@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <EnsembleReport name="soc_system" kind="soc_system" version="1.0" fabric="QSYS">
  <!-- Format version 21.1 842 (Future versions may contain additional information.) -->
- <!-- 2026.04.02.15:59:03 -->
+ <!-- 2026.04.16.21:03:37 -->
  <!-- A collection of modules and connections -->
  <parameter name="AUTO_GENERATION_ID">
   <type>java.lang.Integer</type>
-  <value>1775159939</value>
+  <value>1776387812</value>
   <derived>false</derived>
   <enabled>true</enabled>
   <visible>false</visible>
@@ -332,9 +332,9 @@ parameters are a RESULT of the module parameters. -->
    </port>
    <clockDomainMember>
     <isBridge>false</isBridge>
-    <moduleName>vga_ball_0</moduleName>
+    <moduleName>voxel_gpu_0</moduleName>
     <slaveName>clock</slaveName>
-    <name>vga_ball_0.clock</name>
+    <name>voxel_gpu_0.clock</name>
    </clockDomainMember>
    <clockDomainMember>
     <isBridge>false</isBridge>
@@ -16858,11 +16858,11 @@ parameters are a RESULT of the module parameters. -->
    </port>
    <memoryBlock>
     <isBridge>false</isBridge>
-    <moduleName>vga_ball_0</moduleName>
+    <moduleName>voxel_gpu_0</moduleName>
     <slaveName>avalon_slave_0</slaveName>
-    <name>vga_ball_0.avalon_slave_0</name>
+    <name>voxel_gpu_0.avalon_slave_0</name>
     <baseAddress>0</baseAddress>
-    <span>16</span>
+    <span>32768</span>
    </memoryBlock>
   </interface>
  </module>
@@ -43443,11 +43443,11 @@ parameters are a RESULT of the module parameters. -->
    </port>
    <memoryBlock>
     <isBridge>false</isBridge>
-    <moduleName>vga_ball_0</moduleName>
+    <moduleName>voxel_gpu_0</moduleName>
     <slaveName>avalon_slave_0</slaveName>
-    <name>vga_ball_0.avalon_slave_0</name>
+    <name>voxel_gpu_0.avalon_slave_0</name>
     <baseAddress>0</baseAddress>
-    <span>16</span>
+    <span>32768</span>
    </memoryBlock>
   </interface>
   <interface name="f2h_axi_clock" kind="clock_sink" version="21.1">
@@ -44970,11 +44970,11 @@ parameters are a RESULT of the module parameters. -->
    </memoryBlock>
    <memoryBlock>
     <isBridge>false</isBridge>
-    <moduleName>vga_ball_0</moduleName>
+    <moduleName>voxel_gpu_0</moduleName>
     <slaveName>avalon_slave_0</slaveName>
-    <name>vga_ball_0.avalon_slave_0</name>
+    <name>voxel_gpu_0.avalon_slave_0</name>
     <baseAddress>4280287232</baseAddress>
-    <span>16</span>
+    <span>32768</span>
    </memoryBlock>
    <memoryBlock>
     <isBridge>false</isBridge>
@@ -45801,11 +45801,11 @@ parameters are a RESULT of the module parameters. -->
    </memoryBlock>
    <memoryBlock>
     <isBridge>false</isBridge>
-    <moduleName>vga_ball_0</moduleName>
+    <moduleName>voxel_gpu_0</moduleName>
     <slaveName>avalon_slave_0</slaveName>
-    <name>vga_ball_0.avalon_slave_0</name>
+    <name>voxel_gpu_0.avalon_slave_0</name>
     <baseAddress>4280287232</baseAddress>
-    <span>16</span>
+    <span>32768</span>
    </memoryBlock>
    <memoryBlock>
     <isBridge>false</isBridge>
@@ -73402,16 +73402,16 @@ parameters are a RESULT of the module parameters. -->
    </port>
   </interface>
  </module>
- <module name="vga_ball_0" kind="vga_ball" version="1.0" path="vga_ball_0">
+ <module name="voxel_gpu_0" kind="voxel_gpu" version="1.0" path="voxel_gpu_0">
   <!-- Describes a single module. Module parameters are
 the requested settings for a module instance. -->
   <assignment>
    <name>embeddedsw.dts.group</name>
-   <value>vga</value>
+   <value>voxel</value>
   </assignment>
   <assignment>
    <name>embeddedsw.dts.name</name>
-   <value>vga_ball</value>
+   <value>voxel_gpu</value>
   </assignment>
   <assignment>
    <name>embeddedsw.dts.vendor</name>
@@ -73561,7 +73561,7 @@ parameters are a RESULT of the module parameters. -->
    </parameter>
    <parameter name="addressSpan">
     <type>java.math.BigInteger</type>
-    <value>16</value>
+    <value>32768</value>
     <derived>true</derived>
     <enabled>true</enabled>
     <visible>false</visible>
@@ -73858,16 +73858,10 @@ parameters are a RESULT of the module parameters. -->
    <type>avalon</type>
    <isStart>false</isStart>
    <port>
-    <name>writedata</name>
+    <name>address</name>
     <direction>Input</direction>
-    <width>16</width>
-    <role>writedata</role>
-   </port>
-   <port>
-    <name>write</name>
-    <direction>Input</direction>
-    <width>1</width>
-    <role>write</role>
+    <width>13</width>
+    <role>address</role>
    </port>
    <port>
     <name>chipselect</name>
@@ -73876,10 +73870,28 @@ parameters are a RESULT of the module parameters. -->
     <role>chipselect</role>
    </port>
    <port>
-    <name>address</name>
+    <name>write</name>
     <direction>Input</direction>
-    <width>3</width>
-    <role>address</role>
+    <width>1</width>
+    <role>write</role>
+   </port>
+   <port>
+    <name>writedata</name>
+    <direction>Input</direction>
+    <width>32</width>
+    <role>writedata</role>
+   </port>
+   <port>
+    <name>byteenable</name>
+    <direction>Input</direction>
+    <width>4</width>
+    <role>byteenable</role>
+   </port>
+   <port>
+    <name>readdata</name>
+    <direction>Output</direction>
+    <width>32</width>
+    <role>readdata</role>
    </port>
   </interface>
   <interface name="vga" kind="conduit_end" version="21.1">
@@ -84097,11 +84109,11 @@ parameters are a RESULT of the module parameters. -->
   <endConnectionPoint>axi_slave0</endConnectionPoint>
  </connection>
  <connection
-   name="hps_0_bridges.h2f_lw/vga_ball_0.avalon_slave_0"
+   name="hps_0_bridges.h2f_lw/voxel_gpu_0.avalon_slave_0"
    kind="avalon"
    version="21.1"
    start="hps_0_bridges.h2f_lw"
-   end="vga_ball_0.avalon_slave_0">
+   end="voxel_gpu_0.avalon_slave_0">
   <parameter name="arbitrationPriority">
    <type>int</type>
    <value>1</value>
@@ -84144,15 +84156,15 @@ parameters are a RESULT of the module parameters. -->
   </parameter>
   <startModule>hps_0_bridges</startModule>
   <startConnectionPoint>h2f_lw</startConnectionPoint>
-  <endModule>vga_ball_0</endModule>
+  <endModule>voxel_gpu_0</endModule>
   <endConnectionPoint>avalon_slave_0</endConnectionPoint>
  </connection>
  <connection
-   name="clk_0.clk/vga_ball_0.clock"
+   name="clk_0.clk/voxel_gpu_0.clock"
    kind="clock"
    version="21.1"
    start="clk_0.clk"
-   end="vga_ball_0.clock">
+   end="voxel_gpu_0.clock">
   <parameter name="deviceFamily">
    <type>java.lang.String</type>
    <value>UNKNOWN</value>
@@ -84171,7 +84183,7 @@ parameters are a RESULT of the module parameters. -->
   </parameter>
   <startModule>clk_0</startModule>
   <startConnectionPoint>clk</startConnectionPoint>
-  <endModule>vga_ball_0</endModule>
+  <endModule>voxel_gpu_0</endModule>
   <endConnectionPoint>clock</endConnectionPoint>
  </connection>
  <connection
@@ -84256,11 +84268,11 @@ parameters are a RESULT of the module parameters. -->
   <endConnectionPoint>h2f_lw_axi_clock</endConnectionPoint>
  </connection>
  <connection
-   name="clk_0.clk_reset/vga_ball_0.reset"
+   name="clk_0.clk_reset/voxel_gpu_0.reset"
    kind="reset"
    version="21.1"
    start="clk_0.clk_reset"
-   end="vga_ball_0.reset">
+   end="voxel_gpu_0.reset">
   <parameter name="deviceFamily">
    <type>java.lang.String</type>
    <value>UNKNOWN</value>
@@ -84279,7 +84291,7 @@ parameters are a RESULT of the module parameters. -->
   </parameter>
   <startModule>clk_0</startModule>
   <startConnectionPoint>clk_reset</startConnectionPoint>
-  <endModule>vga_ball_0</endModule>
+  <endModule>voxel_gpu_0</endModule>
   <endConnectionPoint>reset</endConnectionPoint>
  </connection>
  <plugin>
@@ -84660,10 +84672,10 @@ parameters are a RESULT of the module parameters. -->
  </plugin>
  <plugin>
   <instanceCount>1</instanceCount>
-  <name>vga_ball</name>
+  <name>voxel_gpu</name>
   <type>com.altera.entityinterfaces.IElementClass</type>
   <subtype>com.altera.entityinterfaces.IModule</subtype>
-  <displayName>VGA Ball</displayName>
+  <displayName>Voxel GPU</displayName>
   <version>1.0</version>
  </plugin>
  <plugin>

@@ -630,7 +630,7 @@ https://fpgasoftware.intel.com/eula.
 		(text "r" (rect 181 1035 368 2080)(font "Arial" (color 0 0 0)))
 		(text "sync_n" (rect 181 1051 398 2112)(font "Arial" (color 0 0 0)))
 		(text "vs" (rect 181 1067 374 2144)(font "Arial" (color 0 0 0)))
-		(text " system " (rect 525 1088 1098 2186)(font "Arial" ))
+		(text " soc_system " (rect 504 1088 1080 2186)(font "Arial" ))
 		(line (pt 176 32)(pt 384 32)(line_width 1))
 		(line (pt 384 32)(pt 384 1088)(line_width 1))
 		(line (pt 176 1088)(pt 384 1088)(line_width 1))

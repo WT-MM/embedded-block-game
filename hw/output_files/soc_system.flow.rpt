@@ -1,5 +1,5 @@
 Flow report for soc_system
-Thu Apr  2 16:06:36 2026
+Thu Apr 16 21:16:20 2026
 Quartus Prime Version 21.1.0 Build 842 10/21/2021 SJ Lite Edition
 
 
@@ -41,19 +41,19 @@ https://fpgasoftware.intel.com/eula.
 +-------------------------------------------------------------------------------+
 ; Flow Summary                                                                  ;
 +---------------------------------+---------------------------------------------+
-; Flow Status                     ; Successful - Thu Apr  2 16:06:11 2026       ;
+; Flow Status                     ; Successful - Thu Apr 16 21:15:50 2026       ;
 ; Quartus Prime Version           ; 21.1.0 Build 842 10/21/2021 SJ Lite Edition ;
 ; Revision Name                   ; soc_system                                  ;
 ; Top-level Entity Name           ; soc_system_top                              ;
 ; Family                          ; Cyclone V                                   ;
 ; Device                          ; 5CSEMA5F31C6                                ;
 ; Timing Models                   ; Final                                       ;
-; Logic utilization (in ALMs)     ; 269 / 32,070 ( < 1 % )                      ;
-; Total registers                 ; 503                                         ;
+; Logic utilization (in ALMs)     ; 97 / 32,070 ( < 1 % )                       ;
+; Total registers                 ; 350                                         ;
 ; Total pins                      ; 362 / 457 ( 79 % )                          ;
 ; Total virtual pins              ; 0                                           ;
 ; Total block memory bits         ; 0 / 4,065,280 ( 0 % )                       ;
-; Total DSP Blocks                ; 1 / 87 ( 1 % )                              ;
+; Total DSP Blocks                ; 0 / 87 ( 0 % )                              ;
 ; Total HSSI RX PCSs              ; 0                                           ;
 ; Total HSSI PMA RX Deserializers ; 0                                           ;
 ; Total HSSI TX PCSs              ; 0                                           ;
@@ -68,7 +68,7 @@ https://fpgasoftware.intel.com/eula.
 +-------------------+---------------------+
 ; Option            ; Setting             ;
 +-------------------+---------------------+
-; Start date & time ; 04/02/2026 16:02:34 ;
+; Start date & time ; 04/16/2026 21:12:05 ;
 ; Main task         ; Compilation         ;
 ; Revision Name     ; soc_system          ;
 +-------------------+---------------------+
@@ -79,7 +79,7 @@ https://fpgasoftware.intel.com/eula.
 +---------------------------------------+--------------------------------------------------------------------------+---------------+--------------------------------+------------+
 ; Assignment Name                       ; Value                                                                    ; Default Value ; Entity Name                    ; Section Id ;
 +---------------------------------------+--------------------------------------------------------------------------+---------------+--------------------------------+------------+
-; COMPILER_SIGNATURE_ID                 ; 224948460875849.177516015425981                                          ; --            ; --                             ; --         ;
+; COMPILER_SIGNATURE_ID                 ; 35768770337026.177638832527137                                           ; --            ; --                             ; --         ;
 ; ECO_REGENERATE_REPORT                 ; On                                                                       ; Off           ; --                             ; --         ;
 ; HPS_ISW_FILE                          ; soc_system/synthesis/submodules/sequencer/sdram_io.pre.h                 ; --            ; soc_system_hps_0_hps_io_border ; --         ;
 ; HPS_ISW_FILE                          ; soc_system/synthesis/submodules/sequencer/alt_types.pre.h                ; --            ; soc_system_hps_0_hps_io_border ; --         ;
@@ -115,7 +115,7 @@ https://fpgasoftware.intel.com/eula.
 ; PROJECT_OUTPUT_DIRECTORY              ; output_files                                                             ; --            ; --                             ; --         ;
 ; SLD_FILE                              ; soc_system/synthesis/soc_system.regmap                                   ; --            ; --                             ; --         ;
 ; SLD_FILE                              ; soc_system/synthesis/soc_system.debuginfo                                ; --            ; --                             ; --         ;
-; SLD_INFO                              ; QSYS_NAME soc_system HAS_SOPCINFO 1 GENERATION_ID 1775159939             ; --            ; --                             ; --         ;
+; SLD_INFO                              ; QSYS_NAME soc_system HAS_SOPCINFO 1 GENERATION_ID 1776387812             ; --            ; --                             ; --         ;
 ; SOPCINFO_FILE                         ; soc_system/synthesis/../../soc_system.sopcinfo                           ; --            ; --                             ; --         ;
 ; SYNTHESIS_ONLY_QIP                    ; On                                                                       ; --            ; --                             ; --         ;
 ; TOP_LEVEL_ENTITY                      ; soc_system_top                                                           ; soc_system    ; --                             ; --         ;
@@ -128,11 +128,11 @@ https://fpgasoftware.intel.com/eula.
 +----------------------+--------------+-------------------------+---------------------+------------------------------------+
 ; Module Name          ; Elapsed Time ; Average Processors Used ; Peak Virtual Memory ; Total CPU Time (on all processors) ;
 +----------------------+--------------+-------------------------+---------------------+------------------------------------+
-; Analysis & Synthesis ; 00:00:15     ; 1.0                     ; 979 MB              ; 00:00:15                           ;
-; Fitter               ; 00:00:46     ; 1.0                     ; 2944 MB             ; 00:00:52                           ;
-; Assembler            ; 00:00:11     ; 1.0                     ; 810 MB              ; 00:00:05                           ;
-; Timing Analyzer      ; 00:00:23     ; 1.1                     ; 1553 MB             ; 00:00:17                           ;
-; Total                ; 00:01:35     ; --                      ; --                  ; 00:01:29                           ;
+; Analysis & Synthesis ; 00:00:25     ; 1.0                     ; 978 MB              ; 00:00:14                           ;
+; Fitter               ; 00:00:44     ; 1.0                     ; 2867 MB             ; 00:00:48                           ;
+; Assembler            ; 00:00:09     ; 1.0                     ; 814 MB              ; 00:00:05                           ;
+; Timing Analyzer      ; 00:00:28     ; 1.0                     ; 1549 MB             ; 00:00:16                           ;
+; Total                ; 00:01:46     ; --                      ; --                  ; 00:01:23                           ;
 +----------------------+--------------+-------------------------+---------------------+------------------------------------+
 
 
@@ -141,10 +141,10 @@ https://fpgasoftware.intel.com/eula.
 +----------------------+------------------+---------+------------+----------------+
 ; Module Name          ; Machine Hostname ; OS Name ; OS Version ; Processor type ;
 +----------------------+------------------+---------+------------+----------------+
-; Analysis & Synthesis ; micro12          ; Red Hat ; Red Hat    ; x86_64         ;
-; Fitter               ; micro12          ; Red Hat ; Red Hat    ; x86_64         ;
-; Assembler            ; micro12          ; Red Hat ; Red Hat    ; x86_64         ;
-; Timing Analyzer      ; micro12          ; Red Hat ; Red Hat    ; x86_64         ;
+; Analysis & Synthesis ; micro25          ; Red Hat ; Red Hat    ; x86_64         ;
+; Fitter               ; micro25          ; Red Hat ; Red Hat    ; x86_64         ;
+; Assembler            ; micro25          ; Red Hat ; Red Hat    ; x86_64         ;
+; Timing Analyzer      ; micro25          ; Red Hat ; Red Hat    ; x86_64         ;
 +----------------------+------------------+---------+------------+----------------+
 
 

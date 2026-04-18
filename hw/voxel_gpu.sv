@@ -74,8 +74,6 @@ module voxel_gpu (
     logic        front_sel;  // 0 => fb0 is front, 1 => fb1 is front
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
-    (* ramstyle = "M10K, no_rw_check" *) logic [7:0] fb0 [0:FB_PIXELS-1];
-    (* ramstyle = "M10K, no_rw_check" *) logic [7:0] fb1 [0:FB_PIXELS-1];
     logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
 
     logic [10:0] fifo_wr_ptr;
@@ -105,6 +103,12 @@ module voxel_gpu (
     logic        scan_visible_r;
     logic [16:0] scan_row_base;
     logic [16:0] draw_addr;
+    logic [16:0] fb_wr_addr;
+    logic  [7:0] fb_wr_data;
+    logic        fb0_wr_en;
+    logic        fb1_wr_en;
+    logic  [7:0] fb0_rd_data;
+    logic  [7:0] fb1_rd_data;
 
     logic vga_vs_d;
 
@@ -186,6 +190,32 @@ module voxel_gpu (
         .VGA_SYNC_n  (VGA_SYNC_n)
     );
 
+    voxel_sdp_ram #(
+        .DATA_W(8),
+        .ADDR_W(17),
+        .DEPTH(FB_PIXELS)
+    ) fb0_ram (
+        .clk     (clk),
+        .rd_addr (scan_addr_now),
+        .rd_data (fb0_rd_data),
+        .wr_addr (fb_wr_addr),
+        .wr_data (fb_wr_data),
+        .wr_en   (fb0_wr_en)
+    );
+
+    voxel_sdp_ram #(
+        .DATA_W(8),
+        .ADDR_W(17),
+        .DEPTH(FB_PIXELS)
+    ) fb1_ram (
+        .clk     (clk),
+        .rd_addr (scan_addr_now),
+        .rd_data (fb1_rd_data),
+        .wr_addr (fb_wr_addr),
+        .wr_data (fb_wr_data),
+        .wr_en   (fb1_wr_en)
+    );
+
     integer i;
     integer ei;
     initial begin
@@ -256,15 +286,41 @@ module voxel_gpu (
             scan_addr_now = 17'd0;
         end
         draw_addr = ({8'd0, draw_y_cur} * 17'd320) + {7'd0, draw_x_cur};
+        fb_wr_addr = draw_addr;
+        fb_wr_data = draw_color;
+        fb0_wr_en = 1'b0;
+        fb1_wr_en = 1'b0;
+
+        case (state)
+            ST_CLEAR: begin
+                fb_wr_addr = clear_addr;
+                fb_wr_data = 8'd0;
+                if (front_sel)
+                    fb0_wr_en = 1'b1;
+                else
+                    fb1_wr_en = 1'b1;
+            end
+
+            ST_DRAW: begin
+                if (draw_inside) begin
+                    if (front_sel)
+                        fb0_wr_en = 1'b1;
+                    else
+                        fb1_wr_en = 1'b1;
+                end
+            end
+
+            default: ;
+        endcase
     end
 
     always_ff @(posedge clk) begin
         vga_vs_d <= VGA_VS;
 
         if (front_sel)
-            scan_idx_r <= fb1[scan_addr_now];
+            scan_idx_r <= fb1_rd_data;
         else
-            scan_idx_r <= fb0[scan_addr_now];
+            scan_idx_r <= fb0_rd_data;
         scan_visible_r <= scan_visible_now;
     end
 
@@ -362,11 +418,6 @@ module voxel_gpu (
                 end
 
                 ST_CLEAR: begin
-                    if (front_sel)
-                        fb0[clear_addr] <= 8'd0;
-                    else
-                        fb1[clear_addr] <= 8'd0;
-
                     if (clear_addr == 17'd76799) begin
                         state <= ST_IDLE;
                     end else begin
@@ -398,13 +449,6 @@ module voxel_gpu (
                 end
 
                 ST_DRAW: begin
-                    if (draw_inside) begin
-                        if (front_sel)
-                            fb0[draw_addr] <= draw_color;
-                        else
-                            fb1[draw_addr] <= draw_color;
-                    end
-
                     if (draw_x_cur == draw_x_max) begin
                         if (draw_y_cur == draw_y_max) begin
                             state <= ST_IDLE;
@@ -443,6 +487,29 @@ module voxel_gpu (
             VGA_G = 8'h00;
             VGA_B = 8'h00;
         end
+    end
+
+endmodule
+
+module voxel_sdp_ram #(
+    parameter int DATA_W = 8,
+    parameter int ADDR_W = 17,
+    parameter int DEPTH  = 76800
+) (
+    input  logic                clk,
+    input  logic [ADDR_W-1:0]   rd_addr,
+    output logic [DATA_W-1:0]   rd_data,
+    input  logic [ADDR_W-1:0]   wr_addr,
+    input  logic [DATA_W-1:0]   wr_data,
+    input  logic                wr_en
+);
+
+    (* ramstyle = "M10K, no_rw_check" *) logic [DATA_W-1:0] mem [0:DEPTH-1];
+
+    always_ff @(posedge clk) begin
+        rd_data <= mem[rd_addr];
+        if (wr_en)
+            mem[wr_addr] <= wr_data;
     end
 
 endmodule

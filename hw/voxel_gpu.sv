@@ -113,8 +113,6 @@ module voxel_gpu (
     wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < 5'd16) && !fifo_empty;
     wire engine_busy = (state != ST_IDLE);
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
-    wire _unused_byteenable = &{1'b0, byteenable};
-    wire _unused_counter_bits = &{1'b0, hcount[1:0], vcount[9], vcount[0]};
 
     wire signed [15:0] desc_x_min_raw = $signed(desc_words[0][15:0]);
     wire signed [15:0] desc_y_min_raw = $signed(desc_words[0][31:16]);
@@ -233,11 +231,6 @@ module voxel_gpu (
         palette[15] = 24'hFFFF80;
         for (i = 16; i < 256; i = i + 1)
             palette[i] = {i[7:0], i[7:0], i[7:0]};
-
-        for (i = 0; i < FB_PIXELS; i = i + 1) begin
-            fb0[i] = 8'd0;
-            fb1[i] = 8'd0;
-        end
 
         for (i = 0; i < FIFO_DEPTH; i = i + 1)
             fifo_mem[i] = 32'h0;

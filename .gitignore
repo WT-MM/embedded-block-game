@@ -22,7 +22,6 @@ greybox_tmp/
 *.sof
 *.sld
 *.jdi
-*.rbf
 *.done
 *.txt.bak
 
@@ -30,7 +29,6 @@ greybox_tmp/
 hw/soc_system/
 hw/ip/
 *.sopcinfo
-*.dtb
 *.srf
 c5_pin_model_dump.txt
 hps_sdram_p0_all_pins.txt

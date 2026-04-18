@@ -1,24 +1,86 @@
-Simple Device Driver for the VGA 7-segment LED emulator
+voxel_gpu — MVP device driver for the FPGA voxel GPU
+=====================================================
 
-make
+Files
+-----
+  voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
+  voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
+  voxel_test.c   Userspace smoke test that exercises every ioctl + write().
+  Makefile       Builds both the .ko and the test binary.
 
-# To display Kernel debugging messages on the console
-echo 8 > /proc/sys/kernel/printk
+Build
+-----
+On the SoC (with kernel headers installed):
 
-# Alternately,
-dmesg | tail -7
+    make            # builds voxel_gpu.ko and ./voxel_test
+    make clean
 
-insmod vga_led.ko
-lsmod
-./hello
+Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
 
-rmmod vga_led
+    make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+         KERNEL_SOURCE=/path/to/linux-socfpga \
+         CC=arm-linux-gnueabihf-gcc
 
-Once the module is loaded, look for information about it with
+Device-tree binding
+-------------------
+The driver matches the OF node with
 
-lsmod
-cat /proc/iomem
-ls /sys/module/vga_led
-ls /sys/devices/soc.0
-ls /sys/class/misc/vga_led
-ls /sys/bus/drivers
+    compatible = "csee4840,voxel_gpu-1.0";
+
+That string is generated automatically by Platform Designer from the
+embeddedsw.dts.vendor / .name assignments in voxel_gpu_hw.tcl. After you
+add the voxel_gpu IP into soc_system.qsys, regenerate soc_system.dts
+(via sopc2dts) so a node like the following appears:
+
+    voxel_gpu_0: voxel_gpu@0x100001000 {
+        compatible = "csee4840,voxel_gpu-1.0";
+        reg = <0x00000001 0x00001000 0x00003000>;
+        clocks = <&clk_0>;
+    };
+
+The `reg` size must cover the whole 0x3000-byte slave (registers +
+8 KB FIFO window).
+
+Run
+---
+    # Print kernel messages while bringing the module up.
+    echo 8 > /proc/sys/kernel/printk
+
+    insmod voxel_gpu.ko
+    dmesg | tail
+    ls -l /dev/voxel_gpu        # should appear with mode 0666
+
+    ./voxel_test                # run the smoke test
+    rmmod voxel_gpu
+
+Sysfs / debug peeks
+-------------------
+    cat /proc/iomem             # voxel_gpu region appears here
+    ls /sys/class/misc/voxel_gpu
+
+ABI summary
+-----------
+write(fd, buf, n)              Stream `n` bytes (must be a multiple of 4)
+                               into the FIFO. Blocks while FIFO_FULL,
+                               returns -ETIMEDOUT if the GPU is wedged.
+
+ioctl(fd, VOXEL_IOC_CLEAR_FRAME)         Clears Z + framebuffer.
+ioctl(fd, VOXEL_IOC_FLIP)                Drains FIFO, then flips on vsync.
+ioctl(fd, VOXEL_IOC_SET_PALETTE, &e)     Upload one palette entry.
+ioctl(fd, VOXEL_IOC_GET_STATUS, &s)      Snapshot of STATUS register.
+ioctl(fd, VOXEL_IOC_GET_FRAME_COUNT, &n) Read free-running frame counter.
+
+The MVP render loop is therefore:
+
+    ioctl(CLEAR_FRAME);
+    write(quad_descriptors, n_bytes);
+    ioctl(FLIP);
+
+What this driver intentionally does NOT do
+------------------------------------------
+  * Parse, validate, or schedule descriptors.
+  * Manage GPU memory beyond a small bounce buffer.
+  * Use interrupts (everything is polled — see VOXEL_POLL_TIMEOUT_MS).
+  * Implement mmap of the FIFO (write() is the only data path for MVP).
+
+Adding any of those is a post-MVP exercise.

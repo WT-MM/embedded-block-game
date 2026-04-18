@@ -1,0 +1,83 @@
+/*
+ * voxel_gpu.h — shared user/kernel header for the voxel GPU device driver.
+ *
+ * This header documents the FPGA peripheral's register layout and defines
+ * the ioctl ABI exposed through /dev/voxel_gpu.
+ *
+ * Register map (Avalon-MM slave, byte offsets, 32-bit words):
+ *   0x0000  CONTROL     [3]=CLR [2]=IEN [1]=FLP [0]=EN          (R/W)
+ *   0x0004  STATUS      [19:4]=FIFO_COUNT [3]=VSY [2]=FEM
+ *                       [1]=FFL [0]=BSY                          (R)
+ *   0x0008  FRAME_COUNT 32-bit free-running counter              (R)
+ *   0x000C  PALETTE_ADDR  [7:0] = palette index                  (W)
+ *   0x0010  PALETTE_DATA  [23:16]=R [15:8]=G [7:0]=B             (W)
+ *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
+ *
+ * The driver itself is intentionally dumb: it streams bytes from
+ * userspace straight into FIFO_WINDOW and provides ioctls for the
+ * handful of control knobs the hardware exposes.
+ */
+
+#ifndef _VOXEL_GPU_H
+#define _VOXEL_GPU_H
+
+#include <linux/ioctl.h>
+#include <linux/types.h>
+
+/* ----- register layout (byte offsets) ----- */
+#define VOXEL_REG_CONTROL       0x0000
+#define VOXEL_REG_STATUS        0x0004
+#define VOXEL_REG_FRAME_COUNT   0x0008
+#define VOXEL_REG_PALETTE_ADDR  0x000C
+#define VOXEL_REG_PALETTE_DATA  0x0010
+
+#define VOXEL_FIFO_BASE         0x1000
+#define VOXEL_FIFO_END          0x3000          /* exclusive */
+#define VOXEL_FIFO_BYTES        (VOXEL_FIFO_END - VOXEL_FIFO_BASE)
+#define VOXEL_FIFO_WORDS        (VOXEL_FIFO_BYTES / 4)   /* 2048 */
+
+#define VOXEL_REG_SPAN          VOXEL_FIFO_END
+
+/* ----- CONTROL bits ----- */
+#define VOXEL_CTRL_EN           (1u << 0)
+#define VOXEL_CTRL_FLP          (1u << 1)
+#define VOXEL_CTRL_IEN          (1u << 2)
+#define VOXEL_CTRL_CLR          (1u << 3)
+
+/* ----- STATUS bits ----- */
+#define VOXEL_STAT_BSY          (1u << 0)       /* rasterizer busy */
+#define VOXEL_STAT_FFL          (1u << 1)       /* FIFO full */
+#define VOXEL_STAT_FEM          (1u << 2)       /* FIFO empty */
+#define VOXEL_STAT_VSY          (1u << 3)       /* vsync pulse latched */
+#define VOXEL_STAT_FIFO_SHIFT   4
+#define VOXEL_STAT_FIFO_MASK    0xFFFFu
+
+/* ----- ioctl payloads ----- */
+struct voxel_palette_entry {
+	__u8 index;
+	__u8 r;
+	__u8 g;
+	__u8 b;
+};
+
+struct voxel_status {
+	__u32 raw;              /* full STATUS register */
+	__u32 fifo_count;       /* convenience: words currently in FIFO */
+	__u8  busy;
+	__u8  fifo_full;
+	__u8  fifo_empty;
+	__u8  vsync;
+};
+
+/* ----- ioctl numbers ----- */
+#define VOXEL_IOC_MAGIC 'v'
+
+#define VOXEL_IOC_CLEAR_FRAME      _IO(VOXEL_IOC_MAGIC, 1)
+#define VOXEL_IOC_FLIP             _IO(VOXEL_IOC_MAGIC, 2)
+#define VOXEL_IOC_SET_PALETTE      _IOW(VOXEL_IOC_MAGIC, 3, struct voxel_palette_entry)
+#define VOXEL_IOC_GET_STATUS       _IOR(VOXEL_IOC_MAGIC, 4, struct voxel_status)
+#define VOXEL_IOC_GET_FRAME_COUNT  _IOR(VOXEL_IOC_MAGIC, 5, __u32)
+
+#define VOXEL_IOC_MAXNR            5
+
+#endif /* _VOXEL_GPU_H */

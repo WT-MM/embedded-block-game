@@ -1,1 +1,54 @@
+# --- OS / editor cruft ---
+.DS_Store
+*~
+*.bak
+*.swp
+*.swo
+
+# --- Quartus build artifacts ---
+db/
+incremental_db/
+output_files/
+.qsys_edit/
+hps_isw_handoff/
+hc_output/
+greybox_tmp/
+*.qws
+*.qarlog
+*.rpt
+*.smsg
+*.summary
+*.pin
+*.sof
+*.sld
+*.jdi
+*.rbf
+*.done
+*.txt.bak
+
+# --- Platform Designer (Qsys) generated ---
+hw/soc_system/
+hw/ip/
+*.sopcinfo
+*.dtb
+*.srf
+c5_pin_model_dump.txt
+hps_sdram_p0_all_pins.txt
+hps_sdram_p0_summary.csv
+
+# --- Linux kernel module build artifacts ---
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+modules.order
+Module.symvers
+.tmp_versions/
+
+# --- Userspace build artifacts ---
+sw/voxel_test
+
+# --- Filesystem mount stub from old workflow ---
 usr/

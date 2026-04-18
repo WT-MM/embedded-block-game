@@ -1,30 +1,36 @@
 ifneq (${KERNELRELEASE},)
 
-# KERNELRELEASE defined: we are being compiled as part of the Kernel
-        obj-m := vga_ball.o
+# Compiled as part of the kernel build.
+        obj-m := voxel_gpu.o
 
 else
 
-# We are being compiled as a module: use the Kernel build system
+# Standalone build: invoke the kernel build system.
 
-	KERNEL_SOURCE := /usr/src/linux-headers-$(shell uname -r)
+        KERNEL_SOURCE := /usr/src/linux-headers-$(shell uname -r)
         PWD := $(shell pwd)
 
-default: module hello
+        CC      ?= gcc
+        CFLAGS  ?= -O2 -Wall -Wextra
+
+default: module voxel_test
 
 module:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} modules
 
+voxel_test: voxel_test.c voxel_gpu.h
+	${CC} ${CFLAGS} -o $@ voxel_test.c
+
 clean:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} clean
-	${RM} hello
+	${RM} voxel_test
 
-TARFILES = Makefile README vga_ball.h vga_ball.c hello.c
-TARFILE = lab3-sw.tar.gz
-.PHONY : tar
-tar : $(TARFILE)
+TARFILES = Makefile README voxel_gpu.h voxel_gpu.c voxel_test.c
+TARFILE  = sw.tar.gz
+.PHONY: tar
+tar: $(TARFILE)
 
-$(TARFILE) : $(TARFILES)
-	tar zcfC $(TARFILE) .. $(TARFILES:%=lab3-sw/%)
+$(TARFILE): $(TARFILES)
+	tar zcfC $(TARFILE) .. $(TARFILES:%=sw/%)
 
-endif 
+endif

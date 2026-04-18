@@ -17,7 +17,6 @@ typedef struct {
 
 typedef struct {
     float x, y;
-    bool visible;
 } Vec2;
 
 typedef struct {

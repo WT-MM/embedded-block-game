@@ -1,191 +1,283 @@
 #include "renderer.h"
+#include "voxel_gpu.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <string.h>
 
-// --- Internal Context Definition ---
+#define DEV_PATH "/dev/voxel_gpu"
+
 struct RenderContext {
+    int fd;
     Camera current_camera;
-    
-    // In a real implementation, this might be a pointer to memory-mapped 
-    // FPGA address space (e.g., via /dev/mem)
-    RenderQuad* command_fifo; 
-    int quads_submitted_this_frame;
 
-    // Cached trig for the current frame to save cycles
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
+
+    struct quad_desc *staging;
+    int n_quads;
 };
 
-// --- Internal Math & Projection Functions ---
+/* Project a world-space point into screen space.
+ * Returns false if the point is behind the near plane. */
+static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
+{
+    float dx = world.x - ctx->current_camera.position.x;
+    float dy = world.y - ctx->current_camera.position.y;
+    float dz = world.z - ctx->current_camera.position.z;
 
-// Projects a 3D world coordinate to 2D screen coordinate, applying camera transforms
-static void project_point(RenderContext* ctx, Vec3 world_pos, Vertex2D* out_vert) {
-    float dx = world_pos.x - ctx->current_camera.position.x;
-    float dy = world_pos.y - ctx->current_camera.position.y;
-    float dz = world_pos.z - ctx->current_camera.position.z;
+    float x_yaw =  dx * ctx->cos_yaw - dz * ctx->sin_yaw;
+    float z_yaw =  dx * ctx->sin_yaw + dz * ctx->cos_yaw;
+    float y_yaw =  dy;
 
-    // Yaw
-    float x_yaw = dx * ctx->cos_yaw - dz * ctx->sin_yaw;
-    float z_yaw = dx * ctx->sin_yaw + dz * ctx->cos_yaw;
-    float y_yaw = dy;
-
-    // Pitch
     float x_cam = x_yaw;
     float y_cam = y_yaw * ctx->cos_pitch - z_yaw * ctx->sin_pitch;
     float z_cam = y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
 
-    out_vert->z = z_cam;
+    out->z = z_cam;
 
-    // Near-plane clipping check (as specified in your design doc, reject if < 0.1)
-    if (z_cam > 0.1f) {
-        float proj_x = (x_cam / z_cam) * ctx->current_camera.depth;
-        float proj_y = (y_cam / z_cam) * ctx->current_camera.depth;
-        
-        out_vert->x = proj_x + (SCREEN_WIDTH / 2.0f);
-        out_vert->y = proj_y + (SCREEN_HEIGHT / 2.0f);
-    }
+    if (z_cam <= 0.1f)
+        return false;
+
+    float depth = ctx->current_camera.depth;
+    out->x = (x_cam / z_cam) * depth + SCREEN_WIDTH  / 2.0f;
+    out->y = (y_cam / z_cam) * depth + SCREEN_HEIGHT / 2.0f;
+    return true;
 }
 
-// Check if a block face is pointing towards the camera (Dot product of face normal and view vector)
-static bool is_face_visible(Vec3 block_pos, Vec3 face_normal, Vec3 cam_pos) {
-    // Vector from camera to the center of the face
-    Vec3 view_dir = {
-        (block_pos.x + 0.5f + face_normal.x * 0.5f) - cam_pos.x,
-        (block_pos.y + 0.5f + face_normal.y * 0.5f) - cam_pos.y,
-        (block_pos.z + 0.5f + face_normal.z * 0.5f) - cam_pos.z
+/* Dot-product backface cull: skip face if normal points away from camera. */
+static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
+{
+    Vec3 v = {
+        (block_pos.x + 0.5f + normal.x * 0.5f) - cam_pos.x,
+        (block_pos.y + 0.5f + normal.y * 0.5f) - cam_pos.y,
+        (block_pos.z + 0.5f + normal.z * 0.5f) - cam_pos.z,
     };
-    
-    // Dot product
-    float dot = (view_dir.x * face_normal.x) + 
-                (view_dir.y * face_normal.y) + 
-                (view_dir.z * face_normal.z);
-    
-    return dot < 0.0f; // Visible if angle is > 90 degrees (facing opposite directions)
+    return (v.x*normal.x + v.y*normal.y + v.z*normal.z) < 0.0f;
 }
 
-// --- Public API ---
+/* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */
+static inline int32_t to_q24_8(float v)
+{
+    return (int32_t)roundf(v * 256.0f);
+}
 
-RenderContext* renderer_init(void) {
-    RenderContext* ctx = (RenderContext*)malloc(sizeof(RenderContext));
+/* Pack a float depth value into Q1.15 unsigned (clamp to [0,2)). */
+static inline uint16_t to_q1_15u(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.99f) v = 1.99f;
+    return (uint16_t)(v * 32768.0f);
+}
+
+/* Pack a float depth gradient into Q1.15 signed (clamp to [-1,1)). */
+static inline int16_t to_q1_15s(float v)
+{
+    if (v < -1.0f) v = -1.0f;
+    if (v >  0.999f) v = 0.999f;
+    return (int16_t)(v * 32768.0f);
+}
+
+/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
+ * Stores the plane at (x_min, y_min). */
+static void fit_depth_plane(Vertex2D v[4], int x_min, int y_min,
+                             uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
+{
+    /* Use vertices 0, 1, 2. Solve the 2x2 system for gradients. */
+    float ax = v[1].x - v[0].x, ay = v[1].y - v[0].y, az = v[1].z - v[0].z;
+    float bx = v[2].x - v[0].x, by = v[2].y - v[0].y, bz = v[2].z - v[0].z;
+
+    float det = ax * by - ay * bx;
+    float ddx = 0.0f, ddy = 0.0f;
+    if (fabsf(det) > 1e-6f) {
+        ddx = ( by * az - ay * bz) / det;
+        ddy = (-bx * az + ax * bz) / det;
+    }
+
+    float z_at_origin = v[0].z - ddx * v[0].x - ddy * v[0].y;
+    float z_at_min    = z_at_origin + ddx * x_min + ddy * y_min;
+
+    *z0    = to_q1_15u(z_at_min);
+    *dz_dx = to_q1_15s(ddx);
+    *dz_dy = to_q1_15s(ddy);
+}
+
+/* --- Public API --- */
+
+RenderContext *renderer_init(void)
+{
+    RenderContext *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    
-    // TODO: mmap() /dev/mem here to get the real FPGA FIFO address
-    ctx->command_fifo = (RenderQuad*)malloc(sizeof(RenderQuad) * MAX_QUADS_IN_FLIGHT);
-    ctx->quads_submitted_this_frame = 0;
-    
+
+    ctx->fd = open(DEV_PATH, O_RDWR);
+    if (ctx->fd < 0) {
+        perror("open " DEV_PATH);
+        free(ctx);
+        return NULL;
+    }
+
+    ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(struct quad_desc));
+    if (!ctx->staging) {
+        close(ctx->fd);
+        free(ctx);
+        return NULL;
+    }
+
     return ctx;
 }
 
-void renderer_shutdown(RenderContext* ctx) {
-    if (ctx) {
-        // TODO: munmap() FPGA memory here
-        free(ctx->command_fifo);
-        free(ctx);
+void renderer_shutdown(RenderContext *ctx)
+{
+    if (!ctx) return;
+    free(ctx->staging);
+    close(ctx->fd);
+    free(ctx);
+}
+
+void renderer_begin_frame(RenderContext *ctx)
+{
+    ctx->n_quads = 0;
+    if (ioctl(ctx->fd, VOXEL_IOC_CLEAR_FRAME))
+        perror("ioctl(CLEAR_FRAME)");
+}
+
+void renderer_end_frame(RenderContext *ctx)
+{
+    if (ctx->n_quads == 0) {
+        ioctl(ctx->fd, VOXEL_IOC_FLIP);
+        return;
     }
+
+    size_t bytes = (size_t)ctx->n_quads * sizeof(struct quad_desc);
+    ssize_t n = write(ctx->fd, ctx->staging, bytes);
+    if (n < 0)
+        perror("write(quads)");
+
+    if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
+        perror("ioctl(FLIP)");
 }
 
-void renderer_begin_frame(RenderContext* ctx) {
-    ctx->quads_submitted_this_frame = 0;
-    // TODO: Write to FPGA control register to clear Z-Buffer and Screen
-}
-
-void renderer_end_frame(RenderContext* ctx) {
-    // TODO: Write to FPGA control register to wait for VSYNC/FLIP
-    // printf("Frame ended. Total quads pushed: %d\n", ctx->quads_submitted_this_frame);
-}
-
-void renderer_set_camera(RenderContext* ctx, Camera* camera) {
+void renderer_set_camera(RenderContext *ctx, Camera *camera)
+{
     ctx->current_camera = *camera;
-    // Cache trig functions once per frame
-    ctx->cos_yaw = cosf(camera->yaw);
-    ctx->sin_yaw = sinf(camera->yaw);
+    ctx->cos_yaw   = cosf(camera->yaw);
+    ctx->sin_yaw   = sinf(camera->yaw);
     ctx->cos_pitch = cosf(camera->pitch);
     ctx->sin_pitch = sinf(camera->pitch);
 }
 
-bool renderer_push_quad(RenderContext* ctx, RenderQuad* quad) {
-    if (ctx->quads_submitted_this_frame >= MAX_QUADS_IN_FLIGHT) {
-        return false; // FIFO full/Out of budget
+bool renderer_push_quad(RenderContext *ctx, RenderQuad *quad)
+{
+    if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+        return false;
+
+    Vertex2D *v = quad->vertices;
+
+    /* Bounding box, clamped to viewport */
+    float fxmin = v[0].x, fxmax = v[0].x;
+    float fymin = v[0].y, fymax = v[0].y;
+    for (int i = 1; i < 4; i++) {
+        if (v[i].x < fxmin) fxmin = v[i].x;
+        if (v[i].x > fxmax) fxmax = v[i].x;
+        if (v[i].y < fymin) fymin = v[i].y;
+        if (v[i].y > fymax) fymax = v[i].y;
     }
-    
-    // TODO: memcpy directly to mapped FPGA FIFO address
-    ctx->command_fifo[ctx->quads_submitted_this_frame] = *quad;
-    ctx->quads_submitted_this_frame++;
-    
+    int x_min = (int)fxmin; if (x_min <   0) x_min =   0;
+    int y_min = (int)fymin; if (y_min <   0) y_min =   0;
+    int x_max = (int)fxmax; if (x_max > 319) x_max = 319;
+    int y_max = (int)fymax; if (y_max > 239) y_max = 239;
+
+    if (x_min >= x_max || y_min >= y_max)
+        return false;   /* degenerate / off-screen */
+
+    struct quad_desc *d = &ctx->staging[ctx->n_quads++];
+    memset(d, 0, sizeof(*d));
+
+    d->x_min = (int16_t)x_min;
+    d->y_min = (int16_t)y_min;
+    d->x_max = (int16_t)x_max;
+    d->y_max = (int16_t)y_max;
+
+    /* Edge coefficients: vertices in clockwise screen order.
+     * For edge from (x0,y0) to (x1,y1):
+     *   A = y0 - y1,  B = x1 - x0,  C = -(A*x0 + B*y0)         */
+    for (int i = 0; i < 4; i++) {
+        float x0 = v[i].x,         y0 = v[i].y;
+        float x1 = v[(i+1)%4].x,   y1 = v[(i+1)%4].y;
+        float A  =  y0 - y1;
+        float B  =  x1 - x0;
+        float C  = -(A * x0 + B * y0);
+        d->edges[i].A = to_q24_8(A);
+        d->edges[i].B = to_q24_8(B);
+        d->edges[i].C = to_q24_8(C);
+    }
+
+    /* Depth plane */
+    fit_depth_plane(v, x_min, y_min, &d->z0, &d->dz_dx, &d->dz_dy);
+
+    d->tex_or_color = quad->texture_id ? quad->texture_id : quad->color_tint;
+    d->flags        = QUAD_FLAG_ZTEST;
+    if (quad->texture_id)
+        d->flags |= QUAD_FLAG_TEX;
+
     return true;
 }
 
-void renderer_draw_block(RenderContext* ctx, Block* block) {
+void renderer_draw_block(RenderContext *ctx, Block *block)
+{
     if (block->type == BLOCK_AIR) return;
 
-    // Define the 6 face normals and their respective vertex offsets
-    // Ordering matches BlockFace enum: TOP, BOTTOM, LEFT, RIGHT, FRONT, BACK
-    Vec3 normals[NUM_FACES] = {
-        {0, 1, 0}, {0, -1, 0}, {-1, 0, 0}, {1, 0, 0}, {0, 0, -1}, {0, 0, 1}
+    static const Vec3 normals[NUM_FACES] = {
+        {0,1,0}, {0,-1,0}, {-1,0,0}, {1,0,0}, {0,0,-1}, {0,0,1}
     };
-
-    // The 4 local corners for each of the 6 faces
-    Vec3 face_vertices[NUM_FACES][4] = {
-        {{0,1,1}, {1,1,1}, {1,1,0}, {0,1,0}}, // TOP
-        {{0,0,0}, {1,0,0}, {1,0,1}, {0,0,1}}, // BOTTOM
-        {{0,0,0}, {0,0,1}, {0,1,1}, {0,1,0}}, // LEFT
-        {{1,0,1}, {1,0,0}, {1,1,0}, {1,1,1}}, // RIGHT
-        {{0,0,0}, {0,1,0}, {1,1,0}, {1,0,0}}, // FRONT
-        {{1,0,1}, {1,1,1}, {0,1,1}, {0,0,1}}  // BACK
+    static const Vec3 face_verts[NUM_FACES][4] = {
+        {{0,1,1},{1,1,1},{1,1,0},{0,1,0}},  /* TOP    */
+        {{0,0,0},{1,0,0},{1,0,1},{0,0,1}},  /* BOTTOM */
+        {{0,0,0},{0,0,1},{0,1,1},{0,1,0}},  /* LEFT   */
+        {{1,0,1},{1,0,0},{1,1,0},{1,1,1}},  /* RIGHT  */
+        {{0,0,0},{0,1,0},{1,1,0},{1,0,0}},  /* FRONT  */
+        {{1,0,1},{1,1,1},{0,1,1},{0,0,1}},  /* BACK   */
     };
-
-    // Standard UV mapping for a 16x16 texture
-    float uvs[4][2] = { {0,15}, {15,15}, {15,0}, {0,0} };
 
     BlockDescriptor bd = BlockRegistry[block->type];
 
     for (int f = 0; f < NUM_FACES; f++) {
-        // 1. Hidden-face culling: skip if face points away from camera
-        if (!is_face_visible(block->position, normals[f], ctx->current_camera.position)) {
+        if (!is_face_visible(block->position, normals[f],
+                             ctx->current_camera.position))
             continue;
-        }
 
-        RenderQuad quad;
-        // In a real scenario, this gets an index mapping to the FPGA's BRAM layout
-        quad.texture_id = bd.face_textures[f] ? 1 : 0; 
-        quad.color_tint = 255;
-        
-        bool quad_behind_camera = false;
-
-        // 2. Setup Vertices
-        for (int v = 0; v < 4; v++) {
-            Vec3 world_pos = {
-                block->position.x + face_vertices[f][v].x,
-                block->position.y + face_vertices[f][v].y,
-                block->position.z + face_vertices[f][v].z
+        Vertex2D verts[4];
+        bool behind = false;
+        for (int i = 0; i < 4; i++) {
+            Vec3 wp = {
+                block->position.x + face_verts[f][i].x,
+                block->position.y + face_verts[f][i].y,
+                block->position.z + face_verts[f][i].z,
             };
-
-            project_point(ctx, world_pos, &quad.vertices[v]);
-            
-            // Apply UVs
-            quad.vertices[v].u = uvs[v][0];
-            quad.vertices[v].v = uvs[v][1];
-
-            // 3. Early Near-Plane rejection
-            // (As noted in design doc: reject quad if a single vertex goes behind camera)
-            if (quad.vertices[v].z < 0.1f) {
-                quad_behind_camera = true;
+            if (!project_point(ctx, wp, &verts[i])) {
+                behind = true;
                 break;
             }
+            verts[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
+            verts[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
         }
+        if (behind) continue;
 
-        // 4. Submit to FPGA if valid
-        if (!quad_behind_camera) {
-            renderer_push_quad(ctx, &quad);
-        }
+        RenderQuad q;
+        memcpy(q.vertices, verts, sizeof(verts));
+        q.texture_id = bd.face_textures[f] ? 1 : 0;
+        q.color_tint = 1;
+        renderer_push_quad(ctx, &q);
     }
 }
 
-int renderer_draw_chunk(RenderContext* ctx, Block* blocks, int num_blocks) {
-    int quads_before = ctx->quads_submitted_this_frame;
-    for (int i = 0; i < num_blocks; i++) {
+int renderer_draw_chunk(RenderContext *ctx, Block *blocks, int num_blocks)
+{
+    int before = ctx->n_quads;
+    for (int i = 0; i < num_blocks; i++)
         renderer_draw_block(ctx, &blocks[i]);
-    }
-    return ctx->quads_submitted_this_frame - quads_before;
+    return ctx->n_quads - before;
 }

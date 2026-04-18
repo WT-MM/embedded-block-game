@@ -83,6 +83,35 @@ static void push_dummy_quad(int fd, uint32_t seed)
 		fprintf(stderr, "short write: %zd / %zu\n", n, sizeof(quad));
 }
 
+/*
+ * Push a real flat-shaded quad descriptor: a red rectangle (80,60)-(240,180).
+ * palette[0] = background (dark), palette[1] = red.
+ * Edge functions are clockwise so E(x,y) >= 0 inside.
+ */
+static void push_rect_quad(int fd)
+{
+	struct quad_desc q = {
+		.x_min = 80,  .y_min = 60,
+		.x_max = 240, .y_max = 180,
+		.edges = {
+			{       0,  160*256, -9600*256  },  /* bottom */
+			{ -120*256,       0,  28800*256 },  /* right  */
+			{       0, -160*256,  28800*256 },  /* top    */
+			{  120*256,       0, -9600*256  },  /* left   */
+		},
+		.z0         = 0x4000,
+		.dz_dx      = 0,
+		.dz_dy      = 0,
+		.tex_or_color = 1,   /* palette index 1 = red */
+		.flags      = 0,     /* flat color, z-test off for now */
+	};
+	ssize_t n = write(fd, &q, sizeof(q));
+	if (n < 0)
+		die("write(rect_quad)");
+	if (n != (ssize_t)sizeof(q))
+		fprintf(stderr, "short write: %zd / %zu\n", n, sizeof(q));
+}
+
 int main(void)
 {
 	int fd;
@@ -98,11 +127,27 @@ int main(void)
 	upload_demo_palette(fd);
 	printf("uploaded demo palette\n");
 
+	/* Dummy-quad smoke test (existing) */
 	for (frame = 0; frame < 5; frame++) {
 		if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME))
 			die("ioctl(CLEAR_FRAME)");
 
 		push_dummy_quad(fd, 0xDEAD0000u + (uint32_t)frame);
+
+		if (ioctl(fd, VOXEL_IOC_FLIP))
+			die("ioctl(FLIP)");
+
+		printf("frame %d done; ", frame);
+		print_status(fd);
+	}
+
+	/* Real descriptor test: push a flat red rectangle each frame */
+	printf("\nreal quad test (red rectangle 80,60 -> 240,180):\n");
+	for (frame = 0; frame < 5; frame++) {
+		if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME))
+			die("ioctl(CLEAR_FRAME)");
+
+		push_rect_quad(fd);
 
 		if (ioctl(fd, VOXEL_IOC_FLIP))
 			die("ioctl(FLIP)");

@@ -80,4 +80,31 @@ struct voxel_status {
 
 #define VOXEL_IOC_MAXNR            5
 
+/* ----- quad descriptor layout (§5.2) ----- */
+
+#define QUAD_FLAG_TEX    (1u << 0)   /* textured: second 64-byte UV block follows */
+#define QUAD_FLAG_ZTEST  (1u << 1)   /* enable z-test and z-write */
+
+struct edge_coef {
+	__s32 A, B, C;   /* signed Q24.8 */
+};
+
+/* First 64-byte block — always present */
+struct quad_desc {
+	__s16 x_min, y_min, x_max, y_max;   /* screen-space bounding box */
+	struct edge_coef edges[4];           /* 4 × 12 = 48 B */
+	__u16 z0;                            /* Q1.15 unsigned, depth at (x_min, y_min) */
+	__s16 dz_dx, dz_dy;                  /* Q1.15 signed depth gradients */
+	__u8  tex_or_color;                  /* TEX=1: tile id (0-63); TEX=0: palette idx */
+	__u8  flags;                         /* QUAD_FLAG_* */
+} __attribute__((packed));
+
+/* Second 64-byte block — appended only when QUAD_FLAG_TEX is set */
+struct quad_desc_uv {
+	__s32 u0, v0;          /* Q16.16, UV at (x_min, y_min) */
+	__s32 du_dx, dv_dx;    /* Q16.16, UV gradients along x */
+	__s32 du_dy, dv_dy;    /* Q16.16, UV gradients along y */
+	__u8  reserved[40];    /* write 0 */
+} __attribute__((packed));
+
 #endif /* _VOXEL_GPU_H */

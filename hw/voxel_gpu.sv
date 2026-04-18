@@ -1,4 +1,5 @@
 // voxel_gpu.sv — bring-up MVP for the FPGA voxel GPU.
+// pls work
 //
 // This iteration implements the *register interface* and *VGA scanout*
 // for real, with a visible test pattern, so the SW driver and

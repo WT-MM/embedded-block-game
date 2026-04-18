@@ -26,8 +26,6 @@
 #include "voxel_gpu.h"
 
 #define DEV_PATH "/dev/voxel_gpu"
-#define WORDS_PER_QUAD 16
-
 static void die(const char *what)
 {
 	perror(what);
@@ -67,26 +65,10 @@ static void upload_demo_palette(int fd)
 	}
 }
 
-static void push_dummy_quad(int fd, uint32_t seed)
-{
-	uint32_t quad[WORDS_PER_QUAD];
-	ssize_t n;
-	int i;
-
-	for (i = 0; i < WORDS_PER_QUAD; i++)
-		quad[i] = seed + (uint32_t)i;
-
-	n = write(fd, quad, sizeof(quad));
-	if (n < 0)
-		die("write(quad)");
-	if (n != (ssize_t)sizeof(quad))
-		fprintf(stderr, "short write: %zd / %zu\n", n, sizeof(quad));
-}
-
 /*
  * Push a real flat-shaded quad descriptor: a red rectangle (80,60)-(240,180).
  * palette[0] = background (dark), palette[1] = red.
- * Edge functions are clockwise so E(x,y) >= 0 inside.
+ * The initial RTL milestone uses x/y bounds + color and ignores texturing.
  */
 static void push_rect_quad(int fd)
 {
@@ -127,22 +109,7 @@ int main(void)
 	upload_demo_palette(fd);
 	printf("uploaded demo palette\n");
 
-	/* Dummy-quad smoke test (existing) */
-	for (frame = 0; frame < 5; frame++) {
-		if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME))
-			die("ioctl(CLEAR_FRAME)");
-
-		push_dummy_quad(fd, 0xDEAD0000u + (uint32_t)frame);
-
-		if (ioctl(fd, VOXEL_IOC_FLIP))
-			die("ioctl(FLIP)");
-
-		printf("frame %d done; ", frame);
-		print_status(fd);
-	}
-
-	/* Real descriptor test: push a flat red rectangle each frame */
-	printf("\nreal quad test (red rectangle 80,60 -> 240,180):\n");
+	printf("single-quad test (red rectangle 80,60 -> 240,180):\n");
 	for (frame = 0; frame < 5; frame++) {
 		if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME))
 			die("ioctl(CLEAR_FRAME)");

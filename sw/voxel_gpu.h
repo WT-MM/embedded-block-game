@@ -21,8 +21,18 @@
 #ifndef _VOXEL_GPU_H
 #define _VOXEL_GPU_H
 
+#ifdef __KERNEL__
 #include <linux/ioctl.h>
 #include <linux/types.h>
+#else
+#include <stdint.h>
+#include <sys/ioctl.h>
+typedef uint8_t  __u8;
+typedef uint16_t __u16;
+typedef uint32_t __u32;
+typedef int16_t  __s16;
+typedef int32_t  __s32;
+#endif
 
 /* ----- register layout (byte offsets) ----- */
 #define VOXEL_REG_CONTROL       0x0000
@@ -106,5 +116,9 @@ struct quad_desc_uv {
 	__s32 du_dy, dv_dy;    /* Q16.16, UV gradients along y */
 	__u8  reserved[40];    /* write 0 */
 } __attribute__((packed));
+
+_Static_assert(sizeof(struct edge_coef) == 12, "edge_coef must be 12 bytes");
+_Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 bytes");
+_Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 bytes");
 
 #endif /* _VOXEL_GPU_H */

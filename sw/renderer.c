@@ -10,6 +10,23 @@
 
 #define DEV_PATH "/dev/voxel_gpu"
 
+static void upload_default_palette(int fd)
+{
+    static const struct voxel_palette_entry entries[] = {
+        { 0, 0x10, 0x10, 0x18 }, /* background */
+        { 1, 0x4c, 0xaf, 0x50 }, /* grass */
+        { 2, 0x8b, 0x45, 0x13 }, /* dirt */
+        { 3, 0x65, 0x43, 0x21 }, /* wood */
+        { 4, 0x80, 0x80, 0x80 }, /* stone */
+        { 5, 0xff, 0xff, 0xff }, /* debug white */
+    };
+
+    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+        if (ioctl(fd, VOXEL_IOC_SET_PALETTE, &entries[i]))
+            perror("ioctl(SET_PALETTE)");
+    }
+}
+
 struct RenderContext {
     int fd;
     Camera current_camera;
@@ -63,6 +80,22 @@ static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
 static inline int32_t to_q24_8(float v)
 {
     return (int32_t)roundf(v * 256.0f);
+}
+
+static uint8_t block_palette_index(BlockID id)
+{
+    switch (id) {
+    case BLOCK_GRASS:
+        return 1;
+    case BLOCK_DIRT:
+        return 2;
+    case BLOCK_WOOD:
+        return 3;
+    case BLOCK_STONE:
+        return 4;
+    default:
+        return 5;
+    }
 }
 
 /* Pack a float depth value into Q1.15 unsigned (clamp to [0,2)). */
@@ -126,6 +159,7 @@ RenderContext *renderer_init(void)
         return NULL;
     }
 
+    upload_default_palette(ctx->fd);
     return ctx;
 }
 
@@ -147,14 +181,21 @@ void renderer_begin_frame(RenderContext *ctx)
 void renderer_end_frame(RenderContext *ctx)
 {
     if (ctx->n_quads == 0) {
-        ioctl(ctx->fd, VOXEL_IOC_FLIP);
+        if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
+            perror("ioctl(FLIP)");
         return;
     }
 
     size_t bytes = (size_t)ctx->n_quads * sizeof(struct quad_desc);
     ssize_t n = write(ctx->fd, ctx->staging, bytes);
-    if (n < 0)
+    if (n < 0) {
         perror("write(quads)");
+        return;
+    }
+    if ((size_t)n != bytes) {
+        fprintf(stderr, "short write(quads): %zd / %zu\n", n, bytes);
+        return;
+    }
 
     if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
         perror("ioctl(FLIP)");
@@ -215,13 +256,17 @@ bool renderer_push_quad(RenderContext *ctx, RenderQuad *quad)
         d->edges[i].C = to_q24_8(C);
     }
 
-    /* Depth plane */
-    fit_depth_plane(v, x_min, y_min, &d->z0, &d->dz_dx, &d->dz_dy);
+    /* Compute into locals first to avoid taking addresses of packed members. */
+    uint16_t z0;
+    int16_t dz_dx;
+    int16_t dz_dy;
+    fit_depth_plane(v, x_min, y_min, &z0, &dz_dx, &dz_dy);
+    d->z0 = z0;
+    d->dz_dx = dz_dx;
+    d->dz_dy = dz_dy;
 
-    d->tex_or_color = quad->texture_id ? quad->texture_id : quad->color_tint;
-    d->flags        = QUAD_FLAG_ZTEST;
-    if (quad->texture_id)
-        d->flags |= QUAD_FLAG_TEX;
+    d->tex_or_color = quad->color_tint;
+    d->flags        = 0;
 
     return true;
 }
@@ -241,8 +286,6 @@ void renderer_draw_block(RenderContext *ctx, Block *block)
         {{0,0,0},{0,1,0},{1,1,0},{1,0,0}},  /* FRONT  */
         {{1,0,1},{1,1,1},{0,1,1},{0,0,1}},  /* BACK   */
     };
-
-    BlockDescriptor bd = BlockRegistry[block->type];
 
     for (int f = 0; f < NUM_FACES; f++) {
         if (!is_face_visible(block->position, normals[f],
@@ -268,8 +311,8 @@ void renderer_draw_block(RenderContext *ctx, Block *block)
 
         RenderQuad q;
         memcpy(q.vertices, verts, sizeof(verts));
-        q.texture_id = bd.face_textures[f] ? 1 : 0;
-        q.color_tint = 1;
+        q.texture_id = 0;
+        q.color_tint = block_palette_index(block->type);
         renderer_push_quad(ctx, &q);
     }
 }

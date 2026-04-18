@@ -17,6 +17,9 @@ DTB = $(SYSTEM).dtb
 
 SOF = output_files/$(SYSTEM).sof
 RBF = output_files/$(SYSTEM).rbf
+RBF_INSTALL_SRC ?= $(SYSTEM).rbf
+BOOT_DEV ?= /dev/mmcblk0p1
+BOOT_MOUNT ?= /mnt
 
 SOFTWARE_DIR = software
 
@@ -78,7 +81,9 @@ $(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
 .PHONY : qsys
 qsys : $(SOPCINFO)
 
-$(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS)
+QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl vga_ball.sv vga_ball_hw.tcl
+
+$(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
 	qsys-generate $(QSYS) --synthesis=VERILOG
 
@@ -105,6 +110,31 @@ rbf : $(RBF)
 
 $(RBF) : $(SOF)
 	quartus_cpf -c $(SOF) $(RBF)
+
+# install-rbf
+#
+# Copy an already-built .rbf into the mounted SD boot partition and flush it.
+# By default this uses ./soc_system.rbf; override RBF_INSTALL_SRC if needed.
+# Use mount-boot first if the boot partition is not yet mounted.
+.PHONY : mount-boot install-rbf install-built-rbf
+mount-boot :
+	mkdir -p $(BOOT_MOUNT)
+	mount | grep -q " $(BOOT_MOUNT) " || mount $(BOOT_DEV) $(BOOT_MOUNT)
+
+install-rbf :
+	@test -f "$(RBF_INSTALL_SRC)" || (echo "missing $(RBF_INSTALL_SRC)"; exit 1)
+	@test -d "$(BOOT_MOUNT)" || (echo "$(BOOT_MOUNT) does not exist; run 'make mount-boot' first"; exit 1)
+	@mount | grep -q " $(BOOT_MOUNT) " || (echo "$(BOOT_MOUNT) is not mounted; run 'make mount-boot' first"; exit 1)
+	cp $(RBF_INSTALL_SRC) $(BOOT_MOUNT)/$(SYSTEM).rbf
+	sync
+	ls -lh $(BOOT_MOUNT)/$(SYSTEM).rbf
+
+install-built-rbf : $(RBF)
+	@test -d "$(BOOT_MOUNT)" || (echo "$(BOOT_MOUNT) does not exist; run 'make mount-boot' first"; exit 1)
+	@mount | grep -q " $(BOOT_MOUNT) " || (echo "$(BOOT_MOUNT) is not mounted; run 'make mount-boot' first"; exit 1)
+	cp $(RBF) $(BOOT_MOUNT)/$(SYSTEM).rbf
+	sync
+	ls -lh $(BOOT_MOUNT)/$(SYSTEM).rbf
 
 # dtb
 #

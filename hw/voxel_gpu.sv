@@ -69,8 +69,6 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_PAL_ADDR = 13'h003;
     localparam logic [12:0] ADDR_PAL_DATA = 13'h004;
 
-    wire is_fifo = (address >= 13'h400) && (address <= 13'hBFF);
-
     // ----------------------------------------------------------------
     // Register state
     // ----------------------------------------------------------------
@@ -119,8 +117,10 @@ module voxel_gpu (
     // ----------------------------------------------------------------
     wire wr = chipselect & write;
 
-    // Default-init the palette to a colorful gradient so even before SW
-    // uploads anything you see something on screen.
+    // Default-init the palette to a vibrant rainbow so even before SW
+    // uploads anything you see something on screen. Indices 0..15 are
+    // hand-picked so the test bars look distinct; 16..255 fall back to a
+    // grayscale ramp.
     integer i;
     initial begin
         ctrl_en     = 1'b0;
@@ -131,10 +131,25 @@ module voxel_gpu (
         frame_count = 32'h0;
         vsy_latch   = 1'b0;
         bsy_counter = 6'h0;
-        for (i = 0; i < 256; i = i + 1) begin
-            // Hue-ish ramp: R = i, G = 255 - i, B = (i << 1) ^ 0x55.
-            palette[i] = { i[7:0], 8'(8'hFF - i[7:0]),
-                           8'((i[7:0] << 1) ^ 8'h55) };
+
+        palette[0]  = 24'h202028;   // dark slate (background)
+        palette[1]  = 24'hFF0000;   // red
+        palette[2]  = 24'hFF8000;   // orange
+        palette[3]  = 24'hFFFF00;   // yellow
+        palette[4]  = 24'h80FF00;   // chartreuse
+        palette[5]  = 24'h00FF00;   // green
+        palette[6]  = 24'h00FF80;   // mint
+        palette[7]  = 24'h00FFFF;   // cyan
+        palette[8]  = 24'h0080FF;   // sky blue
+        palette[9]  = 24'h0000FF;   // blue
+        palette[10] = 24'h8000FF;   // purple
+        palette[11] = 24'hFF00FF;   // magenta
+        palette[12] = 24'hFF0080;   // pink
+        palette[13] = 24'hFFFFFF;   // white
+        palette[14] = 24'h808080;   // medium gray
+        palette[15] = 24'hFFFF80;   // pale yellow (flip indicator)
+        for (i = 16; i < 256; i = i + 1) begin
+            palette[i] = { i[7:0], i[7:0], i[7:0] };
         end
     end
 
@@ -149,38 +164,7 @@ module voxel_gpu (
             vsy_latch   <= 1'b0;
             bsy_counter <= 6'h0;
         end else begin
-            // ----- Avalon writes -----
-            if (wr) begin
-                case (address)
-                    ADDR_CONTROL: begin
-                        // CLR/FLP are write-1-to-pulse; underlying flop is
-                        // cleared automatically below.
-                        ctrl_en  <= writedata[0];
-                        if (writedata[1]) ctrl_flp <= 1'b1;
-                        ctrl_ien <= writedata[2];
-                        if (writedata[3]) begin
-                            ctrl_clr    <= 1'b1;
-                            bsy_counter <= 6'd32;   // ~32 clk pulse
-                            // Setting CLR also clears any prior VSY latch
-                            // so a paranoid CLEAR-then-FLIP sees a fresh
-                            // vsync.
-                            vsy_latch   <= 1'b0;
-                        end
-                    end
-                    ADDR_PAL_ADDR: begin
-                        pal_addr <= writedata[7:0];
-                    end
-                    ADDR_PAL_DATA: begin
-                        palette[pal_addr] <= writedata[23:0];
-                    end
-                    default: begin
-                        // STATUS/FRAME_COUNT writes are ignored.
-                        // FIFO_WINDOW writes are silently dropped (no FIFO yet).
-                    end
-                endcase
-            end
-
-            // ----- BSY pulse drain -----
+            // ----- BSY pulse drain (continuous) -----
             if (bsy_counter != 6'd0) begin
                 bsy_counter <= bsy_counter - 6'd1;
                 if (bsy_counter == 6'd1) begin
@@ -189,17 +173,38 @@ module voxel_gpu (
             end
 
             // ----- Vsync handling -----
+            // VSY is "any vsync has happened since you armed me by writing
+            // CTRL.FLP=1". The Avalon write block below runs *after* this
+            // and wins on collisions, so a write-on-vsync still arms cleanly
+            // for the next vsync.
             if (vsync_pulse) begin
                 frame_count <= frame_count + 32'd1;
-                if (ctrl_flp) begin
-                    vsy_latch <= 1'b1;      // tell SW the flip landed
-                    ctrl_flp  <= 1'b0;      // auto-clear FLP
-                end
+                vsy_latch   <= 1'b1;
+                ctrl_flp    <= 1'b0;        // auto-clear FLP latch
             end
 
-            // STATUS reads clear VSY (read-to-clear) — keeps polling sane.
-            if (chipselect && !write && (address == ADDR_STATUS)) begin
-                vsy_latch <= 1'b0;
+            // ----- Avalon writes (placed last so they win NBA collisions) -----
+            if (wr) begin
+                case (address)
+                    ADDR_CONTROL: begin
+                        ctrl_en  <= writedata[0];
+                        ctrl_ien <= writedata[2];
+                        if (writedata[1]) begin
+                            // FLP arm: latch the request and clear VSY so
+                            // the *next* vsync re-sets it.
+                            ctrl_flp  <= 1'b1;
+                            vsy_latch <= 1'b0;
+                        end
+                        if (writedata[3]) begin
+                            ctrl_clr    <= 1'b1;
+                            bsy_counter <= 6'd32;   // ~32 clk BSY pulse
+                            vsy_latch   <= 1'b0;
+                        end
+                    end
+                    ADDR_PAL_ADDR: pal_addr           <= writedata[7:0];
+                    ADDR_PAL_DATA: palette[pal_addr]  <= writedata[23:0];
+                    default      : ;  // STATUS/FRAMECNT/FIFO writes ignored
+                endcase
             end
         end
     end

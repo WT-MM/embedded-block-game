@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import errno
 import struct
 from dataclasses import dataclass
 
@@ -33,6 +34,17 @@ class ProtocolError(RuntimeError):
     pass
 
 
+def _is_disconnect_error(exc: OSError) -> bool:
+    return exc.errno in {
+        errno.EPIPE,
+        errno.ECONNRESET,
+        errno.ENOTCONN,
+        errno.EBADF,
+        errno.ECONNABORTED,
+        errno.ESHUTDOWN,
+    }
+
+
 @dataclass(frozen=True)
 class QuadDesc:
     x_min: int
@@ -51,7 +63,12 @@ def recv_exact(sock, size: int) -> bytes:
     data = bytearray(size)
     view = memoryview(data)
     while view:
-        count = sock.recv_into(view)
+        try:
+            count = sock.recv_into(view)
+        except OSError as exc:
+            if _is_disconnect_error(exc):
+                raise EOFError from exc
+            raise
         if count == 0:
             raise EOFError
         view = view[count:]
@@ -71,9 +88,14 @@ def recv_request(sock) -> tuple[int, bytes]:
 
 def send_reply(sock, status: int, payload: bytes = b"") -> None:
     header = REPLY.pack(MAGIC, VERSION, status, len(payload))
-    sock.sendall(header)
-    if payload:
-        sock.sendall(payload)
+    try:
+        sock.sendall(header)
+        if payload:
+            sock.sendall(payload)
+    except OSError as exc:
+        if _is_disconnect_error(exc):
+            raise EOFError from exc
+        raise
 
 
 def parse_palette_entry(payload: bytes) -> tuple[int, int, int, int]:

@@ -184,20 +184,31 @@ def serve_client(
             return
         except ProtocolError as exc:
             print(f"virtualhw: protocol error: {exc}", file=sys.stderr)
-            send_reply(conn, -errno.EPROTO)
+            try:
+                send_reply(conn, -errno.EPROTO)
+            except EOFError:
+                return
             return
 
         try:
             reply_payload = handle_request(gpu, monitor, dump_dir, opcode, payload)
             send_reply(conn, 0, reply_payload)
+        except EOFError:
+            return
         except ProtocolError as exc:
             print(f"virtualhw: request failed: {exc}", file=sys.stderr)
-            send_reply(conn, -errno.EINVAL)
+            try:
+                send_reply(conn, -errno.EINVAL)
+            except EOFError:
+                return
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # pragma: no cover - defensive debug path
             print(f"virtualhw: unexpected error: {exc}", file=sys.stderr)
-            send_reply(conn, -errno.EIO)
+            try:
+                send_reply(conn, -errno.EIO)
+            except EOFError:
+                return
 
 
 def main() -> int:

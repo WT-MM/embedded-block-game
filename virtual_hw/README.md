@@ -6,8 +6,8 @@ the same palette updates and packed 64-byte `quad_desc` stream as the C
 renderer, then shows the result in a `pygame` window or writes frames
 headlessly as `.ppm`.
 
-Quick Start
------------
+Run With The Game
+-----------------
 
     cd virtual_hw
     uv sync
@@ -24,6 +24,7 @@ Useful Commands
 
     uv run virtualhw --headless --dump-dir /tmp/voxel_frames
     uv run python -m virtualhw.server
+    cd ../sw && VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
 
 If you activate the venv:
 
@@ -40,3 +41,8 @@ Backends
 Optional socket override:
 
     VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
+
+Linux input note:
+
+`./game` reads `/dev/input/event*`. If keyboard or mouse input only works under
+`sudo`, add your user to the `input` group and start a new login session.

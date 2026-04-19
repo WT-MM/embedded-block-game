@@ -34,11 +34,13 @@ static void build_world(void)
         for (int x = 0; x < 10; x++)
             place(BLOCK_GRASS, (float)(x - 5), 0.0f, (float)(z + 3));
 
-    /* Stone pillar in the middle — 3 blocks tall, sides fully exposed.
-     * Walk around it to see all four side faces. */
-    place(BLOCK_STONE, -0.5f, 1.0f, 7.0f);
-    place(BLOCK_STONE, -0.5f, 2.0f, 7.0f);
-    place(BLOCK_STONE, -0.5f, 3.0f, 7.0f);
+    /*
+     * Keep all props on the same integer block grid as the floor.
+     * Half-cell placement causes overlapping cubes and ugly intersections.
+     */
+    place(BLOCK_STONE,  0.0f, 1.0f, 7.0f);
+    place(BLOCK_STONE,  0.0f, 2.0f, 7.0f);
+    place(BLOCK_STONE,  0.0f, 3.0f, 7.0f);
 
     /* Isolated raised blocks scattered around — easy to walk around and
      * see all four vertical faces of each. */
@@ -48,8 +50,8 @@ static void build_world(void)
     place(BLOCK_DIRT,   3.0f, 1.0f, 10.0f);
 
     /* Wood stack in the corner — two tall, so sides are clearly visible. */
-    place(BLOCK_WOOD,   3.5f, 1.0f, 12.0f);
-    place(BLOCK_WOOD,   3.5f, 2.0f, 12.0f);
+    place(BLOCK_WOOD,   4.0f, 1.0f, 12.0f);
+    place(BLOCK_WOOD,   4.0f, 2.0f, 12.0f);
 }
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -73,7 +75,7 @@ int main(void)
 
     Camera cam = {
         .position = { 0.0f, EYE_HEIGHT, 0.0f },
-        .pitch    = 0.3f,   /* look slightly down so the ground reads as a floor */
+        .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
         .depth    = 170.0f,
     };
@@ -93,11 +95,11 @@ int main(void)
 
         /* Look — mouse or arrow keys */
         cam.yaw   += inp.mouse_dx * MOUSE_SENS;
-        cam.pitch += inp.mouse_dy * MOUSE_SENS;
+        cam.pitch -= inp.mouse_dy * MOUSE_SENS;
         if (inp.look_right) cam.yaw   += LOOK_SPEED * dt;
         if (inp.look_left)  cam.yaw   -= LOOK_SPEED * dt;
-        if (inp.look_down)  cam.pitch += LOOK_SPEED * dt;
-        if (inp.look_up)    cam.pitch -= LOOK_SPEED * dt;
+        if (inp.look_down)  cam.pitch -= LOOK_SPEED * dt;
+        if (inp.look_up)    cam.pitch += LOOK_SPEED * dt;
         if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
         if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
         input_clear_mouse(&inp);

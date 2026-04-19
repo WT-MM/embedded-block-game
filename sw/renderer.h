@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include "block_types.h" // Requires your block types and textures definitions
 
+typedef struct VoxelWorld VoxelWorld;
+
 // --- Constants ---
 #define SCREEN_WIDTH 320.0f
 #define SCREEN_HEIGHT 240.0f
@@ -59,6 +61,7 @@ void renderer_end_frame(RenderContext* ctx);
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);
 void renderer_draw_block(RenderContext* ctx, const Block* block);
 int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
+int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
 bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
 
 #endif // RENDERER_H

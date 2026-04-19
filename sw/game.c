@@ -6,8 +6,8 @@
 #include "renderer.h"
 #include "input.h"
 #include "block_types.h"
+#include "world.h"
 
-#define MAX_BLOCKS   1536
 #define EYE_HEIGHT   1.7f
 #define MOVE_SPEED   5.0f      /* blocks per second */
 #define MOUSE_SENS   0.002f    /* radians per pixel */
@@ -15,137 +15,12 @@
 #define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
-#define CHUNK_SIZE   16
-#define CHUNK_HEIGHT 4
 #define WORLD_CHUNKS_X 2
 #define WORLD_CHUNKS_Z 2
 #define WORLD_ORIGIN_CHUNK_X (-1)
 #define WORLD_ORIGIN_CHUNK_Z 0
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
-
-static Block world[MAX_BLOCKS];
-static int   world_count;
-
-typedef struct {
-    int chunk_x;
-    int chunk_z;
-    BlockID blocks[CHUNK_HEIGHT][CHUNK_SIZE][CHUNK_SIZE];
-} Chunk;
-
-static Chunk chunks[WORLD_CHUNKS_X * WORLD_CHUNKS_Z];
-
-static void place(BlockID type, float x, float y, float z)
-{
-    if (world_count < MAX_BLOCKS)
-        world[world_count++] = (Block){ type, { x, y, z } };
-}
-
-static uint32_t rng_next(uint32_t *state)
-{
-    *state = (*state * 1664525u) + 1013904223u;
-    return *state;
-}
-
-static uint32_t chunk_seed(int chunk_x, int chunk_z)
-{
-    uint32_t xbits = (uint32_t)chunk_x * 0x9e3779b9u;
-    uint32_t zbits = (uint32_t)chunk_z * 0x85ebca6bu;
-    uint32_t seed = STONE_SEED ^ xbits ^ zbits;
-
-    seed ^= seed >> 16;
-    seed *= 0x7feb352du;
-    seed ^= seed >> 15;
-    seed *= 0x846ca68bu;
-    seed ^= seed >> 16;
-    return seed;
-}
-
-static void clear_chunk(Chunk *chunk)
-{
-    for (int y = 0; y < CHUNK_HEIGHT; y++)
-        for (int z = 0; z < CHUNK_SIZE; z++)
-            for (int x = 0; x < CHUNK_SIZE; x++)
-                chunk->blocks[y][z][x] = BLOCK_AIR;
-}
-
-static void generate_chunk(Chunk *chunk, int chunk_x, int chunk_z)
-{
-    uint32_t seed = chunk_seed(chunk_x, chunk_z);
-
-    chunk->chunk_x = chunk_x;
-    chunk->chunk_z = chunk_z;
-    clear_chunk(chunk);
-
-    /* Flat grass ground at y=0 across the entire chunk. */
-    for (int z = 0; z < CHUNK_SIZE; z++)
-        for (int x = 0; x < CHUNK_SIZE; x++)
-            chunk->blocks[0][z][x] = BLOCK_GRASS;
-
-    /*
-     * Scatter deterministic stone pillars up to 3 blocks tall.
-     * Keep the player's initial corridor open near world x in [-1, 1] and
-     * world z in [2, 5] so startup is not cluttered.
-     */
-    for (int i = 0; i < STONE_TRIES_PER_CHUNK; i++) {
-        int lx = (int)(rng_next(&seed) % CHUNK_SIZE);
-        int lz = (int)(rng_next(&seed) % CHUNK_SIZE);
-        int wx = chunk_x * CHUNK_SIZE + lx;
-        int wz = chunk_z * CHUNK_SIZE + lz;
-        int height = 1 + (int)(rng_next(&seed) % (CHUNK_HEIGHT - 1));
-
-        if (fabsf((float)wx) <= 1.0f && wz <= 5)
-            continue;
-        if (chunk->blocks[1][lz][lx] != BLOCK_AIR)
-            continue;
-
-        for (int y = 1; y <= height; y++)
-            chunk->blocks[y][lz][lx] = BLOCK_STONE;
-    }
-}
-
-static void flatten_chunks_to_world(void)
-{
-    world_count = 0;
-
-    for (int ci = 0; ci < WORLD_CHUNKS_X * WORLD_CHUNKS_Z; ci++) {
-        const Chunk *chunk = &chunks[ci];
-
-        for (int y = 0; y < CHUNK_HEIGHT; y++) {
-            for (int z = 0; z < CHUNK_SIZE; z++) {
-                for (int x = 0; x < CHUNK_SIZE; x++) {
-                    BlockID id = chunk->blocks[y][z][x];
-
-                    if (id == BLOCK_AIR)
-                        continue;
-                    if (world_count >= MAX_BLOCKS)
-                        return;
-
-                    place(id,
-                          (float)(chunk->chunk_x * CHUNK_SIZE + x),
-                          (float)y,
-                          (float)(chunk->chunk_z * CHUNK_SIZE + z));
-                }
-            }
-        }
-    }
-}
-
-static void build_world(void)
-{
-    int ci = 0;
-
-    for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
-        for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
-            generate_chunk(&chunks[ci],
-                           WORLD_ORIGIN_CHUNK_X + cx,
-                           WORLD_ORIGIN_CHUNK_Z + cz);
-            ci++;
-        }
-    }
-
-    flatten_chunks_to_world();
-}
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
 {
@@ -155,6 +30,7 @@ static long ns_diff(const struct timespec *a, const struct timespec *b)
 int main(void)
 {
     RenderContext *ctx = renderer_init();
+    VoxelWorld world;
     if (!ctx) {
         fprintf(stderr, "renderer_init failed\n");
         return 1;
@@ -164,7 +40,20 @@ int main(void)
     input_init(&inp);
 
     init_block_types();
-    build_world();
+    world_init(&world);
+    if (!world_generate_flat_random_stone(&world,
+                                          WORLD_ORIGIN_CHUNK_X,
+                                          WORLD_ORIGIN_CHUNK_Z,
+                                          WORLD_CHUNKS_X,
+                                          WORLD_CHUNKS_Z,
+                                          STONE_SEED,
+                                          STONE_TRIES_PER_CHUNK,
+                                          3)) {
+        fprintf(stderr, "world generation failed\n");
+        input_shutdown(&inp);
+        renderer_shutdown(ctx);
+        return 1;
+    }
 
     Camera cam = {
         .position = { 0.0f, EYE_HEIGHT, -1.5f },
@@ -175,7 +64,10 @@ int main(void)
 
     printf("Controls: WASD=move  Space/Shift=up/down  Arrows=look  Mouse=look  Esc=quit\n");
     printf("World: %dx%d chunks of %dx%d flat ground with deterministic random stone blocks (seed 0x%08x)\n",
-           WORLD_CHUNKS_X, WORLD_CHUNKS_Z, CHUNK_SIZE, CHUNK_SIZE, STONE_SEED);
+           WORLD_CHUNKS_X, WORLD_CHUNKS_Z, WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, STONE_SEED);
+    printf("Cached world: blocks=%d exposed_faces=%d render_distance=%d chunks\n",
+           world_total_blocks(&world), world_total_faces(&world),
+           world.render_distance_chunks);
 
     struct timespec prev, now, frame_end;
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -215,7 +107,7 @@ int main(void)
 
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
-        int quads = renderer_draw_chunk(ctx, world, world_count);
+        int quads = renderer_draw_world(ctx, &world);
         renderer_end_frame(ctx);
 
         printf("\rpos=(%.1f,%.1f,%.1f) yaw=%.2f pitch=%.2f quads=%3d  ",
@@ -234,6 +126,7 @@ int main(void)
 
     printf("\n");
     input_shutdown(&inp);
+    world_free(&world);
     renderer_shutdown(ctx);
     return 0;
 }

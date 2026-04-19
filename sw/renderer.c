@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "world.h"
 #include "voxel_gpu.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,6 +20,17 @@
 struct StagedQuad {
     struct quad_desc desc;
 };
+
+typedef struct {
+    int x, y, z;
+    int occupied;
+} LookupEntry;
+
+typedef struct {
+    LookupEntry *entries;
+    int capacity;
+    int mask;
+} BlockLookup;
 
 static void upload_default_palette(int fd)
 {
@@ -57,6 +69,8 @@ struct RenderContext {
 
     struct StagedQuad *staging;
     struct quad_desc *submit_buffer;
+    LookupEntry *lookup_entries;
+    int lookup_capacity;
     int n_quads;
 };
 
@@ -64,6 +78,24 @@ typedef struct {
     float x, y, z;
     float u, v;
 } CameraVertex;
+
+static const Vec3 face_normals[NUM_FACES] = {
+    { 0, 1, 0 },
+    { 0, -1, 0 },
+    { -1, 0, 0 },
+    { 1, 0, 0 },
+    { 0, 0, -1 },
+    { 0, 0, 1 },
+};
+
+static const Vec3 face_verts[NUM_FACES][4] = {
+    { { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 }, { 0, 1, 0 } },
+    { { 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 } },
+    { { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } },
+    { { 1, 0, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 } },
+    { { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } },
+    { { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 }, { 0, 0, 1 } },
+};
 
 static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
 {
@@ -286,30 +318,92 @@ static bool is_solid_block(BlockID id)
     return id != BLOCK_AIR;
 }
 
-static bool same_coord(float a, float b)
+static uint32_t hash_grid_coord(int x, int y, int z)
 {
-    return fabsf(a - b) < 1e-4f;
+    return ((uint32_t)x * 73856093u) ^
+           ((uint32_t)y * 19349663u) ^
+           ((uint32_t)z * 83492791u);
 }
 
-static bool chunk_has_solid_block_at(const Block *blocks, int num_blocks, Vec3 pos)
+static bool ensure_lookup_capacity(RenderContext *ctx, int num_blocks)
 {
+    int needed = 16;
+
+    while (needed < num_blocks * 4)
+        needed <<= 1;
+
+    if (needed <= ctx->lookup_capacity)
+        return true;
+
+    LookupEntry *entries = realloc(ctx->lookup_entries,
+                                   (size_t)needed * sizeof(*entries));
+    if (!entries)
+        return false;
+
+    ctx->lookup_entries = entries;
+    ctx->lookup_capacity = needed;
+    return true;
+}
+
+static bool build_block_lookup(RenderContext *ctx, const Block *blocks, int num_blocks,
+                               BlockLookup *lookup)
+{
+    if (!ensure_lookup_capacity(ctx, num_blocks))
+        return false;
+
+    memset(ctx->lookup_entries, 0,
+           (size_t)ctx->lookup_capacity * sizeof(*ctx->lookup_entries));
+
+    lookup->entries = ctx->lookup_entries;
+    lookup->capacity = ctx->lookup_capacity;
+    lookup->mask = ctx->lookup_capacity - 1;
+
     for (int i = 0; i < num_blocks; i++) {
         if (!is_solid_block(blocks[i].type))
             continue;
-        if (!same_coord(blocks[i].position.x, pos.x))
-            continue;
-        if (!same_coord(blocks[i].position.y, pos.y))
-            continue;
-        if (!same_coord(blocks[i].position.z, pos.z))
-            continue;
-        return true;
+
+        int x = (int)lroundf(blocks[i].position.x);
+        int y = (int)lroundf(blocks[i].position.y);
+        int z = (int)lroundf(blocks[i].position.z);
+        uint32_t idx = hash_grid_coord(x, y, z) & (uint32_t)lookup->mask;
+
+        while (lookup->entries[idx].occupied) {
+            if (lookup->entries[idx].x == x &&
+                lookup->entries[idx].y == y &&
+                lookup->entries[idx].z == z)
+                break;
+            idx = (idx + 1u) & (uint32_t)lookup->mask;
+        }
+
+        lookup->entries[idx].x = x;
+        lookup->entries[idx].y = y;
+        lookup->entries[idx].z = z;
+        lookup->entries[idx].occupied = 1;
+    }
+
+    return true;
+}
+
+static bool lookup_has_solid_block_at(const BlockLookup *lookup, Vec3 pos)
+{
+    int x = (int)lroundf(pos.x);
+    int y = (int)lroundf(pos.y);
+    int z = (int)lroundf(pos.z);
+    uint32_t idx = hash_grid_coord(x, y, z) & (uint32_t)lookup->mask;
+
+    while (lookup->entries[idx].occupied) {
+        if (lookup->entries[idx].x == x &&
+            lookup->entries[idx].y == y &&
+            lookup->entries[idx].z == z)
+            return true;
+        idx = (idx + 1u) & (uint32_t)lookup->mask;
     }
 
     return false;
 }
 
 static bool is_face_exposed(const Block *block, Vec3 normal,
-                            const Block *blocks, int num_blocks)
+                            const BlockLookup *lookup)
 {
     Vec3 neighbor = {
         block->position.x + normal.x,
@@ -317,7 +411,7 @@ static bool is_face_exposed(const Block *block, Vec3 normal,
         block->position.z + normal.z,
     };
 
-    return !chunk_has_solid_block_at(blocks, num_blocks, neighbor);
+    return !lookup_has_solid_block_at(lookup, neighbor);
 }
 
 /* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */
@@ -538,6 +632,121 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
     }
 }
 
+static void emit_block_face(RenderContext *ctx, BlockID type,
+                            Vec3 block_pos, BlockFace face)
+{
+    CameraVertex face_cam[4];
+
+    if (type == BLOCK_AIR)
+        return;
+    if (face < 0 || face >= NUM_FACES)
+        return;
+    if (!is_face_visible(block_pos, face_normals[face],
+                         ctx->current_camera.position))
+        return;
+
+    for (int i = 0; i < 4; i++) {
+        Vec3 wp = {
+            block_pos.x + face_verts[face][i].x,
+            block_pos.y + face_verts[face][i].y,
+            block_pos.z + face_verts[face][i].z,
+        };
+        world_to_camera(ctx, wp, &face_cam[i]);
+        face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
+        face_cam[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
+    }
+
+    CameraVertex clipped[6];
+    int clipped_count = clip_face_to_near_plane(face_cam, clipped);
+    emit_clipped_face(ctx, clipped, clipped_count,
+                      flat_face_palette_index(type, face), 0);
+}
+
+static float distance_to_interval(float value, float min, float max)
+{
+    if (value < min)
+        return min - value;
+    if (value > max)
+        return value - max;
+    return 0.0f;
+}
+
+static bool chunk_within_render_distance(RenderContext *ctx,
+                                         const VoxelWorld *world,
+                                         const Chunk *chunk)
+{
+    float max_distance;
+    float min_x;
+    float max_x;
+    float min_y = 0.0f;
+    float max_y = (float)WORLD_CHUNK_HEIGHT;
+    float min_z;
+    float max_z;
+    float dx;
+    float dy;
+    float dz;
+
+    if (world->render_distance_chunks <= 0)
+        return true;
+
+    max_distance = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    min_x = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+    max_x = min_x + (float)WORLD_CHUNK_SIZE;
+    min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
+    max_z = min_z + (float)WORLD_CHUNK_SIZE;
+
+    dx = distance_to_interval(ctx->current_camera.position.x, min_x, max_x);
+    dy = distance_to_interval(ctx->current_camera.position.y, min_y, max_y);
+    dz = distance_to_interval(ctx->current_camera.position.z, min_z, max_z);
+
+    return dx * dx + dy * dy + dz * dz <= max_distance * max_distance;
+}
+
+static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
+{
+    float min_x = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+    float max_x = min_x + (float)WORLD_CHUNK_SIZE;
+    float min_y = 0.0f;
+    float max_y = (float)WORLD_CHUNK_HEIGHT;
+    float min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
+    float max_z = min_z + (float)WORLD_CHUNK_SIZE;
+    float half_width = SCREEN_WIDTH * 0.5f;
+    float half_height = SCREEN_HEIGHT * 0.5f;
+    int outside_near = 0;
+    int outside_left = 0;
+    int outside_right = 0;
+    int outside_top = 0;
+    int outside_bottom = 0;
+
+    for (int corner = 0; corner < 8; corner++) {
+        Vec3 world_corner = {
+            (corner & 1) ? max_x : min_x,
+            (corner & 2) ? max_y : min_y,
+            (corner & 4) ? max_z : min_z,
+        };
+        CameraVertex cam_corner;
+
+        world_to_camera(ctx, world_corner, &cam_corner);
+
+        if (cam_corner.z < NEAR_PLANE)
+            outside_near++;
+        if (cam_corner.x < -(half_width / ctx->current_camera.depth) * cam_corner.z)
+            outside_left++;
+        if (cam_corner.x > (half_width / ctx->current_camera.depth) * cam_corner.z)
+            outside_right++;
+        if (cam_corner.y > (half_height / ctx->current_camera.depth) * cam_corner.z)
+            outside_top++;
+        if (cam_corner.y < -(half_height / ctx->current_camera.depth) * cam_corner.z)
+            outside_bottom++;
+    }
+
+    return outside_near < 8 &&
+           outside_left < 8 &&
+           outside_right < 8 &&
+           outside_top < 8 &&
+           outside_bottom < 8;
+}
+
 /* --- Public API --- */
 
 RenderContext *renderer_init(void)
@@ -554,6 +763,8 @@ RenderContext *renderer_init(void)
 
     ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->staging));
     ctx->submit_buffer = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->submit_buffer));
+    ctx->lookup_entries = NULL;
+    ctx->lookup_capacity = 0;
     if (!ctx->staging || !ctx->submit_buffer) {
         free(ctx->submit_buffer);
         free(ctx->staging);
@@ -569,6 +780,7 @@ RenderContext *renderer_init(void)
 void renderer_shutdown(RenderContext *ctx)
 {
     if (!ctx) return;
+    free(ctx->lookup_entries);
     free(ctx->submit_buffer);
     free(ctx->staging);
     close(ctx->fd);
@@ -732,57 +944,70 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
 }
 
 static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
-                                      const Block *blocks, int num_blocks)
+                                      const BlockLookup *lookup)
 {
     if (block->type == BLOCK_AIR) return;
 
-    static const Vec3 normals[NUM_FACES] = {
-        {0,1,0}, {0,-1,0}, {-1,0,0}, {1,0,0}, {0,0,-1}, {0,0,1}
-    };
-    static const Vec3 face_verts[NUM_FACES][4] = {
-        {{0,1,1},{1,1,1},{1,1,0},{0,1,0}},  /* TOP    */
-        {{0,0,0},{1,0,0},{1,0,1},{0,0,1}},  /* BOTTOM */
-        {{0,0,0},{0,0,1},{0,1,1},{0,1,0}},  /* LEFT   */
-        {{1,0,1},{1,0,0},{1,1,0},{1,1,1}},  /* RIGHT  */
-        {{0,0,0},{0,1,0},{1,1,0},{1,0,0}},  /* FRONT  */
-        {{1,0,1},{1,1,1},{0,1,1},{0,0,1}},  /* BACK   */
-    };
-
     for (int f = 0; f < NUM_FACES; f++) {
-        if (!is_face_exposed(block, normals[f], blocks, num_blocks))
+        if (!is_face_exposed(block, face_normals[f], lookup))
             continue;
-        if (!is_face_visible(block->position, normals[f],
-                             ctx->current_camera.position))
-            continue;
-
-        CameraVertex face_cam[4];
-        for (int i = 0; i < 4; i++) {
-            Vec3 wp = {
-                block->position.x + face_verts[f][i].x,
-                block->position.y + face_verts[f][i].y,
-                block->position.z + face_verts[f][i].z,
-            };
-            world_to_camera(ctx, wp, &face_cam[i]);
-            face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
-            face_cam[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
-        }
-
-        CameraVertex clipped[6];
-        int clipped_count = clip_face_to_near_plane(face_cam, clipped);
-        emit_clipped_face(ctx, clipped, clipped_count,
-                          flat_face_palette_index(block->type, (BlockFace)f), 0);
+        emit_block_face(ctx, block->type, block->position, (BlockFace)f);
     }
 }
 
 void renderer_draw_block(RenderContext *ctx, const Block *block)
 {
-    renderer_draw_block_faces(ctx, block, block, 1);
+    BlockLookup lookup;
+
+    if (!build_block_lookup(ctx, block, 1, &lookup))
+        return;
+
+    renderer_draw_block_faces(ctx, block, &lookup);
 }
 
 int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 {
+    BlockLookup lookup;
     int before = ctx->n_quads;
+
+    if (!build_block_lookup(ctx, blocks, num_blocks, &lookup))
+        return 0;
+
     for (int i = 0; i < num_blocks; i++)
-        renderer_draw_block_faces(ctx, &blocks[i], blocks, num_blocks);
+        renderer_draw_block_faces(ctx, &blocks[i], &lookup);
+
+    return ctx->n_quads - before;
+}
+
+int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
+{
+    int before = ctx->n_quads;
+
+    if (!world)
+        return 0;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if (!chunk->faces || chunk->face_count <= 0)
+            continue;
+        if (!chunk_within_render_distance(ctx, world, chunk))
+            continue;
+        if (!chunk_intersects_frustum(ctx, chunk))
+            continue;
+
+        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
+            const ChunkFace *face = &chunk->faces[face_index];
+            Vec3 block_pos = {
+                (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x),
+                (float)face->y,
+                (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
+            };
+
+            emit_block_face(ctx, (BlockID)face->type,
+                            block_pos, (BlockFace)face->face);
+        }
+    }
+
     return ctx->n_quads - before;
 }

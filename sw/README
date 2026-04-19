@@ -9,13 +9,15 @@ Files
   renderer.c     Software block renderer that emits quad descriptors.
   renderer_scene_test.c
                  Minimal static-scene test that drives renderer.c.
+  renderer_static_test.c
+                 Fixed-camera shared-edge coverage test for renderer.c.
   Makefile       Builds both the .ko and the test binary.
 
 Build
 -----
 On the SoC (with kernel headers installed):
 
-    make            # builds voxel_gpu.ko, ./voxel_test, ./renderer_scene_test
+    make            # builds voxel_gpu.ko, ./voxel_test, ./renderer_scene_test, ./renderer_static_test
     make clean
 
 Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
@@ -55,6 +57,7 @@ Run
 
     ./voxel_test                # raw multi-quad smoke test
     ./renderer_scene_test       # renderer-driven static block scene
+    ./renderer_static_test      # fixed-camera top-face / crack test
     rmmod voxel_gpu
 
 Sysfs / debug peeks
@@ -80,15 +83,18 @@ The MVP render loop is therefore:
     write(quad_descriptors, n_bytes);
     ioctl(FLIP);
 
-`voxel_test` currently submits seven flat-color quads per frame: one
-overlapping z-tested pair with different depths, two non-overlapping quads,
-two overlapping quads that still expose submission order with z disabled, and
-one animated sweep bar. This covers both descriptor/FIFO behavior and the
-new hardware z path.
+`voxel_test` currently submits four focused z-buffer cases per frame:
+a z-tested different-depth overlap whose submission order swaps by phase,
+a z-disabled overlap control, an equal-depth tie case, and a sloped-depth
+gradient case. This covers descriptor/FIFO behavior and the hardware z path.
 
 `renderer_scene_test` uses the real software renderer against a tiny fixed
 scene of blocks. It now relies on the FPGA z-buffer path by emitting
 `QUAD_FLAG_ZTEST` on renderer-generated quads.
+
+`renderer_static_test` uses the same renderer path but keeps the camera fixed
+over a tiled platform so cracks, uneven top-face coverage, or z mistakes are
+easier to see than in the animated scene test.
 
 What this driver intentionally does NOT do
 ------------------------------------------

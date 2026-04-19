@@ -93,6 +93,24 @@ static inline int32_t to_q24_8(float v)
     return (int32_t)roundf(v * 256.0f);
 }
 
+static void pack_edge_coef(struct edge_coef *edge,
+                           float x0, float y0, float x1, float y1)
+{
+    float A = y0 - y1;
+    float B = x1 - x0;
+    float C = -(A * x0 + B * y0);
+
+    /*
+     * The RTL evaluates edge functions at integer sample locations.
+     * Bias C so those integer coordinates correspond to pixel centers.
+     */
+    C += 0.5f * (A + B);
+
+    edge->A = to_q24_8(A);
+    edge->B = to_q24_8(B);
+    edge->C = to_q24_8(C);
+}
+
 static uint8_t block_palette_index(BlockID id)
 {
     switch (id) {
@@ -149,8 +167,8 @@ static void ensure_clockwise_winding(Vertex2D v[4])
 }
 
 /* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
- * Stores the plane at (x_min, y_min). */
-static void fit_depth_plane(const Vertex2D v[4], int x_min, int y_min,
+ * Stores the plane at the raster sample point for (x_min, y_min). */
+static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
                              uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
 {
     /* Use vertices 0, 1, 2. Solve the 2x2 system for gradients. */
@@ -165,9 +183,9 @@ static void fit_depth_plane(const Vertex2D v[4], int x_min, int y_min,
     }
 
     float z_at_origin = v[0].z - ddx * v[0].x - ddy * v[0].y;
-    float z_at_min    = z_at_origin + ddx * x_min + ddy * y_min;
+    float z_at_sample = z_at_origin + ddx * sample_x + ddy * sample_y;
 
-    *z0    = to_q1_15u(z_at_min);
+    *z0    = to_q1_15u(z_at_sample);
     *dz_dx = to_q1_15s(ddx);
     *dz_dy = to_q1_15s(ddy);
 }
@@ -258,7 +276,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
 
     const Vertex2D *v = quad->vertices;
 
-    /* Bounding box, clamped to viewport */
+    /* Inclusive integer bbox over pixel-center samples. */
     float fxmin = v[0].x, fxmax = v[0].x;
     float fymin = v[0].y, fymax = v[0].y;
     for (int i = 1; i < 4; i++) {
@@ -267,12 +285,12 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
         if (v[i].y < fymin) fymin = v[i].y;
         if (v[i].y > fymax) fymax = v[i].y;
     }
-    int x_min = (int)fxmin; if (x_min <   0) x_min =   0;
-    int y_min = (int)fymin; if (y_min <   0) y_min =   0;
-    int x_max = (int)fxmax; if (x_max > 319) x_max = 319;
-    int y_max = (int)fymax; if (y_max > 239) y_max = 239;
+    int x_min = (int)ceilf(fxmin - 0.5f); if (x_min <   0) x_min =   0;
+    int y_min = (int)ceilf(fymin - 0.5f); if (y_min <   0) y_min =   0;
+    int x_max = (int)floorf(fxmax - 0.5f); if (x_max > 319) x_max = 319;
+    int y_max = (int)floorf(fymax - 0.5f); if (y_max > 239) y_max = 239;
 
-    if (x_min >= x_max || y_min >= y_max)
+    if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
 
     struct StagedQuad *staged = &ctx->staging[ctx->n_quads];
@@ -287,25 +305,18 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     d->x_max = (int16_t)x_max;
     d->y_max = (int16_t)y_max;
 
-    /* Edge coefficients: vertices in clockwise screen order.
-     * For edge from (x0,y0) to (x1,y1):
-     *   A = y0 - y1,  B = x1 - x0,  C = -(A*x0 + B*y0)         */
     for (int i = 0; i < 4; i++) {
         float x0 = v[i].x,         y0 = v[i].y;
         float x1 = v[(i+1)%4].x,   y1 = v[(i+1)%4].y;
-        float A  =  y0 - y1;
-        float B  =  x1 - x0;
-        float C  = -(A * x0 + B * y0);
-        d->edges[i].A = to_q24_8(A);
-        d->edges[i].B = to_q24_8(B);
-        d->edges[i].C = to_q24_8(C);
+        pack_edge_coef(&d->edges[i], x0, y0, x1, y1);
     }
 
     /* Compute into locals first to avoid taking addresses of packed members. */
     uint16_t z0;
     int16_t dz_dx;
     int16_t dz_dy;
-    fit_depth_plane(v, x_min, y_min, &z0, &dz_dx, &dz_dy);
+    fit_depth_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f,
+                    &z0, &dz_dx, &dz_dy);
     d->z0 = z0;
     d->dz_dx = dz_dx;
     d->dz_dy = dz_dy;

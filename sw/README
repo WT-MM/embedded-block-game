@@ -8,6 +8,9 @@ Files
   renderer.c     Software block renderer that emits quad descriptors.
   tests/         Userspace test programs (see below).
   Makefile       Builds both the .ko and the test binaries.
+  ../PROJECT_NOTES.md
+                 Root-level debugging/report notes, including the April 2026
+                 rasterizer edge-function signedness bug and validation summary.
 
   tests/voxel_test.c
                  Multi-quad flat-color smoke test for the device.

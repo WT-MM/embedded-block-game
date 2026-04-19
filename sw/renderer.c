@@ -87,6 +87,45 @@ static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
     return (v.x*normal.x + v.y*normal.y + v.z*normal.z) < 0.0f;
 }
 
+static bool is_solid_block(BlockID id)
+{
+    return id != BLOCK_AIR;
+}
+
+static bool same_coord(float a, float b)
+{
+    return fabsf(a - b) < 1e-4f;
+}
+
+static bool chunk_has_solid_block_at(const Block *blocks, int num_blocks, Vec3 pos)
+{
+    for (int i = 0; i < num_blocks; i++) {
+        if (!is_solid_block(blocks[i].type))
+            continue;
+        if (!same_coord(blocks[i].position.x, pos.x))
+            continue;
+        if (!same_coord(blocks[i].position.y, pos.y))
+            continue;
+        if (!same_coord(blocks[i].position.z, pos.z))
+            continue;
+        return true;
+    }
+
+    return false;
+}
+
+static bool is_face_exposed(const Block *block, Vec3 normal,
+                            const Block *blocks, int num_blocks)
+{
+    Vec3 neighbor = {
+        block->position.x + normal.x,
+        block->position.y + normal.y,
+        block->position.z + normal.z,
+    };
+
+    return !chunk_has_solid_block_at(blocks, num_blocks, neighbor);
+}
+
 /* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */
 static inline int32_t to_q24_8(float v)
 {
@@ -327,7 +366,8 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     return true;
 }
 
-void renderer_draw_block(RenderContext *ctx, const Block *block)
+static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
+                                      const Block *blocks, int num_blocks)
 {
     if (block->type == BLOCK_AIR) return;
 
@@ -344,6 +384,8 @@ void renderer_draw_block(RenderContext *ctx, const Block *block)
     };
 
     for (int f = 0; f < NUM_FACES; f++) {
+        if (!is_face_exposed(block, normals[f], blocks, num_blocks))
+            continue;
         if (!is_face_visible(block->position, normals[f],
                              ctx->current_camera.position))
             continue;
@@ -375,10 +417,15 @@ void renderer_draw_block(RenderContext *ctx, const Block *block)
     }
 }
 
+void renderer_draw_block(RenderContext *ctx, const Block *block)
+{
+    renderer_draw_block_faces(ctx, block, block, 1);
+}
+
 int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 {
     int before = ctx->n_quads;
     for (int i = 0; i < num_blocks; i++)
-        renderer_draw_block(ctx, &blocks[i]);
+        renderer_draw_block_faces(ctx, &blocks[i], blocks, num_blocks);
     return ctx->n_quads - before;
 }

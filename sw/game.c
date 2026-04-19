@@ -11,6 +11,7 @@
 #define EYE_HEIGHT   1.7f
 #define MOVE_SPEED   5.0f      /* blocks per second */
 #define MOUSE_SENS   0.002f    /* radians per pixel */
+#define LOOK_SPEED   1.8f      /* radians per second (arrow keys) */
 #define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
@@ -56,7 +57,7 @@ int main(void)
         .depth    = 170.0f,
     };
 
-    printf("Controls: WASD=move  Space/Shift=up/down  Mouse=look  Esc=quit\n");
+    printf("Controls: WASD=move  Space/Shift=up/down  Arrows=look  Mouse=look  Esc=quit\n");
 
     struct timespec prev, now, frame_end;
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -69,9 +70,13 @@ int main(void)
 
         input_update(&inp);
 
-        /* Look */
+        /* Look — mouse or arrow keys */
         cam.yaw   += inp.mouse_dx * MOUSE_SENS;
         cam.pitch += inp.mouse_dy * MOUSE_SENS;
+        if (inp.look_right) cam.yaw   += LOOK_SPEED * dt;
+        if (inp.look_left)  cam.yaw   -= LOOK_SPEED * dt;
+        if (inp.look_down)  cam.pitch += LOOK_SPEED * dt;
+        if (inp.look_up)    cam.pitch -= LOOK_SPEED * dt;
         if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
         if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
         input_clear_mouse(&inp);

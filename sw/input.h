@@ -6,6 +6,7 @@
 typedef struct {
     bool forward, back, left, right;
     bool up, down;
+    bool look_left, look_right, look_up, look_down;
     bool quit;
 
     float mouse_dx;

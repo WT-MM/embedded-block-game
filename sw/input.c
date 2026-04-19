@@ -98,6 +98,10 @@ static void drain_fd(InputState *inp, int fd, bool is_mouse)
             case KEY_SPACE:                  inp->up      = down; break;
             case KEY_LEFTSHIFT:
             case KEY_RIGHTSHIFT:             inp->down    = down; break;
+            case KEY_LEFT:                       inp->look_left  = down; break;
+            case KEY_RIGHT:                      inp->look_right = down; break;
+            case KEY_UP:                         inp->look_up    = down; break;
+            case KEY_DOWN:                       inp->look_down  = down; break;
             case KEY_ESC:   if (down) inp->quit = true;   break;
             case KEY_Q:     if (down) inp->quit = true;   break;
             default: break;

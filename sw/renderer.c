@@ -68,7 +68,7 @@ static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
 
     float depth = ctx->current_camera.depth;
     out->x = (x_cam / z_cam) * depth + SCREEN_WIDTH  / 2.0f;
-    out->y = (y_cam / z_cam) * depth + SCREEN_HEIGHT / 2.0f;
+    out->y = SCREEN_HEIGHT / 2.0f - (y_cam / z_cam) * depth;
     return true;
 }
 
@@ -131,6 +131,29 @@ static int compare_staged_quads(const void *lhs, const void *rhs)
     if (a->sort_key > b->sort_key)
         return -1;
     return a->sequence - b->sequence;
+}
+
+static float quad_signed_area(const Vertex2D v[4])
+{
+    float area = 0.0f;
+
+    for (int i = 0; i < 4; i++) {
+        const Vertex2D *a = &v[i];
+        const Vertex2D *b = &v[(i + 1) % 4];
+        area += a->x * b->y - b->x * a->y;
+    }
+
+    return 0.5f * area;
+}
+
+static void ensure_clockwise_winding(Vertex2D v[4])
+{
+    if (quad_signed_area(v) >= 0.0f)
+        return;
+
+    Vertex2D tmp = v[1];
+    v[1] = v[3];
+    v[3] = tmp;
 }
 
 /* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
@@ -347,6 +370,8 @@ void renderer_draw_block(RenderContext *ctx, const Block *block)
             verts[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
         }
         if (behind) continue;
+
+        ensure_clockwise_winding(verts);
 
         RenderQuad q;
         memcpy(q.vertices, verts, sizeof(verts));

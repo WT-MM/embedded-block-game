@@ -10,18 +10,19 @@
 #define WORLD_CHUNK_HEIGHT 16
 
 typedef struct {
-    uint8_t x, y, z;
-    uint8_t w, h;
+    uint8_t x;
+    uint8_t y;
+    uint8_t z;
     uint8_t face;
     uint8_t type;
-} ChunkQuad;
+} ChunkFace;
 
 typedef struct {
     int chunk_x;
     int chunk_z;
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
-    ChunkQuad *quads;
-    int quad_count;
+    ChunkFace *faces;
+    int face_count;
 } Chunk;
 
 typedef struct VoxelWorld {

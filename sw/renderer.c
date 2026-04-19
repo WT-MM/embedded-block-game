@@ -623,22 +623,18 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
         return;
     }
 
-    if (count >= 5) {
-        /* Fan-triangulate any polygon with 5 or more vertices. */
-        for (int i = 1; i + 1 < count; i++) {
-            CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
-            emit_camera_quad(ctx, tri, color_tint, texture_id);
-        }
+    if (count == 5) {
+        CameraVertex tri[4]  = { poly[0], poly[1], poly[2], poly[2] };
+        CameraVertex quad[4] = { poly[0], poly[2], poly[3], poly[4] };
+        emit_camera_quad(ctx, tri, color_tint, texture_id);
+        emit_camera_quad(ctx, quad, color_tint, texture_id);
     }
 }
 
-static void emit_block_face_sized(RenderContext *ctx, BlockID type,
-                                  Vec3 block_pos, BlockFace face,
-                                  int w, int h)
+static void emit_block_face(RenderContext *ctx, BlockID type,
+                            Vec3 block_pos, BlockFace face)
 {
     CameraVertex face_cam[4];
-    float fw = (float)w;
-    float fh = (float)h;
 
     if (type == BLOCK_AIR)
         return;
@@ -649,39 +645,10 @@ static void emit_block_face_sized(RenderContext *ctx, BlockID type,
         return;
 
     for (int i = 0; i < 4; i++) {
-        Vec3 fv = face_verts[face][i];
-
-        /*
-         * Scale the two spread axes of each face by w (first axis) and
-         * h (second axis).  Mapping per face:
-         *   TOP/BOTTOM  → scale x by w, z by h
-         *   LEFT/RIGHT  → scale z by w, y by h
-         *   BACK/FRONT  → scale x by w, y by h
-         */
-        switch (face) {
-        case FACE_TOP:
-        case FACE_BOTTOM:
-            fv.x *= fw;
-            fv.z *= fh;
-            break;
-        case FACE_LEFT:
-        case FACE_RIGHT:
-            fv.z *= fw;
-            fv.y *= fh;
-            break;
-        case FACE_BACK:
-        case FACE_FRONT:
-            fv.x *= fw;
-            fv.y *= fh;
-            break;
-        default:
-            break;
-        }
-
         Vec3 wp = {
-            block_pos.x + fv.x,
-            block_pos.y + fv.y,
-            block_pos.z + fv.z,
+            block_pos.x + face_verts[face][i].x,
+            block_pos.y + face_verts[face][i].y,
+            block_pos.z + face_verts[face][i].z,
         };
         world_to_camera(ctx, wp, &face_cam[i]);
         face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
@@ -692,12 +659,6 @@ static void emit_block_face_sized(RenderContext *ctx, BlockID type,
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count,
                       flat_face_palette_index(type, face), 0);
-}
-
-static void emit_block_face(RenderContext *ctx, BlockID type,
-                            Vec3 block_pos, BlockFace face)
-{
-    emit_block_face_sized(ctx, type, block_pos, face, 1, 1);
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -1054,7 +1015,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
 
-        if (!chunk->quads || chunk->quad_count <= 0)
+        if (!chunk->faces || chunk->face_count <= 0)
             continue;
         if (!chunk_within_render_distance(ctx, world, chunk))
             continue;
@@ -1083,17 +1044,16 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
 
-        for (int qi = 0; qi < chunk->quad_count; qi++) {
-            const ChunkQuad *q = &chunk->quads[qi];
+        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
+            const ChunkFace *face = &chunk->faces[face_index];
             Vec3 block_pos = {
-                (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + q->x),
-                (float)q->y,
-                (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + q->z),
+                (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x),
+                (float)face->y,
+                (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
             };
 
-            emit_block_face_sized(ctx, (BlockID)q->type,
-                                  block_pos, (BlockFace)q->face,
-                                  q->w, q->h);
+            emit_block_face(ctx, (BlockID)face->type,
+                            block_pos, (BlockFace)face->face);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }

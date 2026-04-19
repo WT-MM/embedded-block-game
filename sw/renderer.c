@@ -18,12 +18,20 @@ struct StagedQuad {
 static void upload_default_palette(int fd)
 {
     static const struct voxel_palette_entry entries[] = {
-        { 0, 0x10, 0x10, 0x18 }, /* background */
-        { 1, 0x4c, 0xaf, 0x50 }, /* grass */
-        { 2, 0x8b, 0x45, 0x13 }, /* dirt */
-        { 3, 0x65, 0x43, 0x21 }, /* wood */
-        { 4, 0x80, 0x80, 0x80 }, /* stone */
-        { 5, 0xff, 0xff, 0xff }, /* debug white */
+        {  0, 0x10, 0x10, 0x18 }, /* background */
+        {  1, 0x4c, 0xaf, 0x50 }, /* grass top */
+        {  2, 0x8b, 0x45, 0x13 }, /* dirt side */
+        {  3, 0x65, 0x43, 0x21 }, /* wood side */
+        {  4, 0x80, 0x80, 0x80 }, /* stone side */
+        {  5, 0xff, 0xff, 0xff }, /* debug white */
+        {  9, 0x5e, 0x8b, 0x3d }, /* grass side */
+        { 10, 0x63, 0x3a, 0x17 }, /* grass bottom / dark dirt */
+        { 11, 0x96, 0x6a, 0x3c }, /* wood top */
+        { 12, 0x4d, 0x31, 0x18 }, /* wood bottom */
+        { 13, 0xa4, 0xa4, 0xa4 }, /* stone top */
+        { 14, 0x58, 0x58, 0x58 }, /* stone bottom */
+        { 15, 0xa0, 0x67, 0x35 }, /* dirt top */
+        { 16, 0x5a, 0x2f, 0x12 }, /* dirt bottom */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -217,6 +225,43 @@ static uint8_t block_palette_index(BlockID id)
     }
 }
 
+/*
+ * Temporary flat-shaded face palette until the texture path lands.
+ * Keeping top/side/bottom distinct makes cube silhouettes much easier
+ * to read at 320x240 than a single color per block type.
+ */
+static uint8_t flat_face_palette_index(BlockID id, BlockFace face)
+{
+    switch (id) {
+    case BLOCK_GRASS:
+        if (face == FACE_TOP)
+            return 1;
+        if (face == FACE_BOTTOM)
+            return 10;
+        return 9;
+    case BLOCK_DIRT:
+        if (face == FACE_TOP)
+            return 15;
+        if (face == FACE_BOTTOM)
+            return 16;
+        return 2;
+    case BLOCK_WOOD:
+        if (face == FACE_TOP)
+            return 11;
+        if (face == FACE_BOTTOM)
+            return 12;
+        return 3;
+    case BLOCK_STONE:
+        if (face == FACE_TOP)
+            return 13;
+        if (face == FACE_BOTTOM)
+            return 14;
+        return 4;
+    default:
+        return block_palette_index(id);
+    }
+}
+
 /* Pack a float depth value into Q1.15 unsigned (clamp to [0,2)). */
 static inline uint16_t to_q1_15u(float v)
 {
@@ -258,18 +303,40 @@ static void ensure_clockwise_winding(Vertex2D v[4])
 
 /* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
  * Stores the plane at the raster sample point for (x_min, y_min). */
-static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
-                             uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
+static bool solve_depth_plane(const Vertex2D *a, const Vertex2D *b,
+                              const Vertex2D *c, float *ddx, float *ddy)
 {
-    /* Use vertices 0, 1, 2. Solve the 2x2 system for gradients. */
-    float ax = v[1].x - v[0].x, ay = v[1].y - v[0].y, az = v[1].z - v[0].z;
-    float bx = v[2].x - v[0].x, by = v[2].y - v[0].y, bz = v[2].z - v[0].z;
+    float ax = b->x - a->x, ay = b->y - a->y, az = b->z - a->z;
+    float bx = c->x - a->x, by = c->y - a->y, bz = c->z - a->z;
 
     float det = ax * by - ay * bx;
-    float ddx = 0.0f, ddy = 0.0f;
-    if (fabsf(det) > 1e-6f) {
-        ddx = ( by * az - ay * bz) / det;
-        ddy = (-bx * az + ax * bz) / det;
+    if (fabsf(det) <= 1e-6f)
+        return false;
+
+    *ddx = ( by * az - ay * bz) / det;
+    *ddy = (-bx * az + ax * bz) / det;
+    return true;
+}
+
+static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
+                            uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
+{
+    static const int triples[4][3] = {
+        { 0, 1, 2 },
+        { 0, 1, 3 },
+        { 0, 2, 3 },
+        { 1, 2, 3 },
+    };
+
+    float ddx = 0.0f;
+    float ddy = 0.0f;
+
+    for (int i = 0; i < 4; i++) {
+        if (solve_depth_plane(&v[triples[i][0]],
+                              &v[triples[i][1]],
+                              &v[triples[i][2]],
+                              &ddx, &ddy))
+            break;
     }
 
     float z_at_origin = v[0].z - ddx * v[0].x - ddy * v[0].y;
@@ -501,7 +568,7 @@ static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
         CameraVertex clipped[6];
         int clipped_count = clip_face_to_near_plane(face_cam, clipped);
         emit_clipped_face(ctx, clipped, clipped_count,
-                          block_palette_index(block->type), 0);
+                          flat_face_palette_index(block->type, (BlockFace)f), 0);
     }
 }
 

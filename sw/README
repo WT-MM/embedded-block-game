@@ -5,19 +5,24 @@ Files
 -----
   voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
   voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
-  voxel_test.c   Userspace multi-quad flat-color smoke test.
   renderer.c     Software block renderer that emits quad descriptors.
-  renderer_scene_test.c
+  tests/         Userspace test programs (see below).
+  Makefile       Builds both the .ko and the test binaries.
+
+  tests/voxel_test.c
+                 Multi-quad flat-color smoke test for the device.
+  tests/renderer_scene_test.c
                  Minimal static-scene test that drives renderer.c.
-  renderer_static_test.c
+  tests/renderer_static_test.c
                  Fixed-camera shared-edge coverage test for renderer.c.
-  Makefile       Builds both the .ko and the test binary.
+  tests/renderer_quad_test.c
+                 Single hand-placed screen-space quad (raster / packing check).
 
 Build
 -----
 On the SoC (with kernel headers installed):
 
-    make            # builds voxel_gpu.ko, ./voxel_test, ./renderer_scene_test, ./renderer_static_test
+    make            # builds voxel_gpu.ko and ./tests/* test binaries
     make clean
 
 Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
@@ -55,9 +60,10 @@ Run
     dmesg | tail
     ls -l /dev/voxel_gpu        # should appear with mode 0666
 
-    ./voxel_test                # raw multi-quad smoke test
-    ./renderer_scene_test       # renderer-driven static block scene
-    ./renderer_static_test      # fixed-camera top-face / crack test
+    ./tests/voxel_test                # raw multi-quad smoke test
+    ./tests/renderer_scene_test     # renderer-driven static block scene
+    ./tests/renderer_static_test    # fixed-camera top-face / crack test
+    ./tests/renderer_quad_test      # single screen-space quad
     rmmod voxel_gpu
 
 Sysfs / debug peeks

@@ -13,7 +13,7 @@
  *   * bottom-left: equal-depth z-tested overlap, submission order swaps by phase
  *   * bottom-right: z-tested overlap with a non-zero dz_dx depth gradient
  *
- * Build: see Makefile.  Run: ./voxel_test
+ * Build: see Makefile (from sw/).  Run: ./tests/voxel_test
  */
 
 #include <errno.h>

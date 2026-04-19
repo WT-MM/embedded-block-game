@@ -46,9 +46,10 @@ Module.symvers
 .tmp_versions/
 
 # --- Userspace build artifacts ---
-sw/voxel_test
-sw/renderer_scene_test
-sw/renderer_static_test
+sw/tests/voxel_test
+sw/tests/renderer_scene_test
+sw/tests/renderer_static_test
+sw/tests/renderer_quad_test
 sw/game
 
 # --- Filesystem mount stub from old workflow ---

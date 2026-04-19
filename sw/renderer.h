@@ -5,10 +5,17 @@
 #include <stdbool.h>
 #include "block_types.h" // Requires your block types and textures definitions
 
+typedef struct VoxelWorld VoxelWorld;
+
 // --- Constants ---
 #define SCREEN_WIDTH 320.0f
 #define SCREEN_HEIGHT 240.0f
-#define MAX_QUADS_IN_FLIGHT 2048
+/*
+ * A 3-chunk render radius over 16x16 grass terrain already exceeds 2k
+ * visible quads on top faces alone, so keep enough headroom to avoid
+ * silently dropping nearby chunks.
+ */
+#define MAX_QUADS_IN_FLIGHT 32768
 
 // --- Core Math & Entity Structures ---
 typedef struct {
@@ -17,7 +24,6 @@ typedef struct {
 
 typedef struct {
     float x, y;
-    bool visible;
 } Vec2;
 
 typedef struct {
@@ -57,9 +63,10 @@ void renderer_begin_frame(RenderContext* ctx);
 void renderer_end_frame(RenderContext* ctx);
 
 // --- Camera & Geometry ---
-void renderer_set_camera(RenderContext* ctx, Camera* camera);
-void renderer_draw_block(RenderContext* ctx, Block* block);
-int renderer_draw_chunk(RenderContext* ctx, Block* blocks, int num_blocks);
-bool renderer_push_quad(RenderContext* ctx, RenderQuad* quad);
+void renderer_set_camera(RenderContext* ctx, const Camera* camera);
+void renderer_draw_block(RenderContext* ctx, const Block* block);
+int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
+int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
+bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
 
 #endif // RENDERER_H

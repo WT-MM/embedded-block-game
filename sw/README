@@ -5,14 +5,27 @@ Files
 -----
   voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
   voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
-  voxel_test.c   Userspace smoke test that exercises every ioctl + write().
-  Makefile       Builds both the .ko and the test binary.
+  renderer.c     Software block renderer that emits quad descriptors.
+  tests/         Userspace test programs (see below).
+  Makefile       Builds both the .ko and the test binaries.
+  ../PROJECT_NOTES.md
+                 Root-level debugging/report notes, including the April 2026
+                 rasterizer edge-function signedness bug and validation summary.
+
+  tests/voxel_test.c
+                 Multi-quad flat-color smoke test for the device.
+  tests/renderer_scene_test.c
+                 Minimal static-scene test that drives renderer.c.
+  tests/renderer_static_test.c
+                 Fixed-camera shared-edge coverage test for renderer.c.
+  tests/renderer_quad_test.c
+                 Single hand-placed screen-space quad (raster / packing check).
 
 Build
 -----
 On the SoC (with kernel headers installed):
 
-    make            # builds voxel_gpu.ko and ./voxel_test
+    make            # builds voxel_gpu.ko and ./tests/* test binaries
     make clean
 
 Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
@@ -50,7 +63,10 @@ Run
     dmesg | tail
     ls -l /dev/voxel_gpu        # should appear with mode 0666
 
-    ./voxel_test                # run the smoke test
+    ./tests/voxel_test                # raw multi-quad smoke test
+    ./tests/renderer_scene_test     # renderer-driven static block scene
+    ./tests/renderer_static_test    # fixed-camera top-face / crack test
+    ./tests/renderer_quad_test      # single screen-space quad
     rmmod voxel_gpu
 
 Sysfs / debug peeks
@@ -75,6 +91,19 @@ The MVP render loop is therefore:
     ioctl(CLEAR_FRAME);
     write(quad_descriptors, n_bytes);
     ioctl(FLIP);
+
+`voxel_test` currently submits four focused z-buffer cases per frame:
+a z-tested different-depth overlap whose submission order swaps by phase,
+a z-disabled overlap control, an equal-depth tie case, and a sloped-depth
+gradient case. This covers descriptor/FIFO behavior and the hardware z path.
+
+`renderer_scene_test` uses the real software renderer against a tiny fixed
+scene of blocks. It now relies on the FPGA z-buffer path by emitting
+`QUAD_FLAG_ZTEST` on renderer-generated quads.
+
+`renderer_static_test` uses the same renderer path but keeps the camera fixed
+over a tiled platform so cracks, uneven top-face coverage, or z mistakes are
+easier to see than in the animated scene test.
 
 What this driver intentionally does NOT do
 ------------------------------------------

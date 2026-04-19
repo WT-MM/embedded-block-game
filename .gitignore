@@ -5,6 +5,9 @@
 *.swp
 *.swo
 
+# verilator
+obj_dir/
+
 # --- Quartus build artifacts ---
 db/
 incremental_db/
@@ -46,7 +49,12 @@ Module.symvers
 .tmp_versions/
 
 # --- Userspace build artifacts ---
-sw/voxel_test
+sw/tests/voxel_test
+sw/tests/renderer_scene_test
+sw/tests/renderer_static_test
+sw/tests/renderer_quad_test
+sw/tests/renderer_edge_test
+sw/game
 
 # --- Filesystem mount stub from old workflow ---
 usr/

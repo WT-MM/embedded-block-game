@@ -1,12 +1,13 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <time.h>
 
 #include "renderer.h"
 #include "input.h"
 #include "block_types.h"
 
-#define MAX_BLOCKS   512
+#define MAX_BLOCKS   1536
 #define EYE_HEIGHT   1.7f
 #define MOVE_SPEED   5.0f      /* blocks per second */
 #define MOUSE_SENS   0.002f    /* radians per pixel */
@@ -14,9 +15,25 @@
 #define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
+#define CHUNK_SIZE   16
+#define CHUNK_HEIGHT 4
+#define WORLD_CHUNKS_X 2
+#define WORLD_CHUNKS_Z 2
+#define WORLD_ORIGIN_CHUNK_X (-1)
+#define WORLD_ORIGIN_CHUNK_Z 0
+#define STONE_SEED   0x48403421u
+#define STONE_TRIES_PER_CHUNK 24
 
 static Block world[MAX_BLOCKS];
 static int   world_count;
+
+typedef struct {
+    int chunk_x;
+    int chunk_z;
+    BlockID blocks[CHUNK_HEIGHT][CHUNK_SIZE][CHUNK_SIZE];
+} Chunk;
+
+static Chunk chunks[WORLD_CHUNKS_X * WORLD_CHUNKS_Z];
 
 static void place(BlockID type, float x, float y, float z)
 {
@@ -24,34 +41,110 @@ static void place(BlockID type, float x, float y, float z)
         world[world_count++] = (Block){ type, { x, y, z } };
 }
 
-static void build_world(void)
+static uint32_t rng_next(uint32_t *state)
+{
+    *state = (*state * 1664525u) + 1013904223u;
+    return *state;
+}
+
+static uint32_t chunk_seed(int chunk_x, int chunk_z)
+{
+    uint32_t xbits = (uint32_t)chunk_x * 0x9e3779b9u;
+    uint32_t zbits = (uint32_t)chunk_z * 0x85ebca6bu;
+    uint32_t seed = STONE_SEED ^ xbits ^ zbits;
+
+    seed ^= seed >> 16;
+    seed *= 0x7feb352du;
+    seed ^= seed >> 15;
+    seed *= 0x846ca68bu;
+    seed ^= seed >> 16;
+    return seed;
+}
+
+static void clear_chunk(Chunk *chunk)
+{
+    for (int y = 0; y < CHUNK_HEIGHT; y++)
+        for (int z = 0; z < CHUNK_SIZE; z++)
+            for (int x = 0; x < CHUNK_SIZE; x++)
+                chunk->blocks[y][z][x] = BLOCK_AIR;
+}
+
+static void generate_chunk(Chunk *chunk, int chunk_x, int chunk_z)
+{
+    uint32_t seed = chunk_seed(chunk_x, chunk_z);
+
+    chunk->chunk_x = chunk_x;
+    chunk->chunk_z = chunk_z;
+    clear_chunk(chunk);
+
+    /* Flat grass ground at y=0 across the entire chunk. */
+    for (int z = 0; z < CHUNK_SIZE; z++)
+        for (int x = 0; x < CHUNK_SIZE; x++)
+            chunk->blocks[0][z][x] = BLOCK_GRASS;
+
+    /*
+     * Scatter deterministic stone pillars up to 3 blocks tall.
+     * Keep the player's initial corridor open near world x in [-1, 1] and
+     * world z in [2, 5] so startup is not cluttered.
+     */
+    for (int i = 0; i < STONE_TRIES_PER_CHUNK; i++) {
+        int lx = (int)(rng_next(&seed) % CHUNK_SIZE);
+        int lz = (int)(rng_next(&seed) % CHUNK_SIZE);
+        int wx = chunk_x * CHUNK_SIZE + lx;
+        int wz = chunk_z * CHUNK_SIZE + lz;
+        int height = 1 + (int)(rng_next(&seed) % (CHUNK_HEIGHT - 1));
+
+        if (fabsf((float)wx) <= 1.0f && wz <= 5)
+            continue;
+        if (chunk->blocks[1][lz][lx] != BLOCK_AIR)
+            continue;
+
+        for (int y = 1; y <= height; y++)
+            chunk->blocks[y][lz][lx] = BLOCK_STONE;
+    }
+}
+
+static void flatten_chunks_to_world(void)
 {
     world_count = 0;
 
-    /* Solid grass floor: 10×10. All blocks adjacent — only tops visible
-     * from above, outer edges from outside. Gives a clear ground plane. */
-    for (int z = 0; z < 10; z++)
-        for (int x = 0; x < 10; x++)
-            place(BLOCK_GRASS, (float)(x - 5), 0.0f, (float)(z + 3));
+    for (int ci = 0; ci < WORLD_CHUNKS_X * WORLD_CHUNKS_Z; ci++) {
+        const Chunk *chunk = &chunks[ci];
 
-    /*
-     * Keep all props on the same integer block grid as the floor.
-     * Half-cell placement causes overlapping cubes and ugly intersections.
-     */
-    place(BLOCK_STONE,  0.0f, 1.0f, 7.0f);
-    place(BLOCK_STONE,  0.0f, 2.0f, 7.0f);
-    place(BLOCK_STONE,  0.0f, 3.0f, 7.0f);
+        for (int y = 0; y < CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < CHUNK_SIZE; z++) {
+                for (int x = 0; x < CHUNK_SIZE; x++) {
+                    BlockID id = chunk->blocks[y][z][x];
 
-    /* Isolated raised blocks scattered around — easy to walk around and
-     * see all four vertical faces of each. */
-    place(BLOCK_DIRT,  -4.0f, 1.0f,  5.0f);
-    place(BLOCK_DIRT,   3.0f, 1.0f,  5.0f);
-    place(BLOCK_DIRT,  -4.0f, 1.0f, 10.0f);
-    place(BLOCK_DIRT,   3.0f, 1.0f, 10.0f);
+                    if (id == BLOCK_AIR)
+                        continue;
+                    if (world_count >= MAX_BLOCKS)
+                        return;
 
-    /* Wood stack in the corner — two tall, so sides are clearly visible. */
-    place(BLOCK_WOOD,   4.0f, 1.0f, 12.0f);
-    place(BLOCK_WOOD,   4.0f, 2.0f, 12.0f);
+                    place(id,
+                          (float)(chunk->chunk_x * CHUNK_SIZE + x),
+                          (float)y,
+                          (float)(chunk->chunk_z * CHUNK_SIZE + z));
+                }
+            }
+        }
+    }
+}
+
+static void build_world(void)
+{
+    int ci = 0;
+
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
+        for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
+            generate_chunk(&chunks[ci],
+                           WORLD_ORIGIN_CHUNK_X + cx,
+                           WORLD_ORIGIN_CHUNK_Z + cz);
+            ci++;
+        }
+    }
+
+    flatten_chunks_to_world();
 }
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -74,13 +167,15 @@ int main(void)
     build_world();
 
     Camera cam = {
-        .position = { 0.0f, EYE_HEIGHT, 0.0f },
+        .position = { 0.0f, EYE_HEIGHT, -1.5f },
         .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
         .depth    = 170.0f,
     };
 
     printf("Controls: WASD=move  Space/Shift=up/down  Arrows=look  Mouse=look  Esc=quit\n");
+    printf("World: %dx%d chunks of %dx%d flat ground with deterministic random stone blocks (seed 0x%08x)\n",
+           WORLD_CHUNKS_X, WORLD_CHUNKS_Z, CHUNK_SIZE, CHUNK_SIZE, STONE_SEED);
 
     struct timespec prev, now, frame_end;
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -98,8 +193,8 @@ int main(void)
         cam.pitch -= inp.mouse_dy * MOUSE_SENS;
         if (inp.look_right) cam.yaw   += LOOK_SPEED * dt;
         if (inp.look_left)  cam.yaw   -= LOOK_SPEED * dt;
-        if (inp.look_down)  cam.pitch -= LOOK_SPEED * dt;
-        if (inp.look_up)    cam.pitch += LOOK_SPEED * dt;
+        if (inp.look_down)  cam.pitch += LOOK_SPEED * dt;
+        if (inp.look_up)    cam.pitch -= LOOK_SPEED * dt;
         if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
         if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
         input_clear_mouse(&inp);

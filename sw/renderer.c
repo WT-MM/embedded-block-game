@@ -428,6 +428,33 @@ static inline float snap_q24_8(float v)
     return (float)to_q24_8(v) / 256.0f;
 }
 
+static bool same_screen_xy(const Vertex2D *a, const Vertex2D *b)
+{
+    return a->x == b->x && a->y == b->y;
+}
+
+static int snap_and_compact_polygon(Vertex2D *verts, int count)
+{
+    Vertex2D compact[MAX_VIEW_CLIP_VERTS];
+    int out_count = 0;
+
+    for (int i = 0; i < count; i++) {
+        verts[i].x = snap_q24_8(verts[i].x);
+        verts[i].y = snap_q24_8(verts[i].y);
+
+        if (out_count > 0 && same_screen_xy(&compact[out_count - 1], &verts[i]))
+            continue;
+
+        compact[out_count++] = verts[i];
+    }
+
+    if (out_count > 1 && same_screen_xy(&compact[0], &compact[out_count - 1]))
+        out_count--;
+
+    memcpy(verts, compact, (size_t)out_count * sizeof(*verts));
+    return out_count;
+}
+
 static void pack_edge_coef(struct edge_coef *edge,
                            float x0, float y0, float x1, float y1)
 {
@@ -637,11 +664,9 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
         return;
     }
 
-    if (count == 5) {
-        CameraVertex tri[4]  = { poly[0], poly[1], poly[2], poly[2] };
-        CameraVertex quad[4] = { poly[0], poly[2], poly[3], poly[4] };
+    for (int i = 1; i + 1 < count; i++) {
+        CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
         emit_camera_quad(ctx, tri, color_tint, texture_id);
-        emit_camera_quad(ctx, quad, color_tint, texture_id);
     }
 }
 
@@ -931,6 +956,12 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
     int count = clip_polygon_to_viewport(quad->vertices, clipped);
 
+    /*
+     * Viewport clipping can create duplicate boundary vertices once we snap to
+     * the Q24.8 raster grid. Compact first, then triangulate any larger n-gons
+     * so clipped slivers do not turn into missing wedges at the screen edge.
+     */
+    count = snap_and_compact_polygon(clipped, count);
     if (count < 3)
         return false;
 
@@ -952,32 +983,18 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
         return stage_prepared_quad(ctx, clipped_quad);
     }
 
-    if (count == 5) {
-        RenderQuad tri = {
-            .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-        };
-        RenderQuad clipped_quad = {
-            .vertices = { clipped[0], clipped[2], clipped[3], clipped[4] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-        };
-        return stage_prepared_quad(ctx, tri) &&
-               stage_prepared_quad(ctx, clipped_quad);
-    }
-
+    bool emitted = false;
     for (int i = 1; i + 1 < count; i++) {
         RenderQuad tri = {
             .vertices = { clipped[0], clipped[i], clipped[i + 1], clipped[i + 1] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
         };
-        if (!stage_prepared_quad(ctx, tri))
-            return false;
+        if (stage_prepared_quad(ctx, tri))
+            emitted = true;
     }
 
-    return true;
+    return emitted;
 }
 
 static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,

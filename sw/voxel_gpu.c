@@ -31,6 +31,7 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/version.h>
 
 #include "voxel_gpu.h"
 
@@ -312,7 +313,7 @@ static const struct file_operations voxel_fops = {
 	.release        = voxel_release,
 	.write          = voxel_write,
 	.unlocked_ioctl = voxel_ioctl,
-	.llseek         = no_llseek,
+	.llseek         = noop_llseek,
 };
 
 static struct miscdevice voxel_miscdev = {
@@ -374,15 +375,24 @@ err_misc:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void voxel_remove(struct platform_device *pdev)
+#else
 static int voxel_remove(struct platform_device *pdev)
+#endif
 {
+	(void)pdev;
+
 	/* Disable the engine before tearing down. */
 	voxel_wr(VOXEL_REG_CONTROL, 0);
 
 	iounmap(voxdev.base);
 	release_mem_region(voxdev.res.start, resource_size(&voxdev.res));
 	misc_deregister(&voxel_miscdev);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 	return 0;
+#endif
 }
 
 #ifdef CONFIG_OF

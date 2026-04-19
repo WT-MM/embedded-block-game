@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import errno
 import os
+import select
 import socket
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ from .raster import VirtualGPU
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
+POLL_TIMEOUT = 1.0 / 60.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,6 +85,16 @@ class Monitor:
         if self._pygame is not None:
             self._pygame.quit()
 
+    def pump(self) -> None:
+        if self.headless:
+            return
+
+        assert self._pygame is not None
+
+        for event in self._pygame.event.get():
+            if event.type == self._pygame.QUIT:
+                raise KeyboardInterrupt
+
     def _sync_palette(self, gpu: VirtualGPU) -> None:
         if not gpu.palette_dirty:
             return
@@ -107,13 +119,9 @@ class Monitor:
             return
 
         self._sync_palette(gpu)
+        self.pump()
 
-        assert self._pygame is not None
         assert self._window is not None
-
-        for event in self._pygame.event.get():
-            if event.type == self._pygame.QUIT:
-                raise KeyboardInterrupt
 
         rgb = self._frame_to_rgb(gpu.front_buffer)
         surface = self._pygame.image.frombuffer(rgb, (self.width, self.height), "RGB")
@@ -165,6 +173,11 @@ def serve_client(
     conn: socket.socket, gpu: VirtualGPU, monitor: Monitor, dump_dir: Path | None
 ) -> None:
     while True:
+        monitor.pump()
+        readable, _, _ = select.select([conn], [], [], POLL_TIMEOUT)
+        if not readable:
+            continue
+
         try:
             opcode, payload = recv_request(conn)
         except EOFError:
@@ -211,6 +224,11 @@ def main() -> int:
 
         try:
             while True:
+                monitor.pump()
+                readable, _, _ = select.select([server], [], [], POLL_TIMEOUT)
+                if not readable:
+                    continue
+
                 conn, _ = server.accept()
                 print("virtualhw: client connected")
                 with conn:

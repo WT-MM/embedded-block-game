@@ -678,12 +678,9 @@ static bool chunk_within_render_distance(RenderContext *ctx,
     float max_distance;
     float min_x;
     float max_x;
-    float min_y = 0.0f;
-    float max_y = (float)WORLD_CHUNK_HEIGHT;
     float min_z;
     float max_z;
     float dx;
-    float dy;
     float dz;
 
     if (world->render_distance_chunks <= 0)
@@ -696,57 +693,21 @@ static bool chunk_within_render_distance(RenderContext *ctx,
     max_z = min_z + (float)WORLD_CHUNK_SIZE;
 
     dx = distance_to_interval(ctx->current_camera.position.x, min_x, max_x);
-    dy = distance_to_interval(ctx->current_camera.position.y, min_y, max_y);
     dz = distance_to_interval(ctx->current_camera.position.z, min_z, max_z);
 
-    return dx * dx + dy * dy + dz * dz <= max_distance * max_distance;
+    return dx * dx + dz * dz <= max_distance * max_distance;
 }
 
 static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
 {
-    float min_x = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
-    float max_x = min_x + (float)WORLD_CHUNK_SIZE;
-    float min_y = 0.0f;
-    float max_y = (float)WORLD_CHUNK_HEIGHT;
-    float min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
-    float max_z = min_z + (float)WORLD_CHUNK_SIZE;
-    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
-    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
-    float plane_scale_x = sqrtf(1.0f + x_slope * x_slope);
-    float plane_scale_y = sqrtf(1.0f + y_slope * y_slope);
-    float radius_x = WORLD_CHUNK_SIZE * 0.5f;
-    float radius_y = WORLD_CHUNK_HEIGHT * 0.5f;
-    float radius_z = WORLD_CHUNK_SIZE * 0.5f;
-    float radius = sqrtf(radius_x * radius_x +
-                         radius_y * radius_y +
-                         radius_z * radius_z);
-    Vec3 camera_pos = ctx->current_camera.position;
-    Vec3 chunk_center = {
-        min_x + radius_x,
-        min_y + radius_y,
-        min_z + radius_z,
-    };
-    CameraVertex cam_center;
-
-    /* A chunk containing the camera must never be frustum-culled. */
-    if (camera_pos.x >= min_x && camera_pos.x <= max_x &&
-        camera_pos.y >= min_y && camera_pos.y <= max_y &&
-        camera_pos.z >= min_z && camera_pos.z <= max_z)
-        return true;
-
-    world_to_camera(ctx, chunk_center, &cam_center);
-
-    if (cam_center.z + radius < NEAR_PLANE)
-        return false;
-    if (cam_center.x + x_slope * cam_center.z < -radius * plane_scale_x)
-        return false;
-    if (-cam_center.x + x_slope * cam_center.z < -radius * plane_scale_x)
-        return false;
-    if (-cam_center.y + y_slope * cam_center.z < -radius * plane_scale_y)
-        return false;
-    if (cam_center.y + y_slope * cam_center.z < -radius * plane_scale_y)
-        return false;
-
+    (void)ctx;
+    (void)chunk;
+    /*
+     * Face-level near-plane clipping already guarantees correctness. Keep
+     * chunk-level frustum culling disabled until we replace it with a plane
+     * test derived from the actual projection math; the current heuristic was
+     * producing visible false negatives near the camera.
+     */
     return true;
 }
 

@@ -5,14 +5,17 @@ Files
 -----
   voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
   voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
-  voxel_test.c   Userspace smoke test that exercises every ioctl + write().
+  voxel_test.c   Userspace multi-quad flat-color smoke test.
+  renderer.c     Software block renderer that emits quad descriptors.
+  renderer_scene_test.c
+                 Minimal static-scene test that drives renderer.c.
   Makefile       Builds both the .ko and the test binary.
 
 Build
 -----
 On the SoC (with kernel headers installed):
 
-    make            # builds voxel_gpu.ko and ./voxel_test
+    make            # builds voxel_gpu.ko, ./voxel_test, ./renderer_scene_test
     make clean
 
 Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
@@ -50,7 +53,8 @@ Run
     dmesg | tail
     ls -l /dev/voxel_gpu        # should appear with mode 0666
 
-    ./voxel_test                # run the smoke test
+    ./voxel_test                # raw multi-quad smoke test
+    ./renderer_scene_test       # renderer-driven static block scene
     rmmod voxel_gpu
 
 Sysfs / debug peeks
@@ -75,6 +79,15 @@ The MVP render loop is therefore:
     ioctl(CLEAR_FRAME);
     write(quad_descriptors, n_bytes);
     ioctl(FLIP);
+
+`voxel_test` currently submits five flat-color quads per frame: two
+non-overlapping, two overlapping, and one animated sweep bar. This is the
+fastest way to validate multi-descriptor fetch and FIFO drain behavior before
+hardware z-buffering is added.
+
+`renderer_scene_test` uses the real software renderer against a tiny fixed
+scene of blocks. Until the RTL z-buffer is implemented, the renderer sorts
+quads back-to-front in software so nearer faces overwrite farther ones.
 
 What this driver intentionally does NOT do
 ------------------------------------------

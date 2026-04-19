@@ -1,15 +1,16 @@
 /*
- * voxel_test.c — minimal user-space smoke test for /dev/voxel_gpu.
+ * voxel_test.c — flat-color smoke test for /dev/voxel_gpu.
  *
- * Exercises the MVP pipeline:
+ * Exercises the current hardware MVP path:
  *   1. Open the device.
  *   2. Print STATUS and FRAME_COUNT.
- *   3. Upload a tiny palette.
- *   4. Run a few frames of: CLEAR -> push one dummy quad -> FLIP.
+ *   3. Upload a vivid demo palette.
+ *   4. Run a few frames of: CLEAR -> push several real quads -> FLIP.
  *
- * The "quad" is 16 dummy 32-bit words. The driver does not interpret
- * descriptor contents; replace with real geometry once the rasterizer
- * format is finalized.
+ * Each frame submits:
+ *   * 2 non-overlapping rectangles in different colors
+ *   * 2 overlapping rectangles in different colors
+ *   * 1 animated sweep quad
  *
  * Build: see Makefile.  Run: ./voxel_test
  */
@@ -26,6 +27,10 @@
 #include "voxel_gpu.h"
 
 #define DEV_PATH "/dev/voxel_gpu"
+#define TEST_FRAMES 24
+#define FRAME_DELAY_US 80000
+#define TEST_QUADS_PER_FRAME 5
+
 static void die(const char *what)
 {
 	perror(what);
@@ -56,6 +61,8 @@ static void upload_demo_palette(int fd)
 		{ 2, 0x00, 0xff, 0x00 },   /* green */
 		{ 3, 0x00, 0x80, 0xff },   /* blue */
 		{ 4, 0xff, 0xff, 0x00 },   /* yellow */
+		{ 5, 0xff, 0x00, 0xff },   /* magenta */
+		{ 6, 0x00, 0xff, 0xff },   /* cyan */
 	};
 	size_t i;
 
@@ -65,33 +72,57 @@ static void upload_demo_palette(int fd)
 	}
 }
 
-/*
- * Push a real flat-shaded quad descriptor: a red rectangle (80,60)-(240,180).
- * palette[0] = background (dark), palette[1] = red.
- * The initial RTL milestone uses x/y bounds + color and ignores texturing.
- */
-static void push_rect_quad(int fd)
+static void set_edge(struct edge_coef *edge, int x0, int y0, int x1, int y1)
 {
-	struct quad_desc q = {
-		.x_min = 80,  .y_min = 60,
-		.x_max = 240, .y_max = 180,
-		.edges = {
-			{       0,  160*256, -9600*256  },  /* bottom */
-			{ -120*256,       0,  28800*256 },  /* right  */
-			{       0, -160*256,  28800*256 },  /* top    */
-			{  120*256,       0, -9600*256  },  /* left   */
-		},
-		.z0         = 0x4000,
-		.dz_dx      = 0,
-		.dz_dy      = 0,
-		.tex_or_color = 1,   /* palette index 1 = red */
-		.flags      = 0,     /* flat color, z-test off for now */
-	};
-	ssize_t n = write(fd, &q, sizeof(q));
+	edge->A = (y0 - y1) * 256;
+	edge->B = (x1 - x0) * 256;
+	edge->C = -(edge->A * x0 + edge->B * y0);
+}
+
+/*
+ * Build an axis-aligned rectangle descriptor. Vertices are emitted in
+ * screen-space clockwise order so the edge tests match the RTL.
+ */
+static struct quad_desc make_rect_quad(int x0, int y0, int x1, int y1, uint8_t color)
+{
+	struct quad_desc q;
+
+	memset(&q, 0, sizeof(q));
+	q.x_min = x0;
+	q.y_min = y0;
+	q.x_max = x1;
+	q.y_max = y1;
+
+	set_edge(&q.edges[0], x0, y0, x1, y0);
+	set_edge(&q.edges[1], x1, y0, x1, y1);
+	set_edge(&q.edges[2], x1, y1, x0, y1);
+	set_edge(&q.edges[3], x0, y1, x0, y0);
+
+	q.z0 = 0x4000;
+	q.dz_dx = 0;
+	q.dz_dy = 0;
+	q.tex_or_color = color;
+	q.flags = 0;
+
+	return q;
+}
+
+static void push_test_quads(int fd, int frame)
+{
+	struct quad_desc quads[TEST_QUADS_PER_FRAME];
+	int sweep_x = 20 + ((frame * 10) % 220);
+
+	quads[0] = make_rect_quad(16, 20, 96, 92, 1);
+	quads[1] = make_rect_quad(208, 28, 300, 96, 2);
+	quads[2] = make_rect_quad(72, 112, 216, 208, 3);
+	quads[3] = make_rect_quad(132, 144, 276, 224, 4);
+	quads[4] = make_rect_quad(sweep_x, 188, sweep_x + 44, 224, 6);
+
+	ssize_t n = write(fd, quads, sizeof(quads));
 	if (n < 0)
-		die("write(rect_quad)");
-	if (n != (ssize_t)sizeof(q))
-		fprintf(stderr, "short write: %zd / %zu\n", n, sizeof(q));
+		die("write(test_quads)");
+	if (n != (ssize_t)sizeof(quads))
+		fprintf(stderr, "short write: %zd / %zu\n", n, sizeof(quads));
 }
 
 int main(void)
@@ -109,18 +140,22 @@ int main(void)
 	upload_demo_palette(fd);
 	printf("uploaded demo palette\n");
 
-	printf("single-quad test (red rectangle 80,60 -> 240,180):\n");
-	for (frame = 0; frame < 5; frame++) {
+	printf("multi-quad flat-color test:\n");
+	printf("  red + green are non-overlapping\n");
+	printf("  blue + yellow overlap to expose submission order\n");
+	printf("  cyan sweep moves across the bottom of the screen\n");
+	for (frame = 0; frame < TEST_FRAMES; frame++) {
 		if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME))
 			die("ioctl(CLEAR_FRAME)");
 
-		push_rect_quad(fd);
+		push_test_quads(fd, frame);
 
 		if (ioctl(fd, VOXEL_IOC_FLIP))
 			die("ioctl(FLIP)");
 
 		printf("frame %d done; ", frame);
 		print_status(fd);
+		usleep(FRAME_DELAY_US);
 	}
 
 	close(fd);

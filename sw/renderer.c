@@ -10,6 +10,12 @@
 
 #define DEV_PATH "/dev/voxel_gpu"
 
+struct StagedQuad {
+    struct quad_desc desc;
+    float sort_key;
+    int sequence;
+};
+
 static void upload_default_palette(int fd)
 {
     static const struct voxel_palette_entry entries[] = {
@@ -34,7 +40,8 @@ struct RenderContext {
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
 
-    struct quad_desc *staging;
+    struct StagedQuad *staging;
+    struct quad_desc *submit_buffer;
     int n_quads;
 };
 
@@ -114,9 +121,21 @@ static inline int16_t to_q1_15s(float v)
     return (int16_t)(v * 32768.0f);
 }
 
+static int compare_staged_quads(const void *lhs, const void *rhs)
+{
+    const struct StagedQuad *a = lhs;
+    const struct StagedQuad *b = rhs;
+
+    if (a->sort_key < b->sort_key)
+        return 1;
+    if (a->sort_key > b->sort_key)
+        return -1;
+    return a->sequence - b->sequence;
+}
+
 /* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
  * Stores the plane at (x_min, y_min). */
-static void fit_depth_plane(Vertex2D v[4], int x_min, int y_min,
+static void fit_depth_plane(const Vertex2D v[4], int x_min, int y_min,
                              uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
 {
     /* Use vertices 0, 1, 2. Solve the 2x2 system for gradients. */
@@ -152,8 +171,11 @@ RenderContext *renderer_init(void)
         return NULL;
     }
 
-    ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(struct quad_desc));
-    if (!ctx->staging) {
+    ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->staging));
+    ctx->submit_buffer = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->submit_buffer));
+    if (!ctx->staging || !ctx->submit_buffer) {
+        free(ctx->submit_buffer);
+        free(ctx->staging);
         close(ctx->fd);
         free(ctx);
         return NULL;
@@ -166,6 +188,7 @@ RenderContext *renderer_init(void)
 void renderer_shutdown(RenderContext *ctx)
 {
     if (!ctx) return;
+    free(ctx->submit_buffer);
     free(ctx->staging);
     close(ctx->fd);
     free(ctx);
@@ -186,8 +209,16 @@ void renderer_end_frame(RenderContext *ctx)
         return;
     }
 
+    /*
+     * Temporary painter's algorithm until the FPGA z-buffer path is live.
+     * Draw farther quads first so nearer faces can overwrite them.
+     */
+    qsort(ctx->staging, ctx->n_quads, sizeof(*ctx->staging), compare_staged_quads);
+    for (int i = 0; i < ctx->n_quads; i++)
+        ctx->submit_buffer[i] = ctx->staging[i].desc;
+
     size_t bytes = (size_t)ctx->n_quads * sizeof(struct quad_desc);
-    ssize_t n = write(ctx->fd, ctx->staging, bytes);
+    ssize_t n = write(ctx->fd, ctx->submit_buffer, bytes);
     if (n < 0) {
         perror("write(quads)");
         return;
@@ -201,7 +232,7 @@ void renderer_end_frame(RenderContext *ctx)
         perror("ioctl(FLIP)");
 }
 
-void renderer_set_camera(RenderContext *ctx, Camera *camera)
+void renderer_set_camera(RenderContext *ctx, const Camera *camera)
 {
     ctx->current_camera = *camera;
     ctx->cos_yaw   = cosf(camera->yaw);
@@ -210,12 +241,12 @@ void renderer_set_camera(RenderContext *ctx, Camera *camera)
     ctx->sin_pitch = sinf(camera->pitch);
 }
 
-bool renderer_push_quad(RenderContext *ctx, RenderQuad *quad)
+bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
 {
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
         return false;
 
-    Vertex2D *v = quad->vertices;
+    const Vertex2D *v = quad->vertices;
 
     /* Bounding box, clamped to viewport */
     float fxmin = v[0].x, fxmax = v[0].x;
@@ -234,7 +265,15 @@ bool renderer_push_quad(RenderContext *ctx, RenderQuad *quad)
     if (x_min >= x_max || y_min >= y_max)
         return false;   /* degenerate / off-screen */
 
-    struct quad_desc *d = &ctx->staging[ctx->n_quads++];
+    struct StagedQuad *staged = &ctx->staging[ctx->n_quads];
+    struct quad_desc *d = &staged->desc;
+    float sort_key = 0.25f * (v[0].z + v[1].z + v[2].z + v[3].z);
+
+    memset(staged, 0, sizeof(*staged));
+    staged->sort_key = sort_key;
+    staged->sequence = ctx->n_quads;
+    ctx->n_quads++;
+
     memset(d, 0, sizeof(*d));
 
     d->x_min = (int16_t)x_min;
@@ -271,7 +310,7 @@ bool renderer_push_quad(RenderContext *ctx, RenderQuad *quad)
     return true;
 }
 
-void renderer_draw_block(RenderContext *ctx, Block *block)
+void renderer_draw_block(RenderContext *ctx, const Block *block)
 {
     if (block->type == BLOCK_AIR) return;
 
@@ -317,7 +356,7 @@ void renderer_draw_block(RenderContext *ctx, Block *block)
     }
 }
 
-int renderer_draw_chunk(RenderContext *ctx, Block *blocks, int num_blocks)
+int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 {
     int before = ctx->n_quads;
     for (int i = 0; i < num_blocks; i++)

@@ -10,10 +10,10 @@ else
         KERNEL_SOURCE := /usr/src/linux-headers-$(shell uname -r)
         PWD := $(shell pwd)
 
-        CC      ?= gcc
-        CFLAGS  ?= -O2 -Wall -Wextra
+CC      ?= gcc
+CFLAGS  ?= -O2 -Wall -Wextra
 
-default: module voxel_test
+default: module voxel_test renderer_scene_test
 
 module:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} modules
@@ -21,11 +21,14 @@ module:
 voxel_test: voxel_test.c voxel_gpu.h
 	${CC} ${CFLAGS} -o $@ voxel_test.c
 
+renderer_scene_test: renderer_scene_test.c renderer.c renderer.h voxel_gpu.h block_types.h block_types.c
+	${CC} ${CFLAGS} -o $@ renderer_scene_test.c renderer.c block_types.c -lm
+
 clean:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} clean
-	${RM} voxel_test
+	${RM} voxel_test renderer_scene_test
 
-TARFILES = Makefile README voxel_gpu.h voxel_gpu.c voxel_test.c
+TARFILES = Makefile README voxel_gpu.h voxel_gpu.c voxel_test.c renderer_scene_test.c renderer.c renderer.h block_types.c block_types.h
 TARFILE  = sw.tar.gz
 .PHONY: tar
 tar: $(TARFILE)

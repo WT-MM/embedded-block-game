@@ -11,10 +11,10 @@
 
 #define DEV_PATH "/dev/voxel_gpu"
 #define NEAR_PLANE 0.1f
-#define VIEW_X_MIN 0.0f
-#define VIEW_Y_MIN 0.0f
-#define VIEW_X_MAX (SCREEN_WIDTH - 1.0f)
-#define VIEW_Y_MAX (SCREEN_HEIGHT - 1.0f)
+#define VIEW_X_MIN (-0.5f)
+#define VIEW_Y_MIN (-0.5f)
+#define VIEW_X_MAX (SCREEN_WIDTH - 0.5f)
+#define VIEW_Y_MAX (SCREEN_HEIGHT - 0.5f)
 #define MAX_VIEW_CLIP_VERTS 8
 
 struct StagedQuad {
@@ -426,10 +426,28 @@ static void pack_edge_coef(struct edge_coef *edge,
     float A = y0 - y1;
     float B = x1 - x0;
     float C = -(A * x0 + B * y0);
+    float dx = x1 - x0;
+    float dy = y1 - y0;
 
     edge->A = to_q24_8(A);
     edge->B = to_q24_8(B);
     edge->C = to_q24_8(C);
+
+    /*
+     * Use a top-left fill rule so adjacent quads share edges cleanly.
+     * For our clockwise screen-space winding in y-down coordinates,
+     * inclusive edges are:
+     *   - upward edges
+     *   - horizontal edges that run left-to-right
+     *
+     * Everything else becomes exclusive by subtracting one subpixel LSB.
+     * This prevents shared-edge cracks and inconsistent side/bottom coverage.
+     */
+    if (fabsf(dx) < 1e-6f && fabsf(dy) < 1e-6f)
+        return;
+
+    if (!(dy < 0.0f || (fabsf(dy) < 1e-6f && dx > 0.0f)))
+        edge->C -= 1;
 }
 
 static uint8_t block_palette_index(BlockID id)
@@ -652,77 +670,81 @@ static float distance_to_interval(float value, float min, float max)
     return 0.0f;
 }
 
-static bool chunk_within_render_distance(RenderContext *ctx,
-                                         const VoxelWorld *world,
-                                         const Chunk *chunk)
+typedef struct {
+    CameraVertex center;
+    float ex;
+    float ey;
+    float ez;
+} ChunkCameraBounds;
+
+static void chunk_camera_bounds(RenderContext *ctx, const Chunk *chunk,
+                                ChunkCameraBounds *bounds)
 {
-    float max_distance;
-    float min_x;
-    float max_x;
-    float min_y = 0.0f;
-    float max_y = (float)WORLD_CHUNK_HEIGHT;
-    float min_z;
-    float max_z;
-    float dx;
-    float dy;
-    float dz;
-
-    if (world->render_distance_chunks <= 0)
-        return true;
-
-    max_distance = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
-    min_x = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
-    max_x = min_x + (float)WORLD_CHUNK_SIZE;
-    min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
-    max_z = min_z + (float)WORLD_CHUNK_SIZE;
-
-    dx = distance_to_interval(ctx->current_camera.position.x, min_x, max_x);
-    dy = distance_to_interval(ctx->current_camera.position.y, min_y, max_y);
-    dz = distance_to_interval(ctx->current_camera.position.z, min_z, max_z);
-
-    return dx * dx + dy * dy + dz * dz <= max_distance * max_distance;
-}
-
-static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
-{
-    float ex = WORLD_CHUNK_SIZE * 0.5f;
-    float ey = WORLD_CHUNK_HEIGHT * 0.5f;
-    float ez = WORLD_CHUNK_SIZE * 0.5f;
-    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
-    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    float half_x = WORLD_CHUNK_SIZE * 0.5f;
+    float half_y = WORLD_CHUNK_HEIGHT * 0.5f;
+    float half_z = WORLD_CHUNK_SIZE * 0.5f;
     float cy = ctx->cos_yaw;
     float sy = ctx->sin_yaw;
     float cp = ctx->cos_pitch;
     float sp = ctx->sin_pitch;
-    float cam_ex;
-    float cam_ey;
-    float cam_ez;
     Vec3 chunk_center = {
-        (float)(chunk->chunk_x * WORLD_CHUNK_SIZE) + ex,
-        ey,
-        (float)(chunk->chunk_z * WORLD_CHUNK_SIZE) + ez,
+        (float)(chunk->chunk_x * WORLD_CHUNK_SIZE) + half_x,
+        half_y,
+        (float)(chunk->chunk_z * WORLD_CHUNK_SIZE) + half_z,
     };
-    CameraVertex cam_center;
 
-    world_to_camera(ctx, chunk_center, &cam_center);
+    world_to_camera(ctx, chunk_center, &bounds->center);
 
-    /*
-     * Transform the chunk's world-space half-extents into camera-space
-     * extents with abs(R) * e, where R is the world->camera rotation.
-     */
-    cam_ex = fabsf(cy) * ex + fabsf(sy) * ez;
-    cam_ey = fabsf(sy * sp) * ex + fabsf(cp) * ey + fabsf(cy * sp) * ez;
-    cam_ez = fabsf(sy * cp) * ex + fabsf(sp) * ey + fabsf(cy * cp) * ez;
+    /* Project world-space half-extents into camera space using abs(R) * e. */
+    bounds->ex = fabsf(cy) * half_x + fabsf(sy) * half_z;
+    bounds->ey = fabsf(sy * sp) * half_x +
+                 fabsf(cp) * half_y +
+                 fabsf(cy * sp) * half_z;
+    bounds->ez = fabsf(sy * cp) * half_x +
+                 fabsf(sp) * half_y +
+                 fabsf(cy * cp) * half_z;
+}
 
-    if (cam_center.z - NEAR_PLANE + cam_ez < 0.0f)
+static bool chunk_within_render_distance(RenderContext *ctx,
+                                         const VoxelWorld *world,
+                                         const Chunk *chunk)
+{
+    float max_depth;
+    ChunkCameraBounds bounds;
+
+    if (world->render_distance_chunks <= 0)
+        return true;
+
+    max_depth = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    chunk_camera_bounds(ctx, chunk, &bounds);
+
+    /* Render-distance should track view depth, not spherical distance from
+     * the camera, otherwise high-altitude views punch holes in the terrain. */
+    return bounds.center.z + bounds.ez >= NEAR_PLANE &&
+           bounds.center.z - bounds.ez <= max_depth;
+}
+
+static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
+{
+    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
+    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    ChunkCameraBounds bounds;
+
+    chunk_camera_bounds(ctx, chunk, &bounds);
+
+    if (bounds.center.z + bounds.ez < NEAR_PLANE)
         return false;
-    if (cam_center.x + x_slope * cam_center.z + (cam_ex + x_slope * cam_ez) < 0.0f)
+    if (bounds.center.x + x_slope * bounds.center.z +
+        (bounds.ex + x_slope * bounds.ez) < 0.0f)
         return false;
-    if (-cam_center.x + x_slope * cam_center.z + (cam_ex + x_slope * cam_ez) < 0.0f)
+    if (-bounds.center.x + x_slope * bounds.center.z +
+        (bounds.ex + x_slope * bounds.ez) < 0.0f)
         return false;
-    if (cam_center.y + y_slope * cam_center.z + (cam_ey + y_slope * cam_ez) < 0.0f)
+    if (bounds.center.y + y_slope * bounds.center.z +
+        (bounds.ey + y_slope * bounds.ez) < 0.0f)
         return false;
-    if (-cam_center.y + y_slope * cam_center.z + (cam_ey + y_slope * cam_ez) < 0.0f)
+    if (-bounds.center.y + y_slope * bounds.center.z +
+        (bounds.ey + y_slope * bounds.ez) < 0.0f)
         return false;
 
     return true;

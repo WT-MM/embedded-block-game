@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <linux/input.h>
@@ -53,6 +54,22 @@ static void describe_device(int fd, char *name, size_t name_size)
 
     if (ioctl(fd, EVIOCGNAME((int)name_size), name) < 0 || name[0] == '\0')
         snprintf(name, name_size, "unknown");
+}
+
+static bool env_flag_enabled(const char *name)
+{
+    const char *value = getenv(name);
+
+    if (!value || value[0] == '\0')
+        return false;
+    if (strcmp(value, "0") == 0)
+        return false;
+    if (strcmp(value, "false") == 0 || strcmp(value, "FALSE") == 0)
+        return false;
+    if (strcmp(value, "no") == 0 || strcmp(value, "NO") == 0)
+        return false;
+
+    return true;
 }
 
 static int find_kbd(void)
@@ -171,6 +188,8 @@ int input_init(InputState *inp)
 {
     memset(inp, 0, sizeof(*inp));
     inp->_kbd_fd   = -1;
+    inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
+    inp->_mouse_scale_y = env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
         inp->_pointers[i].fd = -1;
 
@@ -185,6 +204,9 @@ int input_init(InputState *inp)
     if (inp->_pointer_count == 0)
         fprintf(stderr, "input: no pointer found in /dev/input/event0-%d\n",
                 INPUT_SCAN_LIMIT - 1);
+    fprintf(stderr, "input: mouse invert x=%s y=%s\n",
+            inp->_mouse_scale_x < 0.0f ? "on" : "off",
+            inp->_mouse_scale_y < 0.0f ? "on" : "off");
 
     return (inp->_kbd_fd >= 0) ? 0 : -1;
 }
@@ -213,15 +235,18 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             default: break;
             }
         } else if (pointer && pointer->mode == INPUT_POINTER_REL && ev.type == EV_REL) {
-            if (ev.code == REL_X) inp->mouse_dx += (float)ev.value;
-            if (ev.code == REL_Y) inp->mouse_dy += (float)ev.value;
+            if (ev.code == REL_X)
+                inp->mouse_dx += (float)ev.value * inp->_mouse_scale_x;
+            if (ev.code == REL_Y)
+                inp->mouse_dy += (float)ev.value * inp->_mouse_scale_y;
         } else if (pointer && pointer->mode == INPUT_POINTER_ABS && ev.type == EV_ABS) {
             if (ev.code == ABS_X) {
                 if (pointer->have_abs_x) {
                     inp->mouse_dx += scale_abs_delta(ev.value - pointer->last_abs_x,
                                                      pointer->abs_x_min,
                                                      pointer->abs_x_max,
-                                                     ABS_MOUSE_SPAN_X);
+                                                     ABS_MOUSE_SPAN_X) *
+                                     inp->_mouse_scale_x;
                 }
                 pointer->last_abs_x = ev.value;
                 pointer->have_abs_x = true;
@@ -231,7 +256,8 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                     inp->mouse_dy += scale_abs_delta(ev.value - pointer->last_abs_y,
                                                      pointer->abs_y_min,
                                                      pointer->abs_y_max,
-                                                     ABS_MOUSE_SPAN_Y);
+                                                     ABS_MOUSE_SPAN_Y) *
+                                     inp->_mouse_scale_y;
                 }
                 pointer->last_abs_y = ev.value;
                 pointer->have_abs_y = true;

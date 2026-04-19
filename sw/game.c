@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -10,7 +11,7 @@
 
 #define EYE_HEIGHT   1.7f
 #define MOVE_SPEED   5.0f      /* blocks per second */
-#define MOUSE_SENS   0.002f    /* radians per pixel */
+#define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
 #define LOOK_SPEED   1.8f      /* radians per second (arrow keys) */
 #define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
@@ -22,6 +23,22 @@
 static long ns_diff(const struct timespec *a, const struct timespec *b)
 {
     return (a->tv_sec - b->tv_sec) * 1000000000L + (a->tv_nsec - b->tv_nsec);
+}
+
+static float read_mouse_sensitivity(void)
+{
+    const char *value = getenv("VOXEL_MOUSE_SENS");
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_MOUSE_SENS;
+
+    char *end = NULL;
+    float parsed = strtof(value, &end);
+
+    if (end == value || (end && *end != '\0') || parsed <= 0.0f)
+        return DEFAULT_MOUSE_SENS;
+
+    return parsed;
 }
 
 int main(void)
@@ -38,6 +55,7 @@ int main(void)
 
     init_block_types();
     world_init(&world);
+    float mouse_sens = read_mouse_sensitivity();
 
     Camera cam = {
         .position = { 0.0f, EYE_HEIGHT, -1.5f },
@@ -65,6 +83,8 @@ int main(void)
            world.chunks_x, world.chunks_z, world.render_distance_chunks);
     printf("Cached loaded world: blocks=%d exposed_faces=%d\n",
            world_total_blocks(&world), world_total_faces(&world));
+    printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
+           mouse_sens);
 
     struct timespec prev, now, frame_end;
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -78,8 +98,8 @@ int main(void)
         input_update(&inp);
 
         /* Look — mouse or arrow keys */
-        cam.yaw   += inp.mouse_dx * MOUSE_SENS;
-        cam.pitch -= inp.mouse_dy * MOUSE_SENS;
+        cam.yaw   += inp.mouse_dx * mouse_sens;
+        cam.pitch -= inp.mouse_dy * mouse_sens;
         if (inp.look_right) cam.yaw   += LOOK_SPEED * dt;
         if (inp.look_left)  cam.yaw   -= LOOK_SPEED * dt;
         if (inp.look_down)  cam.pitch += LOOK_SPEED * dt;

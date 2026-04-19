@@ -35,6 +35,8 @@ typedef struct {
 
     int _kbd_fd;
     int _pointer_count;
+    float _mouse_scale_x;
+    float _mouse_scale_y;
     InputPointer _pointers[INPUT_MAX_POINTERS];
 } InputState;
 

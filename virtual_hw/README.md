@@ -47,3 +47,5 @@ Linux input note:
 `./game` reads `/dev/input/event*`. If keyboard or mouse input only works under
 `sudo`, add your user to the `input` group and start a new login session.
 Relative mice and absolute VM tablet devices are both accepted for look input.
+Use `VOXEL_MOUSE_INVERT_X=1` and/or `VOXEL_MOUSE_INVERT_Y=1` to flip axes.
+Use `VOXEL_MOUSE_SENS=0.004` to override mouse sensitivity at launch.

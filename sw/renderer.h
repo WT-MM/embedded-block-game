@@ -10,7 +10,12 @@ typedef struct VoxelWorld VoxelWorld;
 // --- Constants ---
 #define SCREEN_WIDTH 320.0f
 #define SCREEN_HEIGHT 240.0f
-#define MAX_QUADS_IN_FLIGHT 2048
+/*
+ * A 3-chunk render radius over 16x16 grass terrain already exceeds 2k
+ * visible quads on top faces alone, so keep enough headroom to avoid
+ * silently dropping nearby chunks.
+ */
+#define MAX_QUADS_IN_FLIGHT 32768
 
 // --- Core Math & Entity Structures ---
 typedef struct {

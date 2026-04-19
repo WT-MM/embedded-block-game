@@ -711,6 +711,26 @@ static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
     return true;
 }
 
+typedef struct {
+    const Chunk *chunk;
+    float distance_sq;
+} ChunkDrawCandidate;
+
+static float chunk_distance_sq_to_camera(RenderContext *ctx, const Chunk *chunk)
+{
+    float min_x = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+    float max_x = min_x + (float)WORLD_CHUNK_SIZE;
+    float min_y = 0.0f;
+    float max_y = (float)WORLD_CHUNK_HEIGHT;
+    float min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
+    float max_z = min_z + (float)WORLD_CHUNK_SIZE;
+    float dx = distance_to_interval(ctx->current_camera.position.x, min_x, max_x);
+    float dy = distance_to_interval(ctx->current_camera.position.y, min_y, max_y);
+    float dz = distance_to_interval(ctx->current_camera.position.z, min_z, max_z);
+
+    return dx * dx + dy * dy + dz * dz;
+}
+
 /* --- Public API --- */
 
 RenderContext *renderer_init(void)
@@ -946,9 +966,12 @@ int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
 {
     int before = ctx->n_quads;
+    int candidate_count = 0;
 
-    if (!world)
+    if (!world || world->chunk_count <= 0)
         return 0;
+
+    ChunkDrawCandidate candidates[world->chunk_count];
 
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
@@ -960,6 +983,28 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
         if (!chunk_intersects_frustum(ctx, chunk))
             continue;
 
+        candidates[candidate_count++] = (ChunkDrawCandidate){
+            .chunk = chunk,
+            .distance_sq = chunk_distance_sq_to_camera(ctx, chunk),
+        };
+    }
+
+    /* Draw nearest chunks first so any future budget limit degrades
+     * gracefully instead of dropping arbitrary sides of the world. */
+    for (int i = 1; i < candidate_count; i++) {
+        ChunkDrawCandidate key = candidates[i];
+        int j = i - 1;
+
+        while (j >= 0 && candidates[j].distance_sq > key.distance_sq) {
+            candidates[j + 1] = candidates[j];
+            j--;
+        }
+        candidates[j + 1] = key;
+    }
+
+    for (int i = 0; i < candidate_count; i++) {
+        const Chunk *chunk = candidates[i].chunk;
+
         for (int face_index = 0; face_index < chunk->face_count; face_index++) {
             const ChunkFace *face = &chunk->faces[face_index];
             Vec3 block_pos = {
@@ -970,6 +1015,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
 
             emit_block_face(ctx, (BlockID)face->type,
                             block_pos, (BlockFace)face->face);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                return ctx->n_quads - before;
         }
     }
 

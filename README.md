@@ -35,6 +35,7 @@ Notes
 - `VOXEL_GPU_BACKEND=hw` is the default and uses `/dev/voxel_gpu`.
 - `VOXEL_GPU_BACKEND=socket` avoids the kernel driver entirely.
 - `./game` reads keyboard and mouse input from `/dev/input/event*` on Linux.
+- The input layer now accepts both relative mice and absolute VM tablet devices.
 
 If input only works under `sudo`, add your user to the `input` group and start
 a new login session:

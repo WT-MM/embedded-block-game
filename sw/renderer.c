@@ -10,10 +10,10 @@
 
 #define DEV_PATH "/dev/voxel_gpu"
 #define NEAR_PLANE 0.1f
-#define VIEW_X_MIN (-0.5f)
-#define VIEW_Y_MIN (-0.5f)
-#define VIEW_X_MAX (SCREEN_WIDTH - 0.5f)
-#define VIEW_Y_MAX (SCREEN_HEIGHT - 0.5f)
+#define VIEW_X_MIN 0.0f
+#define VIEW_Y_MIN 0.0f
+#define VIEW_X_MAX (SCREEN_WIDTH - 1.0f)
+#define VIEW_Y_MAX (SCREEN_HEIGHT - 1.0f)
 #define MAX_VIEW_CLIP_VERTS 8
 
 struct StagedQuad {
@@ -335,12 +335,6 @@ static void pack_edge_coef(struct edge_coef *edge,
     float dx = x1 - x0;
     float dy = y1 - y0;
 
-    /*
-     * The RTL evaluates edge functions at integer sample locations.
-     * Bias C so those integer coordinates correspond to pixel centers.
-     */
-    C += 0.5f * (A + B);
-
     edge->A = to_q24_8(A);
     edge->B = to_q24_8(B);
     edge->C = to_q24_8(C);
@@ -632,7 +626,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 
     const Vertex2D *v = quad.vertices;
 
-    /* Inclusive integer bbox over pixel-center samples. */
+    /* Inclusive integer bbox over the RTL's integer sample grid. */
     float fxmin = v[0].x, fxmax = v[0].x;
     float fymin = v[0].y, fymax = v[0].y;
     for (int i = 1; i < 4; i++) {
@@ -641,10 +635,10 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
         if (v[i].y < fymin) fymin = v[i].y;
         if (v[i].y > fymax) fymax = v[i].y;
     }
-    int x_min = (int)ceilf(fxmin - 0.5f); if (x_min <   0) x_min =   0;
-    int y_min = (int)ceilf(fymin - 0.5f); if (y_min <   0) y_min =   0;
-    int x_max = (int)floorf(fxmax - 0.5f); if (x_max > 319) x_max = 319;
-    int y_max = (int)floorf(fymax - 0.5f); if (y_max > 239) y_max = 239;
+    int x_min = (int)ceilf(fxmin);  if (x_min <   0) x_min =   0;
+    int y_min = (int)ceilf(fymin);  if (y_min <   0) y_min =   0;
+    int x_max = (int)floorf(fxmax); if (x_max > 319) x_max = 319;
+    int y_max = (int)floorf(fymax); if (y_max > 239) y_max = 239;
 
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
@@ -671,7 +665,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     uint16_t z0;
     int16_t dz_dx;
     int16_t dz_dy;
-    fit_depth_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f,
+    fit_depth_plane(v, (float)x_min, (float)y_min,
                     &z0, &dz_dx, &dz_dy);
     d->z0 = z0;
     d->dz_dx = dz_dx;

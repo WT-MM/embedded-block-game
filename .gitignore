@@ -5,6 +5,9 @@
 *.swp
 *.swo
 
+# verilator
+obj_dir/
+
 # --- Quartus build artifacts ---
 db/
 incremental_db/

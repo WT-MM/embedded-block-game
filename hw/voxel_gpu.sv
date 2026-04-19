@@ -151,10 +151,28 @@ module voxel_gpu (
 
     wire signed [10:0] draw_x_s = $signed({1'b0, draw_x_cur});
     wire signed  [9:0] draw_y_s = $signed({1'b0, draw_y_cur});
-    wire signed [63:0] edge_eval0 = edge_A[0] * draw_x_s + edge_B[0] * draw_y_s + {{32{edge_C[0][31]}}, edge_C[0]};
-    wire signed [63:0] edge_eval1 = edge_A[1] * draw_x_s + edge_B[1] * draw_y_s + {{32{edge_C[1][31]}}, edge_C[1]};
-    wire signed [63:0] edge_eval2 = edge_A[2] * draw_x_s + edge_B[2] * draw_y_s + {{32{edge_C[2][31]}}, edge_C[2]};
-    wire signed [63:0] edge_eval3 = edge_A[3] * draw_x_s + edge_B[3] * draw_y_s + {{32{edge_C[3][31]}}, edge_C[3]};
+    /*
+     * Keep the whole edge-function expression in signed arithmetic.
+     * A manual sign-extension concat here becomes an unsigned operand,
+     * which can flip the entire add tree into unsigned math and break
+     * negative edge coefficients.
+     */
+    wire signed [63:0] edge_ax0 = $signed(edge_A[0]) * draw_x_s;
+    wire signed [63:0] edge_by0 = $signed(edge_B[0]) * draw_y_s;
+    wire signed [63:0] edge_c0  = $signed({{32{edge_C[0][31]}}, edge_C[0]});
+    wire signed [63:0] edge_ax1 = $signed(edge_A[1]) * draw_x_s;
+    wire signed [63:0] edge_by1 = $signed(edge_B[1]) * draw_y_s;
+    wire signed [63:0] edge_c1  = $signed({{32{edge_C[1][31]}}, edge_C[1]});
+    wire signed [63:0] edge_ax2 = $signed(edge_A[2]) * draw_x_s;
+    wire signed [63:0] edge_by2 = $signed(edge_B[2]) * draw_y_s;
+    wire signed [63:0] edge_c2  = $signed({{32{edge_C[2][31]}}, edge_C[2]});
+    wire signed [63:0] edge_ax3 = $signed(edge_A[3]) * draw_x_s;
+    wire signed [63:0] edge_by3 = $signed(edge_B[3]) * draw_y_s;
+    wire signed [63:0] edge_c3  = $signed({{32{edge_C[3][31]}}, edge_C[3]});
+    wire signed [63:0] edge_eval0 = edge_ax0 + edge_by0 + edge_c0;
+    wire signed [63:0] edge_eval1 = edge_ax1 + edge_by1 + edge_c1;
+    wire signed [63:0] edge_eval2 = edge_ax2 + edge_by2 + edge_c2;
+    wire signed [63:0] edge_eval3 = edge_ax3 + edge_by3 + edge_c3;
     wire draw_inside = (edge_eval0 >= 0) && (edge_eval1 >= 0) &&
                        (edge_eval2 >= 0) && (edge_eval3 >= 0);
     wire signed [10:0] draw_dx_s = $signed({1'b0, draw_x_cur}) -

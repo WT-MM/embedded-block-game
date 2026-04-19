@@ -44,9 +44,12 @@ struct RenderContext {
     int n_quads;
 };
 
-/* Project a world-space point into screen space.
- * Returns false if the point is behind the near plane. */
-static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
+typedef struct {
+    float x, y, z;
+    float u, v;
+} CameraVertex;
+
+static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
 {
     float dx = world.x - ctx->current_camera.position.x;
     float dy = world.y - ctx->current_camera.position.y;
@@ -56,11 +59,16 @@ static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
     float z_yaw =  dx * ctx->sin_yaw + dz * ctx->cos_yaw;
     float y_yaw =  dy;
 
-    float x_cam = x_yaw;
-    float y_cam =  y_yaw * ctx->cos_pitch + z_yaw * ctx->sin_pitch;
-    float z_cam = -y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
+    out->x = x_yaw;
+    out->y =  y_yaw * ctx->cos_pitch + z_yaw * ctx->sin_pitch;
+    out->z = -y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
+}
 
-    if (z_cam <= NEAR_PLANE)
+/* Project a camera-space point into screen space.
+ * Returns false if the point is behind the near plane. */
+static bool project_camera_vertex(RenderContext *ctx, const CameraVertex *in, Vertex2D *out)
+{
+    if (in->z < NEAR_PLANE)
         return false;
 
     /*
@@ -68,11 +76,13 @@ static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
      * in screen space and fits inside the descriptor's Q1.15 range.
      * Smaller values remain closer, matching the hardware z compare.
      */
-    out->z = 1.0f - (NEAR_PLANE / z_cam);
+    out->z = 1.0f - (NEAR_PLANE / in->z);
 
     float depth = ctx->current_camera.depth;
-    out->x = (x_cam / z_cam) * depth + SCREEN_WIDTH  / 2.0f;
-    out->y = SCREEN_HEIGHT / 2.0f - (y_cam / z_cam) * depth;
+    out->x = (in->x / in->z) * depth + SCREEN_WIDTH  / 2.0f;
+    out->y = SCREEN_HEIGHT / 2.0f - (in->y / in->z) * depth;
+    out->u = in->u;
+    out->v = in->v;
     return true;
 }
 
@@ -85,6 +95,47 @@ static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
         (block_pos.z + 0.5f + normal.z * 0.5f) - cam_pos.z,
     };
     return (v.x*normal.x + v.y*normal.y + v.z*normal.z) < 0.0f;
+}
+
+static CameraVertex lerp_camera_vertex(const CameraVertex *a,
+                                       const CameraVertex *b, float t)
+{
+    CameraVertex out = {
+        .x = a->x + (b->x - a->x) * t,
+        .y = a->y + (b->y - a->y) * t,
+        .z = a->z + (b->z - a->z) * t,
+        .u = a->u + (b->u - a->u) * t,
+        .v = a->v + (b->v - a->v) * t,
+    };
+
+    return out;
+}
+
+static int clip_face_to_near_plane(const CameraVertex in[4], CameraVertex out[6])
+{
+    int out_count = 0;
+    CameraVertex prev = in[3];
+    bool prev_inside = (prev.z >= NEAR_PLANE);
+
+    for (int i = 0; i < 4; i++) {
+        CameraVertex cur = in[i];
+        bool cur_inside = (cur.z >= NEAR_PLANE);
+
+        if (prev_inside != cur_inside) {
+            float t = (NEAR_PLANE - prev.z) / (cur.z - prev.z);
+            CameraVertex clipped = lerp_camera_vertex(&prev, &cur, t);
+            clipped.z = NEAR_PLANE;
+            out[out_count++] = clipped;
+        }
+
+        if (cur_inside)
+            out[out_count++] = cur;
+
+        prev = cur;
+        prev_inside = cur_inside;
+    }
+
+    return out_count;
 }
 
 static bool is_solid_block(BlockID id)
@@ -227,6 +278,51 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
     *z0    = to_q1_15u(z_at_sample);
     *dz_dx = to_q1_15s(ddx);
     *dz_dy = to_q1_15s(ddy);
+}
+
+static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
+                             uint8_t color_tint, uint8_t texture_id)
+{
+    Vertex2D verts[4];
+    RenderQuad q;
+
+    for (int i = 0; i < 4; i++) {
+        if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
+            return false;
+    }
+
+    ensure_clockwise_winding(verts);
+
+    memcpy(q.vertices, verts, sizeof(verts));
+    q.texture_id = texture_id;
+    q.color_tint = color_tint;
+    return renderer_push_quad(ctx, &q);
+}
+
+static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
+                              int count, uint8_t color_tint, uint8_t texture_id)
+{
+    if (count < 3)
+        return;
+
+    if (count == 3) {
+        CameraVertex tri[4] = { poly[0], poly[1], poly[2], poly[2] };
+        emit_camera_quad(ctx, tri, color_tint, texture_id);
+        return;
+    }
+
+    if (count == 4) {
+        CameraVertex quad[4] = { poly[0], poly[1], poly[2], poly[3] };
+        emit_camera_quad(ctx, quad, color_tint, texture_id);
+        return;
+    }
+
+    if (count == 5) {
+        CameraVertex tri[4]  = { poly[0], poly[1], poly[2], poly[2] };
+        CameraVertex quad[4] = { poly[0], poly[2], poly[3], poly[4] };
+        emit_camera_quad(ctx, tri, color_tint, texture_id);
+        emit_camera_quad(ctx, quad, color_tint, texture_id);
+    }
 }
 
 /* --- Public API --- */
@@ -390,30 +486,22 @@ static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
                              ctx->current_camera.position))
             continue;
 
-        Vertex2D verts[4];
-        bool behind = false;
+        CameraVertex face_cam[4];
         for (int i = 0; i < 4; i++) {
             Vec3 wp = {
                 block->position.x + face_verts[f][i].x,
                 block->position.y + face_verts[f][i].y,
                 block->position.z + face_verts[f][i].z,
             };
-            if (!project_point(ctx, wp, &verts[i])) {
-                behind = true;
-                break;
-            }
-            verts[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
-            verts[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
+            world_to_camera(ctx, wp, &face_cam[i]);
+            face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
+            face_cam[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
         }
-        if (behind) continue;
 
-        ensure_clockwise_winding(verts);
-
-        RenderQuad q;
-        memcpy(q.vertices, verts, sizeof(verts));
-        q.texture_id = 0;
-        q.color_tint = block_palette_index(block->type);
-        renderer_push_quad(ctx, &q);
+        CameraVertex clipped[6];
+        int clipped_count = clip_face_to_near_plane(face_cam, clipped);
+        emit_clipped_face(ctx, clipped, clipped_count,
+                          block_palette_index(block->type), 0);
     }
 }
 

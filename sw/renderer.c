@@ -710,41 +710,44 @@ static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
     float max_y = (float)WORLD_CHUNK_HEIGHT;
     float min_z = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
     float max_z = min_z + (float)WORLD_CHUNK_SIZE;
-    float half_width = SCREEN_WIDTH * 0.5f;
-    float half_height = SCREEN_HEIGHT * 0.5f;
-    int outside_near = 0;
-    int outside_left = 0;
-    int outside_right = 0;
-    int outside_top = 0;
-    int outside_bottom = 0;
+    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
+    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    float plane_scale_x = sqrtf(1.0f + x_slope * x_slope);
+    float plane_scale_y = sqrtf(1.0f + y_slope * y_slope);
+    float radius_x = WORLD_CHUNK_SIZE * 0.5f;
+    float radius_y = WORLD_CHUNK_HEIGHT * 0.5f;
+    float radius_z = WORLD_CHUNK_SIZE * 0.5f;
+    float radius = sqrtf(radius_x * radius_x +
+                         radius_y * radius_y +
+                         radius_z * radius_z);
+    Vec3 camera_pos = ctx->current_camera.position;
+    Vec3 chunk_center = {
+        min_x + radius_x,
+        min_y + radius_y,
+        min_z + radius_z,
+    };
+    CameraVertex cam_center;
 
-    for (int corner = 0; corner < 8; corner++) {
-        Vec3 world_corner = {
-            (corner & 1) ? max_x : min_x,
-            (corner & 2) ? max_y : min_y,
-            (corner & 4) ? max_z : min_z,
-        };
-        CameraVertex cam_corner;
+    /* A chunk containing the camera must never be frustum-culled. */
+    if (camera_pos.x >= min_x && camera_pos.x <= max_x &&
+        camera_pos.y >= min_y && camera_pos.y <= max_y &&
+        camera_pos.z >= min_z && camera_pos.z <= max_z)
+        return true;
 
-        world_to_camera(ctx, world_corner, &cam_corner);
+    world_to_camera(ctx, chunk_center, &cam_center);
 
-        if (cam_corner.z < NEAR_PLANE)
-            outside_near++;
-        if (cam_corner.x < -(half_width / ctx->current_camera.depth) * cam_corner.z)
-            outside_left++;
-        if (cam_corner.x > (half_width / ctx->current_camera.depth) * cam_corner.z)
-            outside_right++;
-        if (cam_corner.y > (half_height / ctx->current_camera.depth) * cam_corner.z)
-            outside_top++;
-        if (cam_corner.y < -(half_height / ctx->current_camera.depth) * cam_corner.z)
-            outside_bottom++;
-    }
+    if (cam_center.z + radius < NEAR_PLANE)
+        return false;
+    if (cam_center.x + x_slope * cam_center.z < -radius * plane_scale_x)
+        return false;
+    if (-cam_center.x + x_slope * cam_center.z < -radius * plane_scale_x)
+        return false;
+    if (-cam_center.y + y_slope * cam_center.z < -radius * plane_scale_y)
+        return false;
+    if (cam_center.y + y_slope * cam_center.z < -radius * plane_scale_y)
+        return false;
 
-    return outside_near < 8 &&
-           outside_left < 8 &&
-           outside_right < 8 &&
-           outside_top < 8 &&
-           outside_bottom < 8;
+    return true;
 }
 
 /* --- Public API --- */

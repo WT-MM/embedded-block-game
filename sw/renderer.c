@@ -678,9 +678,12 @@ static bool chunk_within_render_distance(RenderContext *ctx,
     float max_distance;
     float min_x;
     float max_x;
+    float min_y = 0.0f;
+    float max_y = (float)WORLD_CHUNK_HEIGHT;
     float min_z;
     float max_z;
     float dx;
+    float dy;
     float dz;
 
     if (world->render_distance_chunks <= 0)
@@ -693,21 +696,54 @@ static bool chunk_within_render_distance(RenderContext *ctx,
     max_z = min_z + (float)WORLD_CHUNK_SIZE;
 
     dx = distance_to_interval(ctx->current_camera.position.x, min_x, max_x);
+    dy = distance_to_interval(ctx->current_camera.position.y, min_y, max_y);
     dz = distance_to_interval(ctx->current_camera.position.z, min_z, max_z);
 
-    return dx * dx + dz * dz <= max_distance * max_distance;
+    return dx * dx + dy * dy + dz * dz <= max_distance * max_distance;
 }
 
 static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
 {
-    (void)ctx;
-    (void)chunk;
+    float ex = WORLD_CHUNK_SIZE * 0.5f;
+    float ey = WORLD_CHUNK_HEIGHT * 0.5f;
+    float ez = WORLD_CHUNK_SIZE * 0.5f;
+    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
+    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    float cy = ctx->cos_yaw;
+    float sy = ctx->sin_yaw;
+    float cp = ctx->cos_pitch;
+    float sp = ctx->sin_pitch;
+    float cam_ex;
+    float cam_ey;
+    float cam_ez;
+    Vec3 chunk_center = {
+        (float)(chunk->chunk_x * WORLD_CHUNK_SIZE) + ex,
+        ey,
+        (float)(chunk->chunk_z * WORLD_CHUNK_SIZE) + ez,
+    };
+    CameraVertex cam_center;
+
+    world_to_camera(ctx, chunk_center, &cam_center);
+
     /*
-     * Face-level near-plane clipping already guarantees correctness. Keep
-     * chunk-level frustum culling disabled until we replace it with a plane
-     * test derived from the actual projection math; the current heuristic was
-     * producing visible false negatives near the camera.
+     * Transform the chunk's world-space half-extents into camera-space
+     * extents with abs(R) * e, where R is the world->camera rotation.
      */
+    cam_ex = fabsf(cy) * ex + fabsf(sy) * ez;
+    cam_ey = fabsf(sy * sp) * ex + fabsf(cp) * ey + fabsf(cy * sp) * ez;
+    cam_ez = fabsf(sy * cp) * ex + fabsf(sp) * ey + fabsf(cy * cp) * ez;
+
+    if (cam_center.z - NEAR_PLANE + cam_ez < 0.0f)
+        return false;
+    if (cam_center.x + x_slope * cam_center.z + (cam_ex + x_slope * cam_ez) < 0.0f)
+        return false;
+    if (-cam_center.x + x_slope * cam_center.z + (cam_ex + x_slope * cam_ez) < 0.0f)
+        return false;
+    if (cam_center.y + y_slope * cam_center.z + (cam_ey + y_slope * cam_ez) < 0.0f)
+        return false;
+    if (-cam_center.y + y_slope * cam_center.z + (cam_ey + y_slope * cam_ez) < 0.0f)
+        return false;
+
     return true;
 }
 

@@ -112,6 +112,7 @@ module voxel_gpu (
     logic        scan_visible_now;
     logic  [7:0] scan_idx_r;
     logic        scan_visible_r;
+    logic        scan_visible_rr;
     logic [16:0] scan_row_base;
     logic [16:0] draw_addr;
     logic [16:0] fb_wr_addr;
@@ -305,6 +306,7 @@ module voxel_gpu (
         draw_pipe_z      = 16'd0;
         scan_idx_r       = 8'd0;
         scan_visible_r   = 1'b0;
+        scan_visible_rr  = 1'b0;
         vga_vs_d         = 1'b1;
 
         palette[0]  = 24'h202028;
@@ -403,7 +405,8 @@ module voxel_gpu (
             scan_idx_r <= fb1_rd_data;
         else
             scan_idx_r <= fb0_rd_data;
-        scan_visible_r <= scan_visible_now;
+        scan_visible_r  <= scan_visible_now;
+        scan_visible_rr <= scan_visible_r;
     end
 
     always_ff @(posedge clk) begin
@@ -587,7 +590,7 @@ module voxel_gpu (
     end
 
     always_comb begin
-        if (scan_visible_r) begin
+        if (scan_visible_rr) begin
             VGA_R = pixel_rgb[23:16];
             VGA_G = pixel_rgb[15:8];
             VGA_B = pixel_rgb[7:0];

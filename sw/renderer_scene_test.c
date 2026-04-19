@@ -2,8 +2,8 @@
  * renderer_scene_test.c — minimal renderer-driven scene test.
  *
  * Uses the real software renderer to submit a tiny fixed block scene with
- * flat colors only. This is the intended pre-z-buffer integration path:
- * geometry, projection, quad setup, submission, flip.
+ * flat colors and hardware z-test enabled. This exercises geometry,
+ * projection, quad setup, depth setup, submission, and flip.
  */
 
 #include <math.h>

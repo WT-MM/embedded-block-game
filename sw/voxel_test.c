@@ -8,6 +8,7 @@
  *   4. Run a few frames of: CLEAR -> push several real quads -> FLIP.
  *
  * Each frame submits:
+ *   * 2 z-tested overlapping rectangles with different depths
  *   * 2 non-overlapping rectangles in different colors
  *   * 2 overlapping rectangles in different colors
  *   * 1 animated sweep quad
@@ -29,7 +30,7 @@
 #define DEV_PATH "/dev/voxel_gpu"
 #define TEST_FRAMES 24
 #define FRAME_DELAY_US 80000
-#define TEST_QUADS_PER_FRAME 5
+#define TEST_QUADS_PER_FRAME 7
 
 static void die(const char *what)
 {
@@ -83,7 +84,8 @@ static void set_edge(struct edge_coef *edge, int x0, int y0, int x1, int y1)
  * Build an axis-aligned rectangle descriptor. Vertices are emitted in
  * screen-space clockwise order so the edge tests match the RTL.
  */
-static struct quad_desc make_rect_quad(int x0, int y0, int x1, int y1, uint8_t color)
+static struct quad_desc make_rect_quad(int x0, int y0, int x1, int y1,
+				       uint8_t color, uint16_t z0, uint8_t flags)
 {
 	struct quad_desc q;
 
@@ -98,11 +100,11 @@ static struct quad_desc make_rect_quad(int x0, int y0, int x1, int y1, uint8_t c
 	set_edge(&q.edges[2], x1, y1, x0, y1);
 	set_edge(&q.edges[3], x0, y1, x0, y0);
 
-	q.z0 = 0x4000;
+	q.z0 = z0;
 	q.dz_dx = 0;
 	q.dz_dy = 0;
 	q.tex_or_color = color;
-	q.flags = 0;
+	q.flags = flags;
 
 	return q;
 }
@@ -112,11 +114,14 @@ static void push_test_quads(int fd, int frame)
 	struct quad_desc quads[TEST_QUADS_PER_FRAME];
 	int sweep_x = 20 + ((frame * 10) % 220);
 
-	quads[0] = make_rect_quad(16, 20, 96, 92, 1);
-	quads[1] = make_rect_quad(208, 28, 300, 96, 2);
-	quads[2] = make_rect_quad(72, 112, 216, 208, 3);
-	quads[3] = make_rect_quad(132, 144, 276, 224, 4);
-	quads[4] = make_rect_quad(sweep_x, 188, sweep_x + 44, 224, 6);
+	/* Near magenta should stay visible even though the farther cyan quad is submitted later. */
+	quads[0] = make_rect_quad(24, 24, 88, 88, 5, 0x2000, QUAD_FLAG_ZTEST);
+	quads[1] = make_rect_quad(40, 40, 104, 104, 6, 0x5000, QUAD_FLAG_ZTEST);
+	quads[2] = make_rect_quad(16, 20, 96, 92, 1, 0x4000, 0);
+	quads[3] = make_rect_quad(208, 28, 300, 96, 2, 0x4000, 0);
+	quads[4] = make_rect_quad(72, 112, 216, 208, 3, 0x4000, 0);
+	quads[5] = make_rect_quad(132, 144, 276, 224, 4, 0x4000, 0);
+	quads[6] = make_rect_quad(sweep_x, 188, sweep_x + 44, 224, 6, 0x4000, 0);
 
 	ssize_t n = write(fd, quads, sizeof(quads));
 	if (n < 0)
@@ -141,6 +146,7 @@ int main(void)
 	printf("uploaded demo palette\n");
 
 	printf("multi-quad flat-color test:\n");
+	printf("  magenta/cyan overlap at top-left uses z-test (magenta is nearer)\n");
 	printf("  red + green are non-overlapping\n");
 	printf("  blue + yellow overlap to expose submission order\n");
 	printf("  cyan sweep moves across the bottom of the screen\n");

@@ -9,11 +9,10 @@
 #include <string.h>
 
 #define DEV_PATH "/dev/voxel_gpu"
+#define NEAR_PLANE 0.1f
 
 struct StagedQuad {
     struct quad_desc desc;
-    float sort_key;
-    int sequence;
 };
 
 static void upload_default_palette(int fd)
@@ -61,10 +60,15 @@ static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
     float y_cam = y_yaw * ctx->cos_pitch - z_yaw * ctx->sin_pitch;
     float z_cam = y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
 
-    out->z = z_cam;
-
-    if (z_cam <= 0.1f)
+    if (z_cam <= NEAR_PLANE)
         return false;
+
+    /*
+     * Use an inverse-depth mapping so the per-quad depth plane stays affine
+     * in screen space and fits inside the descriptor's Q1.15 range.
+     * Smaller values remain closer, matching the hardware z compare.
+     */
+    out->z = 1.0f - (NEAR_PLANE / z_cam);
 
     float depth = ctx->current_camera.depth;
     out->x = (x_cam / z_cam) * depth + SCREEN_WIDTH  / 2.0f;
@@ -119,18 +123,6 @@ static inline int16_t to_q1_15s(float v)
     if (v < -1.0f) v = -1.0f;
     if (v >  0.999f) v = 0.999f;
     return (int16_t)(v * 32768.0f);
-}
-
-static int compare_staged_quads(const void *lhs, const void *rhs)
-{
-    const struct StagedQuad *a = lhs;
-    const struct StagedQuad *b = rhs;
-
-    if (a->sort_key < b->sort_key)
-        return 1;
-    if (a->sort_key > b->sort_key)
-        return -1;
-    return a->sequence - b->sequence;
 }
 
 static float quad_signed_area(const Vertex2D v[4])
@@ -232,11 +224,6 @@ void renderer_end_frame(RenderContext *ctx)
         return;
     }
 
-    /*
-     * Temporary painter's algorithm until the FPGA z-buffer path is live.
-     * Draw farther quads first so nearer faces can overwrite them.
-     */
-    qsort(ctx->staging, ctx->n_quads, sizeof(*ctx->staging), compare_staged_quads);
     for (int i = 0; i < ctx->n_quads; i++)
         ctx->submit_buffer[i] = ctx->staging[i].desc;
 
@@ -290,11 +277,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
 
     struct StagedQuad *staged = &ctx->staging[ctx->n_quads];
     struct quad_desc *d = &staged->desc;
-    float sort_key = 0.25f * (v[0].z + v[1].z + v[2].z + v[3].z);
-
     memset(staged, 0, sizeof(*staged));
-    staged->sort_key = sort_key;
-    staged->sequence = ctx->n_quads;
     ctx->n_quads++;
 
     memset(d, 0, sizeof(*d));
@@ -328,7 +311,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     d->dz_dy = dz_dy;
 
     d->tex_or_color = quad->color_tint;
-    d->flags        = 0;
+    d->flags        = QUAD_FLAG_ZTEST;
 
     return true;
 }

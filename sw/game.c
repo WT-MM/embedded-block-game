@@ -15,10 +15,7 @@
 #define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
-#define WORLD_CHUNKS_X 2
-#define WORLD_CHUNKS_Z 2
-#define WORLD_ORIGIN_CHUNK_X (-1)
-#define WORLD_ORIGIN_CHUNK_Z 0
+#define WORLD_RENDER_DISTANCE_CHUNKS 3
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 
@@ -41,19 +38,6 @@ int main(void)
 
     init_block_types();
     world_init(&world);
-    if (!world_generate_flat_random_stone(&world,
-                                          WORLD_ORIGIN_CHUNK_X,
-                                          WORLD_ORIGIN_CHUNK_Z,
-                                          WORLD_CHUNKS_X,
-                                          WORLD_CHUNKS_Z,
-                                          STONE_SEED,
-                                          STONE_TRIES_PER_CHUNK,
-                                          3)) {
-        fprintf(stderr, "world generation failed\n");
-        input_shutdown(&inp);
-        renderer_shutdown(ctx);
-        return 1;
-    }
 
     Camera cam = {
         .position = { 0.0f, EYE_HEIGHT, -1.5f },
@@ -62,12 +46,25 @@ int main(void)
         .depth    = 170.0f,
     };
 
+    if (!world_init_infinite_flat_random_stone(&world,
+                                               STONE_SEED,
+                                               STONE_TRIES_PER_CHUNK,
+                                               WORLD_RENDER_DISTANCE_CHUNKS,
+                                               cam.position.x,
+                                               cam.position.z)) {
+        fprintf(stderr, "world generation failed\n");
+        input_shutdown(&inp);
+        renderer_shutdown(ctx);
+        return 1;
+    }
+
     printf("Controls: WASD=move  Space/Shift=up/down  Arrows=look  Mouse=look  Esc=quit\n");
-    printf("World: %dx%d chunks of %dx%d flat ground with deterministic random stone blocks (seed 0x%08x)\n",
-           WORLD_CHUNKS_X, WORLD_CHUNKS_Z, WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, STONE_SEED);
-    printf("Cached world: blocks=%d exposed_faces=%d render_distance=%d chunks\n",
-           world_total_blocks(&world), world_total_faces(&world),
-           world.render_distance_chunks);
+    printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
+           WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
+    printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border)\n",
+           world.chunks_x, world.chunks_z, world.render_distance_chunks);
+    printf("Cached loaded world: blocks=%d exposed_faces=%d\n",
+           world_total_blocks(&world), world_total_faces(&world));
 
     struct timespec prev, now, frame_end;
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -105,13 +102,19 @@ int main(void)
         if (inp.up)      cam.position.y += d;
         if (inp.down)    cam.position.y -= d;
 
+        if (!world_stream_around(&world, cam.position.x, cam.position.z)) {
+            fprintf(stderr, "\nchunk streaming failed\n");
+            break;
+        }
+
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
         int quads = renderer_draw_world(ctx, &world);
         renderer_end_frame(ctx);
 
-        printf("\rpos=(%.1f,%.1f,%.1f) yaw=%.2f pitch=%.2f quads=%3d  ",
+        printf("\rpos=(%.1f,%.1f,%.1f) chunk=(%d,%d) yaw=%.2f pitch=%.2f quads=%3d  ",
                cam.position.x, cam.position.y, cam.position.z,
+               world.center_chunk_x, world.center_chunk_z,
                cam.yaw, cam.pitch, quads);
         fflush(stdout);
 

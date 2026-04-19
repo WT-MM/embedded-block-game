@@ -32,7 +32,12 @@ typedef struct VoxelWorld {
     int chunks_z;
     int origin_chunk_x;
     int origin_chunk_z;
+    int center_chunk_x;
+    int center_chunk_z;
     int render_distance_chunks;
+    int load_radius_chunks;
+    uint32_t procedural_seed;
+    int stone_tries_per_chunk;
 } VoxelWorld;
 
 void world_init(VoxelWorld *world);
@@ -46,6 +51,13 @@ bool world_generate_flat_random_stone(VoxelWorld *world,
                                       uint32_t seed,
                                       int stone_tries_per_chunk,
                                       int render_distance_chunks);
+bool world_init_infinite_flat_random_stone(VoxelWorld *world,
+                                           uint32_t seed,
+                                           int stone_tries_per_chunk,
+                                           int render_distance_chunks,
+                                           float center_x,
+                                           float center_z);
+bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);

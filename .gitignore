@@ -48,6 +48,7 @@ Module.symvers
 # --- Userspace build artifacts ---
 sw/voxel_test
 sw/renderer_scene_test
+sw/renderer_static_test
 
 # --- Filesystem mount stub from old workflow ---
 usr/

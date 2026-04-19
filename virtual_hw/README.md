@@ -40,12 +40,3 @@ Backends
 Optional socket override:
 
     VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
-
-Compatibility wrappers
-----------------------
-
-These still work if you need them:
-
-    python3 virtual_hw/server.py
-    python3 virtual_hw/protocol.py
-    python3 virtual_hw/raster.py

@@ -82,7 +82,9 @@ Python virtual monitor in `../virtual_hw/`.
 
 Start the Python server first:
 
-    python3 ../virtual_hw/server.py
+    cd ../virtual_hw
+    uv sync
+    uv run virtualhw
 
 Then run any renderer-based binary with one of:
 

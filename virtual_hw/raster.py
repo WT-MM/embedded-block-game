@@ -1,1 +1,0 @@
-from virtualhw.raster import *

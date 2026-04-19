@@ -6,8 +6,7 @@
 #include "input.h"
 #include "block_types.h"
 
-#define WORLD_W      16
-#define WORLD_D      16
+#define MAX_BLOCKS   512
 #define EYE_HEIGHT   1.7f
 #define MOVE_SPEED   5.0f      /* blocks per second */
 #define MOUSE_SENS   0.002f    /* radians per pixel */
@@ -16,19 +15,41 @@
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
 
-static Block world[WORLD_W * WORLD_D];
+static Block world[MAX_BLOCKS];
+static int   world_count;
+
+static void place(BlockID type, float x, float y, float z)
+{
+    if (world_count < MAX_BLOCKS)
+        world[world_count++] = (Block){ type, { x, y, z } };
+}
 
 static void build_world(void)
 {
-    int i = 0;
-    for (int z = 0; z < WORLD_D; z++) {
-        for (int x = 0; x < WORLD_W; x++) {
-            BlockID type = BLOCK_GRASS;
-            /* checkerboard of dirt patches so the ground reads as 3D */
-            if ((x + z) % 6 == 0) type = BLOCK_DIRT;
-            world[i++] = (Block){ type, { (float)(x - WORLD_W / 2), 0.0f, (float)(z + 2) } };
-        }
-    }
+    world_count = 0;
+
+    /* Solid grass floor: 10×10. All blocks adjacent — only tops visible
+     * from above, outer edges from outside. Gives a clear ground plane. */
+    for (int z = 0; z < 10; z++)
+        for (int x = 0; x < 10; x++)
+            place(BLOCK_GRASS, (float)(x - 5), 0.0f, (float)(z + 3));
+
+    /* Stone pillar in the middle — 3 blocks tall, sides fully exposed.
+     * Walk around it to see all four side faces. */
+    place(BLOCK_STONE, -0.5f, 1.0f, 7.0f);
+    place(BLOCK_STONE, -0.5f, 2.0f, 7.0f);
+    place(BLOCK_STONE, -0.5f, 3.0f, 7.0f);
+
+    /* Isolated raised blocks scattered around — easy to walk around and
+     * see all four vertical faces of each. */
+    place(BLOCK_DIRT,  -4.0f, 1.0f,  5.0f);
+    place(BLOCK_DIRT,   3.0f, 1.0f,  5.0f);
+    place(BLOCK_DIRT,  -4.0f, 1.0f, 10.0f);
+    place(BLOCK_DIRT,   3.0f, 1.0f, 10.0f);
+
+    /* Wood stack in the corner — two tall, so sides are clearly visible. */
+    place(BLOCK_WOOD,   3.5f, 1.0f, 12.0f);
+    place(BLOCK_WOOD,   3.5f, 2.0f, 12.0f);
 }
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -52,7 +73,7 @@ int main(void)
 
     Camera cam = {
         .position = { 0.0f, EYE_HEIGHT, 0.0f },
-        .pitch    = 0.0f,
+        .pitch    = 0.3f,   /* look slightly down so the ground reads as a floor */
         .yaw      = 0.0f,
         .depth    = 170.0f,
     };
@@ -97,7 +118,7 @@ int main(void)
 
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
-        int quads = renderer_draw_chunk(ctx, world, WORLD_W * WORLD_D);
+        int quads = renderer_draw_chunk(ctx, world, world_count);
         renderer_end_frame(ctx);
 
         printf("\rpos=(%.1f,%.1f,%.1f) yaw=%.2f pitch=%.2f quads=%3d  ",

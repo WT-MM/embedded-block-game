@@ -30,7 +30,7 @@ static void free_chunk_storage(VoxelWorld *world)
         return;
 
     for (int i = 0; i < world->chunk_count; i++)
-        free(world->chunks[i].faces);
+        free(world->chunks[i].quads);
 
     free(world->chunks);
     world->chunks = NULL;
@@ -202,56 +202,154 @@ static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *c
     return count;
 }
 
-static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
+/*
+ * Greedy mesh a chunk: merge adjacent same-type coplanar exposed faces into
+ * larger quads.  This eliminates thousands of internal shared edges on flat
+ * terrain, removing the Q24.8 rounding-induced cracks that the fill rule
+ * cannot reliably prevent at those precision levels.
+ *
+ * For each face direction we iterate over "layers" (slices perpendicular to
+ * the face normal) and run a 2D greedy rectangle merge on the 16×16 type grid.
+ *
+ * Face dimension layout (fixed = coordinate perpendicular to face, d0/d1 are
+ * the two axes in the face plane):
+ *   TOP/BOTTOM : fixed=y,  d0=x, d1=z   (w=x-extent, h=z-extent)
+ *   LEFT/RIGHT : fixed=x,  d0=z, d1=y   (w=z-extent, h=y-extent)
+ *   BACK/FRONT : fixed=z,  d0=x, d1=y   (w=x-extent, h=y-extent)
+ */
+static void rebuild_chunk_quads(VoxelWorld *world, Chunk *chunk)
 {
     static const int nx[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
     static const int ny[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
     static const int nz[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
-    int face_count = count_exposed_faces_for_chunk(world, chunk);
-    ChunkFace *faces = NULL;
-    int out = 0;
+    /* For each face: which local coord is the "layer" axis */
+    static const int face_fixed_dim[NUM_FACES] = { 1, 1, 0, 0, 2, 2 };
+    /* First grid axis (d0) */
+    static const int face_d0_dim[NUM_FACES]    = { 0, 0, 2, 2, 0, 0 };
+    /* Second grid axis (d1) */
+    static const int face_d1_dim[NUM_FACES]    = { 2, 2, 1, 1, 1, 1 };
 
-    if (face_count == 0) {
-        free(chunk->faces);
-        chunk->faces = NULL;
-        chunk->face_count = 0;
+    int max_quads = count_exposed_faces_for_chunk(world, chunk);
+
+    if (max_quads == 0) {
+        free(chunk->quads);
+        chunk->quads = NULL;
+        chunk->quad_count = 0;
         return;
     }
 
-    faces = malloc((size_t)face_count * sizeof(*faces));
-    if (!faces)
+    ChunkQuad *quads = malloc((size_t)max_quads * sizeof(*quads));
+    if (!quads)
         return;
 
-    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
-        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
-                BlockID id = chunk->blocks[y][z][x];
+    int out = 0;
+    int wx_base = chunk->chunk_x * WORLD_CHUNK_SIZE;
+    int wz_base = chunk->chunk_z * WORLD_CHUNK_SIZE;
 
-                if (id == BLOCK_AIR)
-                    continue;
+    /* All chunk dimensions are 16 in both SIZE and HEIGHT. */
+    static const int dim_max[3] = {
+        WORLD_CHUNK_SIZE,
+        WORLD_CHUNK_HEIGHT,
+        WORLD_CHUNK_SIZE,
+    };
 
-                int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
-                int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
+    uint8_t type_grid[16][16];
+    uint8_t done[16][16];
 
-                for (int f = 0; f < NUM_FACES; f++) {
-                    if (world_get_block(world, wx + nx[f], y + ny[f], wz + nz[f]) != BLOCK_AIR)
+    for (int f = 0; f < NUM_FACES; f++) {
+        int fixed_dim = face_fixed_dim[f];
+        int d0_dim    = face_d0_dim[f];
+        int d1_dim    = face_d1_dim[f];
+        int layer_max = dim_max[fixed_dim];
+        int d0_max    = dim_max[d0_dim];
+        int d1_max    = dim_max[d1_dim];
+
+        for (int layer = 0; layer < layer_max; layer++) {
+            /* Build the 2D type grid for this layer/face. */
+            for (int d0 = 0; d0 < d0_max; d0++) {
+                for (int d1 = 0; d1 < d1_max; d1++) {
+                    int local[3];
+                    local[fixed_dim] = layer;
+                    local[d0_dim]    = d0;
+                    local[d1_dim]    = d1;
+
+                    int lx = local[0], ly = local[1], lz = local[2];
+                    BlockID id = chunk->blocks[ly][lz][lx];
+
+                    if (id == BLOCK_AIR) {
+                        type_grid[d0][d1] = 0;
+                        continue;
+                    }
+
+                    int wx = wx_base + lx + nx[f];
+                    int wy = ly + ny[f];
+                    int wz = wz_base + lz + nz[f];
+
+                    type_grid[d0][d1] =
+                        (world_get_block(world, wx, wy, wz) == BLOCK_AIR)
+                        ? (uint8_t)id : 0;
+                }
+            }
+
+            /* Greedy 2D rectangle merge. */
+            memset(done, 0, (size_t)d0_max * sizeof(done[0]));
+            for (int d0 = 0; d0 < d0_max; d0++) {
+                for (int d1 = 0; d1 < d1_max; d1++) {
+                    uint8_t t = type_grid[d0][d1];
+                    if (!t || done[d0][d1])
                         continue;
 
-                    faces[out++] = (ChunkFace){
-                        .x = (uint8_t)x,
-                        .y = (uint8_t)y,
-                        .z = (uint8_t)z,
-                        .face = (uint8_t)f,
-                        .type = (uint8_t)id,
-                    };
+                    /* Extend in d0. */
+                    int w = 1;
+                    while (d0 + w < d0_max &&
+                           type_grid[d0 + w][d1] == t &&
+                           !done[d0 + w][d1])
+                        w++;
+
+                    /* Extend in d1 while entire d0-row matches. */
+                    int h = 1;
+                    while (d1 + h < d1_max) {
+                        bool ok = true;
+                        for (int i = 0; i < w; i++) {
+                            if (type_grid[d0 + i][d1 + h] != t ||
+                                done[d0 + i][d1 + h]) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (!ok)
+                            break;
+                        h++;
+                    }
+
+                    /* Mark rectangle as processed. */
+                    for (int i = 0; i < w; i++)
+                        for (int j = 0; j < h; j++)
+                            done[d0 + i][d1 + j] = 1;
+
+                    if (out < max_quads) {
+                        int local[3];
+                        local[fixed_dim] = layer;
+                        local[d0_dim]    = d0;
+                        local[d1_dim]    = d1;
+                        quads[out++] = (ChunkQuad){
+                            .x    = (uint8_t)local[0],
+                            .y    = (uint8_t)local[1],
+                            .z    = (uint8_t)local[2],
+                            .w    = (uint8_t)w,
+                            .h    = (uint8_t)h,
+                            .face = (uint8_t)f,
+                            .type = t,
+                        };
+                    }
                 }
             }
         }
     }
 
-    free(chunk->faces);
-    chunk->faces = faces;
-    chunk->face_count = out;
+    free(chunk->quads);
+    chunk->quads = quads;
+    chunk->quad_count = out;
 }
 
 static void rebuild_chunk_if_present(VoxelWorld *world, int chunk_x, int chunk_z)
@@ -259,7 +357,7 @@ static void rebuild_chunk_if_present(VoxelWorld *world, int chunk_x, int chunk_z
     Chunk *chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
 
     if (chunk)
-        rebuild_chunk_faces(world, chunk);
+        rebuild_chunk_quads(world, chunk);
 }
 
 static int chunk_coord_from_world(float world_pos)
@@ -316,7 +414,7 @@ static bool populate_chunk_window(VoxelWorld *world, int origin_chunk_x, int ori
     }
 
     for (int i = 0; i < world->chunk_count; i++)
-        rebuild_chunk_faces(world, &world->chunks[i]);
+        rebuild_chunk_quads(world, &world->chunks[i]);
 
     return true;
 }
@@ -432,7 +530,7 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
         return true;
 
     chunk->blocks[wy][lz][lx] = type;
-    rebuild_chunk_faces(world, chunk);
+    rebuild_chunk_quads(world, chunk);
 
     if (lx == 0)
         rebuild_chunk_if_present(world, chunk_x - 1, chunk_z);
@@ -451,7 +549,7 @@ int world_total_faces(const VoxelWorld *world)
     int total = 0;
 
     for (int i = 0; i < world->chunk_count; i++)
-        total += world->chunks[i].face_count;
+        total += world->chunks[i].quad_count;
 
     return total;
 }

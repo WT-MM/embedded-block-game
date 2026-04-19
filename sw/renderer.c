@@ -426,29 +426,10 @@ static void pack_edge_coef(struct edge_coef *edge,
     float A = y0 - y1;
     float B = x1 - x0;
     float C = -(A * x0 + B * y0);
-    float dx = x1 - x0;
-    float dy = y1 - y0;
 
     edge->A = to_q24_8(A);
     edge->B = to_q24_8(B);
     edge->C = to_q24_8(C);
-
-    /*
-     * Use a top-left fill rule so adjacent quads share edges cleanly.
-     * For our clockwise screen-space winding in y-down coordinates,
-     * inclusive edges are:
-     *   - upward edges
-     *   - horizontal edges that run left-to-right
-     *
-     * Everything else becomes exclusive by subtracting one subpixel LSB.
-     * This prevents top/side faces and coplanar neighboring quads from
-     * double-covering the same shared edge.
-     */
-    if (fabsf(dx) < 1e-6f && fabsf(dy) < 1e-6f)
-        return;
-
-    if (!(dy < 0.0f || (fabsf(dy) < 1e-6f && dx > 0.0f)))
-        edge->C -= 1;
 }
 
 static uint8_t block_palette_index(BlockID id)
@@ -509,7 +490,7 @@ static inline uint16_t to_q1_15u(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.99f) v = 1.99f;
-    return (uint16_t)(v * 32768.0f);
+    return (uint16_t)lroundf(v * 32768.0f);
 }
 
 /* Pack a float depth gradient into Q1.15 signed (clamp to [-1,1)). */
@@ -517,7 +498,7 @@ static inline int16_t to_q1_15s(float v)
 {
     if (v < -1.0f) v = -1.0f;
     if (v >  0.999f) v = 0.999f;
-    return (int16_t)(v * 32768.0f);
+    return (int16_t)lroundf(v * 32768.0f);
 }
 
 static float quad_signed_area(const Vertex2D v[4])

@@ -5,6 +5,10 @@ Files
 -----
   voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
   voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
+  gpu_transport.c
+                Runtime-selectable GPU transport (`hw`, `socket`, `tee`).
+  virtual_gpu_protocol.h
+                Binary protocol shared with the Python virtual GPU server.
   renderer.c     Software block renderer that emits quad descriptors.
   tests/         Userspace test programs (see below).
   Makefile       Builds both the .ko and the test binaries.
@@ -68,6 +72,34 @@ Run
     ./tests/renderer_static_test    # fixed-camera top-face / crack test
     ./tests/renderer_quad_test      # single screen-space quad
     rmmod voxel_gpu
+
+Virtual GPU / Socket Backend
+----------------------------
+The renderer can also stream the same palette updates and packed quad
+descriptors to a Unix socket instead of `/dev/voxel_gpu`. This is useful on a
+desktop Ubuntu machine where you want to run the C game/renderer against the
+Python virtual monitor in `../virtual_hw/`.
+
+Start the Python server first:
+
+    python3 ../virtual_hw/server.py
+
+Then run any renderer-based binary with one of:
+
+    VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
+    VOXEL_GPU_BACKEND=socket ./game
+
+To mirror to both FPGA hardware and the Python monitor at once:
+
+    VOXEL_GPU_BACKEND=tee ./game
+
+Environment variables:
+
+    VOXEL_GPU_BACKEND=hw|socket|tee      # default: hw
+    VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
+
+`socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
+same command stream to both backends.
 
 Sysfs / debug peeks
 -------------------

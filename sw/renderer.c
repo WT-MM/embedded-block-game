@@ -1,15 +1,12 @@
 #include "renderer.h"
 #include "world.h"
+#include "gpu_transport.h"
 #include "voxel_gpu.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
 #include <string.h>
 
-#define DEV_PATH "/dev/voxel_gpu"
 #define NEAR_PLANE 0.1f
 /*
  * Projected screen coordinates live on pixel-box edges: the visible viewport
@@ -38,7 +35,7 @@ typedef struct {
     int mask;
 } BlockLookup;
 
-static void upload_default_palette(int fd)
+static void upload_default_palette(GPUTransport *transport)
 {
     static const struct voxel_palette_entry entries[] = {
         {  0, 0x10, 0x10, 0x18 }, /* background */
@@ -61,13 +58,13 @@ static void upload_default_palette(int fd)
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
-        if (ioctl(fd, VOXEL_IOC_SET_PALETTE, &entries[i]))
-            perror("ioctl(SET_PALETTE)");
+        if (gpu_transport_set_palette(transport, &entries[i]) < 0)
+            break;
     }
 }
 
 struct RenderContext {
-    int fd;
+    GPUTransport *transport;
     Camera current_camera;
 
     float cos_yaw, sin_yaw;
@@ -789,9 +786,8 @@ RenderContext *renderer_init(void)
     RenderContext *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
 
-    ctx->fd = open(DEV_PATH, O_RDWR);
-    if (ctx->fd < 0) {
-        perror("open " DEV_PATH);
+    ctx->transport = gpu_transport_open();
+    if (!ctx->transport) {
         free(ctx);
         return NULL;
     }
@@ -803,12 +799,12 @@ RenderContext *renderer_init(void)
     if (!ctx->staging || !ctx->submit_buffer) {
         free(ctx->submit_buffer);
         free(ctx->staging);
-        close(ctx->fd);
+        gpu_transport_close(ctx->transport);
         free(ctx);
         return NULL;
     }
 
-    upload_default_palette(ctx->fd);
+    upload_default_palette(ctx->transport);
     return ctx;
 }
 
@@ -818,41 +814,32 @@ void renderer_shutdown(RenderContext *ctx)
     free(ctx->lookup_entries);
     free(ctx->submit_buffer);
     free(ctx->staging);
-    close(ctx->fd);
+    gpu_transport_close(ctx->transport);
     free(ctx);
 }
 
 void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
-    if (ioctl(ctx->fd, VOXEL_IOC_CLEAR_FRAME))
-        perror("ioctl(CLEAR_FRAME)");
+    gpu_transport_clear(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
 {
     if (ctx->n_quads == 0) {
-        if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
-            perror("ioctl(FLIP)");
+        gpu_transport_flip(ctx->transport);
         return;
     }
 
     for (int i = 0; i < ctx->n_quads; i++)
         ctx->submit_buffer[i] = ctx->staging[i].desc;
 
-    size_t bytes = (size_t)ctx->n_quads * sizeof(struct quad_desc);
-    ssize_t n = write(ctx->fd, ctx->submit_buffer, bytes);
-    if (n < 0) {
-        perror("write(quads)");
+    if (gpu_transport_submit_quads(ctx->transport,
+                                   ctx->submit_buffer,
+                                   (size_t)ctx->n_quads) < 0)
         return;
-    }
-    if ((size_t)n != bytes) {
-        fprintf(stderr, "short write(quads): %zd / %zu\n", n, bytes);
-        return;
-    }
 
-    if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
-        perror("ioctl(FLIP)");
+    gpu_transport_flip(ctx->transport);
 }
 
 void renderer_set_camera(RenderContext *ctx, const Camera *camera)

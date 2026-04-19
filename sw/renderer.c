@@ -197,6 +197,8 @@ static void pack_edge_coef(struct edge_coef *edge,
     float A = y0 - y1;
     float B = x1 - x0;
     float C = -(A * x0 + B * y0);
+    float dx = x1 - x0;
+    float dy = y1 - y0;
 
     /*
      * The RTL evaluates edge functions at integer sample locations.
@@ -207,6 +209,23 @@ static void pack_edge_coef(struct edge_coef *edge,
     edge->A = to_q24_8(A);
     edge->B = to_q24_8(B);
     edge->C = to_q24_8(C);
+
+    /*
+     * Use a top-left fill rule so adjacent quads share edges cleanly.
+     * For our clockwise screen-space winding in y-down coordinates,
+     * inclusive edges are:
+     *   - upward edges
+     *   - horizontal edges that run left-to-right
+     *
+     * Everything else becomes exclusive by subtracting one subpixel LSB.
+     * This prevents top/side faces and coplanar neighboring quads from
+     * double-covering the same shared edge.
+     */
+    if (fabsf(dx) < 1e-6f && fabsf(dy) < 1e-6f)
+        return;
+
+    if (!(dy < 0.0f || (fabsf(dy) < 1e-6f && dx > 0.0f)))
+        edge->C -= 1;
 }
 
 static uint8_t block_palette_index(BlockID id)

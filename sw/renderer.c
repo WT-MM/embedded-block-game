@@ -423,6 +423,11 @@ static inline int32_t to_q24_8(float v)
     return (int32_t)roundf(v * 256.0f);
 }
 
+static inline float snap_q24_8(float v)
+{
+    return (float)to_q24_8(v) / 256.0f;
+}
+
 static void pack_edge_coef(struct edge_coef *edge,
                            float x0, float y0, float x1, float y1)
 {
@@ -855,6 +860,16 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 {
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
         return false;
+
+    /*
+     * The rasterizer only sees Q24.8 edge math. Snap screen-space vertices to
+     * that same grid before bbox, edge, and depth setup so all three stages
+     * agree on which pixels a thin quad should cover.
+     */
+    for (int i = 0; i < 4; i++) {
+        quad.vertices[i].x = snap_q24_8(quad.vertices[i].x);
+        quad.vertices[i].y = snap_q24_8(quad.vertices[i].y);
+    }
 
     ensure_clockwise_winding(quad.vertices);
 

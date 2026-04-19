@@ -49,6 +49,7 @@ Module.symvers
 sw/voxel_test
 sw/renderer_scene_test
 sw/renderer_static_test
+sw/game
 
 # --- Filesystem mount stub from old workflow ---
 usr/

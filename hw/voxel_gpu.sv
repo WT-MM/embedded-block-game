@@ -75,7 +75,7 @@ module voxel_gpu (
     logic        front_sel;  // 0 => fb0 is front, 1 => fb1 is front
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
-    logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
+    (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;
@@ -582,8 +582,7 @@ module voxel_gpu (
             ADDR_STATUS  : readdata = status_word;
             ADDR_FRAMECNT: readdata = frame_count;
             ADDR_PAL_ADDR: readdata = {24'h0, pal_addr};
-            ADDR_PAL_DATA: readdata = {8'h0, palette[pal_addr]};
-            default      : readdata = 32'h0;
+            default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end
 

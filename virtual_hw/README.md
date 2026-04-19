@@ -1,56 +1,51 @@
 Virtual Hardware
 ================
 
-This directory contains a Python virtual GPU that accepts the same palette
-updates and packed 64-byte `quad_desc` payloads that the C renderer already
-emits for the FPGA path.
+`virtualhw` is a small Python monitor for the voxel GPU protocol. It accepts
+the same palette updates and packed 64-byte `quad_desc` stream as the C
+renderer, then shows the result in a `pygame` window or writes frames
+headlessly as `.ppm`.
 
-What it does
-------------
-- Listens on a Unix socket, default `/tmp/voxel_gpu.sock`
-- Accepts `CLEAR`, `SET_PALETTE`, `SUBMIT_QUADS`, and `FLIP`
-- Rasterizes quads into a 320x240 indexed framebuffer plus 16-bit z-buffer
-- Opens a scaled desktop monitor window with `pygame`
-- Can also run headless and dump frames as `.ppm`
+Quick Start
+-----------
 
-Quick start on Ubuntu
----------------------
-Install the optional window dependency:
+    cd virtual_hw
+    uv sync
+    uv run virtualhw --scale 4
 
-    python3 -m pip install -r virtual_hw/requirements.txt
-
-Start the server:
-
-    python3 virtual_hw/server.py
-
-In another shell, run the software renderer against it:
-
-    cd sw
-    VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
-
-For the interactive game on Ubuntu:
+In another shell:
 
     cd sw
     make game
     VOXEL_GPU_BACKEND=socket ./game
 
-Useful options
---------------
-
-    python3 virtual_hw/server.py --scale 4
-    python3 virtual_hw/server.py --headless --dump-dir /tmp/voxel_frames
-
-Transport modes
+Useful Commands
 ---------------
-The C renderer now supports:
 
-- `VOXEL_GPU_BACKEND=hw`
-  Uses `/dev/voxel_gpu` only. This is the default.
-- `VOXEL_GPU_BACKEND=socket`
-  Uses the Python virtual GPU only.
-- `VOXEL_GPU_BACKEND=tee`
-  Sends the same palette/quads/flip commands to both hardware and the socket.
+    uv run virtualhw --headless --dump-dir /tmp/voxel_frames
+    uv run python -m virtualhw.server
 
-Socket path:
+If you activate the venv:
+
+    source .venv/bin/activate
+    virtualhw --scale 4
+
+Backends
+--------
+
+- `VOXEL_GPU_BACKEND=hw`: real `/dev/voxel_gpu` device. Default.
+- `VOXEL_GPU_BACKEND=socket`: Python virtual GPU only.
+- `VOXEL_GPU_BACKEND=tee`: send commands to both hardware and the socket.
+
+Optional socket override:
 
     VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
+
+Compatibility wrappers
+----------------------
+
+These still work if you need them:
+
+    python3 virtual_hw/server.py
+    python3 virtual_hw/protocol.py
+    python3 virtual_hw/raster.py

@@ -57,8 +57,8 @@ static bool project_point(RenderContext *ctx, Vec3 world, Vertex2D *out)
     float y_yaw =  dy;
 
     float x_cam = x_yaw;
-    float y_cam = y_yaw * ctx->cos_pitch - z_yaw * ctx->sin_pitch;
-    float z_cam = y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
+    float y_cam =  y_yaw * ctx->cos_pitch + z_yaw * ctx->sin_pitch;
+    float z_cam = -y_yaw * ctx->sin_pitch + z_yaw * ctx->cos_pitch;
 
     if (z_cam <= NEAR_PLANE)
         return false;

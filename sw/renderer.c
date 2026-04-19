@@ -10,6 +10,11 @@
 
 #define DEV_PATH "/dev/voxel_gpu"
 #define NEAR_PLANE 0.1f
+#define VIEW_X_MIN (-0.5f)
+#define VIEW_Y_MIN (-0.5f)
+#define VIEW_X_MAX (SCREEN_WIDTH - 0.5f)
+#define VIEW_Y_MAX (SCREEN_HEIGHT - 0.5f)
+#define MAX_VIEW_CLIP_VERTS 8
 
 struct StagedQuad {
     struct quad_desc desc;
@@ -24,6 +29,9 @@ static void upload_default_palette(int fd)
         {  3, 0x65, 0x43, 0x21 }, /* wood side */
         {  4, 0x80, 0x80, 0x80 }, /* stone side */
         {  5, 0xff, 0xff, 0xff }, /* debug white */
+        {  6, 0xff, 0x40, 0x40 }, /* debug red */
+        {  7, 0x40, 0xa0, 0xff }, /* debug blue */
+        {  8, 0xff, 0xd0, 0x40 }, /* debug yellow */
         {  9, 0x5e, 0x8b, 0x3d }, /* grass side */
         { 10, 0x63, 0x3a, 0x17 }, /* grass bottom / dark dirt */
         { 11, 0x96, 0x6a, 0x3c }, /* wood top */
@@ -119,6 +127,19 @@ static CameraVertex lerp_camera_vertex(const CameraVertex *a,
     return out;
 }
 
+static Vertex2D lerp_vertex2d(const Vertex2D *a, const Vertex2D *b, float t)
+{
+    Vertex2D out = {
+        .x = a->x + (b->x - a->x) * t,
+        .y = a->y + (b->y - a->y) * t,
+        .z = a->z + (b->z - a->z) * t,
+        .u = a->u + (b->u - a->u) * t,
+        .v = a->v + (b->v - a->v) * t,
+    };
+
+    return out;
+}
+
 static int clip_face_to_near_plane(const CameraVertex in[4], CameraVertex out[6])
 {
     int out_count = 0;
@@ -144,6 +165,120 @@ static int clip_face_to_near_plane(const CameraVertex in[4], CameraVertex out[6]
     }
 
     return out_count;
+}
+
+typedef enum {
+    CLIP_LEFT = 0,
+    CLIP_RIGHT,
+    CLIP_TOP,
+    CLIP_BOTTOM,
+} ClipBoundary;
+
+static bool vertex_inside_boundary(const Vertex2D *v, ClipBoundary boundary)
+{
+    switch (boundary) {
+    case CLIP_LEFT:
+        return v->x >= VIEW_X_MIN;
+    case CLIP_RIGHT:
+        return v->x <= VIEW_X_MAX;
+    case CLIP_TOP:
+        return v->y >= VIEW_Y_MIN;
+    case CLIP_BOTTOM:
+        return v->y <= VIEW_Y_MAX;
+    default:
+        return false;
+    }
+}
+
+static float boundary_value(ClipBoundary boundary)
+{
+    switch (boundary) {
+    case CLIP_LEFT:
+        return VIEW_X_MIN;
+    case CLIP_RIGHT:
+        return VIEW_X_MAX;
+    case CLIP_TOP:
+        return VIEW_Y_MIN;
+    case CLIP_BOTTOM:
+        return VIEW_Y_MAX;
+    default:
+        return 0.0f;
+    }
+}
+
+static int clip_polygon_against_boundary(const Vertex2D *in, int count,
+                                         Vertex2D *out, ClipBoundary boundary)
+{
+    if (count <= 0)
+        return 0;
+
+    int out_count = 0;
+    Vertex2D prev = in[count - 1];
+    bool prev_inside = vertex_inside_boundary(&prev, boundary);
+    float bound = boundary_value(boundary);
+
+    for (int i = 0; i < count; i++) {
+        Vertex2D cur = in[i];
+        bool cur_inside = vertex_inside_boundary(&cur, boundary);
+
+        if (prev_inside != cur_inside) {
+            float denom;
+            float t;
+            Vertex2D clipped;
+
+            if (boundary == CLIP_LEFT || boundary == CLIP_RIGHT)
+                denom = cur.x - prev.x;
+            else
+                denom = cur.y - prev.y;
+
+            if (fabsf(denom) < 1e-6f)
+                t = 0.0f;
+            else if (boundary == CLIP_LEFT || boundary == CLIP_RIGHT)
+                t = (bound - prev.x) / denom;
+            else
+                t = (bound - prev.y) / denom;
+
+            clipped = lerp_vertex2d(&prev, &cur, t);
+            if (boundary == CLIP_LEFT || boundary == CLIP_RIGHT)
+                clipped.x = bound;
+            else
+                clipped.y = bound;
+            out[out_count++] = clipped;
+        }
+
+        if (cur_inside)
+            out[out_count++] = cur;
+
+        prev = cur;
+        prev_inside = cur_inside;
+    }
+
+    return out_count;
+}
+
+static int clip_polygon_to_viewport(const Vertex2D in[4], Vertex2D out[MAX_VIEW_CLIP_VERTS])
+{
+    Vertex2D buf_a[MAX_VIEW_CLIP_VERTS];
+    Vertex2D buf_b[MAX_VIEW_CLIP_VERTS];
+    int count = 4;
+
+    memcpy(buf_a, in, 4 * sizeof(Vertex2D));
+
+    count = clip_polygon_against_boundary(buf_a, count, buf_b, CLIP_LEFT);
+    if (count == 0)
+        return 0;
+    count = clip_polygon_against_boundary(buf_b, count, buf_a, CLIP_RIGHT);
+    if (count == 0)
+        return 0;
+    count = clip_polygon_against_boundary(buf_a, count, buf_b, CLIP_TOP);
+    if (count == 0)
+        return 0;
+    count = clip_polygon_against_boundary(buf_b, count, buf_a, CLIP_BOTTOM);
+    if (count == 0)
+        return 0;
+
+    memcpy(out, buf_a, (size_t)count * sizeof(Vertex2D));
+    return count;
 }
 
 static bool is_solid_block(BlockID id)
@@ -377,8 +512,6 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
             return false;
     }
 
-    ensure_clockwise_winding(verts);
-
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
     q.color_tint = color_tint;
@@ -490,12 +623,14 @@ void renderer_set_camera(RenderContext *ctx, const Camera *camera)
     ctx->sin_pitch = sinf(camera->pitch);
 }
 
-bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
+static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 {
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
         return false;
 
-    const Vertex2D *v = quad->vertices;
+    ensure_clockwise_winding(quad.vertices);
+
+    const Vertex2D *v = quad.vertices;
 
     /* Inclusive integer bbox over pixel-center samples. */
     float fxmin = v[0].x, fxmax = v[0].x;
@@ -542,8 +677,62 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     d->dz_dx = dz_dx;
     d->dz_dy = dz_dy;
 
-    d->tex_or_color = quad->color_tint;
+    d->tex_or_color = quad.color_tint;
     d->flags        = QUAD_FLAG_ZTEST;
+
+    return true;
+}
+
+bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
+{
+    Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
+    int count = clip_polygon_to_viewport(quad->vertices, clipped);
+
+    if (count < 3)
+        return false;
+
+    if (count == 3) {
+        RenderQuad tri = {
+            .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+        };
+        return stage_prepared_quad(ctx, tri);
+    }
+
+    if (count == 4) {
+        RenderQuad clipped_quad = {
+            .vertices = { clipped[0], clipped[1], clipped[2], clipped[3] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+        };
+        return stage_prepared_quad(ctx, clipped_quad);
+    }
+
+    if (count == 5) {
+        RenderQuad tri = {
+            .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+        };
+        RenderQuad clipped_quad = {
+            .vertices = { clipped[0], clipped[2], clipped[3], clipped[4] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+        };
+        return stage_prepared_quad(ctx, tri) &&
+               stage_prepared_quad(ctx, clipped_quad);
+    }
+
+    for (int i = 1; i + 1 < count; i++) {
+        RenderQuad tri = {
+            .vertices = { clipped[0], clipped[i], clipped[i + 1], clipped[i + 1] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+        };
+        if (!stage_prepared_quad(ctx, tri))
+            return false;
+    }
 
     return true;
 }

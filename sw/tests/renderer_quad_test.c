@@ -40,10 +40,10 @@ int main(void)
 
         RenderQuad q = {0};
         /* Top-left -> top-right -> bottom-right -> bottom-left */
-        q.vertices[0] = (Vertex2D){  80.0f,  60.0f, 0.85f, 0.0f, 0.0f };
-        q.vertices[1] = (Vertex2D){ 240.0f,  60.0f, 0.85f, 0.0f, 0.0f };
-        q.vertices[2] = (Vertex2D){ 240.0f, 180.0f, 0.85f, 0.0f, 0.0f };
-        q.vertices[3] = (Vertex2D){  80.0f, 180.0f, 0.85f, 0.0f, 0.0f };
+        q.vertices[0] = (Vertex2D){  80.0f,  60.0f, 0.85f, 0.0f, 0.0f, 0.0f };
+        q.vertices[1] = (Vertex2D){ 240.0f,  60.0f, 0.85f, 0.0f, 0.0f, 0.0f };
+        q.vertices[2] = (Vertex2D){ 240.0f, 180.0f, 0.85f, 0.0f, 0.0f, 0.0f };
+        q.vertices[3] = (Vertex2D){  80.0f, 180.0f, 0.85f, 0.0f, 0.0f, 0.0f };
         q.texture_id = 0;
         q.color_tint = 5; /* debug white in default palette */
         q.flags = QUAD_FLAG_ZTEST;

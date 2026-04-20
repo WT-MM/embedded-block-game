@@ -84,6 +84,7 @@ module voxel_gpu (
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
+    (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1023];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;
@@ -104,12 +105,15 @@ module voxel_gpu (
     logic [15:0] draw_z0;
     logic signed [15:0] draw_dz_dx;
     logic signed [15:0] draw_dz_dy;
-    logic signed [31:0] draw_u0;
-    logic signed [31:0] draw_v0;
-    logic signed [31:0] draw_du_dx;
-    logic signed [31:0] draw_dv_dx;
-    logic signed [31:0] draw_du_dy;
-    logic signed [31:0] draw_dv_dy;
+    logic signed [31:0] draw_uw_0;
+    logic signed [31:0] draw_uw_dx;
+    logic signed [31:0] draw_uw_dy;
+    logic signed [31:0] draw_vw_0;
+    logic signed [31:0] draw_vw_dx;
+    logic signed [31:0] draw_vw_dy;
+    logic signed [31:0] draw_iw_0;
+    logic signed [31:0] draw_iw_dx;
+    logic signed [31:0] draw_iw_dy;
     logic signed [31:0] edge_A [0:3];
     logic signed [31:0] edge_B [0:3];
     logic signed [31:0] edge_C [0:3];
@@ -167,12 +171,19 @@ module voxel_gpu (
     wire signed [15:0] desc_dz_dy = $signed(desc_words[15][15:0]);
     wire [7:0] desc_tex_or_color = desc_words[15][23:16];
     wire [7:0] desc_flags = desc_words[15][31:24];
-    wire signed [31:0] desc_u0 = $signed(desc_words[16]);
-    wire signed [31:0] desc_v0 = $signed(desc_words[17]);
-    wire signed [31:0] desc_du_dx = $signed(desc_words[18]);
-    wire signed [31:0] desc_dv_dx = $signed(desc_words[19]);
-    wire signed [31:0] desc_du_dy = $signed(desc_words[20]);
-    wire signed [31:0] desc_dv_dy = $signed(desc_words[21]);
+    // Perspective-correct UV: 9 Q16.16 plane coefficients packed into the
+    // second 64-byte block (words 16..24). One_over_w is guaranteed positive
+    // at any pixel in front of the near plane — software does not emit quads
+    // that touch w <= 0.
+    wire signed [31:0] desc_uw_0    = $signed(desc_words[16]);
+    wire signed [31:0] desc_uw_dx   = $signed(desc_words[17]);
+    wire signed [31:0] desc_uw_dy   = $signed(desc_words[18]);
+    wire signed [31:0] desc_vw_0    = $signed(desc_words[19]);
+    wire signed [31:0] desc_vw_dx   = $signed(desc_words[20]);
+    wire signed [31:0] desc_vw_dy   = $signed(desc_words[21]);
+    wire signed [31:0] desc_iw_0    = $signed(desc_words[22]);
+    wire signed [31:0] desc_iw_dx   = $signed(desc_words[23]);
+    wire signed [31:0] desc_iw_dy   = $signed(desc_words[24]);
 
     wire signed [10:0] draw_x_s = $signed({1'b0, draw_x_cur});
     wire signed  [9:0] draw_y_s = $signed({1'b0, draw_y_cur});
@@ -208,18 +219,38 @@ module voxel_gpu (
                                      ($signed(draw_dz_dx) * draw_dx_s) +
                                      ($signed(draw_dz_dy) * draw_dy_s);
     wire [15:0] draw_z_value = clamp_z(draw_z_eval);
-    wire signed [63:0] draw_u_base = $signed({{32{draw_u0[31]}}, draw_u0});
-    wire signed [63:0] draw_v_base = $signed({{32{draw_v0[31]}}, draw_v0});
-    wire signed [63:0] draw_u_eval = draw_u_base +
-                                     ($signed(draw_du_dx) * draw_dx_s) +
-                                     ($signed(draw_du_dy) * draw_dy_s);
-    wire signed [63:0] draw_v_eval = draw_v_base +
-                                     ($signed(draw_dv_dx) * draw_dx_s) +
-                                     ($signed(draw_dv_dy) * draw_dy_s);
+    wire signed [63:0] draw_uw_base = $signed({{32{draw_uw_0[31]}}, draw_uw_0});
+    wire signed [63:0] draw_vw_base = $signed({{32{draw_vw_0[31]}}, draw_vw_0});
+    wire signed [63:0] draw_iw_base = $signed({{32{draw_iw_0[31]}}, draw_iw_0});
+    wire signed [63:0] draw_uw_eval = draw_uw_base +
+                                      ($signed(draw_uw_dx) * draw_dx_s) +
+                                      ($signed(draw_uw_dy) * draw_dy_s);
+    wire signed [63:0] draw_vw_eval = draw_vw_base +
+                                      ($signed(draw_vw_dx) * draw_dx_s) +
+                                      ($signed(draw_vw_dy) * draw_dy_s);
+    wire signed [63:0] draw_iw_eval = draw_iw_base +
+                                      ($signed(draw_iw_dx) * draw_dx_s) +
+                                      ($signed(draw_iw_dy) * draw_dy_s);
+    wire signed [31:0] draw_uw_q = clamp_s32(draw_uw_eval);
+    wire signed [31:0] draw_vw_q = clamp_s32(draw_vw_eval);
+    wire [31:0] draw_iw_q = clamp_pos_u32(draw_iw_eval);
+    wire [5:0] draw_iw_msb = msb_index32(draw_iw_q);
+    wire [31:0] draw_iw_norm_q = (draw_iw_q == 32'd0) ? 32'd0 :
+                                 (draw_iw_msb >= 6'd16) ?
+                                 (draw_iw_q >> (draw_iw_msb - 6'd16)) :
+                                 (draw_iw_q << (6'd16 - draw_iw_msb));
+    wire [9:0] draw_iw_lut_idx = draw_iw_norm_q[15:6];
+    wire [31:0] draw_w_norm_q = recip_lut[draw_iw_lut_idx];
+    wire [31:0] draw_w_q = (draw_iw_q == 32'd0) ? 32'd0 :
+                           (draw_iw_msb >= 6'd16) ?
+                           (draw_w_norm_q >> (draw_iw_msb - 6'd16)) :
+                           (draw_w_norm_q << (6'd16 - draw_iw_msb));
+    wire signed [63:0] draw_u_prod = $signed(draw_uw_q) * $signed(draw_w_q);
+    wire signed [63:0] draw_v_prod = $signed(draw_vw_q) * $signed(draw_w_q);
     wire [13:0] tex_addr = {
         draw_tex_or_color[5:0],
-        draw_v_eval[19:16],
-        draw_u_eval[19:16]
+        draw_v_prod[35:32],
+        draw_u_prod[35:32]
     };
     wire  [7:0] draw_pipe_color = draw_pipe_textured ? tex_rd_data : draw_tex_or_color;
     wire draw_pipe_transparent = draw_pipe_textured &&
@@ -278,6 +309,43 @@ module voxel_gpu (
                 clamp_z = 16'hFFFF;
             else
                 clamp_z = value[15:0];
+        end
+    endfunction
+
+    function automatic signed [31:0] clamp_s32(input logic signed [63:0] value);
+        begin
+            if (value > 64'sh7FFF_FFFF)
+                clamp_s32 = 32'sh7FFF_FFFF;
+            else if (value < -64'sh8000_0000)
+                clamp_s32 = -32'sh8000_0000;
+            else
+                clamp_s32 = value[31:0];
+        end
+    endfunction
+
+    function automatic [31:0] clamp_pos_u32(input logic signed [63:0] value);
+        begin
+            if (value <= 0)
+                clamp_pos_u32 = 32'd0;
+            else if (value > 64'sh7FFF_FFFF)
+                clamp_pos_u32 = 32'h7FFF_FFFF;
+            else
+                clamp_pos_u32 = value[31:0];
+        end
+    endfunction
+
+    function automatic [5:0] msb_index32(input logic [31:0] value);
+        integer bit_idx;
+        logic found;
+        begin
+            msb_index32 = 6'd0;
+            found = 1'b0;
+            for (bit_idx = 31; bit_idx >= 0; bit_idx = bit_idx - 1) begin
+                if (!found && value[bit_idx]) begin
+                    msb_index32 = bit_idx[5:0];
+                    found = 1'b1;
+                end
+            end
         end
     endfunction
 
@@ -360,12 +428,15 @@ module voxel_gpu (
         draw_z0          = 16'd0;
         draw_dz_dx       = 16'sd0;
         draw_dz_dy       = 16'sd0;
-        draw_u0          = 32'sd0;
-        draw_v0          = 32'sd0;
-        draw_du_dx       = 32'sd0;
-        draw_dv_dx       = 32'sd0;
-        draw_du_dy       = 32'sd0;
-        draw_dv_dy       = 32'sd0;
+        draw_uw_0        = 32'sd0;
+        draw_uw_dx       = 32'sd0;
+        draw_uw_dy       = 32'sd0;
+        draw_vw_0        = 32'sd0;
+        draw_vw_dx       = 32'sd0;
+        draw_vw_dy       = 32'sd0;
+        draw_iw_0        = 32'sd0;
+        draw_iw_dx       = 32'sd0;
+        draw_iw_dy       = 32'sd0;
         draw_pipe_valid  = 1'b0;
         draw_pipe_inside = 1'b0;
         draw_pipe_ztest  = 1'b0;
@@ -407,6 +478,7 @@ module voxel_gpu (
          * elaborate that loop and trips its 5000-iteration limit.
          */
         $readmemh("textures.hex", texture_mem);
+        $readmemh("recip_lut.hex", recip_lut);
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
@@ -512,12 +584,15 @@ module voxel_gpu (
             draw_z0          <= 16'd0;
             draw_dz_dx       <= 16'sd0;
             draw_dz_dy       <= 16'sd0;
-            draw_u0          <= 32'sd0;
-            draw_v0          <= 32'sd0;
-            draw_du_dx       <= 32'sd0;
-            draw_dv_dx       <= 32'sd0;
-            draw_du_dy       <= 32'sd0;
-            draw_dv_dy       <= 32'sd0;
+            draw_uw_0        <= 32'sd0;
+            draw_uw_dx       <= 32'sd0;
+            draw_uw_dy       <= 32'sd0;
+            draw_vw_0        <= 32'sd0;
+            draw_vw_dx       <= 32'sd0;
+            draw_vw_dy       <= 32'sd0;
+            draw_iw_0        <= 32'sd0;
+            draw_iw_dx       <= 32'sd0;
+            draw_iw_dy       <= 32'sd0;
             draw_pipe_valid  <= 1'b0;
             draw_pipe_inside <= 1'b0;
             draw_pipe_ztest  <= 1'b0;
@@ -619,19 +694,25 @@ module voxel_gpu (
                         draw_dz_dx <= desc_dz_dx;
                         draw_dz_dy <= desc_dz_dy;
                         if (desc_has_uv) begin
-                            draw_u0    <= desc_u0;
-                            draw_v0    <= desc_v0;
-                            draw_du_dx <= desc_du_dx;
-                            draw_dv_dx <= desc_dv_dx;
-                            draw_du_dy <= desc_du_dy;
-                            draw_dv_dy <= desc_dv_dy;
+                            draw_uw_0  <= desc_uw_0;
+                            draw_uw_dx <= desc_uw_dx;
+                            draw_uw_dy <= desc_uw_dy;
+                            draw_vw_0  <= desc_vw_0;
+                            draw_vw_dx <= desc_vw_dx;
+                            draw_vw_dy <= desc_vw_dy;
+                            draw_iw_0  <= desc_iw_0;
+                            draw_iw_dx <= desc_iw_dx;
+                            draw_iw_dy <= desc_iw_dy;
                         end else begin
-                            draw_u0    <= 32'sd0;
-                            draw_v0    <= 32'sd0;
-                            draw_du_dx <= 32'sd0;
-                            draw_dv_dx <= 32'sd0;
-                            draw_du_dy <= 32'sd0;
-                            draw_dv_dy <= 32'sd0;
+                            draw_uw_0  <= 32'sd0;
+                            draw_uw_dx <= 32'sd0;
+                            draw_uw_dy <= 32'sd0;
+                            draw_vw_0  <= 32'sd0;
+                            draw_vw_dx <= 32'sd0;
+                            draw_vw_dy <= 32'sd0;
+                            draw_iw_0  <= 32'sd0;
+                            draw_iw_dx <= 32'sd0;
+                            draw_iw_dy <= 32'sd0;
                         end
                         draw_pipe_valid <= 1'b0;
                         for (ei = 0; ei < 4; ei = ei + 1) begin

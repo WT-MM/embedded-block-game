@@ -26,7 +26,7 @@ PALETTE_ENTRY = struct.Struct("<BBBB")
 STATUS_REPLY = struct.Struct("<IIBBBB")
 FRAME_COUNT_REPLY = struct.Struct("<I")
 QUAD_DESC = struct.Struct("<hhhh" + ("iii" * 4) + "HhhBB")
-QUAD_DESC_UV = struct.Struct("<iiiiii40x")
+QUAD_DESC_UV = struct.Struct("<iiiiiiiii28x")
 
 Edge = tuple[int, int, int]
 QuadEdges = tuple[Edge, Edge, Edge, Edge]

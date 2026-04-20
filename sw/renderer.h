@@ -41,8 +41,10 @@ typedef struct {
 // --- Rendering Structures ---
 typedef struct {
     float x, y;
-    float z;    // Used by FPGA for Z-buffering
-    float u, v; // Texture coordinates
+    float z;             // Inverse-z mapped depth for the FPGA Z-buffer
+    float u_over_w;      // Perspective-correct UV: u / w_eye
+    float v_over_w;      //                         v / w_eye
+    float one_over_w;    // 1 / w_eye, used by the HW reciprocal unit
 } Vertex2D;
 
 typedef struct {

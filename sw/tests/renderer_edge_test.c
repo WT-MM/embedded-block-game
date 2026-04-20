@@ -24,31 +24,31 @@ static void submit_plane(RenderContext *ctx)
     q.flags = QUAD_FLAG_ZTEST;
 
     q.color_tint = 6;
-    q.vertices[0] = (Vertex2D){  30.0f, 205.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[1] = (Vertex2D){ 120.0f, 165.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[2] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[3] = (Vertex2D){  95.0f, 235.0f, 0.72f, 0.0f, 0.0f };
+    q.vertices[0] = (Vertex2D){  30.0f, 205.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[1] = (Vertex2D){ 120.0f, 165.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[2] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[3] = (Vertex2D){  95.0f, 235.0f, 0.72f, 0.0f, 0.0f, 0.0f };
     renderer_push_quad(ctx, &q);
 
     q.color_tint = 7;
-    q.vertices[0] = (Vertex2D){ 120.0f, 165.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[1] = (Vertex2D){ 210.0f, 125.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[2] = (Vertex2D){ 275.0f, 155.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[3] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f };
+    q.vertices[0] = (Vertex2D){ 120.0f, 165.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[1] = (Vertex2D){ 210.0f, 125.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[2] = (Vertex2D){ 275.0f, 155.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[3] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f, 0.0f };
     renderer_push_quad(ctx, &q);
 
     q.color_tint = 8;
-    q.vertices[0] = (Vertex2D){  95.0f, 235.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[1] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[2] = (Vertex2D){ 250.0f, 225.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[3] = (Vertex2D){ 160.0f, 265.0f, 0.72f, 0.0f, 0.0f };
+    q.vertices[0] = (Vertex2D){  95.0f, 235.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[1] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[2] = (Vertex2D){ 250.0f, 225.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[3] = (Vertex2D){ 160.0f, 265.0f, 0.72f, 0.0f, 0.0f, 0.0f };
     renderer_push_quad(ctx, &q);
 
     q.color_tint = 5;
-    q.vertices[0] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[1] = (Vertex2D){ 275.0f, 155.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[2] = (Vertex2D){ 340.0f, 185.0f, 0.72f, 0.0f, 0.0f };
-    q.vertices[3] = (Vertex2D){ 250.0f, 225.0f, 0.72f, 0.0f, 0.0f };
+    q.vertices[0] = (Vertex2D){ 185.0f, 195.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[1] = (Vertex2D){ 275.0f, 155.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[2] = (Vertex2D){ 340.0f, 185.0f, 0.72f, 0.0f, 0.0f, 0.0f };
+    q.vertices[3] = (Vertex2D){ 250.0f, 225.0f, 0.72f, 0.0f, 0.0f, 0.0f };
     renderer_push_quad(ctx, &q);
 }
 

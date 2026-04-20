@@ -141,10 +141,18 @@ static bool project_camera_vertex(RenderContext *ctx, const CameraVertex *in, Ve
     out->z = 1.0f - (NEAR_PLANE / in->z);
 
     float depth = ctx->current_camera.depth;
-    out->x = (in->x / in->z) * depth + SCREEN_WIDTH  / 2.0f;
-    out->y = SCREEN_HEIGHT / 2.0f - (in->y / in->z) * depth;
-    out->u = in->u;
-    out->v = in->v;
+    float inv_w = 1.0f / in->z;
+    out->x = in->x * inv_w * depth + SCREEN_WIDTH  / 2.0f;
+    out->y = SCREEN_HEIGHT / 2.0f - in->y * inv_w * depth;
+    /*
+     * Store u/w, v/w, 1/w instead of u, v. These three quantities are linear
+     * in screen space for any planar world-space quad, so viewport clipping
+     * can lerp them correctly and the HW can recover true u, v by dividing
+     * per pixel. This eliminates the affine-texture swim under perspective.
+     */
+    out->u_over_w   = in->u * inv_w;
+    out->v_over_w   = in->v * inv_w;
+    out->one_over_w = inv_w;
     return true;
 }
 
@@ -179,8 +187,9 @@ static Vertex2D lerp_vertex2d(const Vertex2D *a, const Vertex2D *b, float t)
         .x = a->x + (b->x - a->x) * t,
         .y = a->y + (b->y - a->y) * t,
         .z = a->z + (b->z - a->z) * t,
-        .u = a->u + (b->u - a->u) * t,
-        .v = a->v + (b->v - a->v) * t,
+        .u_over_w   = a->u_over_w   + (b->u_over_w   - a->u_over_w)   * t,
+        .v_over_w   = a->v_over_w   + (b->v_over_w   - a->v_over_w)   * t,
+        .one_over_w = a->one_over_w + (b->one_over_w - a->one_over_w) * t,
     };
 
     return out;
@@ -616,33 +625,46 @@ static bool solve_attr_plane(const Vertex2D *a, const Vertex2D *b,
     return true;
 }
 
+/*
+ * Deterministic triple selection.
+ *
+ * For a planar world-space quad, depth (in the 1 - near/z mapping), u/w, v/w
+ * and 1/w are all exactly linear in screen space, so any 3 of the 4 projected
+ * vertices should yield the same plane. Clip vertices, Q24.8 snapping and
+ * floating-point rounding can still produce tiny disagreements between
+ * triples; picking the first non-degenerate triple in a fixed order removes
+ * the frame-to-frame jitter where the "winning" triple flipped under
+ * sub-pixel camera motion.
+ */
+static const int kAttrTriples[4][3] = {
+    { 0, 1, 2 },
+    { 0, 1, 3 },
+    { 0, 2, 3 },
+    { 1, 2, 3 },
+};
+
 /* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
  * Stores the plane at the requested raster sample point. */
 static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
                             uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
 {
-    static const int triples[4][3] = {
-        { 0, 1, 2 },
-        { 0, 1, 3 },
-        { 0, 2, 3 },
-        { 1, 2, 3 },
-    };
-
     float ddx = 0.0f;
     float ddy = 0.0f;
+    int basis = 0;
 
     for (int i = 0; i < 4; i++) {
-        if (solve_attr_plane(&v[triples[i][0]],
-                             &v[triples[i][1]],
-                             &v[triples[i][2]],
-                             v[triples[i][0]].z,
-                             v[triples[i][1]].z,
-                             v[triples[i][2]].z,
-                             &ddx, &ddy))
+        int a = kAttrTriples[i][0];
+        int b = kAttrTriples[i][1];
+        int c = kAttrTriples[i][2];
+        if (solve_attr_plane(&v[a], &v[b], &v[c],
+                             v[a].z, v[b].z, v[c].z,
+                             &ddx, &ddy)) {
+            basis = a;
             break;
+        }
     }
 
-    float z_at_origin = v[0].z - ddx * v[0].x - ddy * v[0].y;
+    float z_at_origin = v[basis].z - ddx * v[basis].x - ddy * v[basis].y;
     float z_at_sample = z_at_origin + ddx * sample_x + ddy * sample_y;
 
     *z0    = to_q1_15u(z_at_sample);
@@ -650,54 +672,59 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
     *dz_dy = to_q1_15s(ddy);
 }
 
+/*
+ * Fit three screen-space planes for perspective-correct texturing:
+ *   u/w (x,y), v/w (x,y), 1/w (x,y)
+ *
+ * The rasterizer interpolates each plane linearly per pixel and then divides
+ * to recover true u, v. All three attributes are exactly linear in screen
+ * space for a planar world-space quad, so a single deterministic 3-vertex fit
+ * captures the full plane (modulo FP noise).
+ */
 static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
                          struct quad_desc_uv *uv)
 {
-    static const int triples[4][3] = {
-        { 0, 1, 2 },
-        { 0, 1, 3 },
-        { 0, 2, 3 },
-        { 1, 2, 3 },
-    };
-
-    float du_dx = 0.0f;
-    float du_dy = 0.0f;
-    float dv_dx = 0.0f;
-    float dv_dy = 0.0f;
+    float duw_dx = 0.0f, duw_dy = 0.0f;
+    float dvw_dx = 0.0f, dvw_dy = 0.0f;
+    float diw_dx = 0.0f, diw_dy = 0.0f;
     int basis = 0;
 
     for (int i = 0; i < 4; i++) {
-        if (!solve_attr_plane(&v[triples[i][0]],
-                              &v[triples[i][1]],
-                              &v[triples[i][2]],
-                              v[triples[i][0]].u,
-                              v[triples[i][1]].u,
-                              v[triples[i][2]].u,
-                              &du_dx, &du_dy))
+        int a = kAttrTriples[i][0];
+        int b = kAttrTriples[i][1];
+        int c = kAttrTriples[i][2];
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].u_over_w, v[b].u_over_w, v[c].u_over_w,
+                              &duw_dx, &duw_dy))
             continue;
-        if (!solve_attr_plane(&v[triples[i][0]],
-                              &v[triples[i][1]],
-                              &v[triples[i][2]],
-                              v[triples[i][0]].v,
-                              v[triples[i][1]].v,
-                              v[triples[i][2]].v,
-                              &dv_dx, &dv_dy))
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].v_over_w, v[b].v_over_w, v[c].v_over_w,
+                              &dvw_dx, &dvw_dy))
             continue;
-        basis = triples[i][0];
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].one_over_w, v[b].one_over_w, v[c].one_over_w,
+                              &diw_dx, &diw_dy))
+            continue;
+        basis = a;
         break;
     }
 
-    float u_at_origin = v[basis].u - du_dx * v[basis].x - du_dy * v[basis].y;
-    float v_at_origin = v[basis].v - dv_dx * v[basis].x - dv_dy * v[basis].y;
-    float u_at_sample = u_at_origin + du_dx * sample_x + du_dy * sample_y;
-    float v_at_sample = v_at_origin + dv_dx * sample_x + dv_dy * sample_y;
+    float uw_origin = v[basis].u_over_w   - duw_dx * v[basis].x - duw_dy * v[basis].y;
+    float vw_origin = v[basis].v_over_w   - dvw_dx * v[basis].x - dvw_dy * v[basis].y;
+    float iw_origin = v[basis].one_over_w - diw_dx * v[basis].x - diw_dy * v[basis].y;
+    float uw_sample = uw_origin + duw_dx * sample_x + duw_dy * sample_y;
+    float vw_sample = vw_origin + dvw_dx * sample_x + dvw_dy * sample_y;
+    float iw_sample = iw_origin + diw_dx * sample_x + diw_dy * sample_y;
 
-    uv->u0 = to_q16_16(u_at_sample);
-    uv->v0 = to_q16_16(v_at_sample);
-    uv->du_dx = to_q16_16(du_dx);
-    uv->dv_dx = to_q16_16(dv_dx);
-    uv->du_dy = to_q16_16(du_dy);
-    uv->dv_dy = to_q16_16(dv_dy);
+    uv->u_over_w_0    = to_q16_16(uw_sample);
+    uv->u_over_w_dx   = to_q16_16(duw_dx);
+    uv->u_over_w_dy   = to_q16_16(duw_dy);
+    uv->v_over_w_0    = to_q16_16(vw_sample);
+    uv->v_over_w_dx   = to_q16_16(dvw_dx);
+    uv->v_over_w_dy   = to_q16_16(dvw_dy);
+    uv->one_over_w_0  = to_q16_16(iw_sample);
+    uv->one_over_w_dx = to_q16_16(diw_dx);
+    uv->one_over_w_dy = to_q16_16(diw_dy);
 }
 
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
@@ -764,7 +791,11 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
         };
         world_to_camera(ctx, wp, &face_cam[i]);
         face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
-        face_cam[i].v = (i == 2 || i == 3) ? tile_span : 0.0f;
+        /*
+         * Atlas row 0 sits at the top of each tile image, and the side faces'
+         * vertex 0 is world-bottom. Invert V so world-top maps to texture-top.
+         */
+        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
     }
 
     CameraVertex clipped[6];
@@ -1210,10 +1241,10 @@ bool renderer_draw_crosshair(RenderContext *ctx)
     for (size_t i = 0; i < sizeof(rects) / sizeof(rects[0]); i++) {
         RenderQuad quad = {0};
         quad.color_tint = 5;
-        quad.vertices[0] = (Vertex2D){ rects[i].x0, rects[i].y0, 0.0f, 0.0f, 0.0f };
-        quad.vertices[1] = (Vertex2D){ rects[i].x1, rects[i].y0, 0.0f, 0.0f, 0.0f };
-        quad.vertices[2] = (Vertex2D){ rects[i].x1, rects[i].y1, 0.0f, 0.0f, 0.0f };
-        quad.vertices[3] = (Vertex2D){ rects[i].x0, rects[i].y1, 0.0f, 0.0f, 0.0f };
+        quad.vertices[0] = (Vertex2D){ rects[i].x0, rects[i].y0, 0.0f, 0.0f, 0.0f, 0.0f };
+        quad.vertices[1] = (Vertex2D){ rects[i].x1, rects[i].y0, 0.0f, 0.0f, 0.0f, 0.0f };
+        quad.vertices[2] = (Vertex2D){ rects[i].x1, rects[i].y1, 0.0f, 0.0f, 0.0f, 0.0f };
+        quad.vertices[3] = (Vertex2D){ rects[i].x0, rects[i].y1, 0.0f, 0.0f, 0.0f, 0.0f };
         if (renderer_push_quad(ctx, &quad))
             emitted = true;
     }

@@ -108,7 +108,9 @@ class VirtualGPU:
         if textured:
             if quad.uv is None:
                 raise ValueError("textured quad is missing a UV block")
-            u0, v0, du_dx, dv_dx, du_dy, dv_dy = quad.uv
+            (u_over_w_0, u_over_w_dx, u_over_w_dy,
+             v_over_w_0, v_over_w_dx, v_over_w_dy,
+             one_over_w_0, one_over_w_dx, one_over_w_dy) = quad.uv
             tile_offset = (quad.tex_or_color & 0x3F) << 8
         else:
             color = quad.tex_or_color
@@ -134,10 +136,20 @@ class VirtualGPU:
 
                 if textured:
                     dx = x - qx_min
-                    u_value = u0 + du_dx * dx + du_dy * dy
-                    v_value = v0 + dv_dx * dx + dv_dy * dy
-                    tex_u = (u_value >> 16) & 0xF
-                    tex_v = (v_value >> 16) & 0xF
+                    # Interpolate (u/w, v/w, 1/w) linearly in screen space, then
+                    # divide to recover true u, v. All three quantities are in
+                    # Q16.16; the reciprocal returns Q16.16 w_eye.
+                    uw = u_over_w_0 + u_over_w_dx * dx + u_over_w_dy * dy
+                    vw = v_over_w_0 + v_over_w_dx * dx + v_over_w_dy * dy
+                    iw = one_over_w_0 + one_over_w_dx * dx + one_over_w_dy * dy
+                    if iw <= 0:
+                        continue
+                    # w_q16_16 = 2^32 / iw  (iw is Q16.16; divisor 2^16 cancels)
+                    w_q16_16 = (1 << 32) // iw
+                    u_value = (uw * w_q16_16) >> 32
+                    v_value = (vw * w_q16_16) >> 32
+                    tex_u = u_value & 0xF
+                    tex_v = v_value & 0xF
                     color = self.textures[tile_offset | (tex_v << 4) | tex_u]
                     if alpha_key and color == 0:
                         continue

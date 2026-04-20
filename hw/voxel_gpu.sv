@@ -401,8 +401,11 @@ module voxel_gpu (
         for (i = 0; i < FIFO_DEPTH; i = i + 1)
             fifo_mem[i] = 32'h0;
 
-        for (i = 0; i < TEXTURE_BYTES; i = i + 1)
-            texture_mem[i] = 8'h0;
+        /*
+         * textures.hex always contains the full 64 * 16 * 16 atlas, so avoid
+         * an explicit 16k-entry zero-fill loop here. Quartus tries to
+         * elaborate that loop and trips its 5000-iteration limit.
+         */
         $readmemh("textures.hex", texture_mem);
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)

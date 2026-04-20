@@ -41,6 +41,9 @@ tests/renderer_edge_test: tests/renderer_edge_test.c renderer.c renderer.h voxel
 game: game.c input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h
 	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c -lm
 
+laptop_run:
+	VOXEL_MOUSE_INVERT_Y=1 VOXEL_GPU_BACKEND=socket ./game
+
 clean:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} clean
 	${RM} tests/voxel_test tests/renderer_scene_test tests/renderer_static_test tests/renderer_quad_test tests/renderer_edge_test game

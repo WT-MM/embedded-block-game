@@ -1223,31 +1223,18 @@ bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    const float thickness = 2.0f;
-    const float half_t = thickness * 0.5f;
-    const float gap = 2.0f;
-    const float arm = 5.0f;
-    bool emitted = false;
+    const float half = 8.0f;
+    const float x0 = cx - half, y0 = cy - half;
+    const float x1 = cx + half, y1 = cy + half;
+    const float tile = 16.0f;
 
-    const struct {
-        float x0, y0, x1, y1;
-    } rects[] = {
-        { cx - half_t,          cy - gap - arm, cx + half_t,          cy - gap },
-        { cx - half_t,          cy + gap,       cx + half_t,          cy + gap + arm },
-        { cx - gap - arm,       cy - half_t,    cx - gap,             cy + half_t },
-        { cx + gap,             cy - half_t,    cx + gap + arm,       cy + half_t },
-    };
+    RenderQuad quad = {0};
+    quad.texture_id = TEX_TILE_CROSSHAIR;
+    quad.flags = QUAD_FLAG_TEX | QUAD_FLAG_ALPHA_KEY;
+    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f,  0.0f,  1.0f };
+    quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, tile,  0.0f,  1.0f };
+    quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, tile,  tile,  1.0f };
+    quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, 0.0f,  tile,  1.0f };
 
-    for (size_t i = 0; i < sizeof(rects) / sizeof(rects[0]); i++) {
-        RenderQuad quad = {0};
-        quad.color_tint = 5;
-        quad.vertices[0] = (Vertex2D){ rects[i].x0, rects[i].y0, 0.0f, 0.0f, 0.0f, 0.0f };
-        quad.vertices[1] = (Vertex2D){ rects[i].x1, rects[i].y0, 0.0f, 0.0f, 0.0f, 0.0f };
-        quad.vertices[2] = (Vertex2D){ rects[i].x1, rects[i].y1, 0.0f, 0.0f, 0.0f, 0.0f };
-        quad.vertices[3] = (Vertex2D){ rects[i].x0, rects[i].y1, 0.0f, 0.0f, 0.0f, 0.0f };
-        if (renderer_push_quad(ctx, &quad))
-            emitted = true;
-    }
-
-    return emitted;
+    return renderer_push_quad(ctx, &quad);
 }

@@ -39,101 +39,101 @@ def noise(x: int, y: int, seed: int) -> int:
     return value & 0xFF
 
 
-def choose_from_noise(n: int, base: int, dark: int, light: int) -> int:
-    if n < 36:
-        return dark
-    if n > 212:
-        return light
-    return base
-
-
 def grass_top(x: int, y: int) -> int:
-    n = noise(x, y, 1)
-    value = choose_from_noise(n, PAL_GRASS_TOP, PAL_GRASS_DARK, PAL_GRASS_LIGHT)
-    if ((x * 3 + y * 5) & 7) == 0:
-        value = PAL_GRASS_DARK
-    elif ((x * 7 + y * 3) & 15) == 1:
-        value = PAL_GRASS_LIGHT
-    return value
+    # Sparse 2x2 clumps of shade variation over a mostly uniform green field.
+    clump = noise(x >> 1, y >> 1, 1)
+    if clump < 48:
+        return PAL_GRASS_DARK
+    if clump > 220:
+        return PAL_GRASS_LIGHT
+    # Rare single-pixel blade highlights.
+    if noise(x, y, 11) > 245:
+        return PAL_GRASS_LIGHT
+    return PAL_GRASS_TOP
 
 
 def dirt(x: int, y: int) -> int:
-    n = noise(x, y, 2)
-    value = choose_from_noise(n, PAL_DIRT, PAL_DIRT_DARK, PAL_DIRT_LIGHT)
-    if ((x + y * 2) % 7) == 0:
-        value = PAL_DIRT_DARK
-    elif ((x * 5 + y) % 11) == 2:
-        value = PAL_DIRT_LIGHT
-    return value
+    # Mostly uniform dirt with a few 2x2 shade clumps and sparse pebbles.
+    clump = noise(x >> 1, y >> 1, 2)
+    if clump < 40:
+        return PAL_DIRT_DARK
+    if clump > 220:
+        return PAL_DIRT_LIGHT
+    if noise(x, y, 12) > 248:
+        return PAL_DIRT_DARK
+    return PAL_DIRT
 
 
 def grass_side(x: int, y: int) -> int:
-    turf_height = 3 + ((x * 5 + 3) & 1)
-    if ((x * 3 + 1) % 7) == 0:
-        turf_height += 1
-
-    if y < turf_height:
-        n = noise(x, y, 3)
-        value = choose_from_noise(n, PAL_GRASS_SIDE, PAL_GRASS_DARK, PAL_GRASS_LIGHT)
-        if y == turf_height - 1 and ((x + y * 2) % 5) == 0:
-            value = PAL_GRASS_DARK
-        return value
-
+    # Always at least 3 rows of grass at the top; some columns drip one or two
+    # pixels further into the dirt for a jagged edge. Never carve into the top.
+    col = noise(x, 0, 3)
+    drip = 3
+    if (col & 3) == 0:
+        drip = 4
+    if (col & 15) == 1:
+        drip = 5
+    if y < drip:
+        clump = noise(x >> 1, y, 8)
+        if clump < 48:
+            return PAL_GRASS_DARK
+        if clump > 220:
+            return PAL_GRASS_LIGHT
+        return PAL_GRASS_SIDE
     return dirt(x, y)
 
 
 def stone(x: int, y: int) -> int:
-    coarse = noise(x >> 1, y >> 1, 4)
-    large = noise(x >> 2, y >> 2, 7)
-
-    if coarse < 52:
-        value = PAL_STONE_DARK
-    elif coarse > 214:
-        value = PAL_STONE_LIGHT
+    # Blend fine per-pixel speckle with a coarser 2x2 mottle so neither
+    # dimension dominates — keeps the blobs smaller than the tile.
+    fine = noise(x, y, 4)
+    coarse = noise(x >> 1, y >> 1, 17)
+    mix = (fine + coarse) >> 1
+    if mix < 70:
+        base = PAL_STONE_DARK
+    elif mix > 195:
+        base = PAL_STONE_LIGHT
     else:
-        value = PAL_STONE
-
-    if large > 228:
-        value = PAL_STONE_LIGHT
-    elif large < 18:
-        value = PAL_STONE_DARK
-
-    if ((x + y + (large >> 5)) % 11) == 0:
-        value = PAL_STONE_DARK
-    elif ((x - y + (coarse >> 4)) % 13) == 0:
-        value = PAL_STONE_LIGHT
-
-    return value
+        base = PAL_STONE
+    # Sparse crack accents along a couple of shallow diagonals.
+    if ((x + 2 * y) % 19) == 4 and noise(x, y, 15) > 170:
+        return PAL_STONE_DARK
+    return base
 
 
 def wood_side(x: int, y: int) -> int:
-    stripe = (x // 3) & 1
-    value = PAL_WOOD if stripe else PAL_WOOD_GRAIN
-    if x in (2, 7, 11, 14):
-        value = PAL_WOOD_DARK
-    elif ((y * 5 + x) % 9) == 0:
-        value = PAL_WOOD_GRAIN
-    return value
+    # Vertical bark with darker columns at the edges and one offset knot.
+    if x == 0 or x == 15:
+        return PAL_WOOD_DARK
+    if x in (1, 14) and (y & 3) != 0:
+        return PAL_WOOD_GRAIN
+    # Knot
+    dx = x - 6
+    dy = y - 10
+    r2 = dx * dx + dy * dy
+    if r2 <= 1:
+        return PAL_WOOD_DARK
+    if r2 <= 4:
+        return PAL_WOOD_GRAIN
+    # Occasional vertical grain streaks — one out of every few columns.
+    if noise(x, 0, 5) < 40 and (y & 1) == 0:
+        return PAL_WOOD_GRAIN
+    return PAL_WOOD
 
 
 def wood_top(x: int, y: int) -> int:
+    # Clean concentric rings around the center.
     dx = x - 7.5
     dy = y - 7.5
-    radius = int((dx * dx + dy * dy) ** 0.5 * 1.35)
-    ring = radius % 4
-
+    r = (dx * dx + dy * dy) ** 0.5
+    if r < 1.2:
+        return PAL_WOOD_DARK
+    ring = int(r * 1.1) % 3
     if ring == 0:
-        value = PAL_WOOD_DARK
-    elif ring == 1:
-        value = PAL_WOOD_GRAIN
-    else:
-        value = PAL_WOOD_TOP
-
-    if abs(x - 7) <= 1 and abs(y - 7) <= 1:
-        value = PAL_WOOD_DARK
-    elif ((x * 9 + y * 5) % 13) == 0:
-        value = PAL_WOOD_GRAIN
-    return value
+        return PAL_WOOD_GRAIN
+    if ring == 1:
+        return PAL_WOOD_TOP
+    return PAL_WOOD
 
 
 def crosshair(x: int, y: int) -> int:

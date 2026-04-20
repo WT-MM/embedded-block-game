@@ -22,6 +22,7 @@
 #define PI_F 3.14159265358979323846f
 #define SKY_DAY_LENGTH_SECONDS 180.0f
 #define SKY_DOME_DISTANCE 512.0f
+#define SKY_GRADIENT_BANDS 24
 
 enum {
     PAL_SKY_HIGH = 25,
@@ -34,6 +35,7 @@ enum {
     PAL_MOON = 32,
     PAL_MOON_SHADOW = 33,
     PAL_STAR = 34,
+    PAL_SKY_GRADIENT_BASE = 40,
 };
 
 struct StagedQuad {
@@ -56,6 +58,20 @@ typedef struct {
 typedef struct {
     uint8_t r, g, b;
 } RGB24;
+
+typedef struct {
+    RGB24 zenith;
+    RGB24 high;
+    RGB24 mid;
+    RGB24 horizon;
+    RGB24 cloud;
+    RGB24 cloud_shadow;
+    RGB24 sun_core;
+    RGB24 sun_glow;
+    RGB24 moon;
+    RGB24 moon_shadow;
+    RGB24 star;
+} SkyPalette;
 
 static void upload_default_palette(GPUTransport *transport)
 {
@@ -1322,6 +1338,22 @@ static bool push_screen_textured_quad(RenderContext *ctx,
     return renderer_push_quad(ctx, &quad);
 }
 
+static bool push_screen_flat_quad(RenderContext *ctx,
+                                  float x0, float y0,
+                                  float x1, float y1,
+                                  uint8_t palette_index)
+{
+    RenderQuad quad = {0};
+
+    quad.color_tint = palette_index;
+    quad.flags = 0;
+    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f, 0.0f, 1.0f };
+    quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, 0.0f, 0.0f, 1.0f };
+    quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, 0.0f, 0.0f, 1.0f };
+    quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, 0.0f, 0.0f, 1.0f };
+    return renderer_push_quad(ctx, &quad);
+}
+
 static bool project_sky_direction(RenderContext *ctx, Vec3 dir, float *screen_x, float *screen_y)
 {
     Vec3 world = {
@@ -1358,6 +1390,29 @@ static bool draw_sky_sprite(RenderContext *ctx, Vec3 dir, float size_px, uint8_t
                                      QUAD_FLAG_ALPHA_KEY);
 }
 
+static RGB24 sample_sky_gradient(const SkyPalette *palette, float t)
+{
+    if (t <= 0.22f)
+        return lerp_rgb24(palette->zenith, palette->high, smoothstepf(0.0f, 0.22f, t));
+    if (t <= 0.62f)
+        return lerp_rgb24(palette->high, palette->mid, smoothstepf(0.22f, 0.62f, t));
+    return lerp_rgb24(palette->mid, palette->horizon, smoothstepf(0.62f, 1.0f, t));
+}
+
+static void draw_sky_gradient(RenderContext *ctx, const SkyPalette *palette)
+{
+    for (int band = 0; band < SKY_GRADIENT_BANDS; band++) {
+        float y0 = SCREEN_HEIGHT * (float)band / (float)SKY_GRADIENT_BANDS;
+        float y1 = SCREEN_HEIGHT * (float)(band + 1) / (float)SKY_GRADIENT_BANDS;
+        float t = ((float)band + 0.5f) / (float)SKY_GRADIENT_BANDS;
+        uint8_t palette_index = (uint8_t)(PAL_SKY_GRADIENT_BASE + band);
+        RGB24 color = sample_sky_gradient(palette, t);
+
+        renderer_set_palette_rgb(ctx, palette_index, color);
+        push_screen_flat_quad(ctx, 0.0f, y0, SCREEN_WIDTH, y1, palette_index);
+    }
+}
+
 static Vec3 sun_direction_for_time(float time_seconds)
 {
     float cycle = fmodf(time_seconds / SKY_DAY_LENGTH_SECONDS + 0.18f, 1.0f);
@@ -1373,47 +1428,53 @@ static Vec3 sun_direction_for_time(float time_seconds)
     });
 }
 
-static void update_sky_palette(RenderContext *ctx, Vec3 sun_dir)
+static SkyPalette make_sky_palette(Vec3 sun_dir)
 {
     float daylight = smoothstepf(-0.18f, 0.08f, sun_dir.y);
     float twilight = clamp01(1.0f - fabsf(sun_dir.y) * 4.5f);
     float night = 1.0f - daylight;
-    RGB24 zenith = lerp_rgb24(rgb24(0x08, 0x0a, 0x16), rgb24(0x58, 0x96, 0xdb), daylight);
-    RGB24 high = lerp_rgb24(rgb24(0x15, 0x18, 0x31), rgb24(0x7f, 0xbd, 0xff), daylight);
-    RGB24 mid = lerp_rgb24(rgb24(0x22, 0x24, 0x46), rgb24(0xad, 0xd8, 0xff), daylight);
-    RGB24 horizon = lerp_rgb24(rgb24(0x2c, 0x1f, 0x2d), rgb24(0xdf, 0xee, 0xff), daylight);
-    RGB24 cloud = lerp_rgb24(rgb24(0x54, 0x5c, 0x79), rgb24(0xf5, 0xfa, 0xff), daylight);
-    RGB24 cloud_shadow = lerp_rgb24(rgb24(0x34, 0x3b, 0x53), rgb24(0xcb, 0xd8, 0xec), daylight);
+    SkyPalette palette = {
+        .zenith = lerp_rgb24(rgb24(0x08, 0x0a, 0x16), rgb24(0x58, 0x96, 0xdb), daylight),
+        .high = lerp_rgb24(rgb24(0x15, 0x18, 0x31), rgb24(0x7f, 0xbd, 0xff), daylight),
+        .mid = lerp_rgb24(rgb24(0x22, 0x24, 0x46), rgb24(0xad, 0xd8, 0xff), daylight),
+        .horizon = lerp_rgb24(rgb24(0x2c, 0x1f, 0x2d), rgb24(0xdf, 0xee, 0xff), daylight),
+        .cloud = lerp_rgb24(rgb24(0x54, 0x5c, 0x79), rgb24(0xf5, 0xfa, 0xff), daylight),
+        .cloud_shadow = lerp_rgb24(rgb24(0x34, 0x3b, 0x53), rgb24(0xcb, 0xd8, 0xec), daylight),
+        .sun_core = rgb24(0xff, 0xee, 0xaa),
+        .sun_glow = rgb24(0xff, 0xbd, 0x58),
+        .moon = lerp_rgb24(rgb24(0xb9, 0xc3, 0xe0), rgb24(0xe7, 0xeb, 0xf8), night),
+        .moon_shadow = lerp_rgb24(rgb24(0x5d, 0x67, 0x85), rgb24(0x9c, 0xa4, 0xc0), night),
+    };
     RGB24 sunset = rgb24(0xff, 0xab, 0x61);
-    RGB24 sun_core = rgb24(0xff, 0xee, 0xaa);
-    RGB24 sun_glow = rgb24(0xff, 0xbd, 0x58);
-    RGB24 moon = lerp_rgb24(rgb24(0xb9, 0xc3, 0xe0), rgb24(0xe7, 0xeb, 0xf8), night);
-    RGB24 moon_shadow = lerp_rgb24(rgb24(0x5d, 0x67, 0x85), rgb24(0x9c, 0xa4, 0xc0), night);
-    RGB24 star;
 
     twilight *= 0.35f + 0.65f * night;
-    zenith = mix_rgb24(zenith, rgb24(0x52, 0x3d, 0x5d), twilight * 0.22f);
-    high = mix_rgb24(high, rgb24(0xa0, 0x5f, 0x62), twilight * 0.28f);
-    mid = mix_rgb24(mid, rgb24(0xe7, 0x88, 0x56), twilight * 0.45f);
-    horizon = mix_rgb24(horizon, sunset, twilight * 0.78f);
-    cloud = mix_rgb24(cloud, rgb24(0xff, 0xc6, 0x8c), twilight * 0.18f);
-    cloud_shadow = mix_rgb24(cloud_shadow, rgb24(0xc7, 0x8d, 0x58), twilight * 0.22f);
-    sun_core = mix_rgb24(sun_core, rgb24(0xff, 0xdb, 0x91), twilight * 0.35f);
-    sun_glow = mix_rgb24(sun_glow, rgb24(0xff, 0x97, 0x4a), twilight * 0.50f);
-    star = lerp_rgb24(zenith, rgb24(0xff, 0xff, 0xff),
-                      smoothstepf(0.15f, 0.95f, night));
+    palette.zenith = mix_rgb24(palette.zenith, rgb24(0x52, 0x3d, 0x5d), twilight * 0.22f);
+    palette.high = mix_rgb24(palette.high, rgb24(0xa0, 0x5f, 0x62), twilight * 0.28f);
+    palette.mid = mix_rgb24(palette.mid, rgb24(0xe7, 0x88, 0x56), twilight * 0.45f);
+    palette.horizon = mix_rgb24(palette.horizon, sunset, twilight * 0.78f);
+    palette.cloud = mix_rgb24(palette.cloud, rgb24(0xff, 0xc6, 0x8c), twilight * 0.18f);
+    palette.cloud_shadow = mix_rgb24(palette.cloud_shadow, rgb24(0xc7, 0x8d, 0x58), twilight * 0.22f);
+    palette.sun_core = mix_rgb24(palette.sun_core, rgb24(0xff, 0xdb, 0x91), twilight * 0.35f);
+    palette.sun_glow = mix_rgb24(palette.sun_glow, rgb24(0xff, 0x97, 0x4a), twilight * 0.50f);
+    palette.star = lerp_rgb24(palette.zenith, rgb24(0xff, 0xff, 0xff),
+                              smoothstepf(0.15f, 0.95f, night));
 
-    renderer_set_palette_rgb(ctx, 0, zenith);
-    renderer_set_palette_rgb(ctx, PAL_SKY_HIGH, high);
-    renderer_set_palette_rgb(ctx, PAL_SKY_MID, mid);
-    renderer_set_palette_rgb(ctx, PAL_SKY_HORIZON, horizon);
-    renderer_set_palette_rgb(ctx, PAL_CLOUD, cloud);
-    renderer_set_palette_rgb(ctx, PAL_CLOUD_SHADOW, cloud_shadow);
-    renderer_set_palette_rgb(ctx, PAL_SUN_CORE, sun_core);
-    renderer_set_palette_rgb(ctx, PAL_SUN_GLOW, sun_glow);
-    renderer_set_palette_rgb(ctx, PAL_MOON, moon);
-    renderer_set_palette_rgb(ctx, PAL_MOON_SHADOW, moon_shadow);
-    renderer_set_palette_rgb(ctx, PAL_STAR, star);
+    return palette;
+}
+
+static void upload_sky_palette(RenderContext *ctx, const SkyPalette *palette)
+{
+    renderer_set_palette_rgb(ctx, 0, palette->zenith);
+    renderer_set_palette_rgb(ctx, PAL_SKY_HIGH, palette->high);
+    renderer_set_palette_rgb(ctx, PAL_SKY_MID, palette->mid);
+    renderer_set_palette_rgb(ctx, PAL_SKY_HORIZON, palette->horizon);
+    renderer_set_palette_rgb(ctx, PAL_CLOUD, palette->cloud);
+    renderer_set_palette_rgb(ctx, PAL_CLOUD_SHADOW, palette->cloud_shadow);
+    renderer_set_palette_rgb(ctx, PAL_SUN_CORE, palette->sun_core);
+    renderer_set_palette_rgb(ctx, PAL_SUN_GLOW, palette->sun_glow);
+    renderer_set_palette_rgb(ctx, PAL_MOON, palette->moon);
+    renderer_set_palette_rgb(ctx, PAL_MOON_SHADOW, palette->moon_shadow);
+    renderer_set_palette_rgb(ctx, PAL_STAR, palette->star);
 }
 
 int renderer_draw_sky(RenderContext *ctx, float time_seconds)
@@ -1443,9 +1504,9 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     int before = ctx->n_quads;
     Vec3 sun_dir;
     Vec3 moon_dir;
+    SkyPalette palette;
     float daylight;
     float night;
-    float sky_shift;
 
     if (!ctx)
         return 0;
@@ -1454,14 +1515,9 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
     daylight = smoothstepf(-0.18f, 0.08f, sun_dir.y);
     night = 1.0f - daylight;
-    update_sky_palette(ctx, sun_dir);
-
-    sky_shift = ctx->current_camera.pitch * 4.5f;
-    push_screen_textured_quad(ctx,
-                              0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
-                              0.0f, -1.5f - sky_shift,
-                              16.0f, 14.5f - sky_shift,
-                              TEX_TILE_SKY, 0);
+    palette = make_sky_palette(sun_dir);
+    upload_sky_palette(ctx, &palette);
+    draw_sky_gradient(ctx, &palette);
 
     if (night > 0.2f) {
         for (size_t i = 0; i < sizeof(star_defs) / sizeof(star_defs[0]); i++) {

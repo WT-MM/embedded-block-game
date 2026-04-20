@@ -83,12 +83,26 @@ def grass_side(x: int, y: int) -> int:
 
 
 def stone(x: int, y: int) -> int:
-    n = noise(x, y, 4)
-    value = choose_from_noise(n, PAL_STONE, PAL_STONE_DARK, PAL_STONE_LIGHT)
-    if (x - y) in (-1, 0, 1) and ((x + y) % 6) == 0:
+    coarse = noise(x >> 1, y >> 1, 4)
+    large = noise(x >> 2, y >> 2, 7)
+
+    if coarse < 52:
         value = PAL_STONE_DARK
-    elif ((x * 11 + y * 3) % 13) == 0:
+    elif coarse > 214:
         value = PAL_STONE_LIGHT
+    else:
+        value = PAL_STONE
+
+    if large > 228:
+        value = PAL_STONE_LIGHT
+    elif large < 18:
+        value = PAL_STONE_DARK
+
+    if ((x + y + (large >> 5)) % 11) == 0:
+        value = PAL_STONE_DARK
+    elif ((x - y + (coarse >> 4)) % 13) == 0:
+        value = PAL_STONE_LIGHT
+
     return value
 
 

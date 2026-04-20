@@ -745,6 +745,7 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
 static void emit_block_face(RenderContext *ctx, BlockID type,
                             Vec3 block_pos, BlockFace face)
 {
+    static const float tile_span = 16.0f;
     CameraVertex face_cam[4];
 
     if (type == BLOCK_AIR)
@@ -762,8 +763,8 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
             block_pos.z + face_verts[face][i].z,
         };
         world_to_camera(ctx, wp, &face_cam[i]);
-        face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
-        face_cam[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
+        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
+        face_cam[i].v = (i == 2 || i == 3) ? tile_span : 0.0f;
     }
 
     CameraVertex clipped[6];
@@ -1189,18 +1190,33 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
 
 bool renderer_draw_crosshair(RenderContext *ctx)
 {
-    const float size = 16.0f;
-    const float half = size * 0.5f;
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    RenderQuad quad = {0};
+    const float thickness = 2.0f;
+    const float half_t = thickness * 0.5f;
+    const float gap = 2.0f;
+    const float arm = 5.0f;
+    bool emitted = false;
 
-    quad.vertices[0] = (Vertex2D){ cx - half, cy - half, 0.0f,  0.0f,  0.0f };
-    quad.vertices[1] = (Vertex2D){ cx + half, cy - half, 0.0f, 15.0f,  0.0f };
-    quad.vertices[2] = (Vertex2D){ cx + half, cy + half, 0.0f, 15.0f, 15.0f };
-    quad.vertices[3] = (Vertex2D){ cx - half, cy + half, 0.0f,  0.0f, 15.0f };
-    quad.texture_id = TEX_TILE_CROSSHAIR;
-    quad.flags = QUAD_FLAG_TEX | QUAD_FLAG_ALPHA_KEY;
+    const struct {
+        float x0, y0, x1, y1;
+    } rects[] = {
+        { cx - half_t,          cy - gap - arm, cx + half_t,          cy - gap },
+        { cx - half_t,          cy + gap,       cx + half_t,          cy + gap + arm },
+        { cx - gap - arm,       cy - half_t,    cx - gap,             cy + half_t },
+        { cx + gap,             cy - half_t,    cx + gap + arm,       cy + half_t },
+    };
 
-    return renderer_push_quad(ctx, &quad);
+    for (size_t i = 0; i < sizeof(rects) / sizeof(rects[0]); i++) {
+        RenderQuad quad = {0};
+        quad.color_tint = 5;
+        quad.vertices[0] = (Vertex2D){ rects[i].x0, rects[i].y0, 0.0f, 0.0f, 0.0f };
+        quad.vertices[1] = (Vertex2D){ rects[i].x1, rects[i].y0, 0.0f, 0.0f, 0.0f };
+        quad.vertices[2] = (Vertex2D){ rects[i].x1, rects[i].y1, 0.0f, 0.0f, 0.0f };
+        quad.vertices[3] = (Vertex2D){ rects[i].x0, rects[i].y1, 0.0f, 0.0f, 0.0f };
+        if (renderer_push_quad(ctx, &quad))
+            emitted = true;
+    }
+
+    return emitted;
 }

@@ -353,36 +353,12 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     return populate_chunk_window(world, origin_chunk_x, origin_chunk_z);
 }
 
-bool world_generate_flat_random_stone(VoxelWorld *world,
-                                      int origin_chunk_x,
-                                      int origin_chunk_z,
-                                      int chunks_x,
-                                      int chunks_z,
-                                      uint32_t seed,
-                                      int stone_tries_per_chunk,
-                                      int render_distance_chunks)
-{
-    if (!world)
-        return false;
-
-    if (!ensure_chunk_storage(world, chunks_x, chunks_z))
-        return false;
-
-    world->procedural_seed = seed;
-    world->stone_tries_per_chunk = stone_tries_per_chunk;
-    world->render_distance_chunks = render_distance_chunks;
-    world->load_radius_chunks = render_distance_chunks;
-    world->center_chunk_x = origin_chunk_x + chunks_x / 2;
-    world->center_chunk_z = origin_chunk_z + chunks_z / 2;
-    return populate_chunk_window(world, origin_chunk_x, origin_chunk_z);
-}
-
-bool world_init_infinite_flat_random_stone(VoxelWorld *world,
-                                           uint32_t seed,
-                                           int stone_tries_per_chunk,
-                                           int render_distance_chunks,
-                                           float center_x,
-                                           float center_z)
+bool world_init_infinite_procedural(VoxelWorld *world,
+                                    uint32_t seed,
+                                    int stone_tries_per_chunk,
+                                    int render_distance_chunks,
+                                    float center_x,
+                                    float center_z)
 {
     if (!world || render_distance_chunks < 0)
         return false;

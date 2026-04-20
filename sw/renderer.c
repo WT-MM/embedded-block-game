@@ -511,59 +511,6 @@ static void pack_edge_coef(struct edge_coef *edge,
         edge->C -= 1;
 }
 
-static uint8_t block_palette_index(BlockID id)
-{
-    switch (id) {
-    case BLOCK_GRASS:
-        return 1;
-    case BLOCK_DIRT:
-        return 2;
-    case BLOCK_WOOD:
-        return 3;
-    case BLOCK_STONE:
-        return 4;
-    default:
-        return 5;
-    }
-}
-
-/*
- * Temporary flat-shaded face palette until the texture path lands.
- * Keeping top/side/bottom distinct makes cube silhouettes much easier
- * to read at 320x240 than a single color per block type.
- */
-static uint8_t flat_face_palette_index(BlockID id, BlockFace face)
-{
-    switch (id) {
-    case BLOCK_GRASS:
-        if (face == FACE_TOP)
-            return 1;
-        if (face == FACE_BOTTOM)
-            return 10;
-        return 9;
-    case BLOCK_DIRT:
-        if (face == FACE_TOP)
-            return 15;
-        if (face == FACE_BOTTOM)
-            return 16;
-        return 2;
-    case BLOCK_WOOD:
-        if (face == FACE_TOP)
-            return 11;
-        if (face == FACE_BOTTOM)
-            return 12;
-        return 3;
-    case BLOCK_STONE:
-        if (face == FACE_TOP)
-            return 13;
-        if (face == FACE_BOTTOM)
-            return 14;
-        return 4;
-    default:
-        return block_palette_index(id);
-    }
-}
-
 /* Pack a float depth value into Q1.15 unsigned (clamp to [0,2)). */
 static inline uint16_t to_q1_15u(float v)
 {
@@ -728,7 +675,7 @@ static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
 }
 
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
-                             uint8_t color_tint, uint8_t texture_id)
+                             uint8_t texture_id)
 {
     Vertex2D verts[4];
     RenderQuad q = {0};
@@ -740,32 +687,31 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
 
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
-    q.color_tint = color_tint;
     q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX;
     return renderer_push_quad(ctx, &q);
 }
 
 static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
-                              int count, uint8_t color_tint, uint8_t texture_id)
+                              int count, uint8_t texture_id)
 {
     if (count < 3)
         return;
 
     if (count == 3) {
         CameraVertex tri[4] = { poly[0], poly[1], poly[2], poly[2] };
-        emit_camera_quad(ctx, tri, color_tint, texture_id);
+        emit_camera_quad(ctx, tri, texture_id);
         return;
     }
 
     if (count == 4) {
         CameraVertex quad[4] = { poly[0], poly[1], poly[2], poly[3] };
-        emit_camera_quad(ctx, quad, color_tint, texture_id);
+        emit_camera_quad(ctx, quad, texture_id);
         return;
     }
 
     for (int i = 1; i + 1 < count; i++) {
         CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
-        emit_camera_quad(ctx, tri, color_tint, texture_id);
+        emit_camera_quad(ctx, tri, texture_id);
     }
 }
 
@@ -832,9 +778,7 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
-    emit_clipped_face(ctx, clipped, clipped_count,
-                      flat_face_palette_index(type, face),
-                      texture_id);
+    emit_clipped_face(ctx, clipped, clipped_count, texture_id);
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -1165,16 +1109,6 @@ static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
             continue;
         emit_block_face(ctx, block->type, block->position, (BlockFace)f);
     }
-}
-
-void renderer_draw_block(RenderContext *ctx, const Block *block)
-{
-    BlockLookup lookup;
-
-    if (!build_block_lookup(ctx, block, 1, &lookup))
-        return;
-
-    renderer_draw_block_faces(ctx, block, &lookup);
 }
 
 int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)

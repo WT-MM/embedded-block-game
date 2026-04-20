@@ -1,8 +1,8 @@
 /*
  * renderer_scene_test.c — minimal renderer-driven scene test.
  *
- * Uses the real software renderer to submit a tiny fixed block scene with
- * flat colors and hardware z-test enabled. This exercises geometry,
+ * Uses the real software renderer to submit a tiny fixed textured block
+ * scene with hardware z-test enabled. This exercises geometry,
  * projection, quad setup, depth setup, submission, and flip.
  */
 

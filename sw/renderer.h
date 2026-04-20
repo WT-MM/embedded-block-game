@@ -67,7 +67,6 @@ void renderer_end_frame(RenderContext* ctx);
 
 // --- Camera & Geometry ---
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);
-void renderer_draw_block(RenderContext* ctx, const Block* block);
 int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
 int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
 bool renderer_draw_crosshair(RenderContext* ctx);

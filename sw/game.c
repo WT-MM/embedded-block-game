@@ -64,12 +64,12 @@ int main(void)
         .depth    = 170.0f,
     };
 
-    if (!world_init_infinite_flat_random_stone(&world,
-                                               STONE_SEED,
-                                               STONE_TRIES_PER_CHUNK,
-                                               WORLD_RENDER_DISTANCE_CHUNKS,
-                                               cam.position.x,
-                                               cam.position.z)) {
+    if (!world_init_infinite_procedural(&world,
+                                        STONE_SEED,
+                                        STONE_TRIES_PER_CHUNK,
+                                        WORLD_RENDER_DISTANCE_CHUNKS,
+                                        cam.position.x,
+                                        cam.position.z)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
         renderer_shutdown(ctx);

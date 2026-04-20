@@ -25,6 +25,11 @@ TEX_TILE_DIRT_MIP2 = 26
 TEX_TILE_STONE_MIP2 = 27
 TEX_TILE_WOOD_SIDE_MIP2 = 28
 TEX_TILE_WOOD_TOP_MIP2 = 29
+TEX_TILE_SKY = 48
+TEX_TILE_CLOUD = 49
+TEX_TILE_SUN = 50
+TEX_TILE_MOON = 51
+TEX_TILE_STARS = 52
 TEX_TILE_CROSSHAIR = 63
 
 PAL_TRANSPARENT = 0
@@ -43,6 +48,16 @@ PAL_WOOD_GRAIN = 21
 PAL_WOOD_DARK = 22
 PAL_STONE_DARK = 23
 PAL_STONE_LIGHT = 24
+PAL_SKY_HIGH = 25
+PAL_SKY_MID = 26
+PAL_SKY_HORIZON = 27
+PAL_CLOUD = 28
+PAL_CLOUD_SHADOW = 29
+PAL_SUN_CORE = 30
+PAL_SUN_GLOW = 31
+PAL_MOON = 32
+PAL_MOON_SHADOW = 33
+PAL_STAR = 34
 
 
 MIP1_TILES = {
@@ -243,6 +258,75 @@ def crosshair(x: int, y: int) -> int:
     return PAL_TRANSPARENT
 
 
+def sky(x: int, y: int) -> int:
+    if y <= 2:
+        return PAL_TRANSPARENT
+    if y <= 5:
+        return PAL_SKY_HIGH
+    if y <= 10:
+        return PAL_SKY_MID
+    return PAL_SKY_HORIZON
+
+
+def cloud(x: int, y: int) -> int:
+    covered = False
+
+    for cx, cy, radius in ((3.0, 9.0, 3.4), (7.5, 7.0, 4.8), (12.0, 9.0, 3.6)):
+        dx = x - cx
+        dy = y - cy
+        if dx * dx + dy * dy <= radius * radius:
+            covered = True
+            break
+
+    if not covered:
+        return PAL_TRANSPARENT
+    if y >= 9 or (((x * 3) + y) & 3) == 0:
+        return PAL_CLOUD_SHADOW
+    return PAL_CLOUD
+
+
+def sun(x: int, y: int) -> int:
+    dx = x - 7.5
+    dy = y - 7.5
+    dist2 = dx * dx + dy * dy
+
+    if dist2 <= 15.0:
+        return PAL_SUN_CORE
+    if dist2 <= 32.0:
+        return PAL_SUN_GLOW
+    return PAL_TRANSPARENT
+
+
+def moon(x: int, y: int) -> int:
+    dx = x - 7.0
+    dy = y - 7.0
+    dist2 = dx * dx + dy * dy
+
+    if dist2 > 20.0:
+        return PAL_TRANSPARENT
+
+    cut_dx = x - 9.5
+    cut_dy = y - 6.0
+    if cut_dx * cut_dx + cut_dy * cut_dy <= 16.0:
+        return PAL_TRANSPARENT
+    if x <= 6 or y <= 5:
+        return PAL_MOON_SHADOW
+    return PAL_MOON
+
+
+def stars(x: int, y: int) -> int:
+    points = {
+        (2, 3), (5, 11), (8, 6), (12, 2), (13, 9),
+        (4, 7), (10, 13), (14, 5),
+    }
+
+    if (x, y) in points:
+        return PAL_STAR
+    if (x - 1, y) in points or (x, y - 1) in points:
+        return PAL_STAR if ((x + y) & 1) == 0 else PAL_TRANSPARENT
+    return PAL_TRANSPARENT
+
+
 def base_texel(tile: int, x: int, y: int) -> int:
     if tile == TEX_TILE_GRASS_TOP:
         return grass_top(x, y)
@@ -256,6 +340,16 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return wood_side(x, y)
     if tile == TEX_TILE_WOOD_TOP:
         return wood_top(x, y)
+    if tile == TEX_TILE_SKY:
+        return sky(x, y)
+    if tile == TEX_TILE_CLOUD:
+        return cloud(x, y)
+    if tile == TEX_TILE_SUN:
+        return sun(x, y)
+    if tile == TEX_TILE_MOON:
+        return moon(x, y)
+    if tile == TEX_TILE_STARS:
+        return stars(x, y)
     if tile == TEX_TILE_CROSSHAIR:
         return crosshair(x, y)
     return PAL_TRANSPARENT

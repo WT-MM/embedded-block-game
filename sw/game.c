@@ -87,6 +87,7 @@ int main(void)
            mouse_sens);
 
     struct timespec prev, now, frame_end;
+    float world_time = 0.0f;
     clock_gettime(CLOCK_MONOTONIC, &prev);
 
     while (!inp.quit) {
@@ -94,6 +95,7 @@ int main(void)
         float dt = (float)ns_diff(&now, &prev) / 1e9f;
         if (dt > 0.1f) dt = 0.1f;
         prev = now;
+        world_time += dt;
 
         input_update(&inp);
 
@@ -129,14 +131,15 @@ int main(void)
 
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
+        int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world);
         renderer_draw_crosshair(ctx);
         renderer_end_frame(ctx);
 
-        printf("\rpos=(%.1f,%.1f,%.1f) chunk=(%d,%d) yaw=%.2f pitch=%.2f quads=%3d  ",
+        printf("\rpos=(%.1f,%.1f,%.1f) chunk=(%d,%d) yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
                cam.position.x, cam.position.y, cam.position.z,
                world.center_chunk_x, world.center_chunk_z,
-               cam.yaw, cam.pitch, quads);
+               cam.yaw, cam.pitch, quads, sky_quads);
         fflush(stdout);
 
         /* Sleep for the remainder of the frame budget */

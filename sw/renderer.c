@@ -19,6 +19,22 @@
 #define VIEW_X_MAX SCREEN_WIDTH
 #define VIEW_Y_MAX SCREEN_HEIGHT
 #define MAX_VIEW_CLIP_VERTS 8
+#define PI_F 3.14159265358979323846f
+#define SKY_DAY_LENGTH_SECONDS 180.0f
+#define SKY_DOME_DISTANCE 512.0f
+
+enum {
+    PAL_SKY_HIGH = 25,
+    PAL_SKY_MID = 26,
+    PAL_SKY_HORIZON = 27,
+    PAL_CLOUD = 28,
+    PAL_CLOUD_SHADOW = 29,
+    PAL_SUN_CORE = 30,
+    PAL_SUN_GLOW = 31,
+    PAL_MOON = 32,
+    PAL_MOON_SHADOW = 33,
+    PAL_STAR = 34,
+};
 
 struct StagedQuad {
     struct quad_desc desc;
@@ -36,6 +52,10 @@ typedef struct {
     int capacity;
     int mask;
 } BlockLookup;
+
+typedef struct {
+    uint8_t r, g, b;
+} RGB24;
 
 static void upload_default_palette(GPUTransport *transport)
 {
@@ -65,6 +85,16 @@ static void upload_default_palette(GPUTransport *transport)
         { 22, 0x50, 0x3b, 0x24 }, /* wood bark dark */
         { 23, 0x63, 0x63, 0x63 }, /* stone dark */
         { 24, 0x9a, 0x9a, 0x9a }, /* stone light */
+        { 25, 0x78, 0xb4, 0xf0 }, /* sky high */
+        { 26, 0xb0, 0xd8, 0xff }, /* sky mid */
+        { 27, 0xe2, 0xef, 0xff }, /* sky horizon */
+        { 28, 0xf5, 0xfa, 0xff }, /* cloud */
+        { 29, 0xcb, 0xd8, 0xec }, /* cloud shadow */
+        { 30, 0xff, 0xee, 0xaa }, /* sun core */
+        { 31, 0xff, 0xbb, 0x55 }, /* sun glow */
+        { 32, 0xe7, 0xeb, 0xf8 }, /* moon */
+        { 33, 0x9c, 0xa4, 0xc0 }, /* moon shadow */
+        { 34, 0xff, 0xff, 0xff }, /* stars */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -85,6 +115,8 @@ struct RenderContext {
     size_t submit_capacity;
     LookupEntry *lookup_entries;
     int lookup_capacity;
+    uint32_t palette_cache[256];
+    uint8_t palette_valid[256];
     int n_quads;
 };
 
@@ -92,6 +124,92 @@ typedef struct {
     float x, y, z;
     float u, v;
 } CameraVertex;
+
+static RGB24 rgb24(uint8_t r, uint8_t g, uint8_t b)
+{
+    RGB24 color = { r, g, b };
+    return color;
+}
+
+static float clamp01(float value)
+{
+    if (value < 0.0f)
+        return 0.0f;
+    if (value > 1.0f)
+        return 1.0f;
+    return value;
+}
+
+static float smoothstepf(float edge0, float edge1, float x)
+{
+    if (edge0 == edge1)
+        return x >= edge1 ? 1.0f : 0.0f;
+
+    x = clamp01((x - edge0) / (edge1 - edge0));
+    return x * x * (3.0f - 2.0f * x);
+}
+
+static RGB24 lerp_rgb24(RGB24 a, RGB24 b, float t)
+{
+    RGB24 out;
+
+    t = clamp01(t);
+    out.r = (uint8_t)lroundf(a.r + (b.r - a.r) * t);
+    out.g = (uint8_t)lroundf(a.g + (b.g - a.g) * t);
+    out.b = (uint8_t)lroundf(a.b + (b.b - a.b) * t);
+    return out;
+}
+
+static RGB24 mix_rgb24(RGB24 base, RGB24 tint, float amount)
+{
+    return lerp_rgb24(base, tint, amount);
+}
+
+static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 color)
+{
+    uint32_t packed = ((uint32_t)color.r << 16) |
+                      ((uint32_t)color.g << 8) |
+                      (uint32_t)color.b;
+
+    if (ctx->palette_valid[index] && ctx->palette_cache[index] == packed)
+        return true;
+
+    struct voxel_palette_entry entry = {
+        .index = index,
+        .r = color.r,
+        .g = color.g,
+        .b = color.b,
+    };
+
+    if (gpu_transport_set_palette(ctx->transport, &entry) < 0)
+        return false;
+
+    ctx->palette_valid[index] = 1;
+    ctx->palette_cache[index] = packed;
+    return true;
+}
+
+static Vec3 normalize_vec3(Vec3 v)
+{
+    float len_sq = v.x * v.x + v.y * v.y + v.z * v.z;
+
+    if (len_sq <= 0.0f)
+        return (Vec3){ 0.0f, 0.0f, 1.0f };
+
+    float inv_len = 1.0f / sqrtf(len_sq);
+    return (Vec3){ v.x * inv_len, v.y * inv_len, v.z * inv_len };
+}
+
+static Vec3 direction_from_azimuth_elevation(float azimuth, float elevation)
+{
+    float cos_elevation = cosf(elevation);
+
+    return (Vec3){
+        cos_elevation * sinf(azimuth),
+        sinf(elevation),
+        cos_elevation * cosf(azimuth),
+    };
+}
 
 static const Vec3 face_normals[NUM_FACES] = {
     { 0, 1, 0 },
@@ -1185,6 +1303,195 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     return ctx->n_quads - before;
 }
 
+static bool push_screen_textured_quad(RenderContext *ctx,
+                                      float x0, float y0,
+                                      float x1, float y1,
+                                      float u0, float v0,
+                                      float u1, float v1,
+                                      uint8_t texture_id,
+                                      uint8_t extra_flags)
+{
+    RenderQuad quad = {0};
+
+    quad.texture_id = texture_id;
+    quad.flags = QUAD_FLAG_TEX | extra_flags;
+    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, u0, v0, 1.0f };
+    quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, u1, v0, 1.0f };
+    quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, u1, v1, 1.0f };
+    quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, u0, v1, 1.0f };
+    return renderer_push_quad(ctx, &quad);
+}
+
+static bool project_sky_direction(RenderContext *ctx, Vec3 dir, float *screen_x, float *screen_y)
+{
+    Vec3 world = {
+        ctx->current_camera.position.x + dir.x * SKY_DOME_DISTANCE,
+        ctx->current_camera.position.y + dir.y * SKY_DOME_DISTANCE,
+        ctx->current_camera.position.z + dir.z * SKY_DOME_DISTANCE,
+    };
+    CameraVertex camera = {0};
+    Vertex2D projected;
+
+    world_to_camera(ctx, world, &camera);
+    if (!project_camera_vertex(ctx, &camera, &projected))
+        return false;
+
+    *screen_x = projected.x;
+    *screen_y = projected.y;
+    return true;
+}
+
+static bool draw_sky_sprite(RenderContext *ctx, Vec3 dir, float size_px, uint8_t texture_id)
+{
+    float center_x;
+    float center_y;
+    float half = size_px * 0.5f;
+
+    if (!project_sky_direction(ctx, dir, &center_x, &center_y))
+        return false;
+
+    return push_screen_textured_quad(ctx,
+                                     center_x - half, center_y - half,
+                                     center_x + half, center_y + half,
+                                     0.0f, 0.0f, 16.0f, 16.0f,
+                                     texture_id,
+                                     QUAD_FLAG_ALPHA_KEY);
+}
+
+static Vec3 sun_direction_for_time(float time_seconds)
+{
+    float cycle = fmodf(time_seconds / SKY_DAY_LENGTH_SECONDS + 0.18f, 1.0f);
+
+    if (cycle < 0.0f)
+        cycle += 1.0f;
+
+    float orbit = cycle * (2.0f * PI_F);
+    return normalize_vec3((Vec3){
+        cosf(orbit),
+        0.92f * sinf(orbit),
+        0.35f,
+    });
+}
+
+static void update_sky_palette(RenderContext *ctx, Vec3 sun_dir)
+{
+    float daylight = smoothstepf(-0.18f, 0.08f, sun_dir.y);
+    float twilight = clamp01(1.0f - fabsf(sun_dir.y) * 4.5f);
+    float night = 1.0f - daylight;
+    RGB24 zenith = lerp_rgb24(rgb24(0x08, 0x0a, 0x16), rgb24(0x58, 0x96, 0xdb), daylight);
+    RGB24 high = lerp_rgb24(rgb24(0x15, 0x18, 0x31), rgb24(0x7f, 0xbd, 0xff), daylight);
+    RGB24 mid = lerp_rgb24(rgb24(0x22, 0x24, 0x46), rgb24(0xad, 0xd8, 0xff), daylight);
+    RGB24 horizon = lerp_rgb24(rgb24(0x2c, 0x1f, 0x2d), rgb24(0xdf, 0xee, 0xff), daylight);
+    RGB24 cloud = lerp_rgb24(rgb24(0x54, 0x5c, 0x79), rgb24(0xf5, 0xfa, 0xff), daylight);
+    RGB24 cloud_shadow = lerp_rgb24(rgb24(0x34, 0x3b, 0x53), rgb24(0xcb, 0xd8, 0xec), daylight);
+    RGB24 sunset = rgb24(0xff, 0xab, 0x61);
+    RGB24 sun_core = rgb24(0xff, 0xee, 0xaa);
+    RGB24 sun_glow = rgb24(0xff, 0xbd, 0x58);
+    RGB24 moon = lerp_rgb24(rgb24(0xb9, 0xc3, 0xe0), rgb24(0xe7, 0xeb, 0xf8), night);
+    RGB24 moon_shadow = lerp_rgb24(rgb24(0x5d, 0x67, 0x85), rgb24(0x9c, 0xa4, 0xc0), night);
+    RGB24 star;
+
+    twilight *= 0.35f + 0.65f * night;
+    zenith = mix_rgb24(zenith, rgb24(0x52, 0x3d, 0x5d), twilight * 0.22f);
+    high = mix_rgb24(high, rgb24(0xa0, 0x5f, 0x62), twilight * 0.28f);
+    mid = mix_rgb24(mid, rgb24(0xe7, 0x88, 0x56), twilight * 0.45f);
+    horizon = mix_rgb24(horizon, sunset, twilight * 0.78f);
+    cloud = mix_rgb24(cloud, rgb24(0xff, 0xc6, 0x8c), twilight * 0.18f);
+    cloud_shadow = mix_rgb24(cloud_shadow, rgb24(0xc7, 0x8d, 0x58), twilight * 0.22f);
+    sun_core = mix_rgb24(sun_core, rgb24(0xff, 0xdb, 0x91), twilight * 0.35f);
+    sun_glow = mix_rgb24(sun_glow, rgb24(0xff, 0x97, 0x4a), twilight * 0.50f);
+    star = lerp_rgb24(zenith, rgb24(0xff, 0xff, 0xff),
+                      smoothstepf(0.15f, 0.95f, night));
+
+    renderer_set_palette_rgb(ctx, 0, zenith);
+    renderer_set_palette_rgb(ctx, PAL_SKY_HIGH, high);
+    renderer_set_palette_rgb(ctx, PAL_SKY_MID, mid);
+    renderer_set_palette_rgb(ctx, PAL_SKY_HORIZON, horizon);
+    renderer_set_palette_rgb(ctx, PAL_CLOUD, cloud);
+    renderer_set_palette_rgb(ctx, PAL_CLOUD_SHADOW, cloud_shadow);
+    renderer_set_palette_rgb(ctx, PAL_SUN_CORE, sun_core);
+    renderer_set_palette_rgb(ctx, PAL_SUN_GLOW, sun_glow);
+    renderer_set_palette_rgb(ctx, PAL_MOON, moon);
+    renderer_set_palette_rgb(ctx, PAL_MOON_SHADOW, moon_shadow);
+    renderer_set_palette_rgb(ctx, PAL_STAR, star);
+}
+
+int renderer_draw_sky(RenderContext *ctx, float time_seconds)
+{
+    typedef struct {
+        float azimuth;
+        float elevation;
+        float size_px;
+        float drift;
+        float wobble;
+    } SkySpriteDef;
+
+    static const SkySpriteDef star_defs[] = {
+        { 0.20f,  0.95f, 18.0f, 0.0f, 0.0f },
+        { 1.30f,  0.72f, 22.0f, 0.0f, 0.0f },
+        { 2.45f,  0.84f, 20.0f, 0.0f, 0.0f },
+        { 3.60f,  0.66f, 24.0f, 0.0f, 0.0f },
+        { 4.55f,  0.90f, 18.0f, 0.0f, 0.0f },
+        { 5.60f,  0.76f, 20.0f, 0.0f, 0.0f },
+    };
+    static const SkySpriteDef cloud_defs[] = {
+        { 0.15f, 0.48f, 62.0f,  0.014f, 0.23f },
+        { 1.65f, 0.41f, 54.0f, -0.010f, 0.19f },
+        { 3.20f, 0.52f, 68.0f,  0.012f, 0.17f },
+        { 4.85f, 0.37f, 58.0f, -0.008f, 0.21f },
+    };
+    int before = ctx->n_quads;
+    Vec3 sun_dir;
+    Vec3 moon_dir;
+    float daylight;
+    float night;
+    float sky_shift;
+
+    if (!ctx)
+        return 0;
+
+    sun_dir = sun_direction_for_time(time_seconds);
+    moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
+    daylight = smoothstepf(-0.18f, 0.08f, sun_dir.y);
+    night = 1.0f - daylight;
+    update_sky_palette(ctx, sun_dir);
+
+    sky_shift = ctx->current_camera.pitch * 4.5f;
+    push_screen_textured_quad(ctx,
+                              0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                              0.0f, -1.5f - sky_shift,
+                              16.0f, 14.5f - sky_shift,
+                              TEX_TILE_SKY, 0);
+
+    if (night > 0.2f) {
+        for (size_t i = 0; i < sizeof(star_defs) / sizeof(star_defs[0]); i++) {
+            draw_sky_sprite(ctx,
+                            direction_from_azimuth_elevation(star_defs[i].azimuth,
+                                                             star_defs[i].elevation),
+                            star_defs[i].size_px,
+                            TEX_TILE_STARS);
+        }
+    }
+
+    if (sun_dir.y > 0.0f)
+        draw_sky_sprite(ctx, sun_dir, 34.0f, TEX_TILE_SUN);
+    if (moon_dir.y > 0.0f)
+        draw_sky_sprite(ctx, moon_dir, 30.0f, TEX_TILE_MOON);
+
+    for (size_t i = 0; i < sizeof(cloud_defs) / sizeof(cloud_defs[0]); i++) {
+        float azimuth = cloud_defs[i].azimuth + cloud_defs[i].drift * time_seconds;
+        float elevation = cloud_defs[i].elevation +
+                          0.04f * sinf(time_seconds * cloud_defs[i].wobble + (float)i * 1.7f);
+
+        draw_sky_sprite(ctx,
+                        direction_from_azimuth_elevation(azimuth, elevation),
+                        cloud_defs[i].size_px,
+                        TEX_TILE_CLOUD);
+    }
+
+    return ctx->n_quads - before;
+}
+
 bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
@@ -1192,15 +1499,10 @@ bool renderer_draw_crosshair(RenderContext *ctx)
     const float half = 8.0f;
     const float x0 = cx - half, y0 = cy - half;
     const float x1 = cx + half, y1 = cy + half;
-    const float tile = 16.0f;
 
-    RenderQuad quad = {0};
-    quad.texture_id = TEX_TILE_CROSSHAIR;
-    quad.flags = QUAD_FLAG_TEX | QUAD_FLAG_ALPHA_KEY;
-    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f,  0.0f,  1.0f };
-    quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, tile,  0.0f,  1.0f };
-    quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, tile,  tile,  1.0f };
-    quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, 0.0f,  tile,  1.0f };
-
-    return renderer_push_quad(ctx, &quad);
+    return push_screen_textured_quad(ctx,
+                                     x0, y0, x1, y1,
+                                     0.0f, 0.0f, 16.0f, 16.0f,
+                                     TEX_TILE_CROSSHAIR,
+                                     QUAD_FLAG_ALPHA_KEY);
 }

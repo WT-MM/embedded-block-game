@@ -553,23 +553,32 @@ module voxel_gpu (
         scan_visible_rr  = 1'b0;
         vga_vs_d         = 1'b1;
 
-        palette[0]  = 24'h202028;
-        palette[1]  = 24'hFF0000;
-        palette[2]  = 24'h00FF00;
-        palette[3]  = 24'h0080FF;
-        palette[4]  = 24'hFFFF00;
+        palette[0]  = 24'h101018;
+        palette[1]  = 24'h6BA43A;
+        palette[2]  = 24'h8B6341;
+        palette[3]  = 24'h6F5737;
+        palette[4]  = 24'h7C7C7C;
         palette[5]  = 24'hFFFFFF;
-        palette[6]  = 24'h00FFFF;
-        palette[7]  = 24'hFF00FF;
-        palette[8]  = 24'h808080;
-        palette[9]  = 24'h804000;
-        palette[10] = 24'h80FF00;
-        palette[11] = 24'h0000FF;
-        palette[12] = 24'hFF8000;
-        palette[13] = 24'hFFFFFF;
-        palette[14] = 24'h404040;
-        palette[15] = 24'hFFFF80;
-        for (i = 16; i < 256; i = i + 1)
+        palette[6]  = 24'hFF4040;
+        palette[7]  = 24'h40A0FF;
+        palette[8]  = 24'hFFD040;
+        palette[9]  = 24'h5C8634;
+        palette[10] = 24'h6A4A2C;
+        palette[11] = 24'h9D7B4D;
+        palette[12] = 24'h533823;
+        palette[13] = 24'h989898;
+        palette[14] = 24'h5C5C5C;
+        palette[15] = 24'hA77952;
+        palette[16] = 24'h59412A;
+        palette[17] = 24'h4F782D;
+        palette[18] = 24'h84BA57;
+        palette[19] = 24'h6F4F32;
+        palette[20] = 24'hAA815A;
+        palette[21] = 24'h886A44;
+        palette[22] = 24'h503B24;
+        palette[23] = 24'h636363;
+        palette[24] = 24'h9A9A9A;
+        for (i = 25; i < 256; i = i + 1)
             palette[i] = {i[7:0], i[7:0], i[7:0]};
 
         for (i = 0; i < FIFO_DEPTH; i = i + 1)

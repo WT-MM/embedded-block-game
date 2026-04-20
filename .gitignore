@@ -4,6 +4,8 @@
 *.bak
 *.swp
 *.swo
+__pycache__/
+*.pyc
 
 # verilator
 obj_dir/
@@ -55,6 +57,12 @@ sw/tests/renderer_static_test
 sw/tests/renderer_quad_test
 sw/tests/renderer_edge_test
 sw/game
+
+# --- Virtual GPU local artifacts ---
+virtual_hw/*.sock
+virtual_hw/test_frames/
+virtual_hw/.venv/
+virtual_hw/*.egg-info/
 
 # --- Filesystem mount stub from old workflow ---
 usr/

@@ -1,79 +1,72 @@
 #include "block_types.h"
+
 #include <string.h>
 
-// The global registry that holds our block definitions
 BlockDescriptor BlockRegistry[NUM_BLOCK_TYPES];
 
-// A small internal texture registry to hold our generated textures
-// Extensible: Add more texture slots as you add things like "stone_bricks", "leaves", etc.
-typedef enum {
-    TEX_GREEN_GRASS = 0,
-    TEX_DIRT_BROWN,
-    TEX_WOOD_DARK_BROWN,
-    TEX_STONE_GREY,
-    NUM_TEXTURES
-} TextureID;
-
-Texture TextureRegistry[NUM_TEXTURES];
-
-// Helper function to fill a 16x16 texture with a solid RGB color
-static void generate_solid_texture(Texture* tex, uint8_t r, uint8_t g, uint8_t b) {
-    for (int y = 0; y < TEXTURE_HEIGHT; y++) {
-        for (int x = 0; x < TEXTURE_WIDTH; x++) {
-            tex->pixels[y][x].r = r;
-            tex->pixels[y][x].g = g;
-            tex->pixels[y][x].b = b;
-        }
-    }
+static void set_all_faces(BlockDescriptor *block, uint8_t tile_id)
+{
+    for (int i = 0; i < NUM_FACES; i++)
+        block->face_texture_ids[i] = tile_id;
 }
 
-// Helper function to assign the exact same texture to all 6 faces of a block
-static void set_all_faces(BlockDescriptor* block, Texture* tex) {
-    for (int i = 0; i < NUM_FACES; i++) {
-        block->face_textures[i] = tex;
-    }
-}
+void init_block_types(void)
+{
+    memset(BlockRegistry, 0, sizeof(BlockRegistry));
 
-void init_block_types() {
-    // 1. Generate the actual 16x16 Texture Data
-    generate_solid_texture(&TextureRegistry[TEX_GREEN_GRASS], 34, 139, 34);     // Forest Green
-    generate_solid_texture(&TextureRegistry[TEX_DIRT_BROWN], 139, 69, 19);      // Light/Dirt Brown
-    generate_solid_texture(&TextureRegistry[TEX_WOOD_DARK_BROWN], 101, 67, 33); // Dark Wood Brown
-    generate_solid_texture(&TextureRegistry[TEX_STONE_GREY], 128, 128, 128);    // Neutral Grey
-
-    // 2. Initialize Air (Invisible, no textures)
     BlockRegistry[BLOCK_AIR].id = BLOCK_AIR;
     BlockRegistry[BLOCK_AIR].name = "Air";
-    set_all_faces(&BlockRegistry[BLOCK_AIR], NULL);
 
-    // 3. Initialize Dirt
     BlockRegistry[BLOCK_DIRT].id = BLOCK_DIRT;
     BlockRegistry[BLOCK_DIRT].name = "Dirt";
-    set_all_faces(&BlockRegistry[BLOCK_DIRT], &TextureRegistry[TEX_DIRT_BROWN]);
+    set_all_faces(&BlockRegistry[BLOCK_DIRT], TEX_TILE_DIRT);
 
-    // 4. Initialize Wood
     BlockRegistry[BLOCK_WOOD].id = BLOCK_WOOD;
     BlockRegistry[BLOCK_WOOD].name = "Wood";
-    set_all_faces(&BlockRegistry[BLOCK_WOOD], &TextureRegistry[TEX_WOOD_DARK_BROWN]);
+    set_all_faces(&BlockRegistry[BLOCK_WOOD], TEX_TILE_WOOD_SIDE);
+    BlockRegistry[BLOCK_WOOD].face_texture_ids[FACE_TOP] = TEX_TILE_WOOD_TOP;
+    BlockRegistry[BLOCK_WOOD].face_texture_ids[FACE_BOTTOM] = TEX_TILE_WOOD_TOP;
 
-    // 5. Initialize Stone
     BlockRegistry[BLOCK_STONE].id = BLOCK_STONE;
     BlockRegistry[BLOCK_STONE].name = "Stone";
-    set_all_faces(&BlockRegistry[BLOCK_STONE], &TextureRegistry[TEX_STONE_GREY]);
+    set_all_faces(&BlockRegistry[BLOCK_STONE], TEX_TILE_STONE);
 
-    // 6. Initialize Grass (Special case: different textures on different faces)
     BlockRegistry[BLOCK_GRASS].id = BLOCK_GRASS;
     BlockRegistry[BLOCK_GRASS].name = "Grass";
-    
-    // Top is green
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_TOP] = &TextureRegistry[TEX_GREEN_GRASS];
-    
-    // Bottom is dirt
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_BOTTOM] = &TextureRegistry[TEX_DIRT_BROWN];
-    
-    // Sides are dirt (For a true Minecraft feel, you might later make a specific "grass_side" texture)
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_FRONT] = &TextureRegistry[TEX_DIRT_BROWN];
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_BACK]  = &TextureRegistry[TEX_DIRT_BROWN];
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_LEFT]  = &TextureRegistry[TEX_DIRT_BROWN];
-    BlockRegistry[BLOCK_GRASS].face_textures[FACE_RIGHT] = &TextureRegistry[TEX_DIRT_BROWN];
+    set_all_faces(&BlockRegistry[BLOCK_GRASS], TEX_TILE_GRASS_SIDE);
+    BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_TOP] = TEX_TILE_GRASS_TOP;
+    BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_BOTTOM] = TEX_TILE_DIRT;
+}
+
+uint8_t block_face_texture_id(BlockID id, BlockFace face)
+{
+    if (id <= BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return 0;
+    if (face < 0 || face >= NUM_FACES)
+        return 0;
+
+    return BlockRegistry[id].face_texture_ids[face];
+}
+
+uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
+{
+    if (lod <= 0)
+        return tile_id;
+
+    switch (tile_id) {
+    case TEX_TILE_GRASS_TOP:
+        return lod >= 2 ? TEX_TILE_GRASS_TOP_MIP2 : TEX_TILE_GRASS_TOP_MIP1;
+    case TEX_TILE_GRASS_SIDE:
+        return lod >= 2 ? TEX_TILE_GRASS_SIDE_MIP2 : TEX_TILE_GRASS_SIDE_MIP1;
+    case TEX_TILE_DIRT:
+        return lod >= 2 ? TEX_TILE_DIRT_MIP2 : TEX_TILE_DIRT_MIP1;
+    case TEX_TILE_STONE:
+        return lod >= 2 ? TEX_TILE_STONE_MIP2 : TEX_TILE_STONE_MIP1;
+    case TEX_TILE_WOOD_SIDE:
+        return lod >= 2 ? TEX_TILE_WOOD_SIDE_MIP2 : TEX_TILE_WOOD_SIDE_MIP1;
+    case TEX_TILE_WOOD_TOP:
+        return lod >= 2 ? TEX_TILE_WOOD_TOP_MIP2 : TEX_TILE_WOOD_TOP_MIP1;
+    default:
+        return tile_id;
+    }
 }

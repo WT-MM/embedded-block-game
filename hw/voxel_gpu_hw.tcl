@@ -42,6 +42,8 @@ set_fileset_property QUARTUS_SYNTH TOP_LEVEL voxel_gpu
 set_fileset_property QUARTUS_SYNTH ENABLE_RELATIVE_INCLUDE_PATHS false
 set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
 add_fileset_file voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu.sv TOP_LEVEL_FILE
+add_fileset_file textures.hex HEX PATH textures.hex
+add_fileset_file recip_lut.hex HEX PATH recip_lut.hex
 
 
 # 
@@ -141,4 +143,3 @@ add_interface_port vga VGA_HS hs Output 1
 add_interface_port vga VGA_R r Output 8
 add_interface_port vga VGA_SYNC_n sync_n Output 1
 add_interface_port vga VGA_VS vs Output 1
-

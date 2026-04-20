@@ -7,15 +7,16 @@
 //     via 2x2 pixel doubling.
 //   * CLEAR command clears the back buffer to palette index 0.
 //   * FLIP swaps front/back on the next vsync.
-//   * Descriptor fetch consumes 16 FIFO words (64 bytes) per quad.
-//   * Rasterizer currently supports flat-color quads with optional z-test:
+//   * Descriptor fetch consumes 16 FIFO words for flat quads and 32 for
+//     textured quads with a UV block.
+//   * Rasterizer supports flat-color and textured quads with optional z-test:
 //       - bbox walk
 //       - 4 edge-function inclusion test
 //       - 16-bit z-buffer compare/write when QUAD_FLAG_ZTEST is set
-//       - writes tex_or_color as a palette index
+//       - nearest-neighbor texture lookup from textures.hex when QUAD_FLAG_TEX
+//       - alpha-key skip when QUAD_FLAG_ALPHA_KEY and sampled texel is 0
 //
 // Intentionally not implemented yet:
-//   * Texturing / UV block consumption
 //   * Interrupts / waitrequest backpressure
 
 module voxel_gpu (
@@ -49,11 +50,18 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
-    localparam int FB_WIDTH     = 320;
-    localparam int FB_HEIGHT    = 240;
-    localparam int FB_PIXELS    = FB_WIDTH * FB_HEIGHT;
-    localparam int FIFO_DEPTH   = 2048;
-    localparam int QUAD_WORDS   = 16;
+    localparam int FB_WIDTH       = 320;
+    localparam int FB_HEIGHT      = 240;
+    localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
+    localparam int FIFO_DEPTH     = 2048;
+    localparam int BASE_QUAD_WORDS = 16;
+    localparam int UV_QUAD_WORDS   = 16;
+    localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
+    localparam int TEXTURE_BYTES   = 64 * 16 * 16;
+    localparam logic [2:0] DRAW_FLUSH_CYCLES = 3'd4;
+    localparam int FLAG_TEX_BIT        = 0;
+    localparam int FLAG_ZTEST_BIT      = 1;
+    localparam int FLAG_ALPHA_KEY_BIT  = 2;
 
     typedef enum logic [2:0] {
         ST_IDLE       = 3'd0,
@@ -76,6 +84,8 @@ module voxel_gpu (
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
+    (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
+    (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;
@@ -84,26 +94,73 @@ module voxel_gpu (
     wire         fifo_empty = (fifo_count == 0);
     wire [31:0]  fifo_head  = fifo_mem[fifo_rd_ptr];
 
-    logic [31:0] desc_words [0:QUAD_WORDS-1];
-    logic  [4:0] fetch_count;
+    logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
+    logic  [5:0] fetch_count;
+    logic  [2:0] draw_flush_count;
 
     logic [16:0] clear_addr;
     logic  [9:0] draw_x_min, draw_x_max, draw_x_cur;
     logic  [8:0] draw_y_min;
     logic  [8:0] draw_y_max, draw_y_cur;
-    logic  [7:0] draw_color;
+    logic  [7:0] draw_tex_or_color;
     logic  [7:0] draw_flags;
     logic [15:0] draw_z0;
     logic signed [15:0] draw_dz_dx;
     logic signed [15:0] draw_dz_dy;
+    logic signed [31:0] draw_uw_0;
+    logic signed [31:0] draw_uw_dx;
+    logic signed [31:0] draw_uw_dy;
+    logic signed [31:0] draw_vw_0;
+    logic signed [31:0] draw_vw_dx;
+    logic signed [31:0] draw_vw_dy;
+    logic signed [31:0] draw_iw_0;
+    logic signed [31:0] draw_iw_dx;
+    logic signed [31:0] draw_iw_dy;
     logic signed [31:0] edge_A [0:3];
     logic signed [31:0] edge_B [0:3];
     logic signed [31:0] edge_C [0:3];
+    logic        pipe0_valid;
+    logic        pipe0_inside;
+    logic        pipe0_ztest;
+    logic        pipe0_textured;
+    logic        pipe0_alpha_key;
+    logic  [7:0] pipe0_tex_or_color;
+    logic [16:0] pipe0_addr;
+    logic [15:0] pipe0_z;
+    logic signed [31:0] pipe0_uw_q;
+    logic signed [31:0] pipe0_vw_q;
+    logic [31:0] pipe0_iw_q;
+    logic        pipe1_valid;
+    logic        pipe1_inside;
+    logic        pipe1_ztest;
+    logic        pipe1_textured;
+    logic        pipe1_alpha_key;
+    logic  [7:0] pipe1_tex_or_color;
+    logic [16:0] pipe1_addr;
+    logic [15:0] pipe1_z;
+    logic signed [31:0] pipe1_uw_q;
+    logic signed [31:0] pipe1_vw_q;
+    logic [31:0] pipe1_w_q;
+    logic        pipe2_valid;
+    logic        pipe2_inside;
+    logic        pipe2_ztest;
+    logic        pipe2_textured;
+    logic        pipe2_alpha_key;
+    logic  [7:0] pipe2_tex_or_color;
+    logic [16:0] pipe2_addr;
+    logic [15:0] pipe2_z;
+    logic [15:0] pipe2_z_ref;
+    logic [13:0] pipe2_tex_addr;
     logic        draw_pipe_valid;
     logic        draw_pipe_inside;
     logic        draw_pipe_ztest;
+    logic        draw_pipe_textured;
+    logic        draw_pipe_alpha_key;
+    logic  [7:0] draw_pipe_tex_or_color;
     logic [16:0] draw_pipe_addr;
     logic [15:0] draw_pipe_z;
+    logic [15:0] draw_pipe_z_ref;
+    logic  [7:0] tex_rd_data;
 
     logic [10:0] hcount;
     logic  [9:0] vcount;
@@ -131,7 +188,9 @@ module voxel_gpu (
 
     wire wr = chipselect & write;
     wire fifo_push_req = wr && (address >= ADDR_FIFO_LO) && (address < ADDR_FIFO_HI) && !fifo_full;
-    wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < 5'd16) && !fifo_empty;
+    wire desc_has_uv = desc_flags[FLAG_TEX_BIT];
+    wire [5:0] fetch_target_words = ((fetch_count >= 6'd16) && desc_has_uv) ? 6'd32 : 6'd16;
+    wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
     wire engine_busy = (state != ST_IDLE);
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
 
@@ -146,8 +205,21 @@ module voxel_gpu (
     wire [15:0] desc_z0 = desc_words[14][15:0];
     wire signed [15:0] desc_dz_dx = $signed(desc_words[14][31:16]);
     wire signed [15:0] desc_dz_dy = $signed(desc_words[15][15:0]);
-    wire [7:0] desc_color = desc_words[15][23:16];
+    wire [7:0] desc_tex_or_color = desc_words[15][23:16];
     wire [7:0] desc_flags = desc_words[15][31:24];
+    // Perspective-correct UV: 9 Q16.16 plane coefficients packed into the
+    // second 64-byte block (words 16..24). One_over_w is guaranteed positive
+    // at any pixel in front of the near plane — software does not emit quads
+    // that touch w <= 0.
+    wire signed [31:0] desc_uw_0    = $signed(desc_words[16]);
+    wire signed [31:0] desc_uw_dx   = $signed(desc_words[17]);
+    wire signed [31:0] desc_uw_dy   = $signed(desc_words[18]);
+    wire signed [31:0] desc_vw_0    = $signed(desc_words[19]);
+    wire signed [31:0] desc_vw_dx   = $signed(desc_words[20]);
+    wire signed [31:0] desc_vw_dy   = $signed(desc_words[21]);
+    wire signed [31:0] desc_iw_0    = $signed(desc_words[22]);
+    wire signed [31:0] desc_iw_dx   = $signed(desc_words[23]);
+    wire signed [31:0] desc_iw_dy   = $signed(desc_words[24]);
 
     wire signed [10:0] draw_x_s = $signed({1'b0, draw_x_cur});
     wire signed  [9:0] draw_y_s = $signed({1'b0, draw_y_cur});
@@ -183,8 +255,50 @@ module voxel_gpu (
                                      ($signed(draw_dz_dx) * draw_dx_s) +
                                      ($signed(draw_dz_dy) * draw_dy_s);
     wire [15:0] draw_z_value = clamp_z(draw_z_eval);
+    wire signed [63:0] draw_uw_base = $signed({{32{draw_uw_0[31]}}, draw_uw_0});
+    wire signed [63:0] draw_vw_base = $signed({{32{draw_vw_0[31]}}, draw_vw_0});
+    wire signed [63:0] draw_iw_base = $signed({{32{draw_iw_0[31]}}, draw_iw_0});
+    wire signed [63:0] draw_uw_eval = draw_uw_base +
+                                      ($signed(draw_uw_dx) * draw_dx_s) +
+                                      ($signed(draw_uw_dy) * draw_dy_s);
+    wire signed [63:0] draw_vw_eval = draw_vw_base +
+                                      ($signed(draw_vw_dx) * draw_dx_s) +
+                                      ($signed(draw_vw_dy) * draw_dy_s);
+    wire signed [63:0] draw_iw_eval = draw_iw_base +
+                                      ($signed(draw_iw_dx) * draw_dx_s) +
+                                      ($signed(draw_iw_dy) * draw_dy_s);
+    wire signed [31:0] draw_uw_q = clamp_s32(draw_uw_eval);
+    wire signed [31:0] draw_vw_q = clamp_s32(draw_vw_eval);
+    wire [31:0] draw_iw_q = clamp_pos_u32(draw_iw_eval);
+    wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
+    wire [15:0] pipe0_iw_phase = recip_lut_phase(pipe0_iw_q);
+    wire [10:0] pipe0_iw_lut_idx = {1'b0, pipe0_iw_phase[15:6]};
+    wire [5:0] pipe0_iw_lut_frac = pipe0_iw_phase[5:0];
+    wire [31:0] pipe0_w_norm_lo = recip_lut[pipe0_iw_lut_idx];
+    wire [31:0] pipe0_w_norm_hi = recip_lut[pipe0_iw_lut_idx + 11'd1];
+    wire [31:0] pipe0_w_norm_delta = pipe0_w_norm_lo - pipe0_w_norm_hi;
+    wire [37:0] pipe0_w_interp_prod = pipe0_w_norm_delta * pipe0_iw_lut_frac;
+    wire [37:0] pipe0_w_interp_step_ext = (pipe0_w_interp_prod + 38'd32) >> 6;
+    wire [31:0] pipe0_w_interp_step = pipe0_w_interp_step_ext[31:0];
+    wire [31:0] pipe0_w_norm_q = pipe0_w_norm_lo - pipe0_w_interp_step;
+    wire [31:0] pipe0_w_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
+                            (pipe0_iw_msb >= 6'd16) ?
+                            (pipe0_w_norm_q >> (pipe0_iw_msb - 6'd16)) :
+                            (pipe0_w_norm_q << (6'd16 - pipe0_iw_msb));
+    wire signed [63:0] pipe1_u_prod = $signed(pipe1_uw_q) * $signed(pipe1_w_q);
+    wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
+    wire [3:0] pipe1_tex_u = clamp_tex_coord(pipe1_u_prod);
+    wire [3:0] pipe1_tex_v = clamp_tex_coord(pipe1_v_prod);
+    wire [13:0] pipe1_tex_addr = pipe1_textured ?
+                                 {pipe1_tex_or_color[5:0], pipe1_tex_v, pipe1_tex_u} :
+                                 14'd0;
+    wire  [7:0] draw_pipe_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
+    wire draw_pipe_transparent = draw_pipe_textured &&
+                                 draw_pipe_alpha_key &&
+                                 (draw_pipe_color == 8'd0);
     wire draw_commit_pass = draw_pipe_inside &&
-                            (!draw_pipe_ztest || (draw_pipe_z < z_rd_data));
+                            !draw_pipe_transparent &&
+                            (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
 
     wire [31:0] status_word = {
         12'h0,
@@ -235,6 +349,71 @@ module voxel_gpu (
                 clamp_z = 16'hFFFF;
             else
                 clamp_z = value[15:0];
+        end
+    endfunction
+
+    function automatic signed [31:0] clamp_s32(input logic signed [63:0] value);
+        begin
+            if (value > 64'sh7FFF_FFFF)
+                clamp_s32 = 32'sh7FFF_FFFF;
+            else if (value < -64'sh8000_0000)
+                clamp_s32 = -32'sh8000_0000;
+            else
+                clamp_s32 = value[31:0];
+        end
+    endfunction
+
+    function automatic [31:0] clamp_pos_u32(input logic signed [63:0] value);
+        begin
+            if (value <= 0)
+                clamp_pos_u32 = 32'd0;
+            else if (value > 64'sh7FFF_FFFF)
+                clamp_pos_u32 = 32'h7FFF_FFFF;
+            else
+                clamp_pos_u32 = value[31:0];
+        end
+    endfunction
+
+    function automatic [5:0] msb_index32(input logic [31:0] value);
+        integer bit_idx;
+        logic found;
+        begin
+            msb_index32 = 6'd0;
+            found = 1'b0;
+            for (bit_idx = 31; bit_idx >= 0; bit_idx = bit_idx - 1) begin
+                if (!found && value[bit_idx]) begin
+                    msb_index32 = bit_idx[5:0];
+                    found = 1'b1;
+                end
+            end
+        end
+    endfunction
+
+    function automatic [3:0] clamp_tex_coord(input logic signed [63:0] value);
+        begin
+            if (value <= 64'sd0)
+                clamp_tex_coord = 4'd0;
+            else if (value >= 64'sh0000_0010_0000_0000)
+                clamp_tex_coord = 4'd15;
+            else
+                clamp_tex_coord = value[35:32];
+        end
+    endfunction
+
+    function automatic [15:0] recip_lut_phase(input logic [31:0] value);
+        logic [5:0] msb;
+        logic [31:0] shifted_q;
+        begin
+            if (value == 32'd0) begin
+                recip_lut_phase = 16'd0;
+            end else begin
+                msb = msb_index32(value);
+                if (msb >= 6'd16)
+                    shifted_q = value >> (msb - 6'd16);
+                else
+                    shifted_q = value << (6'd16 - msb);
+                recip_lut_phase = shifted_q[15:0];
+            end
         end
     endfunction
 
@@ -304,7 +483,8 @@ module voxel_gpu (
         fifo_wr_ptr      = 11'd0;
         fifo_rd_ptr      = 11'd0;
         fifo_count       = 12'd0;
-        fetch_count      = 5'd0;
+        fetch_count      = 6'd0;
+        draw_flush_count = 3'd0;
         clear_addr       = 17'd0;
         draw_x_min       = 10'd0;
         draw_x_max       = 10'd0;
@@ -312,44 +492,107 @@ module voxel_gpu (
         draw_y_min       = 9'd0;
         draw_y_max       = 9'd0;
         draw_y_cur       = 9'd0;
-        draw_color       = 8'd0;
+        draw_tex_or_color = 8'd0;
         draw_flags       = 8'd0;
         draw_z0          = 16'd0;
         draw_dz_dx       = 16'sd0;
         draw_dz_dy       = 16'sd0;
+        draw_uw_0        = 32'sd0;
+        draw_uw_dx       = 32'sd0;
+        draw_uw_dy       = 32'sd0;
+        draw_vw_0        = 32'sd0;
+        draw_vw_dx       = 32'sd0;
+        draw_vw_dy       = 32'sd0;
+        draw_iw_0        = 32'sd0;
+        draw_iw_dx       = 32'sd0;
+        draw_iw_dy       = 32'sd0;
+        pipe0_valid      = 1'b0;
+        pipe0_inside     = 1'b0;
+        pipe0_ztest      = 1'b0;
+        pipe0_textured   = 1'b0;
+        pipe0_alpha_key  = 1'b0;
+        pipe0_tex_or_color = 8'd0;
+        pipe0_addr       = 17'd0;
+        pipe0_z          = 16'd0;
+        pipe0_uw_q       = 32'sd0;
+        pipe0_vw_q       = 32'sd0;
+        pipe0_iw_q       = 32'd0;
+        pipe1_valid      = 1'b0;
+        pipe1_inside     = 1'b0;
+        pipe1_ztest      = 1'b0;
+        pipe1_textured   = 1'b0;
+        pipe1_alpha_key  = 1'b0;
+        pipe1_tex_or_color = 8'd0;
+        pipe1_addr       = 17'd0;
+        pipe1_z          = 16'd0;
+        pipe1_uw_q       = 32'sd0;
+        pipe1_vw_q       = 32'sd0;
+        pipe1_w_q        = 32'd0;
+        pipe2_valid      = 1'b0;
+        pipe2_inside     = 1'b0;
+        pipe2_ztest      = 1'b0;
+        pipe2_textured   = 1'b0;
+        pipe2_alpha_key  = 1'b0;
+        pipe2_tex_or_color = 8'd0;
+        pipe2_addr       = 17'd0;
+        pipe2_z          = 16'd0;
+        pipe2_z_ref      = 16'd0;
+        pipe2_tex_addr   = 14'd0;
         draw_pipe_valid  = 1'b0;
         draw_pipe_inside = 1'b0;
         draw_pipe_ztest  = 1'b0;
+        draw_pipe_textured = 1'b0;
+        draw_pipe_alpha_key = 1'b0;
+        draw_pipe_tex_or_color = 8'd0;
         draw_pipe_addr   = 17'd0;
         draw_pipe_z      = 16'd0;
+        draw_pipe_z_ref  = 16'd0;
+        tex_rd_data      = 8'd0;
         scan_idx_r       = 8'd0;
         scan_visible_r   = 1'b0;
         scan_visible_rr  = 1'b0;
         vga_vs_d         = 1'b1;
 
-        palette[0]  = 24'h202028;
-        palette[1]  = 24'hFF0000;
-        palette[2]  = 24'h00FF00;
-        palette[3]  = 24'h0080FF;
-        palette[4]  = 24'hFFFF00;
+        palette[0]  = 24'h101018;
+        palette[1]  = 24'h6BA43A;
+        palette[2]  = 24'h8B6341;
+        palette[3]  = 24'h6F5737;
+        palette[4]  = 24'h7C7C7C;
         palette[5]  = 24'hFFFFFF;
-        palette[6]  = 24'h00FFFF;
-        palette[7]  = 24'hFF00FF;
-        palette[8]  = 24'h808080;
-        palette[9]  = 24'h804000;
-        palette[10] = 24'h80FF00;
-        palette[11] = 24'h0000FF;
-        palette[12] = 24'hFF8000;
-        palette[13] = 24'hFFFFFF;
-        palette[14] = 24'h404040;
-        palette[15] = 24'hFFFF80;
-        for (i = 16; i < 256; i = i + 1)
+        palette[6]  = 24'hFF4040;
+        palette[7]  = 24'h40A0FF;
+        palette[8]  = 24'hFFD040;
+        palette[9]  = 24'h5C8634;
+        palette[10] = 24'h6A4A2C;
+        palette[11] = 24'h9D7B4D;
+        palette[12] = 24'h533823;
+        palette[13] = 24'h989898;
+        palette[14] = 24'h5C5C5C;
+        palette[15] = 24'hA77952;
+        palette[16] = 24'h59412A;
+        palette[17] = 24'h4F782D;
+        palette[18] = 24'h84BA57;
+        palette[19] = 24'h6F4F32;
+        palette[20] = 24'hAA815A;
+        palette[21] = 24'h886A44;
+        palette[22] = 24'h503B24;
+        palette[23] = 24'h636363;
+        palette[24] = 24'h9A9A9A;
+        for (i = 25; i < 256; i = i + 1)
             palette[i] = {i[7:0], i[7:0], i[7:0]};
 
         for (i = 0; i < FIFO_DEPTH; i = i + 1)
             fifo_mem[i] = 32'h0;
 
-        for (i = 0; i < QUAD_WORDS; i = i + 1)
+        /*
+         * textures.hex always contains the full 64 * 16 * 16 atlas, so avoid
+         * an explicit 16k-entry zero-fill loop here. Quartus tries to
+         * elaborate that loop and trips its 5000-iteration limit.
+         */
+        $readmemh("textures.hex", texture_mem);
+        $readmemh("recip_lut.hex", recip_lut);
+
+        for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
 
         for (i = 0; i < 4; i = i + 1) begin
@@ -371,10 +614,10 @@ module voxel_gpu (
         end
         draw_addr = ({8'd0, draw_y_cur} * 17'd320) + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
-        fb_wr_data = draw_color;
+        fb_wr_data = draw_pipe_color;
         fb0_wr_en = 1'b0;
         fb1_wr_en = 1'b0;
-        z_rd_addr = draw_addr;
+        z_rd_addr = pipe0_addr;
         z_wr_addr = draw_pipe_addr;
         z_wr_data = draw_pipe_z;
         z_wr_en   = 1'b0;
@@ -396,19 +639,17 @@ module voxel_gpu (
             ST_DRAW_FLUSH: begin
                 if (draw_pipe_valid && draw_commit_pass) begin
                     fb_wr_addr = draw_pipe_addr;
-                    fb_wr_data = draw_color;
+                    fb_wr_data = draw_pipe_color;
                     if (front_sel)
                         fb0_wr_en = 1'b1;
                     else
                         fb1_wr_en = 1'b1;
                 end
 
-                if (draw_pipe_valid && draw_pipe_inside && draw_pipe_ztest) begin
-                    if (draw_pipe_z < z_rd_data) begin
-                        z_wr_en = 1'b1;
-                        z_wr_addr = draw_pipe_addr;
-                        z_wr_data = draw_pipe_z;
-                    end
+                if (draw_pipe_valid && draw_commit_pass && draw_pipe_ztest) begin
+                    z_wr_en = 1'b1;
+                    z_wr_addr = draw_pipe_addr;
+                    z_wr_data = draw_pipe_z;
                 end
             end
 
@@ -417,6 +658,7 @@ module voxel_gpu (
     end
 
     always_ff @(posedge clk) begin
+        tex_rd_data <= texture_mem[pipe2_tex_addr];
         vga_vs_d <= VGA_VS;
 
         if (front_sel)
@@ -441,7 +683,8 @@ module voxel_gpu (
             fifo_wr_ptr      <= 11'd0;
             fifo_rd_ptr      <= 11'd0;
             fifo_count       <= 12'd0;
-            fetch_count      <= 5'd0;
+            fetch_count      <= 6'd0;
+            draw_flush_count <= 3'd0;
             clear_addr       <= 17'd0;
             draw_x_min       <= 10'd0;
             draw_x_max       <= 10'd0;
@@ -449,16 +692,61 @@ module voxel_gpu (
             draw_y_min       <= 9'd0;
             draw_y_max       <= 9'd0;
             draw_y_cur       <= 9'd0;
-            draw_color       <= 8'd0;
+            draw_tex_or_color <= 8'd0;
             draw_flags       <= 8'd0;
             draw_z0          <= 16'd0;
             draw_dz_dx       <= 16'sd0;
             draw_dz_dy       <= 16'sd0;
+            draw_uw_0        <= 32'sd0;
+            draw_uw_dx       <= 32'sd0;
+            draw_uw_dy       <= 32'sd0;
+            draw_vw_0        <= 32'sd0;
+            draw_vw_dx       <= 32'sd0;
+            draw_vw_dy       <= 32'sd0;
+            draw_iw_0        <= 32'sd0;
+            draw_iw_dx       <= 32'sd0;
+            draw_iw_dy       <= 32'sd0;
+            pipe0_valid      <= 1'b0;
+            pipe0_inside     <= 1'b0;
+            pipe0_ztest      <= 1'b0;
+            pipe0_textured   <= 1'b0;
+            pipe0_alpha_key  <= 1'b0;
+            pipe0_tex_or_color <= 8'd0;
+            pipe0_addr       <= 17'd0;
+            pipe0_z          <= 16'd0;
+            pipe0_uw_q       <= 32'sd0;
+            pipe0_vw_q       <= 32'sd0;
+            pipe0_iw_q       <= 32'd0;
+            pipe1_valid      <= 1'b0;
+            pipe1_inside     <= 1'b0;
+            pipe1_ztest      <= 1'b0;
+            pipe1_textured   <= 1'b0;
+            pipe1_alpha_key  <= 1'b0;
+            pipe1_tex_or_color <= 8'd0;
+            pipe1_addr       <= 17'd0;
+            pipe1_z          <= 16'd0;
+            pipe1_uw_q       <= 32'sd0;
+            pipe1_vw_q       <= 32'sd0;
+            pipe1_w_q        <= 32'd0;
+            pipe2_valid      <= 1'b0;
+            pipe2_inside     <= 1'b0;
+            pipe2_ztest      <= 1'b0;
+            pipe2_textured   <= 1'b0;
+            pipe2_alpha_key  <= 1'b0;
+            pipe2_tex_or_color <= 8'd0;
+            pipe2_addr       <= 17'd0;
+            pipe2_z          <= 16'd0;
+            pipe2_z_ref      <= 16'd0;
+            pipe2_tex_addr   <= 14'd0;
             draw_pipe_valid  <= 1'b0;
             draw_pipe_inside <= 1'b0;
             draw_pipe_ztest  <= 1'b0;
+            draw_pipe_textured <= 1'b0;
+            draw_pipe_alpha_key <= 1'b0;
+            draw_pipe_tex_or_color <= 8'd0;
             draw_pipe_addr   <= 17'd0;
             draw_pipe_z      <= 16'd0;
+            draw_pipe_z_ref  <= 16'd0;
             for (ei = 0; ei < 4; ei = ei + 1) begin
                 edge_A[ei] <= 32'sd0;
                 edge_B[ei] <= 32'sd0;
@@ -499,7 +787,7 @@ module voxel_gpu (
             if (fifo_push_req)
                 fifo_mem[fifo_wr_ptr] <= writedata;
             if (fifo_pop_req)
-                desc_words[fetch_count[3:0]] <= fifo_head;
+                desc_words[fetch_count[4:0]] <= fifo_head;
 
             case ({fifo_push_req, fifo_pop_req})
                 2'b10: begin
@@ -519,7 +807,11 @@ module voxel_gpu (
 
             case (state)
                 ST_IDLE: begin
-                    fetch_count <= 5'd0;
+                    fetch_count <= 6'd0;
+                    draw_flush_count <= 3'd0;
+                    pipe0_valid <= 1'b0;
+                    pipe1_valid <= 1'b0;
+                    pipe2_valid <= 1'b0;
                     draw_pipe_valid <= 1'b0;
                     if (clear_pending) begin
                         state         <= ST_CLEAR;
@@ -527,7 +819,7 @@ module voxel_gpu (
                         clear_addr    <= 17'd0;
                     end else if (ctrl_en && (fifo_count >= 12'd16)) begin
                         state       <= ST_FETCH;
-                        fetch_count <= 5'd0;
+                        fetch_count <= 6'd0;
                     end
                 end
 
@@ -540,18 +832,42 @@ module voxel_gpu (
                 end
 
                 ST_FETCH: begin
-                    if (fetch_count == 5'd16) begin
+                    if (fetch_count == fetch_target_words) begin
                         draw_x_min <= desc_x_min;
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
-                        draw_color <= desc_color;
+                        draw_tex_or_color <= desc_tex_or_color;
                         draw_flags <= desc_flags;
                         draw_z0    <= desc_z0;
                         draw_dz_dx <= desc_dz_dx;
                         draw_dz_dy <= desc_dz_dy;
+                        if (desc_has_uv) begin
+                            draw_uw_0  <= desc_uw_0;
+                            draw_uw_dx <= desc_uw_dx;
+                            draw_uw_dy <= desc_uw_dy;
+                            draw_vw_0  <= desc_vw_0;
+                            draw_vw_dx <= desc_vw_dx;
+                            draw_vw_dy <= desc_vw_dy;
+                            draw_iw_0  <= desc_iw_0;
+                            draw_iw_dx <= desc_iw_dx;
+                            draw_iw_dy <= desc_iw_dy;
+                        end else begin
+                            draw_uw_0  <= 32'sd0;
+                            draw_uw_dx <= 32'sd0;
+                            draw_uw_dy <= 32'sd0;
+                            draw_vw_0  <= 32'sd0;
+                            draw_vw_dx <= 32'sd0;
+                            draw_vw_dy <= 32'sd0;
+                            draw_iw_0  <= 32'sd0;
+                            draw_iw_dx <= 32'sd0;
+                            draw_iw_dy <= 32'sd0;
+                        end
+                        pipe0_valid <= 1'b0;
+                        pipe1_valid <= 1'b0;
+                        pipe2_valid <= 1'b0;
                         draw_pipe_valid <= 1'b0;
                         for (ei = 0; ei < 4; ei = ei + 1) begin
                             edge_A[ei] <= $signed(desc_words[2 + ei * 3]);
@@ -564,32 +880,95 @@ module voxel_gpu (
                         else
                             state <= ST_DRAW;
                     end else if (fifo_pop_req) begin
-                        fetch_count <= fetch_count + 5'd1;
+                        fetch_count <= fetch_count + 6'd1;
                     end
                 end
 
-                ST_DRAW: begin
-                    draw_pipe_valid  <= 1'b1;
-                    draw_pipe_inside <= draw_inside;
-                    draw_pipe_ztest  <= draw_flags[1];
-                    draw_pipe_addr   <= draw_addr;
-                    draw_pipe_z      <= draw_z_value;
+                ST_DRAW,
+                ST_DRAW_FLUSH: begin
+                    /*
+                     * Stage 0: raster eval at the current pixel.
+                     * Stage 1: reciprocal lookup / rescale.
+                     * Stage 2: texel address formation + delayed z reference.
+                     * Stage 3: commit metadata aligned with the texture ROM read.
+                     */
+                    pipe1_valid <= pipe0_valid;
+                    pipe1_inside <= pipe0_inside;
+                    pipe1_ztest <= pipe0_ztest;
+                    pipe1_textured <= pipe0_textured;
+                    pipe1_alpha_key <= pipe0_alpha_key;
+                    pipe1_tex_or_color <= pipe0_tex_or_color;
+                    pipe1_addr <= pipe0_addr;
+                    pipe1_z <= pipe0_z;
+                    pipe1_uw_q <= pipe0_uw_q;
+                    pipe1_vw_q <= pipe0_vw_q;
+                    pipe1_w_q <= pipe0_w_q;
 
-                    if (draw_x_cur == draw_x_max) begin
-                        if (draw_y_cur == draw_y_max) begin
-                            state <= ST_DRAW_FLUSH;
+                    pipe2_valid <= pipe1_valid;
+                    pipe2_inside <= pipe1_inside;
+                    pipe2_ztest <= pipe1_ztest;
+                    pipe2_textured <= pipe1_textured;
+                    pipe2_alpha_key <= pipe1_alpha_key;
+                    pipe2_tex_or_color <= pipe1_tex_or_color;
+                    pipe2_addr <= pipe1_addr;
+                    pipe2_z <= pipe1_z;
+                    pipe2_z_ref <= z_rd_data;
+                    pipe2_tex_addr <= pipe1_tex_addr;
+
+                    draw_pipe_valid <= pipe2_valid;
+                    draw_pipe_inside <= pipe2_inside;
+                    draw_pipe_ztest <= pipe2_ztest;
+                    draw_pipe_textured <= pipe2_textured;
+                    draw_pipe_alpha_key <= pipe2_alpha_key;
+                    draw_pipe_tex_or_color <= pipe2_tex_or_color;
+                    draw_pipe_addr <= pipe2_addr;
+                    draw_pipe_z <= pipe2_z;
+                    draw_pipe_z_ref <= pipe2_z_ref;
+
+                    if (state == ST_DRAW) begin
+                        pipe0_valid <= 1'b1;
+                        pipe0_inside <= draw_inside;
+                        pipe0_ztest <= draw_flags[FLAG_ZTEST_BIT];
+                        pipe0_textured <= draw_flags[FLAG_TEX_BIT];
+                        pipe0_alpha_key <= draw_flags[FLAG_ALPHA_KEY_BIT];
+                        pipe0_tex_or_color <= draw_tex_or_color;
+                        pipe0_addr <= draw_addr;
+                        pipe0_z <= draw_z_value;
+                        pipe0_uw_q <= draw_uw_q;
+                        pipe0_vw_q <= draw_vw_q;
+                        pipe0_iw_q <= draw_iw_q;
+
+                        if (draw_x_cur == draw_x_max) begin
+                            if (draw_y_cur == draw_y_max) begin
+                                state <= ST_DRAW_FLUSH;
+                                draw_flush_count <= DRAW_FLUSH_CYCLES;
+                            end else begin
+                                draw_x_cur <= draw_x_min;
+                                draw_y_cur <= draw_y_cur + 9'd1;
+                            end
                         end else begin
-                            draw_x_cur <= draw_x_min;
-                            draw_y_cur <= draw_y_cur + 9'd1;
+                            draw_x_cur <= draw_x_cur + 10'd1;
                         end
                     end else begin
-                        draw_x_cur <= draw_x_cur + 10'd1;
-                    end
-                end
+                        pipe0_valid <= 1'b0;
+                        pipe0_inside <= 1'b0;
+                        pipe0_ztest <= 1'b0;
+                        pipe0_textured <= 1'b0;
+                        pipe0_alpha_key <= 1'b0;
+                        pipe0_tex_or_color <= 8'd0;
+                        pipe0_addr <= 17'd0;
+                        pipe0_z <= 16'd0;
+                        pipe0_uw_q <= 32'sd0;
+                        pipe0_vw_q <= 32'sd0;
+                        pipe0_iw_q <= 32'd0;
 
-                ST_DRAW_FLUSH: begin
-                    draw_pipe_valid <= 1'b0;
-                    state <= ST_IDLE;
+                        if (draw_flush_count == 3'd1) begin
+                            draw_flush_count <= 3'd0;
+                            state <= ST_IDLE;
+                        end else begin
+                            draw_flush_count <= draw_flush_count - 3'd1;
+                        end
+                    end
                 end
 
                 default: state <= ST_IDLE;

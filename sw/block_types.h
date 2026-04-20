@@ -3,22 +3,6 @@
 
 #include <stdint.h>
 
-#define TEXTURE_WIDTH 16
-#define TEXTURE_HEIGHT 16
-
-// 1. Define the basic color structure
-typedef struct {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-} RGBColor;
-
-// 2. Define the Texture structure (16x16 array of RGB values)
-typedef struct {
-    RGBColor pixels[TEXTURE_HEIGHT][TEXTURE_WIDTH];
-} Texture;
-
-// 3. Define Face Indices for easy mapping
 typedef enum {
     FACE_TOP = 0,
     FACE_BOTTOM,
@@ -29,9 +13,8 @@ typedef enum {
     NUM_FACES
 } BlockFace;
 
-// 4. Define the Block Types (Extensible: just add more here before NUM_BLOCK_TYPES)
 typedef enum {
-    BLOCK_AIR = 0, // Always good to have an empty block type
+    BLOCK_AIR = 0,
     BLOCK_GRASS,
     BLOCK_WOOD,
     BLOCK_DIRT,
@@ -39,19 +22,39 @@ typedef enum {
     NUM_BLOCK_TYPES
 } BlockID;
 
-// 5. Define the Block Descriptor
-// We use pointers to Textures so multiple faces or blocks can share the same texture 
-// (e.g., Grass sides and Dirt use the same memory).
+typedef enum {
+    TEX_TILE_GRASS_TOP = 0,
+    TEX_TILE_GRASS_SIDE,
+    TEX_TILE_DIRT,
+    TEX_TILE_STONE,
+    TEX_TILE_WOOD_SIDE,
+    TEX_TILE_WOOD_TOP,
+    TEX_TILE_GRASS_TOP_MIP1 = 16,
+    TEX_TILE_GRASS_SIDE_MIP1,
+    TEX_TILE_DIRT_MIP1,
+    TEX_TILE_STONE_MIP1,
+    TEX_TILE_WOOD_SIDE_MIP1,
+    TEX_TILE_WOOD_TOP_MIP1,
+    TEX_TILE_GRASS_TOP_MIP2 = 24,
+    TEX_TILE_GRASS_SIDE_MIP2,
+    TEX_TILE_DIRT_MIP2,
+    TEX_TILE_STONE_MIP2,
+    TEX_TILE_WOOD_SIDE_MIP2,
+    TEX_TILE_WOOD_TOP_MIP2,
+    TEX_TILE_CROSSHAIR = 63,
+    NUM_TEXTURE_TILES = 64
+} TextureTileID;
+
 typedef struct {
     BlockID id;
-    const char* name;
-    Texture* face_textures[NUM_FACES]; // Array of 6 texture pointers
+    const char *name;
+    uint8_t face_texture_ids[NUM_FACES];
 } BlockDescriptor;
 
-// Global Registry Arrays
 extern BlockDescriptor BlockRegistry[NUM_BLOCK_TYPES];
 
-// Function Prototypes
-void init_block_types();
+void init_block_types(void);
+uint8_t block_face_texture_id(BlockID id, BlockFace face);
+uint8_t texture_lod_tile_id(uint8_t tile_id, int lod);
 
-#endif // BLOCK_TYPES_H
+#endif

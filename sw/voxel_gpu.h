@@ -92,8 +92,9 @@ struct voxel_status {
 
 /* ----- quad descriptor layout (§5.2) ----- */
 
-#define QUAD_FLAG_TEX    (1u << 0)   /* textured: second 64-byte UV block follows */
-#define QUAD_FLAG_ZTEST  (1u << 1)   /* enable z-test and z-write */
+#define QUAD_FLAG_TEX        (1u << 0)   /* textured: second 64-byte UV block follows */
+#define QUAD_FLAG_ZTEST      (1u << 1)   /* enable z-test and z-write */
+#define QUAD_FLAG_ALPHA_KEY  (1u << 2)   /* skip texels whose sampled palette index is 0 */
 
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */
@@ -109,12 +110,25 @@ struct quad_desc {
 	__u8  flags;                         /* QUAD_FLAG_* */
 } __attribute__((packed));
 
-/* Second 64-byte block — appended only when QUAD_FLAG_TEX is set */
+/*
+ * Second 64-byte block — appended only when QUAD_FLAG_TEX is set.
+ *
+ * Perspective-correct texturing: interpolate (u/w), (v/w), and (1/w) linearly
+ * in screen space, then divide per-pixel in hardware to recover true (u, v).
+ * Each plane is stored as (value at (x_min, y_min), dx gradient, dy gradient)
+ * in Q16.16. 1/w is positive for any pixel in front of the near plane.
+ */
 struct quad_desc_uv {
-	__s32 u0, v0;          /* Q16.16, UV at (x_min, y_min) */
-	__s32 du_dx, dv_dx;    /* Q16.16, UV gradients along x */
-	__s32 du_dy, dv_dy;    /* Q16.16, UV gradients along y */
-	__u8  reserved[40];    /* write 0 */
+	__s32 u_over_w_0;         /* Q16.16, u/w at (x_min, y_min) */
+	__s32 u_over_w_dx;        /* Q16.16, u/w gradient along x */
+	__s32 u_over_w_dy;        /* Q16.16, u/w gradient along y */
+	__s32 v_over_w_0;         /* Q16.16, v/w at (x_min, y_min) */
+	__s32 v_over_w_dx;        /* Q16.16, v/w gradient along x */
+	__s32 v_over_w_dy;        /* Q16.16, v/w gradient along y */
+	__s32 one_over_w_0;       /* Q16.16, 1/w at (x_min, y_min) */
+	__s32 one_over_w_dx;      /* Q16.16, 1/w gradient along x */
+	__s32 one_over_w_dy;      /* Q16.16, 1/w gradient along y */
+	__u8  reserved[28];       /* write 0 */
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct edge_coef) == 12, "edge_coef must be 12 bytes");

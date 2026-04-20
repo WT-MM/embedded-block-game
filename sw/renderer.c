@@ -1,24 +1,29 @@
 #include "renderer.h"
 #include "world.h"
+#include "gpu_transport.h"
 #include "voxel_gpu.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
 #include <string.h>
 
-#define DEV_PATH "/dev/voxel_gpu"
 #define NEAR_PLANE 0.1f
-#define VIEW_X_MIN (-0.5f)
-#define VIEW_Y_MIN (-0.5f)
-#define VIEW_X_MAX (SCREEN_WIDTH - 0.5f)
-#define VIEW_Y_MAX (SCREEN_HEIGHT - 0.5f)
+/*
+ * Projected screen coordinates live on pixel-box edges: the visible viewport
+ * spans [0, SCREEN_WIDTH] x [0, SCREEN_HEIGHT], while raster samples sit at
+ * pixel centers (x + 0.5, y + 0.5). Keep clipping in edge space, then bake the
+ * 0.5 center offset into edge/depth setup before descriptors hit the FPGA.
+ */
+#define VIEW_X_MIN 0.0f
+#define VIEW_Y_MIN 0.0f
+#define VIEW_X_MAX SCREEN_WIDTH
+#define VIEW_Y_MAX SCREEN_HEIGHT
 #define MAX_VIEW_CLIP_VERTS 8
 
 struct StagedQuad {
     struct quad_desc desc;
+    struct quad_desc_uv uv;
+    size_t descriptor_bytes;
 };
 
 typedef struct {
@@ -32,43 +37,52 @@ typedef struct {
     int mask;
 } BlockLookup;
 
-static void upload_default_palette(int fd)
+static void upload_default_palette(GPUTransport *transport)
 {
     static const struct voxel_palette_entry entries[] = {
         {  0, 0x10, 0x10, 0x18 }, /* background */
-        {  1, 0x4c, 0xaf, 0x50 }, /* grass top */
-        {  2, 0x8b, 0x45, 0x13 }, /* dirt side */
-        {  3, 0x65, 0x43, 0x21 }, /* wood side */
-        {  4, 0x80, 0x80, 0x80 }, /* stone side */
+        {  1, 0x6b, 0xa4, 0x3a }, /* grass top */
+        {  2, 0x8b, 0x63, 0x41 }, /* dirt side */
+        {  3, 0x6f, 0x57, 0x37 }, /* wood side */
+        {  4, 0x7c, 0x7c, 0x7c }, /* stone side */
         {  5, 0xff, 0xff, 0xff }, /* debug white */
         {  6, 0xff, 0x40, 0x40 }, /* debug red */
         {  7, 0x40, 0xa0, 0xff }, /* debug blue */
         {  8, 0xff, 0xd0, 0x40 }, /* debug yellow */
-        {  9, 0x5e, 0x8b, 0x3d }, /* grass side */
-        { 10, 0x63, 0x3a, 0x17 }, /* grass bottom / dark dirt */
-        { 11, 0x96, 0x6a, 0x3c }, /* wood top */
-        { 12, 0x4d, 0x31, 0x18 }, /* wood bottom */
-        { 13, 0xa4, 0xa4, 0xa4 }, /* stone top */
-        { 14, 0x58, 0x58, 0x58 }, /* stone bottom */
-        { 15, 0xa0, 0x67, 0x35 }, /* dirt top */
-        { 16, 0x5a, 0x2f, 0x12 }, /* dirt bottom */
+        {  9, 0x5c, 0x86, 0x34 }, /* grass side */
+        { 10, 0x6a, 0x4a, 0x2c }, /* grass bottom / dark dirt */
+        { 11, 0x9d, 0x7b, 0x4d }, /* wood top */
+        { 12, 0x53, 0x38, 0x23 }, /* wood bottom */
+        { 13, 0x98, 0x98, 0x98 }, /* stone top */
+        { 14, 0x5c, 0x5c, 0x5c }, /* stone bottom */
+        { 15, 0xa7, 0x79, 0x52 }, /* dirt top */
+        { 16, 0x59, 0x41, 0x2a }, /* dirt bottom */
+        { 17, 0x4f, 0x78, 0x2d }, /* grass dark */
+        { 18, 0x84, 0xba, 0x57 }, /* grass highlight */
+        { 19, 0x6f, 0x4f, 0x32 }, /* dirt dark */
+        { 20, 0xaa, 0x81, 0x5a }, /* dirt light */
+        { 21, 0x88, 0x6a, 0x44 }, /* wood grain */
+        { 22, 0x50, 0x3b, 0x24 }, /* wood bark dark */
+        { 23, 0x63, 0x63, 0x63 }, /* stone dark */
+        { 24, 0x9a, 0x9a, 0x9a }, /* stone light */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
-        if (ioctl(fd, VOXEL_IOC_SET_PALETTE, &entries[i]))
-            perror("ioctl(SET_PALETTE)");
+        if (gpu_transport_set_palette(transport, &entries[i]) < 0)
+            break;
     }
 }
 
 struct RenderContext {
-    int fd;
+    GPUTransport *transport;
     Camera current_camera;
 
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
 
     struct StagedQuad *staging;
-    struct quad_desc *submit_buffer;
+    uint8_t *submit_buffer;
+    size_t submit_capacity;
     LookupEntry *lookup_entries;
     int lookup_capacity;
     int n_quads;
@@ -127,10 +141,18 @@ static bool project_camera_vertex(RenderContext *ctx, const CameraVertex *in, Ve
     out->z = 1.0f - (NEAR_PLANE / in->z);
 
     float depth = ctx->current_camera.depth;
-    out->x = (in->x / in->z) * depth + SCREEN_WIDTH  / 2.0f;
-    out->y = SCREEN_HEIGHT / 2.0f - (in->y / in->z) * depth;
-    out->u = in->u;
-    out->v = in->v;
+    float inv_w = 1.0f / in->z;
+    out->x = in->x * inv_w * depth + SCREEN_WIDTH  / 2.0f;
+    out->y = SCREEN_HEIGHT / 2.0f - in->y * inv_w * depth;
+    /*
+     * Store u/w, v/w, 1/w instead of u, v. These three quantities are linear
+     * in screen space for any planar world-space quad, so viewport clipping
+     * can lerp them correctly and the HW can recover true u, v by dividing
+     * per pixel. This eliminates the affine-texture swim under perspective.
+     */
+    out->u_over_w   = in->u * inv_w;
+    out->v_over_w   = in->v * inv_w;
+    out->one_over_w = inv_w;
     return true;
 }
 
@@ -165,8 +187,9 @@ static Vertex2D lerp_vertex2d(const Vertex2D *a, const Vertex2D *b, float t)
         .x = a->x + (b->x - a->x) * t,
         .y = a->y + (b->y - a->y) * t,
         .z = a->z + (b->z - a->z) * t,
-        .u = a->u + (b->u - a->u) * t,
-        .v = a->v + (b->v - a->v) * t,
+        .u_over_w   = a->u_over_w   + (b->u_over_w   - a->u_over_w)   * t,
+        .v_over_w   = a->v_over_w   + (b->v_over_w   - a->v_over_w)   * t,
+        .one_over_w = a->one_over_w + (b->one_over_w - a->one_over_w) * t,
     };
 
     return out;
@@ -420,6 +443,38 @@ static inline int32_t to_q24_8(float v)
     return (int32_t)roundf(v * 256.0f);
 }
 
+static inline float snap_q24_8(float v)
+{
+    return (float)to_q24_8(v) / 256.0f;
+}
+
+static bool same_screen_xy(const Vertex2D *a, const Vertex2D *b)
+{
+    return a->x == b->x && a->y == b->y;
+}
+
+static int snap_and_compact_polygon(Vertex2D *verts, int count)
+{
+    Vertex2D compact[MAX_VIEW_CLIP_VERTS];
+    int out_count = 0;
+
+    for (int i = 0; i < count; i++) {
+        verts[i].x = snap_q24_8(verts[i].x);
+        verts[i].y = snap_q24_8(verts[i].y);
+
+        if (out_count > 0 && same_screen_xy(&compact[out_count - 1], &verts[i]))
+            continue;
+
+        compact[out_count++] = verts[i];
+    }
+
+    if (out_count > 1 && same_screen_xy(&compact[0], &compact[out_count - 1]))
+        out_count--;
+
+    memcpy(verts, compact, (size_t)out_count * sizeof(*verts));
+    return out_count;
+}
+
 static void pack_edge_coef(struct edge_coef *edge,
                            float x0, float y0, float x1, float y1)
 {
@@ -428,6 +483,12 @@ static void pack_edge_coef(struct edge_coef *edge,
     float C = -(A * x0 + B * y0);
     float dx = x1 - x0;
     float dy = y1 - y0;
+
+    /*
+     * The RTL evaluates E(x,y) at integer sample locations. Shift C so those
+     * integer coordinates correspond to pixel centers (x + 0.5, y + 0.5).
+     */
+    C += 0.5f * (A + B);
 
     edge->A = to_q24_8(A);
     edge->B = to_q24_8(B);
@@ -519,6 +580,11 @@ static inline int16_t to_q1_15s(float v)
     return (int16_t)lroundf(v * 32768.0f);
 }
 
+static inline int32_t to_q16_16(float v)
+{
+    return (int32_t)lroundf(v * 65536.0f);
+}
+
 static float quad_signed_area(const Vertex2D v[4])
 {
     float area = 0.0f;
@@ -542,45 +608,63 @@ static void ensure_clockwise_winding(Vertex2D v[4])
     v[3] = tmp;
 }
 
-/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
- * Stores the plane at the raster sample point for (x_min, y_min). */
-static bool solve_depth_plane(const Vertex2D *a, const Vertex2D *b,
-                              const Vertex2D *c, float *ddx, float *ddy)
+static bool solve_attr_plane(const Vertex2D *a, const Vertex2D *b,
+                             const Vertex2D *c,
+                             float attr_a, float attr_b, float attr_c,
+                             float *ddx, float *ddy)
 {
-    float ax = b->x - a->x, ay = b->y - a->y, az = b->z - a->z;
-    float bx = c->x - a->x, by = c->y - a->y, bz = c->z - a->z;
+    float ax = b->x - a->x, ay = b->y - a->y, av = attr_b - attr_a;
+    float bx = c->x - a->x, by = c->y - a->y, bv = attr_c - attr_a;
 
     float det = ax * by - ay * bx;
     if (fabsf(det) <= 1e-6f)
         return false;
 
-    *ddx = ( by * az - ay * bz) / det;
-    *ddy = (-bx * az + ax * bz) / det;
+    *ddx = ( by * av - ay * bv) / det;
+    *ddy = (-bx * av + ax * bv) / det;
     return true;
 }
 
+/*
+ * Deterministic triple selection.
+ *
+ * For a planar world-space quad, depth (in the 1 - near/z mapping), u/w, v/w
+ * and 1/w are all exactly linear in screen space, so any 3 of the 4 projected
+ * vertices should yield the same plane. Clip vertices, Q24.8 snapping and
+ * floating-point rounding can still produce tiny disagreements between
+ * triples; picking the first non-degenerate triple in a fixed order removes
+ * the frame-to-frame jitter where the "winning" triple flipped under
+ * sub-pixel camera motion.
+ */
+static const int kAttrTriples[4][3] = {
+    { 0, 1, 2 },
+    { 0, 1, 3 },
+    { 0, 2, 3 },
+    { 1, 2, 3 },
+};
+
+/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
+ * Stores the plane at the requested raster sample point. */
 static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
                             uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
 {
-    static const int triples[4][3] = {
-        { 0, 1, 2 },
-        { 0, 1, 3 },
-        { 0, 2, 3 },
-        { 1, 2, 3 },
-    };
-
     float ddx = 0.0f;
     float ddy = 0.0f;
+    int basis = 0;
 
     for (int i = 0; i < 4; i++) {
-        if (solve_depth_plane(&v[triples[i][0]],
-                              &v[triples[i][1]],
-                              &v[triples[i][2]],
-                              &ddx, &ddy))
+        int a = kAttrTriples[i][0];
+        int b = kAttrTriples[i][1];
+        int c = kAttrTriples[i][2];
+        if (solve_attr_plane(&v[a], &v[b], &v[c],
+                             v[a].z, v[b].z, v[c].z,
+                             &ddx, &ddy)) {
+            basis = a;
             break;
+        }
     }
 
-    float z_at_origin = v[0].z - ddx * v[0].x - ddy * v[0].y;
+    float z_at_origin = v[basis].z - ddx * v[basis].x - ddy * v[basis].y;
     float z_at_sample = z_at_origin + ddx * sample_x + ddy * sample_y;
 
     *z0    = to_q1_15u(z_at_sample);
@@ -588,11 +672,66 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
     *dz_dy = to_q1_15s(ddy);
 }
 
+/*
+ * Fit three screen-space planes for perspective-correct texturing:
+ *   u/w (x,y), v/w (x,y), 1/w (x,y)
+ *
+ * The rasterizer interpolates each plane linearly per pixel and then divides
+ * to recover true u, v. All three attributes are exactly linear in screen
+ * space for a planar world-space quad, so a single deterministic 3-vertex fit
+ * captures the full plane (modulo FP noise).
+ */
+static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
+                         struct quad_desc_uv *uv)
+{
+    float duw_dx = 0.0f, duw_dy = 0.0f;
+    float dvw_dx = 0.0f, dvw_dy = 0.0f;
+    float diw_dx = 0.0f, diw_dy = 0.0f;
+    int basis = 0;
+
+    for (int i = 0; i < 4; i++) {
+        int a = kAttrTriples[i][0];
+        int b = kAttrTriples[i][1];
+        int c = kAttrTriples[i][2];
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].u_over_w, v[b].u_over_w, v[c].u_over_w,
+                              &duw_dx, &duw_dy))
+            continue;
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].v_over_w, v[b].v_over_w, v[c].v_over_w,
+                              &dvw_dx, &dvw_dy))
+            continue;
+        if (!solve_attr_plane(&v[a], &v[b], &v[c],
+                              v[a].one_over_w, v[b].one_over_w, v[c].one_over_w,
+                              &diw_dx, &diw_dy))
+            continue;
+        basis = a;
+        break;
+    }
+
+    float uw_origin = v[basis].u_over_w   - duw_dx * v[basis].x - duw_dy * v[basis].y;
+    float vw_origin = v[basis].v_over_w   - dvw_dx * v[basis].x - dvw_dy * v[basis].y;
+    float iw_origin = v[basis].one_over_w - diw_dx * v[basis].x - diw_dy * v[basis].y;
+    float uw_sample = uw_origin + duw_dx * sample_x + duw_dy * sample_y;
+    float vw_sample = vw_origin + dvw_dx * sample_x + dvw_dy * sample_y;
+    float iw_sample = iw_origin + diw_dx * sample_x + diw_dy * sample_y;
+
+    uv->u_over_w_0    = to_q16_16(uw_sample);
+    uv->u_over_w_dx   = to_q16_16(duw_dx);
+    uv->u_over_w_dy   = to_q16_16(duw_dy);
+    uv->v_over_w_0    = to_q16_16(vw_sample);
+    uv->v_over_w_dx   = to_q16_16(dvw_dx);
+    uv->v_over_w_dy   = to_q16_16(dvw_dy);
+    uv->one_over_w_0  = to_q16_16(iw_sample);
+    uv->one_over_w_dx = to_q16_16(diw_dx);
+    uv->one_over_w_dy = to_q16_16(diw_dy);
+}
+
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
                              uint8_t color_tint, uint8_t texture_id)
 {
     Vertex2D verts[4];
-    RenderQuad q;
+    RenderQuad q = {0};
 
     for (int i = 0; i < 4; i++) {
         if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
@@ -602,6 +741,7 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
     q.color_tint = color_tint;
+    q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX;
     return renderer_push_quad(ctx, &q);
 }
 
@@ -623,18 +763,46 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
         return;
     }
 
-    if (count == 5) {
-        CameraVertex tri[4]  = { poly[0], poly[1], poly[2], poly[2] };
-        CameraVertex quad[4] = { poly[0], poly[2], poly[3], poly[4] };
+    for (int i = 1; i + 1 < count; i++) {
+        CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
         emit_camera_quad(ctx, tri, color_tint, texture_id);
-        emit_camera_quad(ctx, quad, color_tint, texture_id);
     }
+}
+
+static uint8_t choose_face_texture_lod(const RenderContext *ctx,
+                                       uint8_t base_tile,
+                                       const CameraVertex face_cam[4])
+{
+    (void)ctx;
+    float nearest_z = face_cam[0].z;
+    int lod = 0;
+
+    for (int i = 1; i < 4; i++) {
+        if (face_cam[i].z < nearest_z)
+            nearest_z = face_cam[i].z;
+    }
+
+    /*
+     * Use a conservative forward-distance rule instead of projected-span
+     * math. The old span-based selector was more expensive and could choose
+     * low-res tiles for nearby but highly oblique faces because one projected
+     * axis collapsed. These thresholds push mip usage farther out so nearby
+     * surfaces stay crisp and runtime overhead stays tiny.
+     */
+    if (nearest_z > 44.0f)
+        lod = 2;
+    else if (nearest_z > 28.0f)
+        lod = 1;
+
+    return texture_lod_tile_id(base_tile, lod);
 }
 
 static void emit_block_face(RenderContext *ctx, BlockID type,
                             Vec3 block_pos, BlockFace face)
 {
+    static const float tile_span = 16.0f;
     CameraVertex face_cam[4];
+    uint8_t texture_id;
 
     if (type == BLOCK_AIR)
         return;
@@ -651,14 +819,22 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
             block_pos.z + face_verts[face][i].z,
         };
         world_to_camera(ctx, wp, &face_cam[i]);
-        face_cam[i].u = (i == 1 || i == 2) ? 15.0f : 0.0f;
-        face_cam[i].v = (i == 2 || i == 3) ? 15.0f : 0.0f;
+        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
+        /*
+         * Atlas row 0 sits at the top of each tile image, and the side faces'
+         * vertex 0 is world-bottom. Invert V so world-top maps to texture-top.
+         */
+        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
     }
+
+    texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
+                                         face_cam);
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count,
-                      flat_face_palette_index(type, face), 0);
+                      flat_face_palette_index(type, face),
+                      texture_id);
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -777,26 +953,27 @@ RenderContext *renderer_init(void)
     RenderContext *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
 
-    ctx->fd = open(DEV_PATH, O_RDWR);
-    if (ctx->fd < 0) {
-        perror("open " DEV_PATH);
+    ctx->transport = gpu_transport_open();
+    if (!ctx->transport) {
         free(ctx);
         return NULL;
     }
 
     ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->staging));
-    ctx->submit_buffer = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->submit_buffer));
+    ctx->submit_capacity = MAX_QUADS_IN_FLIGHT *
+                           (sizeof(struct quad_desc) + sizeof(struct quad_desc_uv));
+    ctx->submit_buffer = malloc(ctx->submit_capacity);
     ctx->lookup_entries = NULL;
     ctx->lookup_capacity = 0;
     if (!ctx->staging || !ctx->submit_buffer) {
         free(ctx->submit_buffer);
         free(ctx->staging);
-        close(ctx->fd);
+        gpu_transport_close(ctx->transport);
         free(ctx);
         return NULL;
     }
 
-    upload_default_palette(ctx->fd);
+    upload_default_palette(ctx->transport);
     return ctx;
 }
 
@@ -806,41 +983,41 @@ void renderer_shutdown(RenderContext *ctx)
     free(ctx->lookup_entries);
     free(ctx->submit_buffer);
     free(ctx->staging);
-    close(ctx->fd);
+    gpu_transport_close(ctx->transport);
     free(ctx);
 }
 
 void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
-    if (ioctl(ctx->fd, VOXEL_IOC_CLEAR_FRAME))
-        perror("ioctl(CLEAR_FRAME)");
+    gpu_transport_clear(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
 {
     if (ctx->n_quads == 0) {
-        if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
-            perror("ioctl(FLIP)");
+        gpu_transport_flip(ctx->transport);
         return;
     }
 
-    for (int i = 0; i < ctx->n_quads; i++)
-        ctx->submit_buffer[i] = ctx->staging[i].desc;
-
-    size_t bytes = (size_t)ctx->n_quads * sizeof(struct quad_desc);
-    ssize_t n = write(ctx->fd, ctx->submit_buffer, bytes);
-    if (n < 0) {
-        perror("write(quads)");
-        return;
-    }
-    if ((size_t)n != bytes) {
-        fprintf(stderr, "short write(quads): %zd / %zu\n", n, bytes);
-        return;
+    size_t submit_bytes = 0;
+    for (int i = 0; i < ctx->n_quads; i++) {
+        memcpy(ctx->submit_buffer + submit_bytes,
+               &ctx->staging[i].desc, sizeof(ctx->staging[i].desc));
+        submit_bytes += sizeof(ctx->staging[i].desc);
+        if (ctx->staging[i].descriptor_bytes > sizeof(ctx->staging[i].desc)) {
+            memcpy(ctx->submit_buffer + submit_bytes,
+                   &ctx->staging[i].uv, sizeof(ctx->staging[i].uv));
+            submit_bytes += sizeof(ctx->staging[i].uv);
+        }
     }
 
-    if (ioctl(ctx->fd, VOXEL_IOC_FLIP))
-        perror("ioctl(FLIP)");
+    if (gpu_transport_submit_descriptors(ctx->transport,
+                                         ctx->submit_buffer,
+                                         submit_bytes) < 0)
+        return;
+
+    gpu_transport_flip(ctx->transport);
 }
 
 void renderer_set_camera(RenderContext *ctx, const Camera *camera)
@@ -857,11 +1034,21 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
         return false;
 
+    /*
+     * The rasterizer only sees Q24.8 edge math. Snap screen-space vertices to
+     * that same grid before bbox, edge, and depth setup so all three stages
+     * agree on which pixels a thin quad should cover.
+     */
+    for (int i = 0; i < 4; i++) {
+        quad.vertices[i].x = snap_q24_8(quad.vertices[i].x);
+        quad.vertices[i].y = snap_q24_8(quad.vertices[i].y);
+    }
+
     ensure_clockwise_winding(quad.vertices);
 
     const Vertex2D *v = quad.vertices;
 
-    /* Inclusive integer bbox over the RTL's integer sample grid. */
+    /* Inclusive integer bbox over pixel-center samples. */
     float fxmin = v[0].x, fxmax = v[0].x;
     float fymin = v[0].y, fymax = v[0].y;
     for (int i = 1; i < 4; i++) {
@@ -870,10 +1057,10 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
         if (v[i].y < fymin) fymin = v[i].y;
         if (v[i].y > fymax) fymax = v[i].y;
     }
-    int x_min = (int)ceilf(fxmin);  if (x_min <   0) x_min =   0;
-    int y_min = (int)ceilf(fymin);  if (y_min <   0) y_min =   0;
-    int x_max = (int)floorf(fxmax); if (x_max > 319) x_max = 319;
-    int y_max = (int)floorf(fymax); if (y_max > 239) y_max = 239;
+    int x_min = (int)ceilf(fxmin - 0.5f);  if (x_min <   0) x_min =   0;
+    int y_min = (int)ceilf(fymin - 0.5f);  if (y_min <   0) y_min =   0;
+    int x_max = (int)floorf(fxmax - 0.5f); if (x_max > 319) x_max = 319;
+    int y_max = (int)floorf(fymax - 0.5f); if (y_max > 239) y_max = 239;
 
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
@@ -900,14 +1087,21 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     uint16_t z0;
     int16_t dz_dx;
     int16_t dz_dy;
-    fit_depth_plane(v, (float)x_min, (float)y_min,
+    fit_depth_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f,
                     &z0, &dz_dx, &dz_dy);
     d->z0 = z0;
     d->dz_dx = dz_dx;
     d->dz_dy = dz_dy;
 
-    d->tex_or_color = quad.color_tint;
-    d->flags        = QUAD_FLAG_ZTEST;
+    d->tex_or_color = (quad.flags & QUAD_FLAG_TEX) ? quad.texture_id : quad.color_tint;
+    d->flags = quad.flags;
+
+    if (quad.flags & QUAD_FLAG_TEX) {
+        fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, &staged->uv);
+        staged->descriptor_bytes = sizeof(staged->desc) + sizeof(staged->uv);
+    } else {
+        staged->descriptor_bytes = sizeof(staged->desc);
+    }
 
     return true;
 }
@@ -917,6 +1111,12 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
     int count = clip_polygon_to_viewport(quad->vertices, clipped);
 
+    /*
+     * Viewport clipping can create duplicate boundary vertices once we snap to
+     * the Q24.8 raster grid. Compact first, then triangulate any larger n-gons
+     * so clipped slivers do not turn into missing wedges at the screen edge.
+     */
+    count = snap_and_compact_polygon(clipped, count);
     if (count < 3)
         return false;
 
@@ -925,6 +1125,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
             .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
         return stage_prepared_quad(ctx, tri);
     }
@@ -934,36 +1135,24 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
             .vertices = { clipped[0], clipped[1], clipped[2], clipped[3] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
         return stage_prepared_quad(ctx, clipped_quad);
     }
 
-    if (count == 5) {
-        RenderQuad tri = {
-            .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-        };
-        RenderQuad clipped_quad = {
-            .vertices = { clipped[0], clipped[2], clipped[3], clipped[4] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-        };
-        return stage_prepared_quad(ctx, tri) &&
-               stage_prepared_quad(ctx, clipped_quad);
-    }
-
+    bool emitted = false;
     for (int i = 1; i + 1 < count; i++) {
         RenderQuad tri = {
             .vertices = { clipped[0], clipped[i], clipped[i + 1], clipped[i + 1] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
-        if (!stage_prepared_quad(ctx, tri))
-            return false;
+        if (stage_prepared_quad(ctx, tri))
+            emitted = true;
     }
 
-    return true;
+    return emitted;
 }
 
 static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
@@ -1060,4 +1249,24 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     }
 
     return ctx->n_quads - before;
+}
+
+bool renderer_draw_crosshair(RenderContext *ctx)
+{
+    const float cx = SCREEN_WIDTH * 0.5f;
+    const float cy = SCREEN_HEIGHT * 0.5f;
+    const float half = 8.0f;
+    const float x0 = cx - half, y0 = cy - half;
+    const float x1 = cx + half, y1 = cy + half;
+    const float tile = 16.0f;
+
+    RenderQuad quad = {0};
+    quad.texture_id = TEX_TILE_CROSSHAIR;
+    quad.flags = QUAD_FLAG_TEX | QUAD_FLAG_ALPHA_KEY;
+    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f,  0.0f,  1.0f };
+    quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, tile,  0.0f,  1.0f };
+    quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, tile,  tile,  1.0f };
+    quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, 0.0f,  tile,  1.0f };
+
+    return renderer_push_quad(ctx, &quad);
 }

@@ -41,14 +41,17 @@ typedef struct {
 // --- Rendering Structures ---
 typedef struct {
     float x, y;
-    float z;    // Used by FPGA for Z-buffering
-    float u, v; // Texture coordinates
+    float z;             // Inverse-z mapped depth for the FPGA Z-buffer
+    float u_over_w;      // Perspective-correct UV: u / w_eye
+    float v_over_w;      //                         v / w_eye
+    float one_over_w;    // 1 / w_eye, used by the HW reciprocal unit
 } Vertex2D;
 
 typedef struct {
     Vertex2D vertices[4];
-    uint8_t texture_id; 
+    uint8_t texture_id;
     uint8_t color_tint;
+    uint8_t flags;
 } RenderQuad;
 
 // Opaque context struct
@@ -67,6 +70,7 @@ void renderer_set_camera(RenderContext* ctx, const Camera* camera);
 void renderer_draw_block(RenderContext* ctx, const Block* block);
 int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
 int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
+bool renderer_draw_crosshair(RenderContext* ctx);
 bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
 
 #endif // RENDERER_H

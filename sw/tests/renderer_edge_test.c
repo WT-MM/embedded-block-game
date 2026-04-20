@@ -11,15 +11,17 @@
 #include <unistd.h>
 
 #include "renderer.h"
+#include "voxel_gpu.h"
 
 #define DEMO_FRAMES 120
 #define DEMO_FRAME_DELAY_US 33000
 
 static void submit_plane(RenderContext *ctx)
 {
-    RenderQuad q;
+    RenderQuad q = {0};
 
     q.texture_id = 0;
+    q.flags = QUAD_FLAG_ZTEST;
 
     q.color_tint = 6;
     q.vertices[0] = (Vertex2D){  30.0f, 205.0f, 0.72f, 0.0f, 0.0f };

@@ -130,6 +130,7 @@ int main(void)
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
         int quads = renderer_draw_world(ctx, &world);
+        renderer_draw_crosshair(ctx);
         renderer_end_frame(ctx);
 
         printf("\rpos=(%.1f,%.1f,%.1f) chunk=(%d,%d) yaw=%.2f pitch=%.2f quads=%3d  ",

@@ -92,8 +92,9 @@ struct voxel_status {
 
 /* ----- quad descriptor layout (§5.2) ----- */
 
-#define QUAD_FLAG_TEX    (1u << 0)   /* textured: second 64-byte UV block follows */
-#define QUAD_FLAG_ZTEST  (1u << 1)   /* enable z-test and z-write */
+#define QUAD_FLAG_TEX        (1u << 0)   /* textured: second 64-byte UV block follows */
+#define QUAD_FLAG_ZTEST      (1u << 1)   /* enable z-test and z-write */
+#define QUAD_FLAG_ALPHA_KEY  (1u << 2)   /* skip texels whose sampled palette index is 0 */
 
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */

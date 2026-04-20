@@ -342,30 +342,31 @@ int gpu_transport_set_palette(GPUTransport *transport,
     return ret;
 }
 
-int gpu_transport_submit_quads(GPUTransport *transport,
-                               const struct quad_desc *quads,
-                               size_t quad_count)
+int gpu_transport_submit_descriptors(GPUTransport *transport,
+                                     const void *descriptors,
+                                     size_t descriptor_bytes)
 {
-    size_t bytes = quad_count * sizeof(*quads);
     int ret = 0;
 
-    if (bytes > UINT32_MAX)
+    if (descriptor_bytes > UINT32_MAX)
         return -E2BIG;
 
     if (transport_needs_hw(transport)) {
-        ssize_t written = write(transport->hw_fd, quads, bytes);
+        ssize_t written = write(transport->hw_fd, descriptors, descriptor_bytes);
         if (written < 0) {
-            perror("write(quads)");
+            perror("write(descriptors)");
             ret = -errno;
-        } else if ((size_t)written != bytes) {
-            fprintf(stderr, "short write(quads): %zd / %zu\n", written, bytes);
+        } else if ((size_t)written != descriptor_bytes) {
+            fprintf(stderr, "short write(descriptors): %zd / %zu\n",
+                    written, descriptor_bytes);
             ret = -EIO;
         }
     }
 
     if (transport_needs_socket(transport)) {
         int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_SUBMIT_QUADS,
-                                      quads, (uint32_t)bytes, NULL, NULL);
+                                      descriptors, (uint32_t)descriptor_bytes,
+                                      NULL, NULL);
         if (sock_ret < 0 && ret == 0) {
             fprintf(stderr, "renderer: socket SUBMIT_QUADS failed: %s\n",
                     strerror(-sock_ret));

@@ -24,11 +24,12 @@ from .protocol import (
     recv_request,
     send_reply,
 )
-from .raster import VirtualGPU
+from .raster import VirtualGPU, load_texture_hex
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
 POLL_TIMEOUT = 1.0 / 60.0
+DEFAULT_TEXTURE_PATH = Path(__file__).resolve().parents[2] / "hw" / "textures.hex"
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dump-dir", help="optional directory for writing flipped frames as PPMs"
+    )
+    parser.add_argument(
+        "--textures",
+        default=str(DEFAULT_TEXTURE_PATH),
+        help=f"texture atlas hex path (default: {DEFAULT_TEXTURE_PATH})",
     )
     return parser.parse_args()
 
@@ -215,6 +221,7 @@ def main() -> int:
     args = parse_args()
     socket_path = Path(args.socket_path)
     dump_dir = Path(args.dump_dir) if args.dump_dir else None
+    texture_path = Path(args.textures)
 
     if dump_dir is not None:
         dump_dir.mkdir(parents=True, exist_ok=True)
@@ -223,7 +230,14 @@ def main() -> int:
     socket_path.unlink(missing_ok=True)
 
     monitor = Monitor(SCREEN_WIDTH, SCREEN_HEIGHT, args.scale, args.headless)
-    gpu = VirtualGPU(SCREEN_WIDTH, SCREEN_HEIGHT)
+    try:
+        textures = load_texture_hex(texture_path)
+    except (OSError, ValueError) as exc:
+        print(f"virtualhw: failed to load textures: {exc}", file=sys.stderr)
+        monitor.close()
+        return 1
+
+    gpu = VirtualGPU(SCREEN_WIDTH, SCREEN_HEIGHT, textures=textures)
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(socket_path))
@@ -231,6 +245,7 @@ def main() -> int:
         server.listen(1)
 
         print(f"virtualhw: listening on {socket_path}")
+        print(f"virtualhw: textures={texture_path}")
         print("virtualhw: headless mode" if args.headless else "virtualhw: pygame window ready")
 
         try:

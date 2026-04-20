@@ -22,6 +22,8 @@
 
 struct StagedQuad {
     struct quad_desc desc;
+    struct quad_desc_uv uv;
+    size_t descriptor_bytes;
 };
 
 typedef struct {
@@ -55,6 +57,14 @@ static void upload_default_palette(GPUTransport *transport)
         { 14, 0x58, 0x58, 0x58 }, /* stone bottom */
         { 15, 0xa0, 0x67, 0x35 }, /* dirt top */
         { 16, 0x5a, 0x2f, 0x12 }, /* dirt bottom */
+        { 17, 0x2f, 0x82, 0x3a }, /* grass dark */
+        { 18, 0x78, 0xd2, 0x65 }, /* grass highlight */
+        { 19, 0x6c, 0x3b, 0x15 }, /* dirt dark */
+        { 20, 0xb0, 0x7a, 0x47 }, /* dirt light */
+        { 21, 0x84, 0x54, 0x26 }, /* wood grain */
+        { 22, 0x43, 0x26, 0x12 }, /* wood bark dark */
+        { 23, 0x6e, 0x6e, 0x6e }, /* stone dark */
+        { 24, 0xc3, 0xc3, 0xc3 }, /* stone light */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -71,7 +81,8 @@ struct RenderContext {
     float cos_pitch, sin_pitch;
 
     struct StagedQuad *staging;
-    struct quad_desc *submit_buffer;
+    uint8_t *submit_buffer;
+    size_t submit_capacity;
     LookupEntry *lookup_entries;
     int lookup_capacity;
     int n_quads;
@@ -560,6 +571,11 @@ static inline int16_t to_q1_15s(float v)
     return (int16_t)lroundf(v * 32768.0f);
 }
 
+static inline int32_t to_q16_16(float v)
+{
+    return (int32_t)lroundf(v * 65536.0f);
+}
+
 static float quad_signed_area(const Vertex2D v[4])
 {
     float area = 0.0f;
@@ -583,23 +599,25 @@ static void ensure_clockwise_winding(Vertex2D v[4])
     v[3] = tmp;
 }
 
-/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
- * Stores the plane at the requested raster sample point. */
-static bool solve_depth_plane(const Vertex2D *a, const Vertex2D *b,
-                              const Vertex2D *c, float *ddx, float *ddy)
+static bool solve_attr_plane(const Vertex2D *a, const Vertex2D *b,
+                             const Vertex2D *c,
+                             float attr_a, float attr_b, float attr_c,
+                             float *ddx, float *ddy)
 {
-    float ax = b->x - a->x, ay = b->y - a->y, az = b->z - a->z;
-    float bx = c->x - a->x, by = c->y - a->y, bz = c->z - a->z;
+    float ax = b->x - a->x, ay = b->y - a->y, av = attr_b - attr_a;
+    float bx = c->x - a->x, by = c->y - a->y, bv = attr_c - attr_a;
 
     float det = ax * by - ay * bx;
     if (fabsf(det) <= 1e-6f)
         return false;
 
-    *ddx = ( by * az - ay * bz) / det;
-    *ddy = (-bx * az + ax * bz) / det;
+    *ddx = ( by * av - ay * bv) / det;
+    *ddy = (-bx * av + ax * bv) / det;
     return true;
 }
 
+/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
+ * Stores the plane at the requested raster sample point. */
 static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
                             uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
 {
@@ -614,10 +632,13 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
     float ddy = 0.0f;
 
     for (int i = 0; i < 4; i++) {
-        if (solve_depth_plane(&v[triples[i][0]],
-                              &v[triples[i][1]],
-                              &v[triples[i][2]],
-                              &ddx, &ddy))
+        if (solve_attr_plane(&v[triples[i][0]],
+                             &v[triples[i][1]],
+                             &v[triples[i][2]],
+                             v[triples[i][0]].z,
+                             v[triples[i][1]].z,
+                             v[triples[i][2]].z,
+                             &ddx, &ddy))
             break;
     }
 
@@ -629,11 +650,61 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
     *dz_dy = to_q1_15s(ddy);
 }
 
+static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
+                         struct quad_desc_uv *uv)
+{
+    static const int triples[4][3] = {
+        { 0, 1, 2 },
+        { 0, 1, 3 },
+        { 0, 2, 3 },
+        { 1, 2, 3 },
+    };
+
+    float du_dx = 0.0f;
+    float du_dy = 0.0f;
+    float dv_dx = 0.0f;
+    float dv_dy = 0.0f;
+    int basis = 0;
+
+    for (int i = 0; i < 4; i++) {
+        if (!solve_attr_plane(&v[triples[i][0]],
+                              &v[triples[i][1]],
+                              &v[triples[i][2]],
+                              v[triples[i][0]].u,
+                              v[triples[i][1]].u,
+                              v[triples[i][2]].u,
+                              &du_dx, &du_dy))
+            continue;
+        if (!solve_attr_plane(&v[triples[i][0]],
+                              &v[triples[i][1]],
+                              &v[triples[i][2]],
+                              v[triples[i][0]].v,
+                              v[triples[i][1]].v,
+                              v[triples[i][2]].v,
+                              &dv_dx, &dv_dy))
+            continue;
+        basis = triples[i][0];
+        break;
+    }
+
+    float u_at_origin = v[basis].u - du_dx * v[basis].x - du_dy * v[basis].y;
+    float v_at_origin = v[basis].v - dv_dx * v[basis].x - dv_dy * v[basis].y;
+    float u_at_sample = u_at_origin + du_dx * sample_x + du_dy * sample_y;
+    float v_at_sample = v_at_origin + dv_dx * sample_x + dv_dy * sample_y;
+
+    uv->u0 = to_q16_16(u_at_sample);
+    uv->v0 = to_q16_16(v_at_sample);
+    uv->du_dx = to_q16_16(du_dx);
+    uv->dv_dx = to_q16_16(dv_dx);
+    uv->du_dy = to_q16_16(du_dy);
+    uv->dv_dy = to_q16_16(dv_dy);
+}
+
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
                              uint8_t color_tint, uint8_t texture_id)
 {
     Vertex2D verts[4];
-    RenderQuad q;
+    RenderQuad q = {0};
 
     for (int i = 0; i < 4; i++) {
         if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
@@ -643,6 +714,7 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
     q.color_tint = color_tint;
+    q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX;
     return renderer_push_quad(ctx, &q);
 }
 
@@ -697,7 +769,8 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count,
-                      flat_face_palette_index(type, face), 0);
+                      flat_face_palette_index(type, face),
+                      block_face_texture_id(type, face));
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -823,7 +896,9 @@ RenderContext *renderer_init(void)
     }
 
     ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->staging));
-    ctx->submit_buffer = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->submit_buffer));
+    ctx->submit_capacity = MAX_QUADS_IN_FLIGHT *
+                           (sizeof(struct quad_desc) + sizeof(struct quad_desc_uv));
+    ctx->submit_buffer = malloc(ctx->submit_capacity);
     ctx->lookup_entries = NULL;
     ctx->lookup_capacity = 0;
     if (!ctx->staging || !ctx->submit_buffer) {
@@ -861,12 +936,21 @@ void renderer_end_frame(RenderContext *ctx)
         return;
     }
 
-    for (int i = 0; i < ctx->n_quads; i++)
-        ctx->submit_buffer[i] = ctx->staging[i].desc;
+    size_t submit_bytes = 0;
+    for (int i = 0; i < ctx->n_quads; i++) {
+        memcpy(ctx->submit_buffer + submit_bytes,
+               &ctx->staging[i].desc, sizeof(ctx->staging[i].desc));
+        submit_bytes += sizeof(ctx->staging[i].desc);
+        if (ctx->staging[i].descriptor_bytes > sizeof(ctx->staging[i].desc)) {
+            memcpy(ctx->submit_buffer + submit_bytes,
+                   &ctx->staging[i].uv, sizeof(ctx->staging[i].uv));
+            submit_bytes += sizeof(ctx->staging[i].uv);
+        }
+    }
 
-    if (gpu_transport_submit_quads(ctx->transport,
-                                   ctx->submit_buffer,
-                                   (size_t)ctx->n_quads) < 0)
+    if (gpu_transport_submit_descriptors(ctx->transport,
+                                         ctx->submit_buffer,
+                                         submit_bytes) < 0)
         return;
 
     gpu_transport_flip(ctx->transport);
@@ -945,8 +1029,15 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     d->dz_dx = dz_dx;
     d->dz_dy = dz_dy;
 
-    d->tex_or_color = quad.color_tint;
-    d->flags        = QUAD_FLAG_ZTEST;
+    d->tex_or_color = (quad.flags & QUAD_FLAG_TEX) ? quad.texture_id : quad.color_tint;
+    d->flags = quad.flags;
+
+    if (quad.flags & QUAD_FLAG_TEX) {
+        fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, &staged->uv);
+        staged->descriptor_bytes = sizeof(staged->desc) + sizeof(staged->uv);
+    } else {
+        staged->descriptor_bytes = sizeof(staged->desc);
+    }
 
     return true;
 }
@@ -970,6 +1061,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
             .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
         return stage_prepared_quad(ctx, tri);
     }
@@ -979,6 +1071,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
             .vertices = { clipped[0], clipped[1], clipped[2], clipped[3] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
         return stage_prepared_quad(ctx, clipped_quad);
     }
@@ -989,6 +1082,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
             .vertices = { clipped[0], clipped[i], clipped[i + 1], clipped[i + 1] },
             .texture_id = quad->texture_id,
             .color_tint = quad->color_tint,
+            .flags = quad->flags,
         };
         if (stage_prepared_quad(ctx, tri))
             emitted = true;
@@ -1091,4 +1185,22 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     }
 
     return ctx->n_quads - before;
+}
+
+bool renderer_draw_crosshair(RenderContext *ctx)
+{
+    const float size = 16.0f;
+    const float half = size * 0.5f;
+    const float cx = SCREEN_WIDTH * 0.5f;
+    const float cy = SCREEN_HEIGHT * 0.5f;
+    RenderQuad quad = {0};
+
+    quad.vertices[0] = (Vertex2D){ cx - half, cy - half, 0.0f,  0.0f,  0.0f };
+    quad.vertices[1] = (Vertex2D){ cx + half, cy - half, 0.0f, 15.0f,  0.0f };
+    quad.vertices[2] = (Vertex2D){ cx + half, cy + half, 0.0f, 15.0f, 15.0f };
+    quad.vertices[3] = (Vertex2D){ cx - half, cy + half, 0.0f,  0.0f, 15.0f };
+    quad.texture_id = TEX_TILE_CROSSHAIR;
+    quad.flags = QUAD_FLAG_TEX | QUAD_FLAG_ALPHA_KEY;
+
+    return renderer_push_quad(ctx, &quad);
 }

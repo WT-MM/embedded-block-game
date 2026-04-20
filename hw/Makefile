@@ -49,6 +49,8 @@ TARFILES = Makefile \
 	$(SYSTEM)_top.sv \
 	$(BOARD_INFO) \
 	$(SRF) \
+	generate_textures.py \
+	textures.hex \
 	ip/intr_capturer/intr_capturer.v \
 	ip/intr_capturer/intr_capturer_hw.tcl \
 	vga_ball.sv
@@ -81,7 +83,7 @@ $(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
 .PHONY : qsys
 qsys : $(SOPCINFO)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl vga_ball.sv vga_ball_hw.tcl
+QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex generate_textures.py vga_ball.sv vga_ball_hw.tcl
 
 $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/

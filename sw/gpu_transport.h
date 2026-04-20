@@ -15,8 +15,8 @@ int gpu_transport_clear(GPUTransport *transport);
 int gpu_transport_flip(GPUTransport *transport);
 int gpu_transport_set_palette(GPUTransport *transport,
                               const struct voxel_palette_entry *entry);
-int gpu_transport_submit_quads(GPUTransport *transport,
-                               const struct quad_desc *quads,
-                               size_t quad_count);
+int gpu_transport_submit_descriptors(GPUTransport *transport,
+                                     const void *descriptors,
+                                     size_t descriptor_bytes);
 
 #endif

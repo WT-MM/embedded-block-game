@@ -7,15 +7,16 @@
 //     via 2x2 pixel doubling.
 //   * CLEAR command clears the back buffer to palette index 0.
 //   * FLIP swaps front/back on the next vsync.
-//   * Descriptor fetch consumes 16 FIFO words (64 bytes) per quad.
-//   * Rasterizer currently supports flat-color quads with optional z-test:
+//   * Descriptor fetch consumes 16 FIFO words for flat quads and 32 for
+//     textured quads with a UV block.
+//   * Rasterizer supports flat-color and textured quads with optional z-test:
 //       - bbox walk
 //       - 4 edge-function inclusion test
 //       - 16-bit z-buffer compare/write when QUAD_FLAG_ZTEST is set
-//       - writes tex_or_color as a palette index
+//       - nearest-neighbor texture lookup from textures.hex when QUAD_FLAG_TEX
+//       - alpha-key skip when QUAD_FLAG_ALPHA_KEY and sampled texel is 0
 //
 // Intentionally not implemented yet:
-//   * Texturing / UV block consumption
 //   * Interrupts / waitrequest backpressure
 
 module voxel_gpu (
@@ -49,11 +50,17 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
-    localparam int FB_WIDTH     = 320;
-    localparam int FB_HEIGHT    = 240;
-    localparam int FB_PIXELS    = FB_WIDTH * FB_HEIGHT;
-    localparam int FIFO_DEPTH   = 2048;
-    localparam int QUAD_WORDS   = 16;
+    localparam int FB_WIDTH       = 320;
+    localparam int FB_HEIGHT      = 240;
+    localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
+    localparam int FIFO_DEPTH     = 2048;
+    localparam int BASE_QUAD_WORDS = 16;
+    localparam int UV_QUAD_WORDS   = 16;
+    localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
+    localparam int TEXTURE_BYTES   = 64 * 16 * 16;
+    localparam int FLAG_TEX_BIT        = 0;
+    localparam int FLAG_ZTEST_BIT      = 1;
+    localparam int FLAG_ALPHA_KEY_BIT  = 2;
 
     typedef enum logic [2:0] {
         ST_IDLE       = 3'd0,
@@ -76,6 +83,7 @@ module voxel_gpu (
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
+    (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;
@@ -84,26 +92,35 @@ module voxel_gpu (
     wire         fifo_empty = (fifo_count == 0);
     wire [31:0]  fifo_head  = fifo_mem[fifo_rd_ptr];
 
-    logic [31:0] desc_words [0:QUAD_WORDS-1];
-    logic  [4:0] fetch_count;
+    logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
+    logic  [5:0] fetch_count;
 
     logic [16:0] clear_addr;
     logic  [9:0] draw_x_min, draw_x_max, draw_x_cur;
     logic  [8:0] draw_y_min;
     logic  [8:0] draw_y_max, draw_y_cur;
-    logic  [7:0] draw_color;
+    logic  [7:0] draw_tex_or_color;
     logic  [7:0] draw_flags;
     logic [15:0] draw_z0;
     logic signed [15:0] draw_dz_dx;
     logic signed [15:0] draw_dz_dy;
+    logic signed [31:0] draw_u0;
+    logic signed [31:0] draw_v0;
+    logic signed [31:0] draw_du_dx;
+    logic signed [31:0] draw_dv_dx;
+    logic signed [31:0] draw_du_dy;
+    logic signed [31:0] draw_dv_dy;
     logic signed [31:0] edge_A [0:3];
     logic signed [31:0] edge_B [0:3];
     logic signed [31:0] edge_C [0:3];
     logic        draw_pipe_valid;
     logic        draw_pipe_inside;
     logic        draw_pipe_ztest;
+    logic        draw_pipe_textured;
+    logic        draw_pipe_alpha_key;
     logic [16:0] draw_pipe_addr;
     logic [15:0] draw_pipe_z;
+    logic  [7:0] tex_rd_data;
 
     logic [10:0] hcount;
     logic  [9:0] vcount;
@@ -131,7 +148,9 @@ module voxel_gpu (
 
     wire wr = chipselect & write;
     wire fifo_push_req = wr && (address >= ADDR_FIFO_LO) && (address < ADDR_FIFO_HI) && !fifo_full;
-    wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < 5'd16) && !fifo_empty;
+    wire desc_has_uv = desc_flags[FLAG_TEX_BIT];
+    wire [5:0] fetch_target_words = ((fetch_count >= 6'd16) && desc_has_uv) ? 6'd32 : 6'd16;
+    wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
     wire engine_busy = (state != ST_IDLE);
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
 
@@ -146,8 +165,14 @@ module voxel_gpu (
     wire [15:0] desc_z0 = desc_words[14][15:0];
     wire signed [15:0] desc_dz_dx = $signed(desc_words[14][31:16]);
     wire signed [15:0] desc_dz_dy = $signed(desc_words[15][15:0]);
-    wire [7:0] desc_color = desc_words[15][23:16];
+    wire [7:0] desc_tex_or_color = desc_words[15][23:16];
     wire [7:0] desc_flags = desc_words[15][31:24];
+    wire signed [31:0] desc_u0 = $signed(desc_words[16]);
+    wire signed [31:0] desc_v0 = $signed(desc_words[17]);
+    wire signed [31:0] desc_du_dx = $signed(desc_words[18]);
+    wire signed [31:0] desc_dv_dx = $signed(desc_words[19]);
+    wire signed [31:0] desc_du_dy = $signed(desc_words[20]);
+    wire signed [31:0] desc_dv_dy = $signed(desc_words[21]);
 
     wire signed [10:0] draw_x_s = $signed({1'b0, draw_x_cur});
     wire signed  [9:0] draw_y_s = $signed({1'b0, draw_y_cur});
@@ -183,7 +208,25 @@ module voxel_gpu (
                                      ($signed(draw_dz_dx) * draw_dx_s) +
                                      ($signed(draw_dz_dy) * draw_dy_s);
     wire [15:0] draw_z_value = clamp_z(draw_z_eval);
+    wire signed [63:0] draw_u_base = $signed({{32{draw_u0[31]}}, draw_u0});
+    wire signed [63:0] draw_v_base = $signed({{32{draw_v0[31]}}, draw_v0});
+    wire signed [63:0] draw_u_eval = draw_u_base +
+                                     ($signed(draw_du_dx) * draw_dx_s) +
+                                     ($signed(draw_du_dy) * draw_dy_s);
+    wire signed [63:0] draw_v_eval = draw_v_base +
+                                     ($signed(draw_dv_dx) * draw_dx_s) +
+                                     ($signed(draw_dv_dy) * draw_dy_s);
+    wire [13:0] tex_addr = {
+        draw_tex_or_color[5:0],
+        draw_v_eval[19:16],
+        draw_u_eval[19:16]
+    };
+    wire  [7:0] draw_pipe_color = draw_pipe_textured ? tex_rd_data : draw_tex_or_color;
+    wire draw_pipe_transparent = draw_pipe_textured &&
+                                 draw_pipe_alpha_key &&
+                                 (draw_pipe_color == 8'd0);
     wire draw_commit_pass = draw_pipe_inside &&
+                            !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < z_rd_data));
 
     wire [31:0] status_word = {
@@ -304,7 +347,7 @@ module voxel_gpu (
         fifo_wr_ptr      = 11'd0;
         fifo_rd_ptr      = 11'd0;
         fifo_count       = 12'd0;
-        fetch_count      = 5'd0;
+        fetch_count      = 6'd0;
         clear_addr       = 17'd0;
         draw_x_min       = 10'd0;
         draw_x_max       = 10'd0;
@@ -312,16 +355,25 @@ module voxel_gpu (
         draw_y_min       = 9'd0;
         draw_y_max       = 9'd0;
         draw_y_cur       = 9'd0;
-        draw_color       = 8'd0;
+        draw_tex_or_color = 8'd0;
         draw_flags       = 8'd0;
         draw_z0          = 16'd0;
         draw_dz_dx       = 16'sd0;
         draw_dz_dy       = 16'sd0;
+        draw_u0          = 32'sd0;
+        draw_v0          = 32'sd0;
+        draw_du_dx       = 32'sd0;
+        draw_dv_dx       = 32'sd0;
+        draw_du_dy       = 32'sd0;
+        draw_dv_dy       = 32'sd0;
         draw_pipe_valid  = 1'b0;
         draw_pipe_inside = 1'b0;
         draw_pipe_ztest  = 1'b0;
+        draw_pipe_textured = 1'b0;
+        draw_pipe_alpha_key = 1'b0;
         draw_pipe_addr   = 17'd0;
         draw_pipe_z      = 16'd0;
+        tex_rd_data      = 8'd0;
         scan_idx_r       = 8'd0;
         scan_visible_r   = 1'b0;
         scan_visible_rr  = 1'b0;
@@ -349,7 +401,11 @@ module voxel_gpu (
         for (i = 0; i < FIFO_DEPTH; i = i + 1)
             fifo_mem[i] = 32'h0;
 
-        for (i = 0; i < QUAD_WORDS; i = i + 1)
+        for (i = 0; i < TEXTURE_BYTES; i = i + 1)
+            texture_mem[i] = 8'h0;
+        $readmemh("textures.hex", texture_mem);
+
+        for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
 
         for (i = 0; i < 4; i = i + 1) begin
@@ -371,7 +427,7 @@ module voxel_gpu (
         end
         draw_addr = ({8'd0, draw_y_cur} * 17'd320) + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
-        fb_wr_data = draw_color;
+        fb_wr_data = draw_pipe_color;
         fb0_wr_en = 1'b0;
         fb1_wr_en = 1'b0;
         z_rd_addr = draw_addr;
@@ -396,19 +452,17 @@ module voxel_gpu (
             ST_DRAW_FLUSH: begin
                 if (draw_pipe_valid && draw_commit_pass) begin
                     fb_wr_addr = draw_pipe_addr;
-                    fb_wr_data = draw_color;
+                    fb_wr_data = draw_pipe_color;
                     if (front_sel)
                         fb0_wr_en = 1'b1;
                     else
                         fb1_wr_en = 1'b1;
                 end
 
-                if (draw_pipe_valid && draw_pipe_inside && draw_pipe_ztest) begin
-                    if (draw_pipe_z < z_rd_data) begin
-                        z_wr_en = 1'b1;
-                        z_wr_addr = draw_pipe_addr;
-                        z_wr_data = draw_pipe_z;
-                    end
+                if (draw_pipe_valid && draw_commit_pass && draw_pipe_ztest) begin
+                    z_wr_en = 1'b1;
+                    z_wr_addr = draw_pipe_addr;
+                    z_wr_data = draw_pipe_z;
                 end
             end
 
@@ -417,6 +471,7 @@ module voxel_gpu (
     end
 
     always_ff @(posedge clk) begin
+        tex_rd_data <= texture_mem[tex_addr];
         vga_vs_d <= VGA_VS;
 
         if (front_sel)
@@ -441,7 +496,7 @@ module voxel_gpu (
             fifo_wr_ptr      <= 11'd0;
             fifo_rd_ptr      <= 11'd0;
             fifo_count       <= 12'd0;
-            fetch_count      <= 5'd0;
+            fetch_count      <= 6'd0;
             clear_addr       <= 17'd0;
             draw_x_min       <= 10'd0;
             draw_x_max       <= 10'd0;
@@ -449,14 +504,22 @@ module voxel_gpu (
             draw_y_min       <= 9'd0;
             draw_y_max       <= 9'd0;
             draw_y_cur       <= 9'd0;
-            draw_color       <= 8'd0;
+            draw_tex_or_color <= 8'd0;
             draw_flags       <= 8'd0;
             draw_z0          <= 16'd0;
             draw_dz_dx       <= 16'sd0;
             draw_dz_dy       <= 16'sd0;
+            draw_u0          <= 32'sd0;
+            draw_v0          <= 32'sd0;
+            draw_du_dx       <= 32'sd0;
+            draw_dv_dx       <= 32'sd0;
+            draw_du_dy       <= 32'sd0;
+            draw_dv_dy       <= 32'sd0;
             draw_pipe_valid  <= 1'b0;
             draw_pipe_inside <= 1'b0;
             draw_pipe_ztest  <= 1'b0;
+            draw_pipe_textured <= 1'b0;
+            draw_pipe_alpha_key <= 1'b0;
             draw_pipe_addr   <= 17'd0;
             draw_pipe_z      <= 16'd0;
             for (ei = 0; ei < 4; ei = ei + 1) begin
@@ -499,7 +562,7 @@ module voxel_gpu (
             if (fifo_push_req)
                 fifo_mem[fifo_wr_ptr] <= writedata;
             if (fifo_pop_req)
-                desc_words[fetch_count[3:0]] <= fifo_head;
+                desc_words[fetch_count[4:0]] <= fifo_head;
 
             case ({fifo_push_req, fifo_pop_req})
                 2'b10: begin
@@ -519,7 +582,7 @@ module voxel_gpu (
 
             case (state)
                 ST_IDLE: begin
-                    fetch_count <= 5'd0;
+                    fetch_count <= 6'd0;
                     draw_pipe_valid <= 1'b0;
                     if (clear_pending) begin
                         state         <= ST_CLEAR;
@@ -527,7 +590,7 @@ module voxel_gpu (
                         clear_addr    <= 17'd0;
                     end else if (ctrl_en && (fifo_count >= 12'd16)) begin
                         state       <= ST_FETCH;
-                        fetch_count <= 5'd0;
+                        fetch_count <= 6'd0;
                     end
                 end
 
@@ -540,18 +603,33 @@ module voxel_gpu (
                 end
 
                 ST_FETCH: begin
-                    if (fetch_count == 5'd16) begin
+                    if (fetch_count == fetch_target_words) begin
                         draw_x_min <= desc_x_min;
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
-                        draw_color <= desc_color;
+                        draw_tex_or_color <= desc_tex_or_color;
                         draw_flags <= desc_flags;
                         draw_z0    <= desc_z0;
                         draw_dz_dx <= desc_dz_dx;
                         draw_dz_dy <= desc_dz_dy;
+                        if (desc_has_uv) begin
+                            draw_u0    <= desc_u0;
+                            draw_v0    <= desc_v0;
+                            draw_du_dx <= desc_du_dx;
+                            draw_dv_dx <= desc_dv_dx;
+                            draw_du_dy <= desc_du_dy;
+                            draw_dv_dy <= desc_dv_dy;
+                        end else begin
+                            draw_u0    <= 32'sd0;
+                            draw_v0    <= 32'sd0;
+                            draw_du_dx <= 32'sd0;
+                            draw_dv_dx <= 32'sd0;
+                            draw_du_dy <= 32'sd0;
+                            draw_dv_dy <= 32'sd0;
+                        end
                         draw_pipe_valid <= 1'b0;
                         for (ei = 0; ei < 4; ei = ei + 1) begin
                             edge_A[ei] <= $signed(desc_words[2 + ei * 3]);
@@ -564,14 +642,16 @@ module voxel_gpu (
                         else
                             state <= ST_DRAW;
                     end else if (fifo_pop_req) begin
-                        fetch_count <= fetch_count + 5'd1;
+                        fetch_count <= fetch_count + 6'd1;
                     end
                 end
 
                 ST_DRAW: begin
                     draw_pipe_valid  <= 1'b1;
                     draw_pipe_inside <= draw_inside;
-                    draw_pipe_ztest  <= draw_flags[1];
+                    draw_pipe_ztest  <= draw_flags[FLAG_ZTEST_BIT];
+                    draw_pipe_textured <= draw_flags[FLAG_TEX_BIT];
+                    draw_pipe_alpha_key <= draw_flags[FLAG_ALPHA_KEY_BIT];
                     draw_pipe_addr   <= draw_addr;
                     draw_pipe_z      <= draw_z_value;
 

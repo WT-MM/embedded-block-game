@@ -18,6 +18,7 @@ CMD_GET_FRAME_COUNT = 6
 
 QUAD_FLAG_TEX = 1 << 0
 QUAD_FLAG_ZTEST = 1 << 1
+QUAD_FLAG_ALPHA_KEY = 1 << 2
 
 HEADER = struct.Struct("<4sHHI")
 REPLY = struct.Struct("<4sHhI")
@@ -25,6 +26,7 @@ PALETTE_ENTRY = struct.Struct("<BBBB")
 STATUS_REPLY = struct.Struct("<IIBBBB")
 FRAME_COUNT_REPLY = struct.Struct("<I")
 QUAD_DESC = struct.Struct("<hhhh" + ("iii" * 4) + "HhhBB")
+QUAD_DESC_UV = struct.Struct("<iiiiii40x")
 
 Edge = tuple[int, int, int]
 QuadEdges = tuple[Edge, Edge, Edge, Edge]
@@ -57,6 +59,7 @@ class QuadDesc:
     dz_dy: int
     tex_or_color: int
     flags: int
+    uv: tuple[int, int, int, int, int, int] | None = None
 
 
 def recv_exact(sock, size: int) -> bytes:
@@ -105,17 +108,29 @@ def parse_palette_entry(payload: bytes) -> tuple[int, int, int, int]:
 
 
 def iter_quads(payload: bytes) -> Iterable[QuadDesc]:
-    if len(payload) % QUAD_DESC.size != 0:
-        raise ProtocolError("quad payload is not a multiple of 64 bytes")
+    offset = 0
 
-    for offset in range(0, len(payload), QUAD_DESC.size):
+    while offset < len(payload):
+        if offset + QUAD_DESC.size > len(payload):
+            raise ProtocolError("truncated base quad descriptor")
+
         fields = QUAD_DESC.unpack_from(payload, offset)
+        offset += QUAD_DESC.size
         edges: QuadEdges = (
             (fields[4], fields[5], fields[6]),
             (fields[7], fields[8], fields[9]),
             (fields[10], fields[11], fields[12]),
             (fields[13], fields[14], fields[15]),
         )
+
+        flags = fields[20]
+        uv = None
+        if flags & QUAD_FLAG_TEX:
+            if offset + QUAD_DESC_UV.size > len(payload):
+                raise ProtocolError("truncated textured quad UV block")
+            uv = QUAD_DESC_UV.unpack_from(payload, offset)
+            offset += QUAD_DESC_UV.size
+
         yield QuadDesc(
             x_min=fields[0],
             y_min=fields[1],
@@ -126,7 +141,8 @@ def iter_quads(payload: bytes) -> Iterable[QuadDesc]:
             dz_dx=fields[17],
             dz_dy=fields[18],
             tex_or_color=fields[19],
-            flags=fields[20],
+            flags=flags,
+            uv=uv,
         )
 
 

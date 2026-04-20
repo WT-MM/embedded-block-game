@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-LUT_SIZE = 1024
+LUT_SIZE = 1025
 Q16 = 1 << 16
+STEP = 64
 
 
 def recip_entry(index: int) -> int:
     if index < 0 or index >= LUT_SIZE:
         raise ValueError(index)
 
-    if index == 0:
-        sample = Q16
-    else:
-        sample = Q16 + index * 64 + 32
+    sample = Q16 + index * STEP
 
     return round((1 << 32) / sample)
 

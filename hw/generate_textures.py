@@ -13,6 +13,18 @@ TEX_TILE_DIRT = 2
 TEX_TILE_STONE = 3
 TEX_TILE_WOOD_SIDE = 4
 TEX_TILE_WOOD_TOP = 5
+TEX_TILE_GRASS_TOP_MIP1 = 16
+TEX_TILE_GRASS_SIDE_MIP1 = 17
+TEX_TILE_DIRT_MIP1 = 18
+TEX_TILE_STONE_MIP1 = 19
+TEX_TILE_WOOD_SIDE_MIP1 = 20
+TEX_TILE_WOOD_TOP_MIP1 = 21
+TEX_TILE_GRASS_TOP_MIP2 = 24
+TEX_TILE_GRASS_SIDE_MIP2 = 25
+TEX_TILE_DIRT_MIP2 = 26
+TEX_TILE_STONE_MIP2 = 27
+TEX_TILE_WOOD_SIDE_MIP2 = 28
+TEX_TILE_WOOD_TOP_MIP2 = 29
 TEX_TILE_CROSSHAIR = 63
 
 PAL_TRANSPARENT = 0
@@ -31,6 +43,25 @@ PAL_WOOD_GRAIN = 21
 PAL_WOOD_DARK = 22
 PAL_STONE_DARK = 23
 PAL_STONE_LIGHT = 24
+
+
+MIP1_TILES = {
+    TEX_TILE_GRASS_TOP_MIP1: TEX_TILE_GRASS_TOP,
+    TEX_TILE_GRASS_SIDE_MIP1: TEX_TILE_GRASS_SIDE,
+    TEX_TILE_DIRT_MIP1: TEX_TILE_DIRT,
+    TEX_TILE_STONE_MIP1: TEX_TILE_STONE,
+    TEX_TILE_WOOD_SIDE_MIP1: TEX_TILE_WOOD_SIDE,
+    TEX_TILE_WOOD_TOP_MIP1: TEX_TILE_WOOD_TOP,
+}
+
+MIP2_TILES = {
+    TEX_TILE_GRASS_TOP_MIP2: TEX_TILE_GRASS_TOP,
+    TEX_TILE_GRASS_SIDE_MIP2: TEX_TILE_GRASS_SIDE,
+    TEX_TILE_DIRT_MIP2: TEX_TILE_DIRT,
+    TEX_TILE_STONE_MIP2: TEX_TILE_STONE,
+    TEX_TILE_WOOD_SIDE_MIP2: TEX_TILE_WOOD_SIDE,
+    TEX_TILE_WOOD_TOP_MIP2: TEX_TILE_WOOD_TOP,
+}
 
 
 def noise(x: int, y: int, seed: int) -> int:
@@ -144,7 +175,7 @@ def crosshair(x: int, y: int) -> int:
     return PAL_TRANSPARENT
 
 
-def texel(tile: int, x: int, y: int) -> int:
+def base_texel(tile: int, x: int, y: int) -> int:
     if tile == TEX_TILE_GRASS_TOP:
         return grass_top(x, y)
     if tile == TEX_TILE_GRASS_SIDE:
@@ -160,6 +191,41 @@ def texel(tile: int, x: int, y: int) -> int:
     if tile == TEX_TILE_CROSSHAIR:
         return crosshair(x, y)
     return PAL_TRANSPARENT
+
+
+def majority(samples: list[int]) -> int:
+    best = samples[0]
+    best_count = 1
+    for value in samples:
+        count = 0
+        for sample in samples:
+            if sample == value:
+                count += 1
+        if count > best_count:
+            best = value
+            best_count = count
+    return best
+
+
+def mip_texel(source_tile: int, x: int, y: int, block_shift: int) -> int:
+    block_size = 1 << block_shift
+    src_x = (x >> block_shift) << block_shift
+    src_y = (y >> block_shift) << block_shift
+    samples: list[int] = []
+
+    for oy in range(block_size):
+        for ox in range(block_size):
+            samples.append(base_texel(source_tile, src_x + ox, src_y + oy))
+
+    return majority(samples)
+
+
+def texel(tile: int, x: int, y: int) -> int:
+    if tile in MIP1_TILES:
+        return mip_texel(MIP1_TILES[tile], x, y, 1)
+    if tile in MIP2_TILES:
+        return mip_texel(MIP2_TILES[tile], x, y, 2)
+    return base_texel(tile, x, y)
 
 
 def build_atlas() -> bytearray:

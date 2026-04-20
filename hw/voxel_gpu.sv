@@ -85,7 +85,7 @@ module voxel_gpu (
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
-    (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1023];
+    (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;
@@ -271,8 +271,16 @@ module voxel_gpu (
     wire signed [31:0] draw_vw_q = clamp_s32(draw_vw_eval);
     wire [31:0] draw_iw_q = clamp_pos_u32(draw_iw_eval);
     wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
-    wire [9:0] pipe0_iw_lut_idx = recip_lut_index(pipe0_iw_q);
-    wire [31:0] pipe0_w_norm_q = recip_lut[pipe0_iw_lut_idx];
+    wire [15:0] pipe0_iw_phase = recip_lut_phase(pipe0_iw_q);
+    wire [10:0] pipe0_iw_lut_idx = {1'b0, pipe0_iw_phase[15:6]};
+    wire [5:0] pipe0_iw_lut_frac = pipe0_iw_phase[5:0];
+    wire [31:0] pipe0_w_norm_lo = recip_lut[pipe0_iw_lut_idx];
+    wire [31:0] pipe0_w_norm_hi = recip_lut[pipe0_iw_lut_idx + 11'd1];
+    wire [31:0] pipe0_w_norm_delta = pipe0_w_norm_lo - pipe0_w_norm_hi;
+    wire [37:0] pipe0_w_interp_prod = pipe0_w_norm_delta * pipe0_iw_lut_frac;
+    wire [37:0] pipe0_w_interp_step_ext = (pipe0_w_interp_prod + 38'd32) >> 6;
+    wire [31:0] pipe0_w_interp_step = pipe0_w_interp_step_ext[31:0];
+    wire [31:0] pipe0_w_norm_q = pipe0_w_norm_lo - pipe0_w_interp_step;
     wire [31:0] pipe0_w_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
                             (pipe0_iw_msb >= 6'd16) ?
                             (pipe0_w_norm_q >> (pipe0_iw_msb - 6'd16)) :
@@ -392,19 +400,19 @@ module voxel_gpu (
         end
     endfunction
 
-    function automatic [9:0] recip_lut_index(input logic [31:0] value);
+    function automatic [15:0] recip_lut_phase(input logic [31:0] value);
         logic [5:0] msb;
         logic [31:0] shifted_q;
         begin
             if (value == 32'd0) begin
-                recip_lut_index = 10'd0;
+                recip_lut_phase = 16'd0;
             end else begin
                 msb = msb_index32(value);
                 if (msb >= 6'd16)
                     shifted_q = value >> (msb - 6'd16);
                 else
                     shifted_q = value << (6'd16 - msb);
-                recip_lut_index = shifted_q[15:6];
+                recip_lut_phase = shifted_q[15:0];
             end
         end
     endfunction

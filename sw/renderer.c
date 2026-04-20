@@ -769,11 +769,46 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
     }
 }
 
+static float approx_projected_edge_span(const RenderContext *ctx,
+                                        const CameraVertex *a,
+                                        const CameraVertex *b)
+{
+    float dx = b->x - a->x;
+    float dy = b->y - a->y;
+    float mid_z = 0.5f * (a->z + b->z);
+    float xy_len = sqrtf(dx * dx + dy * dy);
+
+    if (mid_z <= NEAR_PLANE)
+        return SCREEN_WIDTH;
+
+    return ctx->current_camera.depth * xy_len / mid_z;
+}
+
+static uint8_t choose_face_texture_lod(const RenderContext *ctx,
+                                       uint8_t base_tile,
+                                       const CameraVertex face_cam[4])
+{
+    float u_span = 0.5f * (approx_projected_edge_span(ctx, &face_cam[0], &face_cam[1]) +
+                           approx_projected_edge_span(ctx, &face_cam[2], &face_cam[3]));
+    float v_span = 0.5f * (approx_projected_edge_span(ctx, &face_cam[1], &face_cam[2]) +
+                           approx_projected_edge_span(ctx, &face_cam[3], &face_cam[0]));
+    float min_span = (u_span < v_span) ? u_span : v_span;
+    int lod = 0;
+
+    if (min_span < 6.0f)
+        lod = 2;
+    else if (min_span < 12.0f)
+        lod = 1;
+
+    return texture_lod_tile_id(base_tile, lod);
+}
+
 static void emit_block_face(RenderContext *ctx, BlockID type,
                             Vec3 block_pos, BlockFace face)
 {
     static const float tile_span = 16.0f;
     CameraVertex face_cam[4];
+    uint8_t texture_id;
 
     if (type == BLOCK_AIR)
         return;
@@ -798,11 +833,14 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
         face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
     }
 
+    texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
+                                         face_cam);
+
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count,
                       flat_face_palette_index(type, face),
-                      block_face_texture_id(type, face));
+                      texture_id);
 }
 
 static float distance_to_interval(float value, float min, float max)

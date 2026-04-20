@@ -29,6 +29,18 @@ typedef enum {
     TEX_TILE_STONE,
     TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP,
+    TEX_TILE_GRASS_TOP_MIP1 = 16,
+    TEX_TILE_GRASS_SIDE_MIP1,
+    TEX_TILE_DIRT_MIP1,
+    TEX_TILE_STONE_MIP1,
+    TEX_TILE_WOOD_SIDE_MIP1,
+    TEX_TILE_WOOD_TOP_MIP1,
+    TEX_TILE_GRASS_TOP_MIP2 = 24,
+    TEX_TILE_GRASS_SIDE_MIP2,
+    TEX_TILE_DIRT_MIP2,
+    TEX_TILE_STONE_MIP2,
+    TEX_TILE_WOOD_SIDE_MIP2,
+    TEX_TILE_WOOD_TOP_MIP2,
     TEX_TILE_CROSSHAIR = 63,
     NUM_TEXTURE_TILES = 64
 } TextureTileID;
@@ -43,5 +55,6 @@ extern BlockDescriptor BlockRegistry[NUM_BLOCK_TYPES];
 
 void init_block_types(void);
 uint8_t block_face_texture_id(BlockID id, BlockFace face);
+uint8_t texture_lod_tile_id(uint8_t tile_id, int lod);
 
 #endif

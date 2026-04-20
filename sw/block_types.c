@@ -47,3 +47,26 @@ uint8_t block_face_texture_id(BlockID id, BlockFace face)
 
     return BlockRegistry[id].face_texture_ids[face];
 }
+
+uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
+{
+    if (lod <= 0)
+        return tile_id;
+
+    switch (tile_id) {
+    case TEX_TILE_GRASS_TOP:
+        return lod >= 2 ? TEX_TILE_GRASS_TOP_MIP2 : TEX_TILE_GRASS_TOP_MIP1;
+    case TEX_TILE_GRASS_SIDE:
+        return lod >= 2 ? TEX_TILE_GRASS_SIDE_MIP2 : TEX_TILE_GRASS_SIDE_MIP1;
+    case TEX_TILE_DIRT:
+        return lod >= 2 ? TEX_TILE_DIRT_MIP2 : TEX_TILE_DIRT_MIP1;
+    case TEX_TILE_STONE:
+        return lod >= 2 ? TEX_TILE_STONE_MIP2 : TEX_TILE_STONE_MIP1;
+    case TEX_TILE_WOOD_SIDE:
+        return lod >= 2 ? TEX_TILE_WOOD_SIDE_MIP2 : TEX_TILE_WOOD_SIDE_MIP1;
+    case TEX_TILE_WOOD_TOP:
+        return lod >= 2 ? TEX_TILE_WOOD_TOP_MIP2 : TEX_TILE_WOOD_TOP_MIP1;
+    default:
+        return tile_id;
+    }
+}

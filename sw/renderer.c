@@ -769,35 +769,29 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
     }
 }
 
-static float approx_projected_edge_span(const RenderContext *ctx,
-                                        const CameraVertex *a,
-                                        const CameraVertex *b)
-{
-    float dx = b->x - a->x;
-    float dy = b->y - a->y;
-    float mid_z = 0.5f * (a->z + b->z);
-    float xy_len = sqrtf(dx * dx + dy * dy);
-
-    if (mid_z <= NEAR_PLANE)
-        return SCREEN_WIDTH;
-
-    return ctx->current_camera.depth * xy_len / mid_z;
-}
-
 static uint8_t choose_face_texture_lod(const RenderContext *ctx,
                                        uint8_t base_tile,
                                        const CameraVertex face_cam[4])
 {
-    float u_span = 0.5f * (approx_projected_edge_span(ctx, &face_cam[0], &face_cam[1]) +
-                           approx_projected_edge_span(ctx, &face_cam[2], &face_cam[3]));
-    float v_span = 0.5f * (approx_projected_edge_span(ctx, &face_cam[1], &face_cam[2]) +
-                           approx_projected_edge_span(ctx, &face_cam[3], &face_cam[0]));
-    float min_span = (u_span < v_span) ? u_span : v_span;
+    (void)ctx;
+    float nearest_z = face_cam[0].z;
     int lod = 0;
 
-    if (min_span < 6.0f)
+    for (int i = 1; i < 4; i++) {
+        if (face_cam[i].z < nearest_z)
+            nearest_z = face_cam[i].z;
+    }
+
+    /*
+     * Use a conservative forward-distance rule instead of projected-span
+     * math. The old span-based selector was more expensive and could choose
+     * low-res tiles for nearby but highly oblique faces because one projected
+     * axis collapsed. These thresholds push mip usage farther out so nearby
+     * surfaces stay crisp and runtime overhead stays tiny.
+     */
+    if (nearest_z > 44.0f)
         lod = 2;
-    else if (min_span < 12.0f)
+    else if (nearest_z > 28.0f)
         lod = 1;
 
     return texture_lod_tile_id(base_tile, lod);

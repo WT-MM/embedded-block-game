@@ -4,12 +4,30 @@ from array import array
 from collections.abc import Iterable
 from pathlib import Path
 
-from .protocol import QUAD_FLAG_ALPHA_KEY, QUAD_FLAG_TEX, QUAD_FLAG_ZTEST, QuadDesc
+from .protocol import (
+    QUAD_FLAG_ALPHA_KEY,
+    QUAD_FLAG_TEX,
+    QUAD_FLAG_ZTEST,
+    QUAD_LIGHT_MASK,
+    QUAD_LIGHT_SHIFT,
+    QuadDesc,
+)
 
 CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 64
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
+
+
+def apply_light_bank(color: int, flags: int) -> int:
+    if color == 0:
+        return 0
+
+    bank = (flags & QUAD_LIGHT_MASK) >> QUAD_LIGHT_SHIFT
+    if bank == 0 or color >= 64:
+        return color
+
+    return (bank << 6) | color
 
 
 def load_texture_hex(path: str | Path) -> bytes:
@@ -113,7 +131,7 @@ class VirtualGPU:
              one_over_w_0, one_over_w_dx, one_over_w_dy) = quad.uv
             tile_offset = (quad.tex_or_color & 0x3F) << 8
         else:
-            color = quad.tex_or_color
+            color = apply_light_bank(quad.tex_or_color, quad.flags)
 
         for y in range(y_min, y_max + 1):
             row_base = y * width
@@ -150,9 +168,10 @@ class VirtualGPU:
                     v_value = (vw * w_q16_16) >> 32
                     tex_u = u_value & 0xF
                     tex_v = v_value & 0xF
-                    color = self.textures[tile_offset | (tex_v << 4) | tex_u]
-                    if alpha_key and color == 0:
+                    raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
+                    if alpha_key and raw_color == 0:
                         continue
+                    color = apply_light_bank(raw_color, quad.flags)
 
                 pixel_index = row_base + x
                 if ztest:

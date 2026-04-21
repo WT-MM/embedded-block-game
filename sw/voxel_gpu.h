@@ -95,6 +95,9 @@ struct voxel_status {
 #define QUAD_FLAG_TEX        (1u << 0)   /* textured: second 64-byte UV block follows */
 #define QUAD_FLAG_ZTEST      (1u << 1)   /* enable z-test and z-write */
 #define QUAD_FLAG_ALPHA_KEY  (1u << 2)   /* skip texels whose sampled palette index is 0 */
+#define QUAD_LIGHT_SHIFT     4           /* bits [5:4] select 64-entry palette light bank */
+#define QUAD_LIGHT_MASK      (3u << QUAD_LIGHT_SHIFT)
+#define QUAD_LIGHT_LEVEL(n)  ((((unsigned)(n)) & 3u) << QUAD_LIGHT_SHIFT)
 
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */

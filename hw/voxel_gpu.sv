@@ -62,6 +62,8 @@ module voxel_gpu (
     localparam int FLAG_TEX_BIT        = 0;
     localparam int FLAG_ZTEST_BIT      = 1;
     localparam int FLAG_ALPHA_KEY_BIT  = 2;
+    localparam int FLAG_LIGHT_LSB      = 4;
+    localparam int FLAG_LIGHT_MSB      = 5;
 
     typedef enum logic [2:0] {
         ST_IDLE       = 3'd0,
@@ -124,6 +126,7 @@ module voxel_gpu (
     logic        pipe0_ztest;
     logic        pipe0_textured;
     logic        pipe0_alpha_key;
+    logic  [1:0] pipe0_light_bank;
     logic  [7:0] pipe0_tex_or_color;
     logic [16:0] pipe0_addr;
     logic [15:0] pipe0_z;
@@ -135,6 +138,7 @@ module voxel_gpu (
     logic        pipe1_ztest;
     logic        pipe1_textured;
     logic        pipe1_alpha_key;
+    logic  [1:0] pipe1_light_bank;
     logic  [7:0] pipe1_tex_or_color;
     logic [16:0] pipe1_addr;
     logic [15:0] pipe1_z;
@@ -146,6 +150,7 @@ module voxel_gpu (
     logic        pipe2_ztest;
     logic        pipe2_textured;
     logic        pipe2_alpha_key;
+    logic  [1:0] pipe2_light_bank;
     logic  [7:0] pipe2_tex_or_color;
     logic [16:0] pipe2_addr;
     logic [15:0] pipe2_z;
@@ -156,6 +161,7 @@ module voxel_gpu (
     logic        draw_pipe_ztest;
     logic        draw_pipe_textured;
     logic        draw_pipe_alpha_key;
+    logic  [1:0] draw_pipe_light_bank;
     logic  [7:0] draw_pipe_tex_or_color;
     logic [16:0] draw_pipe_addr;
     logic [15:0] draw_pipe_z;
@@ -292,10 +298,11 @@ module voxel_gpu (
     wire [13:0] pipe1_tex_addr = pipe1_textured ?
                                  {pipe1_tex_or_color[5:0], pipe1_tex_v, pipe1_tex_u} :
                                  14'd0;
-    wire  [7:0] draw_pipe_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
+    wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
+    wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
-                                 (draw_pipe_color == 8'd0);
+                                 (draw_pipe_raw_color == 8'd0);
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
@@ -397,6 +404,16 @@ module voxel_gpu (
                 clamp_tex_coord = 4'd15;
             else
                 clamp_tex_coord = value[35:32];
+        end
+    endfunction
+
+    function automatic [7:0] apply_light_bank(input logic [7:0] color,
+                                              input logic [1:0] light_bank);
+        begin
+            if ((color == 8'd0) || (light_bank == 2'd0) || (color[7:6] != 2'b00))
+                apply_light_bank = color;
+            else
+                apply_light_bank = {light_bank, color[5:0]};
         end
     endfunction
 
@@ -511,6 +528,7 @@ module voxel_gpu (
         pipe0_ztest      = 1'b0;
         pipe0_textured   = 1'b0;
         pipe0_alpha_key  = 1'b0;
+        pipe0_light_bank = 2'd0;
         pipe0_tex_or_color = 8'd0;
         pipe0_addr       = 17'd0;
         pipe0_z          = 16'd0;
@@ -522,6 +540,7 @@ module voxel_gpu (
         pipe1_ztest      = 1'b0;
         pipe1_textured   = 1'b0;
         pipe1_alpha_key  = 1'b0;
+        pipe1_light_bank = 2'd0;
         pipe1_tex_or_color = 8'd0;
         pipe1_addr       = 17'd0;
         pipe1_z          = 16'd0;
@@ -533,6 +552,7 @@ module voxel_gpu (
         pipe2_ztest      = 1'b0;
         pipe2_textured   = 1'b0;
         pipe2_alpha_key  = 1'b0;
+        pipe2_light_bank = 2'd0;
         pipe2_tex_or_color = 8'd0;
         pipe2_addr       = 17'd0;
         pipe2_z          = 16'd0;
@@ -543,6 +563,7 @@ module voxel_gpu (
         draw_pipe_ztest  = 1'b0;
         draw_pipe_textured = 1'b0;
         draw_pipe_alpha_key = 1'b0;
+        draw_pipe_light_bank = 2'd0;
         draw_pipe_tex_or_color = 8'd0;
         draw_pipe_addr   = 17'd0;
         draw_pipe_z      = 16'd0;
@@ -711,6 +732,7 @@ module voxel_gpu (
             pipe0_ztest      <= 1'b0;
             pipe0_textured   <= 1'b0;
             pipe0_alpha_key  <= 1'b0;
+            pipe0_light_bank <= 2'd0;
             pipe0_tex_or_color <= 8'd0;
             pipe0_addr       <= 17'd0;
             pipe0_z          <= 16'd0;
@@ -722,6 +744,7 @@ module voxel_gpu (
             pipe1_ztest      <= 1'b0;
             pipe1_textured   <= 1'b0;
             pipe1_alpha_key  <= 1'b0;
+            pipe1_light_bank <= 2'd0;
             pipe1_tex_or_color <= 8'd0;
             pipe1_addr       <= 17'd0;
             pipe1_z          <= 16'd0;
@@ -733,6 +756,7 @@ module voxel_gpu (
             pipe2_ztest      <= 1'b0;
             pipe2_textured   <= 1'b0;
             pipe2_alpha_key  <= 1'b0;
+            pipe2_light_bank <= 2'd0;
             pipe2_tex_or_color <= 8'd0;
             pipe2_addr       <= 17'd0;
             pipe2_z          <= 16'd0;
@@ -743,6 +767,7 @@ module voxel_gpu (
             draw_pipe_ztest  <= 1'b0;
             draw_pipe_textured <= 1'b0;
             draw_pipe_alpha_key <= 1'b0;
+            draw_pipe_light_bank <= 2'd0;
             draw_pipe_tex_or_color <= 8'd0;
             draw_pipe_addr   <= 17'd0;
             draw_pipe_z      <= 16'd0;
@@ -897,6 +922,7 @@ module voxel_gpu (
                     pipe1_ztest <= pipe0_ztest;
                     pipe1_textured <= pipe0_textured;
                     pipe1_alpha_key <= pipe0_alpha_key;
+                    pipe1_light_bank <= pipe0_light_bank;
                     pipe1_tex_or_color <= pipe0_tex_or_color;
                     pipe1_addr <= pipe0_addr;
                     pipe1_z <= pipe0_z;
@@ -909,6 +935,7 @@ module voxel_gpu (
                     pipe2_ztest <= pipe1_ztest;
                     pipe2_textured <= pipe1_textured;
                     pipe2_alpha_key <= pipe1_alpha_key;
+                    pipe2_light_bank <= pipe1_light_bank;
                     pipe2_tex_or_color <= pipe1_tex_or_color;
                     pipe2_addr <= pipe1_addr;
                     pipe2_z <= pipe1_z;
@@ -920,6 +947,7 @@ module voxel_gpu (
                     draw_pipe_ztest <= pipe2_ztest;
                     draw_pipe_textured <= pipe2_textured;
                     draw_pipe_alpha_key <= pipe2_alpha_key;
+                    draw_pipe_light_bank <= pipe2_light_bank;
                     draw_pipe_tex_or_color <= pipe2_tex_or_color;
                     draw_pipe_addr <= pipe2_addr;
                     draw_pipe_z <= pipe2_z;
@@ -931,6 +959,7 @@ module voxel_gpu (
                         pipe0_ztest <= draw_flags[FLAG_ZTEST_BIT];
                         pipe0_textured <= draw_flags[FLAG_TEX_BIT];
                         pipe0_alpha_key <= draw_flags[FLAG_ALPHA_KEY_BIT];
+                        pipe0_light_bank <= draw_flags[FLAG_LIGHT_MSB:FLAG_LIGHT_LSB];
                         pipe0_tex_or_color <= draw_tex_or_color;
                         pipe0_addr <= draw_addr;
                         pipe0_z <= draw_z_value;
@@ -955,6 +984,7 @@ module voxel_gpu (
                         pipe0_ztest <= 1'b0;
                         pipe0_textured <= 1'b0;
                         pipe0_alpha_key <= 1'b0;
+                        pipe0_light_bank <= 2'd0;
                         pipe0_tex_or_color <= 8'd0;
                         pipe0_addr <= 17'd0;
                         pipe0_z <= 16'd0;

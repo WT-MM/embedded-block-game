@@ -122,6 +122,7 @@ static void upload_default_palette(GPUTransport *transport)
 struct RenderContext {
     GPUTransport *transport;
     Camera current_camera;
+    Vec3 light_dir;
 
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
@@ -145,6 +146,48 @@ static RGB24 rgb24(uint8_t r, uint8_t g, uint8_t b)
 {
     RGB24 color = { r, g, b };
     return color;
+}
+
+static RGB24 default_palette_color(uint8_t index)
+{
+    switch (index) {
+    case 0:  return rgb24(0x10, 0x10, 0x18);
+    case 1:  return rgb24(0x6b, 0xa4, 0x3a);
+    case 2:  return rgb24(0x8b, 0x63, 0x41);
+    case 3:  return rgb24(0x6f, 0x57, 0x37);
+    case 4:  return rgb24(0x7c, 0x7c, 0x7c);
+    case 5:  return rgb24(0xff, 0xff, 0xff);
+    case 6:  return rgb24(0xff, 0x40, 0x40);
+    case 7:  return rgb24(0x40, 0xa0, 0xff);
+    case 8:  return rgb24(0xff, 0xd0, 0x40);
+    case 9:  return rgb24(0x5c, 0x86, 0x34);
+    case 10: return rgb24(0x6a, 0x4a, 0x2c);
+    case 11: return rgb24(0x9d, 0x7b, 0x4d);
+    case 12: return rgb24(0x53, 0x38, 0x23);
+    case 13: return rgb24(0x98, 0x98, 0x98);
+    case 14: return rgb24(0x5c, 0x5c, 0x5c);
+    case 15: return rgb24(0xa7, 0x79, 0x52);
+    case 16: return rgb24(0x59, 0x41, 0x2a);
+    case 17: return rgb24(0x4f, 0x78, 0x2d);
+    case 18: return rgb24(0x84, 0xba, 0x57);
+    case 19: return rgb24(0x6f, 0x4f, 0x32);
+    case 20: return rgb24(0xaa, 0x81, 0x5a);
+    case 21: return rgb24(0x88, 0x6a, 0x44);
+    case 22: return rgb24(0x50, 0x3b, 0x24);
+    case 23: return rgb24(0x63, 0x63, 0x63);
+    case 24: return rgb24(0x9a, 0x9a, 0x9a);
+    case 25: return rgb24(0x78, 0xb4, 0xf0);
+    case 26: return rgb24(0xb0, 0xd8, 0xff);
+    case 27: return rgb24(0xe2, 0xef, 0xff);
+    case 28: return rgb24(0xf5, 0xfa, 0xff);
+    case 29: return rgb24(0xcb, 0xd8, 0xec);
+    case 30: return rgb24(0xff, 0xee, 0xaa);
+    case 31: return rgb24(0xff, 0xbb, 0x55);
+    case 32: return rgb24(0xe7, 0xeb, 0xf8);
+    case 33: return rgb24(0x9c, 0xa4, 0xc0);
+    case 34: return rgb24(0xff, 0xff, 0xff);
+    default: return rgb24(0x00, 0x00, 0x00);
+    }
 }
 
 static float clamp01(float value)
@@ -181,6 +224,13 @@ static RGB24 mix_rgb24(RGB24 base, RGB24 tint, float amount)
     return lerp_rgb24(base, tint, amount);
 }
 
+static RGB24 scale_rgb24(RGB24 color, float factor)
+{
+    return rgb24((uint8_t)lroundf(color.r * factor),
+                 (uint8_t)lroundf(color.g * factor),
+                 (uint8_t)lroundf(color.b * factor));
+}
+
 static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 color)
 {
     uint32_t packed = ((uint32_t)color.r << 16) |
@@ -203,6 +253,27 @@ static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 co
     ctx->palette_valid[index] = 1;
     ctx->palette_cache[index] = packed;
     return true;
+}
+
+static void upload_light_palette_banks(GPUTransport *transport)
+{
+    static const float bank_scale[4] = { 1.00f, 0.82f, 0.64f, 0.50f };
+
+    for (int bank = 1; bank < 4; bank++) {
+        for (int index = 1; index < 64; index++) {
+            RGB24 color = scale_rgb24(default_palette_color((uint8_t)index),
+                                      bank_scale[bank]);
+            struct voxel_palette_entry entry = {
+                .index = (uint8_t)(bank * 64 + index),
+                .r = color.r,
+                .g = color.g,
+                .b = color.b,
+            };
+
+            if (gpu_transport_set_palette(transport, &entry) < 0)
+                return;
+        }
+    }
 }
 
 static Vec3 normalize_vec3(Vec3 v)
@@ -809,7 +880,7 @@ static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
 }
 
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
-                             uint8_t texture_id)
+                             uint8_t texture_id, uint8_t extra_flags)
 {
     Vertex2D verts[4];
     RenderQuad q = {0};
@@ -821,31 +892,31 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
 
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
-    q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX;
+    q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX | extra_flags;
     return renderer_push_quad(ctx, &q);
 }
 
 static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
-                              int count, uint8_t texture_id)
+                              int count, uint8_t texture_id, uint8_t extra_flags)
 {
     if (count < 3)
         return;
 
     if (count == 3) {
         CameraVertex tri[4] = { poly[0], poly[1], poly[2], poly[2] };
-        emit_camera_quad(ctx, tri, texture_id);
+        emit_camera_quad(ctx, tri, texture_id, extra_flags);
         return;
     }
 
     if (count == 4) {
         CameraVertex quad[4] = { poly[0], poly[1], poly[2], poly[3] };
-        emit_camera_quad(ctx, quad, texture_id);
+        emit_camera_quad(ctx, quad, texture_id, extra_flags);
         return;
     }
 
     for (int i = 1; i + 1 < count; i++) {
         CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
-        emit_camera_quad(ctx, tri, texture_id);
+        emit_camera_quad(ctx, tri, texture_id, extra_flags);
     }
 }
 
@@ -877,11 +948,32 @@ static uint8_t choose_face_texture_lod(const RenderContext *ctx,
     return texture_lod_tile_id(base_tile, lod);
 }
 
+static uint8_t choose_face_light_flags(const RenderContext *ctx, BlockFace face)
+{
+    const Vec3 normal = face_normals[face];
+    float ndotl = normal.x * ctx->light_dir.x +
+                  normal.y * ctx->light_dir.y +
+                  normal.z * ctx->light_dir.z;
+    unsigned bank;
+
+    if (ndotl >= 0.65f)
+        bank = 0;
+    else if (ndotl >= 0.15f)
+        bank = 1;
+    else if (ndotl >= -0.25f)
+        bank = 2;
+    else
+        bank = 3;
+
+    return QUAD_LIGHT_LEVEL(bank);
+}
+
 static void emit_block_face(RenderContext *ctx, BlockID type,
                             Vec3 block_pos, BlockFace face)
 {
     static const float tile_span = 16.0f;
     CameraVertex face_cam[4];
+    uint8_t light_flags;
     uint8_t texture_id;
 
     if (type == BLOCK_AIR)
@@ -909,10 +1001,11 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
 
     texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
                                          face_cam);
+    light_flags = choose_face_light_flags(ctx, face);
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
-    emit_clipped_face(ctx, clipped, clipped_count, texture_id);
+    emit_clipped_face(ctx, clipped, clipped_count, texture_id, light_flags);
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -1051,7 +1144,9 @@ RenderContext *renderer_init(void)
         return NULL;
     }
 
+    ctx->light_dir = normalize_vec3((Vec3){ 0.35f, 0.92f, 0.20f });
     upload_default_palette(ctx->transport);
+    upload_light_palette_banks(ctx->transport);
     return ctx;
 }
 

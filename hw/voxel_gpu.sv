@@ -1,7 +1,7 @@
 // voxel_gpu.sv — first real end-to-end render path for the FPGA voxel GPU.
 //
 // This version is intentionally scoped to the first monitor-visible milestone:
-//   * Real Avalon-MM register file + 2048-word command FIFO.
+//   * Real Avalon-MM register file + 512-word command FIFO.
 //   * 256-entry RGB palette programmable from software.
 //   * Double-buffered 320x240 RGB444 framebuffer, scanned out as 640x480
 //     via 2x2 pixel doubling.
@@ -55,7 +55,7 @@ module voxel_gpu (
     localparam int FB_WIDTH       = 320;
     localparam int FB_HEIGHT      = 240;
     localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
-    localparam int FIFO_DEPTH     = 2048;
+    localparam int FIFO_DEPTH     = 512;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
@@ -93,16 +93,23 @@ module voxel_gpu (
     logic [15:0] fog_inv_proj_sq;
     logic        vsy_latch;
     logic        front_sel;  // 0 => fb0 is front, 1 => fb1 is front
+    /*
+     * Shadow of rgb24_to_rgb444(palette[0]). Updated whenever software writes
+     * palette entry 0, so the clear sweep doesn't need a second palette read
+     * port — which was forcing the 256x24 palette RAM to duplicate into an
+     * extra M10K.
+     */
+    logic [11:0] clear_rgb444;
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
     (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
 
-    logic [10:0] fifo_wr_ptr;
-    logic [10:0] fifo_rd_ptr;
-    logic [11:0] fifo_count;
-    wire         fifo_full  = (fifo_count == 12'd2048);
+    logic  [8:0] fifo_wr_ptr;
+    logic  [8:0] fifo_rd_ptr;
+    logic  [9:0] fifo_count;
+    wire         fifo_full  = (fifo_count == 10'd512);
     wire         fifo_empty = (fifo_count == 0);
     wire [31:0]  fifo_head  = fifo_mem[fifo_rd_ptr];
 
@@ -377,7 +384,7 @@ module voxel_gpu (
 
     wire [31:0] status_word = {
         12'h0,
-        {4'h0, fifo_count},
+        {6'h0, fifo_count},
         vsy_latch,
         fifo_empty,
         fifo_full,
@@ -618,10 +625,11 @@ module voxel_gpu (
         fog_inv_proj_sq  = 16'd0;
         vsy_latch        = 1'b0;
         front_sel        = 1'b0;
+        clear_rgb444     = 12'h111;  // matches rgb24_to_rgb444(24'h101018) initial palette[0]
         state            = ST_IDLE;
-        fifo_wr_ptr      = 11'd0;
-        fifo_rd_ptr      = 11'd0;
-        fifo_count       = 12'd0;
+        fifo_wr_ptr      = 9'd0;
+        fifo_rd_ptr      = 9'd0;
+        fifo_count       = 10'd0;
         fetch_count      = 6'd0;
         draw_flush_count = 3'd0;
         clear_addr       = 17'd0;
@@ -796,7 +804,7 @@ module voxel_gpu (
         case (state)
             ST_CLEAR: begin
                 fb_wr_addr = clear_addr;
-                fb_wr_data = rgb24_to_rgb444(palette[0]);
+                fb_wr_data = clear_rgb444;
                 z_wr_addr = clear_addr;
                 z_wr_data = 16'hFFFF;
                 z_wr_en   = 1'b1;
@@ -859,10 +867,11 @@ module voxel_gpu (
             fog_inv_proj_sq  <= 16'd0;
             vsy_latch        <= 1'b0;
             front_sel        <= 1'b0;
+            clear_rgb444     <= 12'h111;
             state            <= ST_IDLE;
-            fifo_wr_ptr      <= 11'd0;
-            fifo_rd_ptr      <= 11'd0;
-            fifo_count       <= 12'd0;
+            fifo_wr_ptr      <= 9'd0;
+            fifo_rd_ptr      <= 9'd0;
+            fifo_count       <= 10'd0;
             fetch_count      <= 6'd0;
             draw_flush_count <= 3'd0;
             clear_addr       <= 17'd0;
@@ -981,6 +990,8 @@ module voxel_gpu (
                     ADDR_PAL_DATA: begin
                         palette[pal_addr] <= writedata[23:0];
                         pal_addr <= pal_addr + 8'd1;
+                        if (pal_addr == 8'd0)
+                            clear_rgb444 <= rgb24_to_rgb444(writedata[23:0]);
                     end
                     ADDR_FOG_RANGE: begin
                         fog_start_dist <= writedata[15:0];
@@ -1002,16 +1013,16 @@ module voxel_gpu (
 
             case ({fifo_push_req, fifo_pop_req})
                 2'b10: begin
-                    fifo_wr_ptr <= fifo_wr_ptr + 11'd1;
-                    fifo_count  <= fifo_count + 12'd1;
+                    fifo_wr_ptr <= fifo_wr_ptr + 9'd1;
+                    fifo_count  <= fifo_count + 10'd1;
                 end
                 2'b01: begin
-                    fifo_rd_ptr <= fifo_rd_ptr + 11'd1;
-                    fifo_count  <= fifo_count - 12'd1;
+                    fifo_rd_ptr <= fifo_rd_ptr + 9'd1;
+                    fifo_count  <= fifo_count - 10'd1;
                 end
                 2'b11: begin
-                    fifo_wr_ptr <= fifo_wr_ptr + 11'd1;
-                    fifo_rd_ptr <= fifo_rd_ptr + 11'd1;
+                    fifo_wr_ptr <= fifo_wr_ptr + 9'd1;
+                    fifo_rd_ptr <= fifo_rd_ptr + 9'd1;
                 end
                 default: ;
             endcase
@@ -1028,7 +1039,7 @@ module voxel_gpu (
                         state         <= ST_CLEAR;
                         clear_pending <= 1'b0;
                         clear_addr    <= 17'd0;
-                    end else if (ctrl_en && (fifo_count >= 12'd16)) begin
+                    end else if (ctrl_en && (fifo_count >= 10'd16)) begin
                         state       <= ST_FETCH;
                         fetch_count <= 6'd0;
                     end

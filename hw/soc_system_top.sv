@@ -268,6 +268,17 @@ module soc_system_top(
      .hps_hps_io_gpio_inst_GPIO54  ( HPS_KEY ),
      .hps_hps_io_gpio_inst_GPIO61  ( HPS_GSENSOR_INT ),
 
+     .fpga_sdram_wire_addr ( DRAM_ADDR ),
+     .fpga_sdram_wire_ba ( DRAM_BA ),
+     .fpga_sdram_wire_cas_n ( DRAM_CAS_N ),
+     .fpga_sdram_wire_cke ( DRAM_CKE ),
+     .fpga_sdram_wire_cs_n ( DRAM_CS_N ),
+     .fpga_sdram_wire_dq (DRAM_DQ),
+     .fpga_sdram_wire_dqm ( {DRAM_UDQM, DRAM_LDQM} ),
+     .fpga_sdram_wire_ras_n ( DRAM_RAS_N ),
+     .fpga_sdram_wire_we_n ( DRAM_WE_N ),
+     .sdram_clk_clk ( DRAM_CLK ),
+
      .vga_r (VGA_R),
      .vga_g (VGA_G),
      .vga_b (VGA_B), 
@@ -292,12 +303,6 @@ module soc_system_top(
    assign AUD_DACDAT = SW[0];
    assign AUD_DACLRCK = SW[1] ? SW[0] : 1'bZ;
    assign AUD_XCK = SW[0];      
-
-   assign DRAM_ADDR = { 13{ SW[0] } };
-   assign DRAM_BA = { 2{ SW[0] } };
-   assign DRAM_DQ = SW[1] ? { 16{ SW[0] } } : { 16{ 1'bZ } };
-   assign {DRAM_CAS_N, DRAM_CKE, DRAM_CLK, DRAM_CS_N,
-           DRAM_LDQM, DRAM_RAS_N, DRAM_UDQM, DRAM_WE_N} = { 8{SW[0]} };
 
    assign FAN_CTRL = SW[0];
 

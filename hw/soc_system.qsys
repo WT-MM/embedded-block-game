@@ -17,11 +17,27 @@
          type = "int";
       }
    }
+   element fpga_sdram
+   {
+      datum _sortIndex
+      {
+         value = "3";
+         type = "int";
+      }
+   }
    element hps_0
    {
       datum _sortIndex
       {
          value = "1";
+         type = "int";
+      }
+   }
+   element sdram_clocks
+   {
+      datum _sortIndex
+      {
+         value = "4";
          type = "int";
       }
    }
@@ -55,17 +71,56 @@
  <parameter name="useTestBenchNamingPattern" value="false" />
  <instanceScript></instanceScript>
  <interface name="clk" internal="clk_0.clk_in" type="clock" dir="end" />
+ <interface
+   name="fpga_sdram_wire"
+   internal="fpga_sdram.wire"
+   type="conduit"
+   dir="end" />
  <interface name="hps" internal="hps_0.hps_io" type="conduit" dir="end" />
  <interface name="hps_ddr3" internal="hps_0.memory" type="conduit" dir="end" />
  <interface name="reset" internal="clk_0.clk_in_reset" type="reset" dir="end" />
+ <interface
+   name="sdram_clk"
+   internal="sdram_clocks.sdram_clk"
+   type="clock"
+   dir="start" />
  <interface name="vga" internal="voxel_gpu_0.vga" type="conduit" dir="end" />
- <module name="clk_0" kind="clock_source" version="21.1" enabled="1">
+ <module name="clk_0" kind="clock_source" version="19.1" enabled="1">
   <parameter name="clockFrequency" value="50000000" />
   <parameter name="clockFrequencyKnown" value="true" />
   <parameter name="inputClockFrequency" value="0" />
   <parameter name="resetSynchronousEdges" value="NONE" />
  </module>
- <module name="hps_0" kind="altera_hps" version="21.1" enabled="1">
+ <module
+   name="fpga_sdram"
+   kind="altera_avalon_new_sdram_controller"
+   version="19.1"
+   enabled="1">
+  <parameter name="TAC" value="5.4" />
+  <parameter name="TMRD" value="3" />
+  <parameter name="TRCD" value="15.0" />
+  <parameter name="TRFC" value="70.0" />
+  <parameter name="TRP" value="15.0" />
+  <parameter name="TWR" value="14.0" />
+  <parameter name="casLatency" value="3" />
+  <parameter name="clockRate" value="50000000" />
+  <parameter name="columnWidth" value="10" />
+  <parameter name="componentName">$${FILENAME}_fpga_sdram</parameter>
+  <parameter name="dataWidth" value="16" />
+  <parameter name="generateSimulationModel" value="false" />
+  <parameter name="initNOPDelay" value="0.0" />
+  <parameter name="initRefreshCommands" value="2" />
+  <parameter name="masteredTristateBridgeSlave" value="0" />
+  <parameter name="model">single_Micron_MT48LC4M32B2_7_chip</parameter>
+  <parameter name="numberOfBanks" value="4" />
+  <parameter name="numberOfChipSelects" value="1" />
+  <parameter name="pinsSharedViaTriState" value="false" />
+  <parameter name="powerUpDelay" value="100.0" />
+  <parameter name="refreshPeriod" value="7.8125" />
+  <parameter name="registerDataIn" value="true" />
+  <parameter name="rowWidth" value="13" />
+ </module>
+ <module name="hps_0" kind="altera_hps" version="19.1" enabled="1">
   <parameter name="ABSTRACT_REAL_COMPARE_TEST" value="false" />
   <parameter name="ABS_RAM_MEM_INIT_FILENAME" value="meminit" />
   <parameter name="ACV_PHY_CLK_ADD_FR_PHASE" value="0.0" />
@@ -595,36 +650,95 @@
   <parameter name="usb_mp_clk_div" value="0" />
   <parameter name="use_default_mpu_clk" value="true" />
  </module>
+ <module
+   name="sdram_clocks"
+   kind="altera_up_avalon_sys_sdram_pll"
+   version="18.0"
+   enabled="1">
+  <parameter name="AUTO_DEVICE" value="5CSEMA5F31C6" />
+  <parameter name="AUTO_DEVICE_SPEEDGRADE" value="6" />
+  <parameter name="CIII_boards" value="DE0" />
+  <parameter name="CIV_boards" value="DE2-115" />
+  <parameter name="CV_boards" value="DE1-SoC" />
+  <parameter name="MAX10_boards" value="DE10-Lite" />
+  <parameter name="device_family" value="Cyclone V" />
+  <parameter name="gui_outclk" value="50.0" />
+  <parameter name="gui_refclk" value="50.0" />
+  <parameter name="other_boards" value="None" />
+ </module>
  <module name="voxel_gpu_0" kind="voxel_gpu" version="1.0" enabled="1" />
  <connection
    kind="avalon"
-   version="21.1"
+   version="19.1"
+   start="hps_0.h2f_axi_master"
+   end="fpga_sdram.s1">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0000" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="19.1"
    start="hps_0.h2f_lw_axi_master"
    end="voxel_gpu_0.avalon_slave_0">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0000" />
   <parameter name="defaultConnection" value="false" />
  </connection>
- <connection kind="clock" version="21.1" start="clk_0.clk" end="voxel_gpu_0.clock" />
  <connection
    kind="clock"
-   version="21.1"
+   version="19.1"
    start="clk_0.clk"
+   end="sdram_clocks.ref_clk" />
+ <connection
+   kind="clock"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
+   end="fpga_sdram.clk" />
+ <connection
+   kind="clock"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
+   end="voxel_gpu_0.clock" />
+ <connection
+   kind="clock"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
    end="hps_0.f2h_axi_clock" />
  <connection
    kind="clock"
-   version="21.1"
-   start="clk_0.clk"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
    end="hps_0.h2f_axi_clock" />
  <connection
    kind="clock"
-   version="21.1"
-   start="clk_0.clk"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
    end="hps_0.h2f_lw_axi_clock" />
  <connection
    kind="reset"
-   version="21.1"
+   version="19.1"
    start="clk_0.clk_reset"
+   end="sdram_clocks.ref_reset" />
+ <connection
+   kind="reset"
+   version="19.1"
+   start="clk_0.clk_reset"
+   end="voxel_gpu_0.reset" />
+ <connection
+   kind="reset"
+   version="19.1"
+   start="clk_0.clk_reset"
+   end="fpga_sdram.reset" />
+ <connection
+   kind="reset"
+   version="19.1"
+   start="sdram_clocks.reset_source"
+   end="fpga_sdram.reset" />
+ <connection
+   kind="reset"
+   version="19.1"
+   start="sdram_clocks.reset_source"
    end="voxel_gpu_0.reset" />
  <interconnectRequirement for="$system" name="qsys_mm.clockCrossingAdapter" value="HANDSHAKE" />
  <interconnectRequirement for="$system" name="qsys_mm.enableEccProtection" value="FALSE" />

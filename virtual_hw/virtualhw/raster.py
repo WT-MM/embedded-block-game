@@ -5,6 +5,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .protocol import (
+    QUAD_ALPHA_MASK,
+    QUAD_ALPHA_SHIFT,
     QUAD_FLAG_ALPHA_KEY,
     QUAD_FLAG_FOG,
     QUAD_FLAG_TEX,
@@ -18,12 +20,6 @@ CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 64
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
-FOG_BAYER_4X4 = (
-    (0, 8, 2, 10),
-    (12, 4, 14, 6),
-    (3, 11, 1, 9),
-    (15, 7, 13, 5),
-)
 
 
 def apply_light_bank(color: int, flags: int) -> int:
@@ -37,42 +33,72 @@ def apply_light_bank(color: int, flags: int) -> int:
     return (bank << 6) | color
 
 
-def apply_fog(
-    color: int,
+def alpha_nibble(flags: int) -> int:
+    level = (flags & QUAD_ALPHA_MASK) >> QUAD_ALPHA_SHIFT
+    return (16, 12, 8, 4)[level]
+
+
+def rgb24_to_rgb444(color: tuple[int, int, int]) -> int:
+    r, g, b = color
+    return ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+
+
+def blend_rgb444(src: int, dst: int, alpha: int) -> int:
+    if alpha <= 0:
+        return dst
+    if alpha >= 16:
+        return src
+
+    inv_alpha = 16 - alpha
+    src_r = (src >> 8) & 0xF
+    src_g = (src >> 4) & 0xF
+    src_b = src & 0xF
+    dst_r = (dst >> 8) & 0xF
+    dst_g = (dst >> 4) & 0xF
+    dst_b = dst & 0xF
+
+    out_r = (src_r * alpha + dst_r * inv_alpha + 8) >> 4
+    out_g = (src_g * alpha + dst_g * inv_alpha + 8) >> 4
+    out_b = (src_b * alpha + dst_b * inv_alpha + 8) >> 4
+    return (out_r << 8) | (out_g << 4) | out_b
+
+
+def fog_alpha_nibble(
+    flags: int,
     fog_enabled: bool,
     fog_start: int,
     fog_end: int,
-    fog_color: int,
-    flags: int,
-    z_value: int,
+    fog_inv_proj_sq: int,
+    forward_z_q16_16: int,
     x: int,
     y: int,
+    width: int,
+    height: int,
 ) -> int:
-    if not fog_enabled or not (flags & QUAD_FLAG_FOG) or fog_end <= fog_start:
-        return color
-    if z_value <= fog_start:
-        return color
-    if z_value >= fog_end:
-        return fog_color
+    if (
+        not fog_enabled
+        or not (flags & QUAD_FLAG_FOG)
+        or fog_end <= fog_start
+        or forward_z_q16_16 <= 0
+    ):
+        return 0
 
-    fog_span = fog_end - fog_start
-    fog_q1 = fog_start + (fog_span >> 2)
-    fog_q2 = fog_start + (fog_span >> 1)
-    fog_q3 = fog_end - (fog_span >> 2)
+    dx = x - (width // 2)
+    dy = (height // 2) - y
+    radial_sq = dx * dx + dy * dy
+    radial_sq_q16 = radial_sq * fog_inv_proj_sq
+    ray_scale_q16 = 65536 + ((radial_sq_q16 * 3) >> 3)
+    radial_dist_q8_8 = ((forward_z_q16_16 * ray_scale_q16) >> 16) >> 8
 
-    if z_value < fog_q1:
-        threshold = 4
-    elif z_value < fog_q2:
-        threshold = 8
-    elif z_value < fog_q3:
-        threshold = 12
-    else:
-        threshold = 15
+    if radial_dist_q8_8 <= fog_start:
+        return 0
+    if radial_dist_q8_8 >= fog_end:
+        return 16
 
-    if FOG_BAYER_4X4[y & 3][x & 3] < threshold:
-        return fog_color
-
-    return color
+    fog_delta = radial_dist_q8_8 - fog_start
+    if fog_delta >= (16 << 8):
+        return 16
+    return fog_delta >> 8
 
 
 def load_texture_hex(path: str | Path) -> bytes:
@@ -106,19 +132,18 @@ class VirtualGPU:
         self.width = width
         self.height = height
         self.pixel_count = width * height
-        self._cleared_frame = bytes(self.pixel_count)
+        self.front_buffer = array("H", [0]) * self.pixel_count
+        self.back_buffer = array("H", [0]) * self.pixel_count
         self._cleared_depth = array("H", [CLEAR_DEPTH]) * self.pixel_count
-        self.front_buffer = bytearray(self.pixel_count)
-        self.back_buffer = bytearray(self.pixel_count)
         self.z_buffer = self._cleared_depth[:]
         self.palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
         self.frame_count = 0
         self.vsync_latch = 0
-        self.palette_dirty = True
         self.fog_start = 0
         self.fog_end = 0
         self.fog_color = 0
         self.fog_enabled = False
+        self.fog_inv_proj_sq = 0
         if textures is None:
             textures = bytes(TEXTURE_BYTES)
         if len(textures) != TEXTURE_BYTES:
@@ -128,19 +153,27 @@ class VirtualGPU:
         self.textures = textures
 
     def clear(self) -> None:
-        self.back_buffer[:] = self._cleared_frame
+        clear_rgb = rgb24_to_rgb444(self.palette[0])
+        self.back_buffer[:] = array("H", [clear_rgb]) * self.pixel_count
         self.z_buffer[:] = self._cleared_depth
         self.vsync_latch = 0
 
     def set_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
         self.palette[index] = (r, g, b)
-        self.palette_dirty = True
 
-    def set_fog(self, start_z: int, end_z: int, color_index: int, enabled: int) -> None:
-        self.fog_start = start_z & 0xFFFF
-        self.fog_end = end_z & 0xFFFF
+    def set_fog(
+        self,
+        start_dist: int,
+        end_dist: int,
+        color_index: int,
+        enabled: int,
+        inv_proj_sq: int,
+    ) -> None:
+        self.fog_start = start_dist & 0xFFFF
+        self.fog_end = end_dist & 0xFFFF
         self.fog_color = color_index & 0xFF
         self.fog_enabled = bool(enabled)
+        self.fog_inv_proj_sq = inv_proj_sq & 0xFFFF
 
     def submit_quads(self, quads: Iterable[QuadDesc]) -> None:
         for quad in quads:
@@ -177,16 +210,27 @@ class VirtualGPU:
         textured = (quad.flags & QUAD_FLAG_TEX) != 0
         ztest = (quad.flags & QUAD_FLAG_ZTEST) != 0
         alpha_key = (quad.flags & QUAD_FLAG_ALPHA_KEY) != 0
+        src_alpha = alpha_nibble(quad.flags)
 
         if textured:
             if quad.uv is None:
                 raise ValueError("textured quad is missing a UV block")
-            (u_over_w_0, u_over_w_dx, u_over_w_dy,
-             v_over_w_0, v_over_w_dx, v_over_w_dy,
-             one_over_w_0, one_over_w_dx, one_over_w_dy) = quad.uv
+            (
+                u_over_w_0,
+                u_over_w_dx,
+                u_over_w_dy,
+                v_over_w_0,
+                v_over_w_dx,
+                v_over_w_dy,
+                one_over_w_0,
+                one_over_w_dx,
+                one_over_w_dy,
+            ) = quad.uv
             tile_offset = (quad.tex_or_color & 0x3F) << 8
         else:
-            color = apply_light_bank(quad.tex_or_color, quad.flags)
+            color_index = apply_light_bank(quad.tex_or_color, quad.flags)
+
+        fog_rgb = rgb24_to_rgb444(self.palette[self.fog_color])
 
         for y in range(y_min, y_max + 1):
             row_base = y * width
@@ -207,41 +251,49 @@ class VirtualGPU:
                 elif z_value > CLEAR_DEPTH:
                     z_value = CLEAR_DEPTH
 
+                forward_z_q16_16 = 0
                 if textured:
                     dx = x - qx_min
-                    # Interpolate (u/w, v/w, 1/w) linearly in screen space, then
-                    # divide to recover true u, v. All three quantities are in
-                    # Q16.16; the reciprocal returns Q16.16 w_eye.
                     uw = u_over_w_0 + u_over_w_dx * dx + u_over_w_dy * dy
                     vw = v_over_w_0 + v_over_w_dx * dx + v_over_w_dy * dy
                     iw = one_over_w_0 + one_over_w_dx * dx + one_over_w_dy * dy
                     if iw <= 0:
                         continue
-                    # w_q16_16 = 2^32 / iw  (iw is Q16.16; divisor 2^16 cancels)
-                    w_q16_16 = (1 << 32) // iw
-                    u_value = (uw * w_q16_16) >> 32
-                    v_value = (vw * w_q16_16) >> 32
+                    forward_z_q16_16 = (1 << 32) // iw
+                    u_value = (uw * forward_z_q16_16) >> 32
+                    v_value = (vw * forward_z_q16_16) >> 32
                     tex_u = u_value & 0xF
                     tex_v = v_value & 0xF
                     raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
                     if alpha_key and raw_color == 0:
                         continue
-                    color = apply_light_bank(raw_color, quad.flags)
+                    color_index = apply_light_bank(raw_color, quad.flags)
 
                 pixel_index = row_base + x
                 if ztest:
                     if z_value >= self.z_buffer[pixel_index]:
                         continue
-                    self.z_buffer[pixel_index] = z_value
+                    if src_alpha >= 16:
+                        self.z_buffer[pixel_index] = z_value
 
-                self.back_buffer[pixel_index] = apply_fog(
-                    color,
+                src_rgb = rgb24_to_rgb444(self.palette[color_index])
+                fog_alpha = fog_alpha_nibble(
+                    quad.flags,
                     self.fog_enabled,
                     self.fog_start,
                     self.fog_end,
-                    self.fog_color,
-                    quad.flags,
-                    z_value,
+                    self.fog_inv_proj_sq,
+                    forward_z_q16_16,
                     x,
                     y,
+                    self.width,
+                    self.height,
                 )
+                if fog_alpha:
+                    src_rgb = blend_rgb444(fog_rgb, src_rgb, fog_alpha)
+
+                if src_alpha < 16:
+                    dst_rgb = self.back_buffer[pixel_index]
+                    src_rgb = blend_rgb444(src_rgb, dst_rgb, src_alpha)
+
+                self.back_buffer[pixel_index] = src_rgb

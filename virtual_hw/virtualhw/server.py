@@ -67,9 +67,6 @@ class Monitor:
         self._window = None
         self._pygame = None
         self._rgb_buffer = bytearray(width * height * 3)
-        self._red_lut = bytes(256)
-        self._green_lut = bytes(256)
-        self._blue_lut = bytes(256)
 
         if headless:
             return
@@ -103,30 +100,21 @@ class Monitor:
             if event.type == self._pygame.QUIT:
                 raise KeyboardInterrupt
 
-    def _sync_palette(self, gpu: VirtualGPU) -> None:
-        if not gpu.palette_dirty:
-            return
-        palette = gpu.palette
-        self._red_lut = bytes(rgb[0] for rgb in palette)
-        self._green_lut = bytes(rgb[1] for rgb in palette)
-        self._blue_lut = bytes(rgb[2] for rgb in palette)
-        gpu.palette_dirty = False
+    def _frame_to_rgb(self, frame) -> bytearray:
+        out = self._rgb_buffer
 
-    def _frame_to_rgb(self, frame: bytearray) -> bytearray:
-        frame_bytes = bytes(frame)
-        red = frame_bytes.translate(self._red_lut)
-        green = frame_bytes.translate(self._green_lut)
-        blue = frame_bytes.translate(self._blue_lut)
-        self._rgb_buffer[0::3] = red
-        self._rgb_buffer[1::3] = green
-        self._rgb_buffer[2::3] = blue
+        for i, rgb444 in enumerate(frame):
+            base = i * 3
+            out[base] = ((rgb444 >> 8) & 0xF) * 17
+            out[base + 1] = ((rgb444 >> 4) & 0xF) * 17
+            out[base + 2] = (rgb444 & 0xF) * 17
+
         return self._rgb_buffer
 
     def present(self, gpu: VirtualGPU) -> None:
         if self.headless:
             return
 
-        self._sync_palette(gpu)
         self.pump()
 
         assert self._window is not None
@@ -142,7 +130,6 @@ class Monitor:
         self._pygame.display.flip()
 
     def rgb_frame(self, gpu: VirtualGPU) -> bytearray:
-        self._sync_palette(gpu)
         return self._frame_to_rgb(gpu.front_buffer)
 
 

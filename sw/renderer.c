@@ -732,12 +732,18 @@ static inline int16_t to_q1_15s(float v)
     return (int16_t)lroundf(v * 32768.0f);
 }
 
-static uint16_t camera_depth_to_fog_z(float camera_z)
+static inline uint16_t to_q8_8u(float v)
 {
-    if (camera_z < NEAR_PLANE)
-        camera_z = NEAR_PLANE;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 255.996f) v = 255.996f;
+    return (uint16_t)lroundf(v * 256.0f);
+}
 
-    return to_q1_15u(1.0f - (NEAR_PLANE / camera_z));
+static inline uint16_t to_q0_16u(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 0.9999847f) v = 0.9999847f;
+    return (uint16_t)lroundf(v * 65536.0f);
 }
 
 static inline int32_t to_q16_16(float v)
@@ -1060,23 +1066,21 @@ static void chunk_camera_bounds(RenderContext *ctx, const Chunk *chunk,
                  fabsf(cy * cp) * half_z;
 }
 
+static float chunk_distance_sq_to_camera(RenderContext *ctx, const Chunk *chunk);
+
 static bool chunk_within_render_distance(RenderContext *ctx,
                                          const VoxelWorld *world,
                                          const Chunk *chunk)
 {
-    float max_depth;
-    ChunkCameraBounds bounds;
+    float max_distance;
+    float max_distance_sq;
 
     if (world->render_distance_chunks <= 0)
         return true;
 
-    max_depth = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
-    chunk_camera_bounds(ctx, chunk, &bounds);
-
-    /* Render-distance should track view depth, not spherical distance from
-     * the camera, otherwise high-altitude views punch holes in the terrain. */
-    return bounds.center.z + bounds.ez >= NEAR_PLANE &&
-           bounds.center.z - bounds.ez <= max_depth;
+    max_distance = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    max_distance_sq = max_distance * max_distance;
+    return chunk_distance_sq_to_camera(ctx, chunk) <= max_distance_sq;
 }
 
 static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
@@ -1089,21 +1093,22 @@ static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
         return;
     }
 
-    float end_depth = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    float end_distance = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
     float fade_span = (float)WORLD_CHUNK_SIZE;
-    float start_depth;
+    float start_distance;
+    float inv_proj_sq;
 
-    if (fade_span > end_depth * 0.5f)
-        fade_span = end_depth * 0.5f;
+    start_distance = end_distance - fade_span;
+    if (start_distance < NEAR_PLANE)
+        start_distance = NEAR_PLANE;
 
-    start_depth = end_depth - fade_span;
-    if (start_depth < NEAR_PLANE)
-        start_depth = NEAR_PLANE;
+    inv_proj_sq = 1.0f / (ctx->current_camera.depth * ctx->current_camera.depth);
 
-    fog.start_z = camera_depth_to_fog_z(start_depth);
-    fog.end_z = camera_depth_to_fog_z(end_depth);
+    fog.start_dist = to_q8_8u(start_distance);
+    fog.end_dist = to_q8_8u(end_distance);
     fog.color_index = PAL_SKY_HORIZON;
-    fog.enabled = fog.end_z > fog.start_z;
+    fog.enabled = fog.end_dist > fog.start_dist;
+    fog.inv_proj_sq = to_q0_16u(inv_proj_sq);
     gpu_transport_set_fog(ctx->transport, &fog);
 }
 
@@ -1694,5 +1699,5 @@ bool renderer_draw_crosshair(RenderContext *ctx)
                                      x0, y0, x1, y1,
                                      0.0f, 0.0f, 16.0f, 16.0f,
                                      TEX_TILE_CROSSHAIR,
-                                     QUAD_FLAG_ALPHA_KEY);
+                                     QUAD_FLAG_ALPHA_KEY | QUAD_ALPHA_75);
 }

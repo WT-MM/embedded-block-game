@@ -3,9 +3,9 @@
 // This version is intentionally scoped to the first monitor-visible milestone:
 //   * Real Avalon-MM register file + 2048-word command FIFO.
 //   * 256-entry RGB palette programmable from software.
-//   * Double-buffered 320x240 8-bit framebuffer, scanned out as 640x480
+//   * Double-buffered 320x240 RGB444 framebuffer, scanned out as 640x480
 //     via 2x2 pixel doubling.
-//   * CLEAR command clears the back buffer to palette index 0.
+//   * CLEAR command clears the back buffer to palette[0].
 //   * FLIP swaps front/back on the next vsync.
 //   * Descriptor fetch consumes 16 FIFO words for flat quads and 32 for
 //     textured quads with a UV block.
@@ -67,6 +67,8 @@ module voxel_gpu (
     localparam int FLAG_FOG_BIT        = 3;
     localparam int FLAG_LIGHT_LSB      = 4;
     localparam int FLAG_LIGHT_MSB      = 5;
+    localparam int FLAG_ALPHA_LSB      = 6;
+    localparam int FLAG_ALPHA_MSB      = 7;
 
     typedef enum logic [2:0] {
         ST_IDLE       = 3'd0,
@@ -86,8 +88,9 @@ module voxel_gpu (
     logic  [7:0] pal_addr;
     logic        fog_enable;
     logic  [7:0] fog_color;
-    logic [15:0] fog_start_z;
-    logic [15:0] fog_end_z;
+    logic [15:0] fog_start_dist;
+    logic [15:0] fog_end_dist;
+    logic [15:0] fog_inv_proj_sq;
     logic        vsy_latch;
     logic        front_sel;  // 0 => fb0 is front, 1 => fb1 is front
 
@@ -134,12 +137,13 @@ module voxel_gpu (
     logic        pipe0_textured;
     logic        pipe0_alpha_key;
     logic        pipe0_fog;
+    logic  [1:0] pipe0_alpha_level;
     logic  [1:0] pipe0_light_bank;
     logic  [7:0] pipe0_tex_or_color;
     logic [16:0] pipe0_addr;
     logic [15:0] pipe0_z;
-    logic  [1:0] pipe0_fog_x;
-    logic  [1:0] pipe0_fog_y;
+    logic  [9:0] pipe0_x;
+    logic  [8:0] pipe0_y;
     logic signed [31:0] pipe0_uw_q;
     logic signed [31:0] pipe0_vw_q;
     logic [31:0] pipe0_iw_q;
@@ -149,12 +153,13 @@ module voxel_gpu (
     logic        pipe1_textured;
     logic        pipe1_alpha_key;
     logic        pipe1_fog;
+    logic  [1:0] pipe1_alpha_level;
     logic  [1:0] pipe1_light_bank;
     logic  [7:0] pipe1_tex_or_color;
     logic [16:0] pipe1_addr;
     logic [15:0] pipe1_z;
-    logic  [1:0] pipe1_fog_x;
-    logic  [1:0] pipe1_fog_y;
+    logic  [9:0] pipe1_x;
+    logic  [8:0] pipe1_y;
     logic signed [31:0] pipe1_uw_q;
     logic signed [31:0] pipe1_vw_q;
     logic [31:0] pipe1_w_q;
@@ -164,13 +169,15 @@ module voxel_gpu (
     logic        pipe2_textured;
     logic        pipe2_alpha_key;
     logic        pipe2_fog;
+    logic  [1:0] pipe2_alpha_level;
     logic  [1:0] pipe2_light_bank;
     logic  [7:0] pipe2_tex_or_color;
     logic [16:0] pipe2_addr;
     logic [15:0] pipe2_z;
     logic [15:0] pipe2_z_ref;
-    logic  [1:0] pipe2_fog_x;
-    logic  [1:0] pipe2_fog_y;
+    logic  [9:0] pipe2_x;
+    logic  [8:0] pipe2_y;
+    logic [31:0] pipe2_w_q;
     logic [13:0] pipe2_tex_addr;
     logic        draw_pipe_valid;
     logic        draw_pipe_inside;
@@ -178,13 +185,15 @@ module voxel_gpu (
     logic        draw_pipe_textured;
     logic        draw_pipe_alpha_key;
     logic        draw_pipe_fog;
+    logic  [1:0] draw_pipe_alpha_level;
     logic  [1:0] draw_pipe_light_bank;
     logic  [7:0] draw_pipe_tex_or_color;
     logic [16:0] draw_pipe_addr;
     logic [15:0] draw_pipe_z;
     logic [15:0] draw_pipe_z_ref;
-    logic  [1:0] draw_pipe_fog_x;
-    logic  [1:0] draw_pipe_fog_y;
+    logic  [9:0] draw_pipe_x;
+    logic  [8:0] draw_pipe_y;
+    logic [31:0] draw_pipe_w_q;
     logic  [7:0] tex_rd_data;
 
     logic [10:0] hcount;
@@ -192,17 +201,20 @@ module voxel_gpu (
 
     logic [16:0] scan_addr_now;
     logic        scan_visible_now;
-    logic  [7:0] scan_idx_r;
+    logic [16:0] fb0_rd_addr;
+    logic [16:0] fb1_rd_addr;
+    logic [11:0] scan_rgb_r;
+    logic [11:0] back_rgb_r;
     logic        scan_visible_r;
     logic        scan_visible_rr;
     logic [16:0] scan_row_base;
     logic [16:0] draw_addr;
     logic [16:0] fb_wr_addr;
-    logic  [7:0] fb_wr_data;
+    logic [11:0] fb_wr_data;
     logic        fb0_wr_en;
     logic        fb1_wr_en;
-    logic  [7:0] fb0_rd_data;
-    logic  [7:0] fb1_rd_data;
+    logic [11:0] fb0_rd_data;
+    logic [11:0] fb1_rd_data;
     logic [16:0] z_rd_addr;
     logic [15:0] z_rd_data;
     logic [16:0] z_wr_addr;
@@ -317,32 +329,48 @@ module voxel_gpu (
     wire [13:0] pipe1_tex_addr = pipe1_textured ?
                                  {pipe1_tex_or_color[5:0], pipe1_tex_v, pipe1_tex_u} :
                                  14'd0;
-    wire [15:0] fog_span = fog_end_z - fog_start_z;
-    wire [15:0] fog_q1 = fog_start_z + (fog_span >> 2);
-    wire [15:0] fog_q2 = fog_start_z + (fog_span >> 1);
-    wire [15:0] fog_q3 = fog_end_z - (fog_span >> 2);
     wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
-    wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
+    wire  [7:0] draw_pipe_color_idx = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
+    wire [23:0] draw_pipe_rgb24 = palette[draw_pipe_color_idx];
+    wire [11:0] draw_pipe_rgb444 = rgb24_to_rgb444(draw_pipe_rgb24);
+    wire [23:0] fog_rgb24 = palette[fog_color];
+    wire [11:0] fog_rgb444 = rgb24_to_rgb444(fog_rgb24);
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
                                  (draw_pipe_raw_color == 8'd0);
+    wire signed [11:0] draw_pipe_dx_center =
+        $signed({1'b0, draw_pipe_x}) - 12'sd160;
+    wire signed [10:0] draw_pipe_dy_center =
+        11'sd120 - $signed({1'b0, draw_pipe_y});
+    wire [23:0] draw_pipe_dx_sq = draw_pipe_dx_center * draw_pipe_dx_center;
+    wire [23:0] draw_pipe_dy_sq = draw_pipe_dy_center * draw_pipe_dy_center;
+    wire [24:0] draw_pipe_radius_sq = draw_pipe_dx_sq + draw_pipe_dy_sq;
+    wire [40:0] draw_pipe_r2_prod = draw_pipe_radius_sq * fog_inv_proj_sq;
+    wire [31:0] draw_pipe_r2_q16 = draw_pipe_r2_prod[31:0];
+    wire [33:0] draw_pipe_ray_scale_q16 =
+        34'd65536 + (({2'b00, draw_pipe_r2_q16} * 3'd3) >> 3);
+    wire [65:0] draw_pipe_radial_prod = draw_pipe_w_q * draw_pipe_ray_scale_q16;
+    wire [31:0] draw_pipe_radial_q16 = draw_pipe_radial_prod[47:16];
+    wire [15:0] draw_pipe_radial_q8_8 = draw_pipe_radial_q16[23:8];
     wire draw_pipe_fog_active = fog_enable &&
                                 draw_pipe_fog &&
-                                (fog_end_z > fog_start_z) &&
-                                (draw_pipe_z > fog_start_z);
-    wire draw_pipe_fog_full = draw_pipe_fog_active &&
-                              (draw_pipe_z >= fog_end_z);
-    wire  [3:0] draw_pipe_fog_threshold =
-        !draw_pipe_fog_active ? 4'd0 :
-        (draw_pipe_z < fog_q1) ? 4'd4 :
-        (draw_pipe_z < fog_q2) ? 4'd8 :
-        (draw_pipe_z < fog_q3) ? 4'd12 : 4'd15;
-    wire  [3:0] draw_pipe_fog_bayer = bayer4(draw_pipe_fog_x, draw_pipe_fog_y);
-    wire draw_pipe_fog_replace = draw_pipe_fog_full ||
-                                 (draw_pipe_fog_threshold != 4'd0 &&
-                                  (draw_pipe_fog_bayer < draw_pipe_fog_threshold));
-    wire  [7:0] draw_pipe_out_color =
-        draw_pipe_fog_replace ? fog_color : draw_pipe_color;
+                                (fog_end_dist > fog_start_dist) &&
+                                (draw_pipe_radial_q8_8 > fog_start_dist);
+    wire [16:0] draw_pipe_fog_delta =
+        draw_pipe_fog_active ? ({1'b0, draw_pipe_radial_q8_8} - {1'b0, fog_start_dist}) :
+        17'd0;
+    wire [4:0] draw_pipe_fog_alpha =
+        !draw_pipe_fog_active ? 5'd0 :
+        (draw_pipe_radial_q8_8 >= fog_end_dist) ? 5'd16 :
+        (draw_pipe_fog_delta[16:8] >= 9'd16) ? 5'd16 :
+        {1'b0, draw_pipe_fog_delta[11:8]};
+    wire [4:0] draw_pipe_src_alpha = alpha_nibble(draw_pipe_alpha_level);
+    wire [11:0] draw_pipe_fogged_rgb =
+        (draw_pipe_fog_alpha == 5'd0) ? draw_pipe_rgb444 :
+        blend_rgb444(fog_rgb444, draw_pipe_rgb444, draw_pipe_fog_alpha);
+    wire [11:0] draw_pipe_out_rgb =
+        (draw_pipe_src_alpha == 5'd16) ? draw_pipe_fogged_rgb :
+        blend_rgb444(draw_pipe_fogged_rgb, back_rgb_r, draw_pipe_src_alpha);
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
@@ -364,7 +392,7 @@ module voxel_gpu (
         ctrl_en
     };
 
-    wire [23:0] pixel_rgb = palette[scan_idx_r];
+    wire [23:0] pixel_rgb = rgb444_to_rgb24(scan_rgb_r);
 
     function automatic [9:0] clamp_x(input logic signed [15:0] value);
         begin
@@ -457,26 +485,52 @@ module voxel_gpu (
         end
     endfunction
 
-    function automatic [3:0] bayer4(input logic [1:0] x, input logic [1:0] y);
+    function automatic [4:0] alpha_nibble(input logic [1:0] alpha_level);
         begin
-            case ({y, x})
-                4'b00_00: bayer4 = 4'd0;
-                4'b00_01: bayer4 = 4'd8;
-                4'b00_10: bayer4 = 4'd2;
-                4'b00_11: bayer4 = 4'd10;
-                4'b01_00: bayer4 = 4'd12;
-                4'b01_01: bayer4 = 4'd4;
-                4'b01_10: bayer4 = 4'd14;
-                4'b01_11: bayer4 = 4'd6;
-                4'b10_00: bayer4 = 4'd3;
-                4'b10_01: bayer4 = 4'd11;
-                4'b10_10: bayer4 = 4'd1;
-                4'b10_11: bayer4 = 4'd9;
-                4'b11_00: bayer4 = 4'd15;
-                4'b11_01: bayer4 = 4'd7;
-                4'b11_10: bayer4 = 4'd13;
-                default:  bayer4 = 4'd5;
+            case (alpha_level)
+                2'd0: alpha_nibble = 5'd16;
+                2'd1: alpha_nibble = 5'd12;
+                2'd2: alpha_nibble = 5'd8;
+                default: alpha_nibble = 5'd4;
             endcase
+        end
+    endfunction
+
+    function automatic [11:0] rgb24_to_rgb444(input logic [23:0] color);
+        begin
+            rgb24_to_rgb444 = {color[23:20], color[15:12], color[7:4]};
+        end
+    endfunction
+
+    function automatic [23:0] rgb444_to_rgb24(input logic [11:0] color);
+        begin
+            rgb444_to_rgb24 = {
+                color[11:8], color[11:8],
+                color[7:4], color[7:4],
+                color[3:0], color[3:0]
+            };
+        end
+    endfunction
+
+    function automatic [11:0] blend_rgb444(input logic [11:0] src,
+                                           input logic [11:0] dst,
+                                           input logic [4:0] alpha);
+        logic [4:0] inv_alpha;
+        logic [8:0] mix_r;
+        logic [8:0] mix_g;
+        logic [8:0] mix_b;
+        begin
+            if (alpha == 5'd0) begin
+                blend_rgb444 = dst;
+            end else if (alpha >= 5'd16) begin
+                blend_rgb444 = src;
+            end else begin
+                inv_alpha = 5'd16 - alpha;
+                mix_r = src[11:8] * alpha + dst[11:8] * inv_alpha + 9'd8;
+                mix_g = src[7:4] * alpha + dst[7:4] * inv_alpha + 9'd8;
+                mix_b = src[3:0] * alpha + dst[3:0] * inv_alpha + 9'd8;
+                blend_rgb444 = {mix_r[7:4], mix_g[7:4], mix_b[7:4]};
+            end
         end
     endfunction
 
@@ -510,12 +564,12 @@ module voxel_gpu (
     );
 
     voxel_sdp_ram #(
-        .DATA_W(8),
+        .DATA_W(12),
         .ADDR_W(17),
         .DEPTH(FB_PIXELS)
     ) fb0_ram (
         .clk     (clk),
-        .rd_addr (scan_addr_now),
+        .rd_addr (fb0_rd_addr),
         .rd_data (fb0_rd_data),
         .wr_addr (fb_wr_addr),
         .wr_data (fb_wr_data),
@@ -523,12 +577,12 @@ module voxel_gpu (
     );
 
     voxel_sdp_ram #(
-        .DATA_W(8),
+        .DATA_W(12),
         .ADDR_W(17),
         .DEPTH(FB_PIXELS)
     ) fb1_ram (
         .clk     (clk),
-        .rd_addr (scan_addr_now),
+        .rd_addr (fb1_rd_addr),
         .rd_data (fb1_rd_data),
         .wr_addr (fb_wr_addr),
         .wr_data (fb_wr_data),
@@ -559,8 +613,9 @@ module voxel_gpu (
         pal_addr         = 8'h0;
         fog_enable       = 1'b0;
         fog_color        = 8'd0;
-        fog_start_z      = 16'd0;
-        fog_end_z        = 16'd0;
+        fog_start_dist   = 16'd0;
+        fog_end_dist     = 16'd0;
+        fog_inv_proj_sq  = 16'd0;
         vsy_latch        = 1'b0;
         front_sel        = 1'b0;
         state            = ST_IDLE;
@@ -596,12 +651,13 @@ module voxel_gpu (
         pipe0_textured   = 1'b0;
         pipe0_alpha_key  = 1'b0;
         pipe0_fog        = 1'b0;
+        pipe0_alpha_level = 2'd0;
         pipe0_light_bank = 2'd0;
         pipe0_tex_or_color = 8'd0;
         pipe0_addr       = 17'd0;
         pipe0_z          = 16'd0;
-        pipe0_fog_x      = 2'd0;
-        pipe0_fog_y      = 2'd0;
+        pipe0_x          = 10'd0;
+        pipe0_y          = 9'd0;
         pipe0_uw_q       = 32'sd0;
         pipe0_vw_q       = 32'sd0;
         pipe0_iw_q       = 32'd0;
@@ -611,12 +667,13 @@ module voxel_gpu (
         pipe1_textured   = 1'b0;
         pipe1_alpha_key  = 1'b0;
         pipe1_fog        = 1'b0;
+        pipe1_alpha_level = 2'd0;
         pipe1_light_bank = 2'd0;
         pipe1_tex_or_color = 8'd0;
         pipe1_addr       = 17'd0;
         pipe1_z          = 16'd0;
-        pipe1_fog_x      = 2'd0;
-        pipe1_fog_y      = 2'd0;
+        pipe1_x          = 10'd0;
+        pipe1_y          = 9'd0;
         pipe1_uw_q       = 32'sd0;
         pipe1_vw_q       = 32'sd0;
         pipe1_w_q        = 32'd0;
@@ -626,13 +683,15 @@ module voxel_gpu (
         pipe2_textured   = 1'b0;
         pipe2_alpha_key  = 1'b0;
         pipe2_fog        = 1'b0;
+        pipe2_alpha_level = 2'd0;
         pipe2_light_bank = 2'd0;
         pipe2_tex_or_color = 8'd0;
         pipe2_addr       = 17'd0;
         pipe2_z          = 16'd0;
         pipe2_z_ref      = 16'd0;
-        pipe2_fog_x      = 2'd0;
-        pipe2_fog_y      = 2'd0;
+        pipe2_x          = 10'd0;
+        pipe2_y          = 9'd0;
+        pipe2_w_q        = 32'd0;
         pipe2_tex_addr   = 14'd0;
         draw_pipe_valid  = 1'b0;
         draw_pipe_inside = 1'b0;
@@ -640,15 +699,18 @@ module voxel_gpu (
         draw_pipe_textured = 1'b0;
         draw_pipe_alpha_key = 1'b0;
         draw_pipe_fog    = 1'b0;
+        draw_pipe_alpha_level = 2'd0;
         draw_pipe_light_bank = 2'd0;
         draw_pipe_tex_or_color = 8'd0;
         draw_pipe_addr   = 17'd0;
         draw_pipe_z      = 16'd0;
         draw_pipe_z_ref  = 16'd0;
-        draw_pipe_fog_x  = 2'd0;
-        draw_pipe_fog_y  = 2'd0;
+        draw_pipe_x      = 10'd0;
+        draw_pipe_y      = 9'd0;
+        draw_pipe_w_q    = 32'd0;
         tex_rd_data      = 8'd0;
-        scan_idx_r       = 8'd0;
+        scan_rgb_r       = 12'd0;
+        back_rgb_r       = 12'd0;
         scan_visible_r   = 1'b0;
         scan_visible_rr  = 1'b0;
         vga_vs_d         = 1'b1;
@@ -712,9 +774,18 @@ module voxel_gpu (
             scan_row_base = 17'd0;
             scan_addr_now = 17'd0;
         end
+
+        if (front_sel) begin
+            fb0_rd_addr = pipe2_addr;
+            fb1_rd_addr = scan_addr_now;
+        end else begin
+            fb0_rd_addr = scan_addr_now;
+            fb1_rd_addr = pipe2_addr;
+        end
+
         draw_addr = ({8'd0, draw_y_cur} * 17'd320) + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
-        fb_wr_data = draw_pipe_out_color;
+        fb_wr_data = draw_pipe_out_rgb;
         fb0_wr_en = 1'b0;
         fb1_wr_en = 1'b0;
         z_rd_addr = pipe0_addr;
@@ -725,7 +796,7 @@ module voxel_gpu (
         case (state)
             ST_CLEAR: begin
                 fb_wr_addr = clear_addr;
-                fb_wr_data = 8'd0;
+                fb_wr_data = rgb24_to_rgb444(palette[0]);
                 z_wr_addr = clear_addr;
                 z_wr_data = 16'hFFFF;
                 z_wr_en   = 1'b1;
@@ -739,14 +810,15 @@ module voxel_gpu (
             ST_DRAW_FLUSH: begin
                 if (draw_pipe_valid && draw_commit_pass) begin
                     fb_wr_addr = draw_pipe_addr;
-                    fb_wr_data = draw_pipe_out_color;
+                    fb_wr_data = draw_pipe_out_rgb;
                     if (front_sel)
                         fb0_wr_en = 1'b1;
                     else
                         fb1_wr_en = 1'b1;
                 end
 
-                if (draw_pipe_valid && draw_commit_pass && draw_pipe_ztest) begin
+                if (draw_pipe_valid && draw_commit_pass && draw_pipe_ztest &&
+                    (draw_pipe_src_alpha == 5'd16)) begin
                     z_wr_en = 1'b1;
                     z_wr_addr = draw_pipe_addr;
                     z_wr_data = draw_pipe_z;
@@ -761,10 +833,13 @@ module voxel_gpu (
         tex_rd_data <= texture_mem[pipe2_tex_addr];
         vga_vs_d <= VGA_VS;
 
-        if (front_sel)
-            scan_idx_r <= fb1_rd_data;
-        else
-            scan_idx_r <= fb0_rd_data;
+        if (front_sel) begin
+            scan_rgb_r <= fb1_rd_data;
+            back_rgb_r <= fb0_rd_data;
+        end else begin
+            scan_rgb_r <= fb0_rd_data;
+            back_rgb_r <= fb1_rd_data;
+        end
         scan_visible_r  <= scan_visible_now;
         scan_visible_rr <= scan_visible_r;
     end
@@ -779,8 +854,9 @@ module voxel_gpu (
             pal_addr         <= 8'h0;
             fog_enable       <= 1'b0;
             fog_color        <= 8'd0;
-            fog_start_z      <= 16'd0;
-            fog_end_z        <= 16'd0;
+            fog_start_dist   <= 16'd0;
+            fog_end_dist     <= 16'd0;
+            fog_inv_proj_sq  <= 16'd0;
             vsy_latch        <= 1'b0;
             front_sel        <= 1'b0;
             state            <= ST_IDLE;
@@ -816,12 +892,13 @@ module voxel_gpu (
             pipe0_textured   <= 1'b0;
             pipe0_alpha_key  <= 1'b0;
             pipe0_fog        <= 1'b0;
+            pipe0_alpha_level <= 2'd0;
             pipe0_light_bank <= 2'd0;
             pipe0_tex_or_color <= 8'd0;
             pipe0_addr       <= 17'd0;
             pipe0_z          <= 16'd0;
-            pipe0_fog_x      <= 2'd0;
-            pipe0_fog_y      <= 2'd0;
+            pipe0_x          <= 10'd0;
+            pipe0_y          <= 9'd0;
             pipe0_uw_q       <= 32'sd0;
             pipe0_vw_q       <= 32'sd0;
             pipe0_iw_q       <= 32'd0;
@@ -831,12 +908,13 @@ module voxel_gpu (
             pipe1_textured   <= 1'b0;
             pipe1_alpha_key  <= 1'b0;
             pipe1_fog        <= 1'b0;
+            pipe1_alpha_level <= 2'd0;
             pipe1_light_bank <= 2'd0;
             pipe1_tex_or_color <= 8'd0;
             pipe1_addr       <= 17'd0;
             pipe1_z          <= 16'd0;
-            pipe1_fog_x      <= 2'd0;
-            pipe1_fog_y      <= 2'd0;
+            pipe1_x          <= 10'd0;
+            pipe1_y          <= 9'd0;
             pipe1_uw_q       <= 32'sd0;
             pipe1_vw_q       <= 32'sd0;
             pipe1_w_q        <= 32'd0;
@@ -846,13 +924,15 @@ module voxel_gpu (
             pipe2_textured   <= 1'b0;
             pipe2_alpha_key  <= 1'b0;
             pipe2_fog        <= 1'b0;
+            pipe2_alpha_level <= 2'd0;
             pipe2_light_bank <= 2'd0;
             pipe2_tex_or_color <= 8'd0;
             pipe2_addr       <= 17'd0;
             pipe2_z          <= 16'd0;
             pipe2_z_ref      <= 16'd0;
-            pipe2_fog_x      <= 2'd0;
-            pipe2_fog_y      <= 2'd0;
+            pipe2_x          <= 10'd0;
+            pipe2_y          <= 9'd0;
+            pipe2_w_q        <= 32'd0;
             pipe2_tex_addr   <= 14'd0;
             draw_pipe_valid  <= 1'b0;
             draw_pipe_inside <= 1'b0;
@@ -860,13 +940,15 @@ module voxel_gpu (
             draw_pipe_textured <= 1'b0;
             draw_pipe_alpha_key <= 1'b0;
             draw_pipe_fog    <= 1'b0;
+            draw_pipe_alpha_level <= 2'd0;
             draw_pipe_light_bank <= 2'd0;
             draw_pipe_tex_or_color <= 8'd0;
             draw_pipe_addr   <= 17'd0;
             draw_pipe_z      <= 16'd0;
             draw_pipe_z_ref  <= 16'd0;
-            draw_pipe_fog_x  <= 2'd0;
-            draw_pipe_fog_y  <= 2'd0;
+            draw_pipe_x      <= 10'd0;
+            draw_pipe_y      <= 9'd0;
+            draw_pipe_w_q    <= 32'd0;
             for (ei = 0; ei < 4; ei = ei + 1) begin
                 edge_A[ei] <= 32'sd0;
                 edge_B[ei] <= 32'sd0;
@@ -901,12 +983,13 @@ module voxel_gpu (
                         pal_addr <= pal_addr + 8'd1;
                     end
                     ADDR_FOG_RANGE: begin
-                        fog_start_z <= writedata[15:0];
-                        fog_end_z <= writedata[31:16];
+                        fog_start_dist <= writedata[15:0];
+                        fog_end_dist <= writedata[31:16];
                     end
                     ADDR_FOG_CTRL: begin
                         fog_color <= writedata[7:0];
                         fog_enable <= writedata[8];
+                        fog_inv_proj_sq <= writedata[31:16];
                     end
                     default: ;
                 endcase
@@ -1026,12 +1109,13 @@ module voxel_gpu (
                     pipe1_textured <= pipe0_textured;
                     pipe1_alpha_key <= pipe0_alpha_key;
                     pipe1_fog <= pipe0_fog;
+                    pipe1_alpha_level <= pipe0_alpha_level;
                     pipe1_light_bank <= pipe0_light_bank;
                     pipe1_tex_or_color <= pipe0_tex_or_color;
                     pipe1_addr <= pipe0_addr;
                     pipe1_z <= pipe0_z;
-                    pipe1_fog_x <= pipe0_fog_x;
-                    pipe1_fog_y <= pipe0_fog_y;
+                    pipe1_x <= pipe0_x;
+                    pipe1_y <= pipe0_y;
                     pipe1_uw_q <= pipe0_uw_q;
                     pipe1_vw_q <= pipe0_vw_q;
                     pipe1_w_q <= pipe0_w_q;
@@ -1042,13 +1126,15 @@ module voxel_gpu (
                     pipe2_textured <= pipe1_textured;
                     pipe2_alpha_key <= pipe1_alpha_key;
                     pipe2_fog <= pipe1_fog;
+                    pipe2_alpha_level <= pipe1_alpha_level;
                     pipe2_light_bank <= pipe1_light_bank;
                     pipe2_tex_or_color <= pipe1_tex_or_color;
                     pipe2_addr <= pipe1_addr;
                     pipe2_z <= pipe1_z;
                     pipe2_z_ref <= z_rd_data;
-                    pipe2_fog_x <= pipe1_fog_x;
-                    pipe2_fog_y <= pipe1_fog_y;
+                    pipe2_x <= pipe1_x;
+                    pipe2_y <= pipe1_y;
+                    pipe2_w_q <= pipe1_w_q;
                     pipe2_tex_addr <= pipe1_tex_addr;
 
                     draw_pipe_valid <= pipe2_valid;
@@ -1057,13 +1143,15 @@ module voxel_gpu (
                     draw_pipe_textured <= pipe2_textured;
                     draw_pipe_alpha_key <= pipe2_alpha_key;
                     draw_pipe_fog <= pipe2_fog;
+                    draw_pipe_alpha_level <= pipe2_alpha_level;
                     draw_pipe_light_bank <= pipe2_light_bank;
                     draw_pipe_tex_or_color <= pipe2_tex_or_color;
                     draw_pipe_addr <= pipe2_addr;
                     draw_pipe_z <= pipe2_z;
                     draw_pipe_z_ref <= pipe2_z_ref;
-                    draw_pipe_fog_x <= pipe2_fog_x;
-                    draw_pipe_fog_y <= pipe2_fog_y;
+                    draw_pipe_x <= pipe2_x;
+                    draw_pipe_y <= pipe2_y;
+                    draw_pipe_w_q <= pipe2_w_q;
 
                     if (state == ST_DRAW) begin
                         pipe0_valid <= 1'b1;
@@ -1072,12 +1160,13 @@ module voxel_gpu (
                         pipe0_textured <= draw_flags[FLAG_TEX_BIT];
                         pipe0_alpha_key <= draw_flags[FLAG_ALPHA_KEY_BIT];
                         pipe0_fog <= draw_flags[FLAG_FOG_BIT];
+                        pipe0_alpha_level <= draw_flags[FLAG_ALPHA_MSB:FLAG_ALPHA_LSB];
                         pipe0_light_bank <= draw_flags[FLAG_LIGHT_MSB:FLAG_LIGHT_LSB];
                         pipe0_tex_or_color <= draw_tex_or_color;
                         pipe0_addr <= draw_addr;
                         pipe0_z <= draw_z_value;
-                        pipe0_fog_x <= draw_x_cur[1:0];
-                        pipe0_fog_y <= draw_y_cur[1:0];
+                        pipe0_x <= draw_x_cur;
+                        pipe0_y <= draw_y_cur;
                         pipe0_uw_q <= draw_uw_q;
                         pipe0_vw_q <= draw_vw_q;
                         pipe0_iw_q <= draw_iw_q;
@@ -1100,12 +1189,13 @@ module voxel_gpu (
                         pipe0_textured <= 1'b0;
                         pipe0_alpha_key <= 1'b0;
                         pipe0_fog <= 1'b0;
+                        pipe0_alpha_level <= 2'd0;
                         pipe0_light_bank <= 2'd0;
                         pipe0_tex_or_color <= 8'd0;
                         pipe0_addr <= 17'd0;
                         pipe0_z <= 16'd0;
-                        pipe0_fog_x <= 2'd0;
-                        pipe0_fog_y <= 2'd0;
+                        pipe0_x <= 10'd0;
+                        pipe0_y <= 9'd0;
                         pipe0_uw_q <= 32'sd0;
                         pipe0_vw_q <= 32'sd0;
                         pipe0_iw_q <= 32'd0;
@@ -1130,8 +1220,8 @@ module voxel_gpu (
             ADDR_STATUS  : readdata = status_word;
             ADDR_FRAMECNT: readdata = frame_count;
             ADDR_PAL_ADDR: readdata = {24'h0, pal_addr};
-            ADDR_FOG_RANGE: readdata = {fog_end_z, fog_start_z};
-            ADDR_FOG_CTRL: readdata = {23'h0, fog_enable, fog_color};
+            ADDR_FOG_RANGE: readdata = {fog_end_dist, fog_start_dist};
+            ADDR_FOG_CTRL: readdata = {fog_inv_proj_sq, 7'h0, fog_enable, fog_color};
             default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end

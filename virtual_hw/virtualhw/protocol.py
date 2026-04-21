@@ -23,11 +23,13 @@ QUAD_FLAG_ALPHA_KEY = 1 << 2
 QUAD_FLAG_FOG = 1 << 3
 QUAD_LIGHT_SHIFT = 4
 QUAD_LIGHT_MASK = 3 << QUAD_LIGHT_SHIFT
+QUAD_ALPHA_SHIFT = 6
+QUAD_ALPHA_MASK = 3 << QUAD_ALPHA_SHIFT
 
 HEADER = struct.Struct("<4sHHI")
 REPLY = struct.Struct("<4sHhI")
 PALETTE_ENTRY = struct.Struct("<BBBB")
-FOG_STATE = struct.Struct("<HHBBxx")
+FOG_STATE = struct.Struct("<HHBBH")
 STATUS_REPLY = struct.Struct("<IIBBBB")
 FRAME_COUNT_REPLY = struct.Struct("<I")
 QUAD_DESC = struct.Struct("<hhhh" + ("iii" * 4) + "HhhBB")
@@ -112,10 +114,10 @@ def parse_palette_entry(payload: bytes) -> tuple[int, int, int, int]:
     return PALETTE_ENTRY.unpack(payload)
 
 
-def parse_fog_state(payload: bytes) -> tuple[int, int, int, int]:
+def parse_fog_state(payload: bytes) -> tuple[int, int, int, int, int]:
     if len(payload) != FOG_STATE.size:
         raise ProtocolError(f"fog payload must be {FOG_STATE.size} bytes")
-    return FOG_STATE.unpack(payload)[:4]
+    return FOG_STATE.unpack(payload)
 
 
 def iter_quads(payload: bytes) -> Iterable[QuadDesc]:

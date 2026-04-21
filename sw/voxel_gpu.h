@@ -11,8 +11,8 @@
  *   0x0008  FRAME_COUNT 32-bit free-running counter              (R)
  *   0x000C  PALETTE_ADDR  [7:0] = palette index                  (W)
  *   0x0010  PALETTE_DATA  [23:16]=R [15:8]=G [7:0]=B             (W)
- *   0x0014  FOG_RANGE   [15:0]=start_z [31:16]=end_z             (W)
- *   0x0018  FOG_CTRL    [8]=EN [7:0]=palette index               (W)
+ *   0x0014  FOG_RANGE   [15:0]=start_dist [31:16]=end_dist       (W)
+ *   0x0018  FOG_CTRL    [31:16]=inv_proj_sq [8]=EN [7:0]=pal idx (W)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -84,11 +84,11 @@ struct voxel_status {
 };
 
 struct voxel_fog_state {
-	__u16 start_z;          /* Q1.15 depth at which fog begins */
-	__u16 end_z;            /* Q1.15 depth at which fog becomes solid */
+	__u16 start_dist;       /* Q8.8 radial distance at which fog begins */
+	__u16 end_dist;         /* Q8.8 radial distance at which fog becomes solid */
 	__u8  color_index;      /* palette index to dither toward */
 	__u8  enabled;          /* non-zero enables fog for flagged quads */
-	__u16 reserved;
+	__u16 inv_proj_sq;      /* Q0.16 approximation of 1 / projection_depth^2 */
 };
 
 /* ----- ioctl numbers ----- */
@@ -112,6 +112,13 @@ struct voxel_fog_state {
 #define QUAD_LIGHT_SHIFT     4           /* bits [5:4] select 64-entry palette light bank */
 #define QUAD_LIGHT_MASK      (3u << QUAD_LIGHT_SHIFT)
 #define QUAD_LIGHT_LEVEL(n)  ((((unsigned)(n)) & 3u) << QUAD_LIGHT_SHIFT)
+#define QUAD_ALPHA_SHIFT     6           /* bits [7:6] select source alpha */
+#define QUAD_ALPHA_MASK      (3u << QUAD_ALPHA_SHIFT)
+#define QUAD_ALPHA_LEVEL(n)  ((((unsigned)(n)) & 3u) << QUAD_ALPHA_SHIFT)
+#define QUAD_ALPHA_OPAQUE    QUAD_ALPHA_LEVEL(0)
+#define QUAD_ALPHA_75        QUAD_ALPHA_LEVEL(1)
+#define QUAD_ALPHA_50        QUAD_ALPHA_LEVEL(2)
+#define QUAD_ALPHA_25        QUAD_ALPHA_LEVEL(3)
 
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */

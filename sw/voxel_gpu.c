@@ -293,8 +293,10 @@ static long voxel_ioc_set_fog(void __user *uarg)
 	if (copy_from_user(&fog, uarg, sizeof(fog)))
 		return -EFAULT;
 
-	range_word = ((u32)fog.end_z << 16) | (u32)fog.start_z;
-	ctrl_word = ((fog.enabled ? 1u : 0u) << 8) | (u32)fog.color_index;
+	range_word = ((u32)fog.end_dist << 16) | (u32)fog.start_dist;
+	ctrl_word = ((u32)fog.inv_proj_sq << 16) |
+		    ((fog.enabled ? 1u : 0u) << 8) |
+		    (u32)fog.color_index;
 
 	mutex_lock(&voxdev.lock);
 	voxel_wr(VOXEL_REG_FOG_RANGE, range_word);

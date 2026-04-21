@@ -15,16 +15,19 @@ CMD_SET_PALETTE = 3
 CMD_SUBMIT_QUADS = 4
 CMD_GET_STATUS = 5
 CMD_GET_FRAME_COUNT = 6
+CMD_SET_FOG = 7
 
 QUAD_FLAG_TEX = 1 << 0
 QUAD_FLAG_ZTEST = 1 << 1
 QUAD_FLAG_ALPHA_KEY = 1 << 2
+QUAD_FLAG_FOG = 1 << 3
 QUAD_LIGHT_SHIFT = 4
 QUAD_LIGHT_MASK = 3 << QUAD_LIGHT_SHIFT
 
 HEADER = struct.Struct("<4sHHI")
 REPLY = struct.Struct("<4sHhI")
 PALETTE_ENTRY = struct.Struct("<BBBB")
+FOG_STATE = struct.Struct("<HHBBxx")
 STATUS_REPLY = struct.Struct("<IIBBBB")
 FRAME_COUNT_REPLY = struct.Struct("<I")
 QUAD_DESC = struct.Struct("<hhhh" + ("iii" * 4) + "HhhBB")
@@ -107,6 +110,12 @@ def parse_palette_entry(payload: bytes) -> tuple[int, int, int, int]:
     if len(payload) != PALETTE_ENTRY.size:
         raise ProtocolError(f"palette payload must be {PALETTE_ENTRY.size} bytes")
     return PALETTE_ENTRY.unpack(payload)
+
+
+def parse_fog_state(payload: bytes) -> tuple[int, int, int, int]:
+    if len(payload) != FOG_STATE.size:
+        raise ProtocolError(f"fog payload must be {FOG_STATE.size} bytes")
+    return FOG_STATE.unpack(payload)[:4]
 
 
 def iter_quads(payload: bytes) -> Iterable[QuadDesc]:

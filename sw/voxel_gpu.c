@@ -5,8 +5,8 @@
  *   (A) Map the FPGA registers exposed through the lightweight HPS bridge.
  *   (B) Expose /dev/voxel_gpu via the misc subsystem.
  *   (C) Stream user-space command bytes into the on-chip FIFO via write().
- *   (D) Provide the five MVP ioctls: CLEAR_FRAME, FLIP, SET_PALETTE,
- *       GET_STATUS, GET_FRAME_COUNT.
+ *   (D) Provide the control ioctls: CLEAR_FRAME, FLIP, SET_PALETTE,
+ *       GET_STATUS, GET_FRAME_COUNT, SET_FOG.
  *   (E) Use polling on STATUS for synchronization (no interrupts).
  *
  * The driver is intentionally thin: it does not parse, validate, or
@@ -284,6 +284,26 @@ static long voxel_ioc_get_frame_count(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_set_fog(void __user *uarg)
+{
+	struct voxel_fog_state fog;
+	u32 range_word;
+	u32 ctrl_word;
+
+	if (copy_from_user(&fog, uarg, sizeof(fog)))
+		return -EFAULT;
+
+	range_word = ((u32)fog.end_z << 16) | (u32)fog.start_z;
+	ctrl_word = ((fog.enabled ? 1u : 0u) << 8) | (u32)fog.color_index;
+
+	mutex_lock(&voxdev.lock);
+	voxel_wr(VOXEL_REG_FOG_RANGE, range_word);
+	voxel_wr(VOXEL_REG_FOG_CTRL, ctrl_word);
+	mutex_unlock(&voxdev.lock);
+
+	return 0;
+}
+
 static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (_IOC_TYPE(cmd) != VOXEL_IOC_MAGIC)
@@ -302,6 +322,8 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_get_status((void __user *)arg);
 	case VOXEL_IOC_GET_FRAME_COUNT:
 		return voxel_ioc_get_frame_count((void __user *)arg);
+	case VOXEL_IOC_SET_FOG:
+		return voxel_ioc_set_fog((void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

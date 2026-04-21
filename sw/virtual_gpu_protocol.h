@@ -13,6 +13,7 @@ enum {
     VGPU_SOCKET_CMD_SUBMIT_QUADS = 4,
     VGPU_SOCKET_CMD_GET_STATUS = 5,
     VGPU_SOCKET_CMD_GET_FRAME_COUNT = 6,
+    VGPU_SOCKET_CMD_SET_FOG = 7,
 };
 
 struct vgpu_socket_header {

@@ -342,6 +342,30 @@ int gpu_transport_set_palette(GPUTransport *transport,
     return ret;
 }
 
+int gpu_transport_set_fog(GPUTransport *transport,
+                          const struct voxel_fog_state *fog)
+{
+    int ret = 0;
+
+    if (transport_needs_hw(transport) &&
+        ioctl(transport->hw_fd, VOXEL_IOC_SET_FOG, fog) < 0) {
+        perror("ioctl(SET_FOG)");
+        ret = -errno;
+    }
+
+    if (transport_needs_socket(transport)) {
+        int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_SET_FOG,
+                                      fog, sizeof(*fog), NULL, NULL);
+        if (sock_ret < 0 && ret == 0) {
+            fprintf(stderr, "renderer: socket SET_FOG failed: %s\n",
+                    strerror(-sock_ret));
+            ret = sock_ret;
+        }
+    }
+
+    return ret;
+}
+
 int gpu_transport_submit_descriptors(GPUTransport *transport,
                                      const void *descriptors,
                                      size_t descriptor_bytes)

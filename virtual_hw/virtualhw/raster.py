@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .protocol import (
     QUAD_FLAG_ALPHA_KEY,
+    QUAD_FLAG_FOG,
     QUAD_FLAG_TEX,
     QUAD_FLAG_ZTEST,
     QUAD_LIGHT_MASK,
@@ -17,6 +18,12 @@ CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 64
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
+FOG_BAYER_4X4 = (
+    (0, 8, 2, 10),
+    (12, 4, 14, 6),
+    (3, 11, 1, 9),
+    (15, 7, 13, 5),
+)
 
 
 def apply_light_bank(color: int, flags: int) -> int:
@@ -28,6 +35,44 @@ def apply_light_bank(color: int, flags: int) -> int:
         return color
 
     return (bank << 6) | color
+
+
+def apply_fog(
+    color: int,
+    fog_enabled: bool,
+    fog_start: int,
+    fog_end: int,
+    fog_color: int,
+    flags: int,
+    z_value: int,
+    x: int,
+    y: int,
+) -> int:
+    if not fog_enabled or not (flags & QUAD_FLAG_FOG) or fog_end <= fog_start:
+        return color
+    if z_value <= fog_start:
+        return color
+    if z_value >= fog_end:
+        return fog_color
+
+    fog_span = fog_end - fog_start
+    fog_q1 = fog_start + (fog_span >> 2)
+    fog_q2 = fog_start + (fog_span >> 1)
+    fog_q3 = fog_end - (fog_span >> 2)
+
+    if z_value < fog_q1:
+        threshold = 4
+    elif z_value < fog_q2:
+        threshold = 8
+    elif z_value < fog_q3:
+        threshold = 12
+    else:
+        threshold = 15
+
+    if FOG_BAYER_4X4[y & 3][x & 3] < threshold:
+        return fog_color
+
+    return color
 
 
 def load_texture_hex(path: str | Path) -> bytes:
@@ -70,6 +115,10 @@ class VirtualGPU:
         self.frame_count = 0
         self.vsync_latch = 0
         self.palette_dirty = True
+        self.fog_start = 0
+        self.fog_end = 0
+        self.fog_color = 0
+        self.fog_enabled = False
         if textures is None:
             textures = bytes(TEXTURE_BYTES)
         if len(textures) != TEXTURE_BYTES:
@@ -86,6 +135,12 @@ class VirtualGPU:
     def set_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
         self.palette[index] = (r, g, b)
         self.palette_dirty = True
+
+    def set_fog(self, start_z: int, end_z: int, color_index: int, enabled: int) -> None:
+        self.fog_start = start_z & 0xFFFF
+        self.fog_end = end_z & 0xFFFF
+        self.fog_color = color_index & 0xFF
+        self.fog_enabled = bool(enabled)
 
     def submit_quads(self, quads: Iterable[QuadDesc]) -> None:
         for quad in quads:
@@ -179,4 +234,14 @@ class VirtualGPU:
                         continue
                     self.z_buffer[pixel_index] = z_value
 
-                self.back_buffer[pixel_index] = color
+                self.back_buffer[pixel_index] = apply_fog(
+                    color,
+                    self.fog_enabled,
+                    self.fog_start,
+                    self.fog_end,
+                    self.fog_color,
+                    quad.flags,
+                    z_value,
+                    x,
+                    y,
+                )

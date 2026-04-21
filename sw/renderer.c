@@ -732,6 +732,14 @@ static inline int16_t to_q1_15s(float v)
     return (int16_t)lroundf(v * 32768.0f);
 }
 
+static uint16_t camera_depth_to_fog_z(float camera_z)
+{
+    if (camera_z < NEAR_PLANE)
+        camera_z = NEAR_PLANE;
+
+    return to_q1_15u(1.0f - (NEAR_PLANE / camera_z));
+}
+
 static inline int32_t to_q16_16(float v)
 {
     return (int32_t)lroundf(v * 65536.0f);
@@ -1001,7 +1009,7 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
 
     texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
                                          face_cam);
-    light_flags = choose_face_light_flags(ctx, face);
+    light_flags = choose_face_light_flags(ctx, face) | QUAD_FLAG_FOG;
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
@@ -1069,6 +1077,34 @@ static bool chunk_within_render_distance(RenderContext *ctx,
      * the camera, otherwise high-altitude views punch holes in the terrain. */
     return bounds.center.z + bounds.ez >= NEAR_PLANE &&
            bounds.center.z - bounds.ez <= max_depth;
+}
+
+static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
+{
+    struct voxel_fog_state fog = {0};
+
+    if (!ctx || !world || world->render_distance_chunks <= 0) {
+        if (ctx)
+            gpu_transport_set_fog(ctx->transport, &fog);
+        return;
+    }
+
+    float end_depth = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    float fade_span = (float)WORLD_CHUNK_SIZE;
+    float start_depth;
+
+    if (fade_span > end_depth * 0.5f)
+        fade_span = end_depth * 0.5f;
+
+    start_depth = end_depth - fade_span;
+    if (start_depth < NEAR_PLANE)
+        start_depth = NEAR_PLANE;
+
+    fog.start_z = camera_depth_to_fog_z(start_depth);
+    fog.end_z = camera_depth_to_fog_z(end_depth);
+    fog.color_index = PAL_SKY_HORIZON;
+    fog.enabled = fog.end_z > fog.start_z;
+    gpu_transport_set_fog(ctx->transport, &fog);
 }
 
 static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
@@ -1147,6 +1183,7 @@ RenderContext *renderer_init(void)
     ctx->light_dir = normalize_vec3((Vec3){ 0.35f, 0.92f, 0.20f });
     upload_default_palette(ctx->transport);
     upload_light_palette_banks(ctx->transport);
+    gpu_transport_set_fog(ctx->transport, &(struct voxel_fog_state){0});
     return ctx;
 }
 
@@ -1361,6 +1398,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
 
     if (!world || world->chunk_count <= 0)
         return 0;
+
+    configure_world_fog(ctx, world);
 
     ChunkDrawCandidate candidates[world->chunk_count];
 

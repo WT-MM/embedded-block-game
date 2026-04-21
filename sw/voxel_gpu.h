@@ -11,6 +11,8 @@
  *   0x0008  FRAME_COUNT 32-bit free-running counter              (R)
  *   0x000C  PALETTE_ADDR  [7:0] = palette index                  (W)
  *   0x0010  PALETTE_DATA  [23:16]=R [15:8]=G [7:0]=B             (W)
+ *   0x0014  FOG_RANGE   [15:0]=start_z [31:16]=end_z             (W)
+ *   0x0018  FOG_CTRL    [8]=EN [7:0]=palette index               (W)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -40,6 +42,8 @@ typedef int32_t  __s32;
 #define VOXEL_REG_FRAME_COUNT   0x0008
 #define VOXEL_REG_PALETTE_ADDR  0x000C
 #define VOXEL_REG_PALETTE_DATA  0x0010
+#define VOXEL_REG_FOG_RANGE     0x0014
+#define VOXEL_REG_FOG_CTRL      0x0018
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x3000          /* exclusive */
@@ -79,6 +83,14 @@ struct voxel_status {
 	__u8  vsync;
 };
 
+struct voxel_fog_state {
+	__u16 start_z;          /* Q1.15 depth at which fog begins */
+	__u16 end_z;            /* Q1.15 depth at which fog becomes solid */
+	__u8  color_index;      /* palette index to dither toward */
+	__u8  enabled;          /* non-zero enables fog for flagged quads */
+	__u16 reserved;
+};
+
 /* ----- ioctl numbers ----- */
 #define VOXEL_IOC_MAGIC 'v'
 
@@ -87,14 +99,16 @@ struct voxel_status {
 #define VOXEL_IOC_SET_PALETTE      _IOW(VOXEL_IOC_MAGIC, 3, struct voxel_palette_entry)
 #define VOXEL_IOC_GET_STATUS       _IOR(VOXEL_IOC_MAGIC, 4, struct voxel_status)
 #define VOXEL_IOC_GET_FRAME_COUNT  _IOR(VOXEL_IOC_MAGIC, 5, __u32)
+#define VOXEL_IOC_SET_FOG          _IOW(VOXEL_IOC_MAGIC, 6, struct voxel_fog_state)
 
-#define VOXEL_IOC_MAXNR            5
+#define VOXEL_IOC_MAXNR            6
 
 /* ----- quad descriptor layout (§5.2) ----- */
 
 #define QUAD_FLAG_TEX        (1u << 0)   /* textured: second 64-byte UV block follows */
 #define QUAD_FLAG_ZTEST      (1u << 1)   /* enable z-test and z-write */
 #define QUAD_FLAG_ALPHA_KEY  (1u << 2)   /* skip texels whose sampled palette index is 0 */
+#define QUAD_FLAG_FOG        (1u << 3)   /* apply global depth fog to this quad */
 #define QUAD_LIGHT_SHIFT     4           /* bits [5:4] select 64-entry palette light bank */
 #define QUAD_LIGHT_MASK      (3u << QUAD_LIGHT_SHIFT)
 #define QUAD_LIGHT_LEVEL(n)  ((((unsigned)(n)) & 3u) << QUAD_LIGHT_SHIFT)
@@ -137,5 +151,6 @@ struct quad_desc_uv {
 _Static_assert(sizeof(struct edge_coef) == 12, "edge_coef must be 12 bytes");
 _Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 bytes");
 _Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 bytes");
+_Static_assert(sizeof(struct voxel_fog_state) == 8, "voxel_fog_state must be 8 bytes");
 
 #endif /* _VOXEL_GPU_H */

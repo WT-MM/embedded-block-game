@@ -13,6 +13,7 @@ from .protocol import (
     CMD_FLIP,
     CMD_GET_FRAME_COUNT,
     CMD_GET_STATUS,
+    CMD_SET_FOG,
     CMD_SET_PALETTE,
     CMD_SUBMIT_QUADS,
     DEFAULT_SOCKET_PATH,
@@ -20,6 +21,7 @@ from .protocol import (
     iter_quads,
     pack_frame_count,
     pack_status,
+    parse_fog_state,
     parse_palette_entry,
     recv_request,
     send_reply,
@@ -164,6 +166,9 @@ def handle_request(
         return b""
     if opcode == CMD_SET_PALETTE:
         gpu.set_palette_entry(*parse_palette_entry(payload))
+        return b""
+    if opcode == CMD_SET_FOG:
+        gpu.set_fog(*parse_fog_state(payload))
         return b""
     if opcode == CMD_SUBMIT_QUADS:
         gpu.submit_quads(iter_quads(payload))

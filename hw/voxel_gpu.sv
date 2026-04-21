@@ -15,6 +15,8 @@
 //       - 16-bit z-buffer compare/write when QUAD_FLAG_ZTEST is set
 //       - nearest-neighbor texture lookup from textures.hex when QUAD_FLAG_TEX
 //       - alpha-key skip when QUAD_FLAG_ALPHA_KEY and sampled texel is 0
+//   * Reserved SDRAM color-path configuration registers for upcoming
+//     external scanout / blending work.
 //
 // Intentionally not implemented yet:
 //   * Interrupts / waitrequest backpressure
@@ -49,6 +51,12 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_PAL_DATA = 13'h004;
     localparam logic [12:0] ADDR_FOG_RANGE = 13'h005;
     localparam logic [12:0] ADDR_FOG_CTRL = 13'h006;
+    localparam logic [12:0] ADDR_EXTMEM_CTRL = 13'h007;
+    localparam logic [12:0] ADDR_EXTMEM_FRONT = 13'h008;
+    localparam logic [12:0] ADDR_EXTMEM_BACK = 13'h009;
+    localparam logic [12:0] ADDR_EXTMEM_STRIDE = 13'h00A;
+    localparam logic [12:0] ADDR_EXTMEM_TILE = 13'h00B;
+    localparam logic [12:0] ADDR_EXTMEM_STAT = 13'h00C;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
@@ -89,6 +97,12 @@ module voxel_gpu (
     logic [15:0] fog_start_dist;
     logic [15:0] fog_end_dist;
     logic [15:0] fog_inv_proj_sq;
+    logic [31:0] extmem_ctrl;
+    logic [31:0] extmem_front_base;
+    logic [31:0] extmem_back_base;
+    logic [31:0] extmem_stride_bytes;
+    logic [31:0] extmem_tile_cfg;
+    logic [31:0] extmem_dma_status;
     logic        vsy_latch;
     logic        front_sel;  // 0 => fb0 is front, 1 => fb1 is front
 
@@ -589,6 +603,12 @@ module voxel_gpu (
         fog_start_dist   = 16'd0;
         fog_end_dist     = 16'd0;
         fog_inv_proj_sq  = 16'd0;
+        extmem_ctrl      = 32'd0;
+        extmem_front_base = 32'd0;
+        extmem_back_base = 32'd0;
+        extmem_stride_bytes = 32'd0;
+        extmem_tile_cfg  = 32'd0;
+        extmem_dma_status = 32'd0;
         vsy_latch        = 1'b0;
         front_sel        = 1'b0;
         state            = ST_IDLE;
@@ -812,6 +832,12 @@ module voxel_gpu (
             fog_start_dist   <= 16'd0;
             fog_end_dist     <= 16'd0;
             fog_inv_proj_sq  <= 16'd0;
+            extmem_ctrl      <= 32'd0;
+            extmem_front_base <= 32'd0;
+            extmem_back_base <= 32'd0;
+            extmem_stride_bytes <= 32'd0;
+            extmem_tile_cfg  <= 32'd0;
+            extmem_dma_status <= 32'd0;
             vsy_latch        <= 1'b0;
             front_sel        <= 1'b0;
             state            <= ST_IDLE;
@@ -942,6 +968,11 @@ module voxel_gpu (
                         fog_enable      <= writedata[8];
                         fog_inv_proj_sq <= writedata[31:16];
                     end
+                    ADDR_EXTMEM_CTRL: extmem_ctrl <= writedata;
+                    ADDR_EXTMEM_FRONT: extmem_front_base <= writedata;
+                    ADDR_EXTMEM_BACK: extmem_back_base <= writedata;
+                    ADDR_EXTMEM_STRIDE: extmem_stride_bytes <= writedata;
+                    ADDR_EXTMEM_TILE: extmem_tile_cfg <= writedata;
                     default: ;
                 endcase
             end
@@ -1168,6 +1199,12 @@ module voxel_gpu (
             ADDR_PAL_ADDR: readdata = {24'h0, pal_addr};
             ADDR_FOG_RANGE: readdata = {fog_end_dist, fog_start_dist};
             ADDR_FOG_CTRL: readdata = {fog_inv_proj_sq, 7'h0, fog_enable, fog_color};
+            ADDR_EXTMEM_CTRL: readdata = extmem_ctrl;
+            ADDR_EXTMEM_FRONT: readdata = extmem_front_base;
+            ADDR_EXTMEM_BACK: readdata = extmem_back_base;
+            ADDR_EXTMEM_STRIDE: readdata = extmem_stride_bytes;
+            ADDR_EXTMEM_TILE: readdata = extmem_tile_cfg;
+            ADDR_EXTMEM_STAT: readdata = extmem_dma_status;
             default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end

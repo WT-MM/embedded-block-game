@@ -24,6 +24,10 @@ Files
                  Fixed-camera shared-edge coverage test for renderer.c.
   tests/renderer_quad_test.c
                  Single hand-placed screen-space quad (raster / packing check).
+  tests/fpga_sdram_test.c
+                 Standalone `/dev/mem` smoke test for an FPGA SDRAM window
+                 once the external SDRAM controller is wired into Qsys and
+                 mapped behind the full HPS-to-FPGA bridge.
 
 Build
 -----
@@ -71,6 +75,7 @@ Run
     ./tests/renderer_scene_test     # renderer-driven static block scene
     ./tests/renderer_static_test    # fixed-camera top-face / crack test
     ./tests/renderer_quad_test      # single screen-space quad
+    sudo ./tests/fpga_sdram_test <phys_base> 0x04000000
     rmmod voxel_gpu
 
 Virtual GPU / Socket Backend
@@ -119,6 +124,8 @@ ioctl(fd, VOXEL_IOC_FLIP)                Drains FIFO, then flips on vsync.
 ioctl(fd, VOXEL_IOC_SET_PALETTE, &e)     Upload one palette entry.
 ioctl(fd, VOXEL_IOC_GET_STATUS, &s)      Snapshot of STATUS register.
 ioctl(fd, VOXEL_IOC_GET_FRAME_COUNT, &n) Read free-running frame counter.
+ioctl(fd, VOXEL_IOC_SET_EXTMEM, &x)      Program future SDRAM color-path regs.
+ioctl(fd, VOXEL_IOC_GET_EXTMEM, &x)      Read back SDRAM color-path regs.
 
 The MVP render loop is therefore:
 

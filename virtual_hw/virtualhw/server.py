@@ -100,14 +100,15 @@ class Monitor:
             if event.type == self._pygame.QUIT:
                 raise KeyboardInterrupt
 
-    def _frame_to_rgb(self, frame) -> bytearray:
+    def _frame_to_rgb(self, frame, palette) -> bytearray:
         out = self._rgb_buffer
 
-        for i, rgb444 in enumerate(frame):
+        for i, color_index in enumerate(frame):
+            r, g, b = palette[color_index]
             base = i * 3
-            out[base] = ((rgb444 >> 8) & 0xF) * 17
-            out[base + 1] = ((rgb444 >> 4) & 0xF) * 17
-            out[base + 2] = (rgb444 & 0xF) * 17
+            out[base] = r
+            out[base + 1] = g
+            out[base + 2] = b
 
         return self._rgb_buffer
 
@@ -119,7 +120,7 @@ class Monitor:
 
         assert self._window is not None
 
-        rgb = self._frame_to_rgb(gpu.front_buffer)
+        rgb = self._frame_to_rgb(gpu.front_buffer, gpu.palette)
         surface = self._pygame.image.frombuffer(rgb, (self.width, self.height), "RGB")
         if self.scale != 1:
             surface = self._pygame.transform.scale(
@@ -130,7 +131,7 @@ class Monitor:
         self._pygame.display.flip()
 
     def rgb_frame(self, gpu: VirtualGPU) -> bytearray:
-        return self._frame_to_rgb(gpu.front_buffer)
+        return self._frame_to_rgb(gpu.front_buffer, gpu.palette)
 
 
 def write_ppm(path: Path, width: int, height: int, rgb: bytes) -> None:

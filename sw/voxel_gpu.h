@@ -13,12 +13,12 @@
  *   0x0010  PALETTE_DATA  [23:16]=R [15:8]=G [7:0]=B             (W)
  *   0x0014  FOG_RANGE   [15:0]=start_dist [31:16]=end_dist       (W)
  *   0x0018  FOG_CTRL    [31:16]=inv_proj_sq [8]=EN [7:0]=pal idx (W)
- *   0x001C  EXTMEM_CTRL  future SDRAM color-path control          (R/W)
+ *   0x001C  EXTMEM_CTRL  SDRAM display-path control               (R/W)
  *   0x0020  EXTMEM_FRONT_BASE front color buffer byte address     (R/W)
- *   0x0024  EXTMEM_BACK_BASE  back color buffer byte address      (R/W)
+ *   0x0024  EXTMEM_BACK_BASE  second color buffer byte address    (R/W)
  *   0x0028  EXTMEM_STRIDE bytes per scanline in SDRAM             (R/W)
  *   0x002C  EXTMEM_TILE  [15:0]=tile_w [31:16]=tile_h            (R/W)
- *   0x0030  EXTMEM_STAT  future DMA/cache status                  (R)
+ *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -105,11 +105,11 @@ struct voxel_fog_state {
 
 struct voxel_extmem_state {
 	__u32 ctrl;             /* VOXEL_EXTMEM_CTRL_* */
-	__u32 front_base;       /* byte address of front color buffer in SDRAM */
-	__u32 back_base;        /* byte address of back color buffer in SDRAM */
+	__u32 front_base;       /* byte address of SDRAM frame 0 */
+	__u32 back_base;        /* byte address of SDRAM frame 1 */
 	__u32 stride_bytes;     /* bytes per scanline */
-	__u32 tile_cfg;         /* [15:0]=tile width, [31:16]=tile height */
-	__u32 dma_status;       /* read-only future DMA/cache status */
+	__u32 tile_cfg;         /* reserved for later tile-cache work */
+	__u32 dma_status;       /* read-only SDRAM copy/scanout status */
 };
 
 /* ----- ioctl numbers ----- */

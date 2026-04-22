@@ -274,49 +274,54 @@ The most likely places to inspect are:
   * and whether the dual reset fan-in on `fpga_sdram.reset` /
     `voxel_gpu_0.reset` is behaving as intended.
 
-FPGA-Local SDRAM Self-Test Mode
--------------------------------
-
-For isolating the board SDRAM itself from the HPS bridge and boot-chain state,
-this branch also includes a pure FPGA-side test path:
-
-  * `soc_system_top.sv` now lets a local `sdram_selftest_vga` block own the
-    board `DRAM_*` and `VGA_*` pins.
-  * `sdram_selftest_vga.sv` wraps the Terasic SDRAM controller plus a reduced
-    write/readback test over the first 1024 words.
-  * The test auto-starts after reset and draws `SDRAM TEST` plus one of
-    `RESET`, `WRITE`, `READ`, `PASS`, or `FAIL` on the VGA output.
-
-What to expect on hardware
---------------------------
-
-  * `KEY[0]` acts as a manual reset/restart for the local test.
-  * `LEDR[0]` lights while the test is running.
-  * `LEDR[1]` lights on pass.
-  * `LEDR[2]` lights on fail.
-  * `LEDR[6:3]` show the raw `RW_Test` FSM state.
-
-How to run this mode
+Current Default Mode
 --------------------
 
-Build and install the bitstream exactly like the normal lab flow:
+The branch no longer defaults to the standalone VGA self-test. The current
+top-level build routes the board `DRAM_*` and `VGA_*` pins through `voxel_gpu`
+again so the actual game path owns SDRAM scanout.
+
+The intended behavior is now:
+
+  * rasterization still happens into one 320x240 8-bit BRAM backbuffer,
+  * `FLIP` copies that BRAM image into the inactive SDRAM frame,
+  * VGA scanout reads the active SDRAM frame through line buffers, and
+  * the visible frame only switches on vsync after the copy completes.
+
+The HPS control path is still the normal one through the `voxel_gpu`
+Avalon-MM register block, so Linux and the game software should not need a new
+bootloader workflow just for this change.
+
+Recommended build/install flow for this mode
+--------------------------------------------
 
 ```bash
 cd /homes/user/stud/fall25/wm2505/Github/embedded-block-game/hw
-make quartus19 rbf19
+make qsys19
+make quartus19
+make rbf19
 make mount-boot
 make install-built-rbf
 ```
 
-Then reboot the board. For this local self-test path, you do not need
-`bridge_enable_handoff`, `/dev/mem`, or the Linux smoke test at all. If the
-VGA screen reaches `PASS`, the SDRAM pins, clocking, controller timing, and
-basic read/write path are all working independently of the HPS bridge.
+Then reboot the board normally.
 
-One subtlety
-------------
+Current EXTMEM defaults
+-----------------------
 
-`soc_system.qsys` still contains the experimental HPS-connected SDRAM block, but
-the top-level board SDRAM pins are currently driven by the local test wrapper
-instead. That keeps the HPS experiment in-tree while letting bring-up proceed on
-the simpler FPGA-only path first.
+The hardware now defaults to two SDRAM-resident display frames:
+
+  * `EXTMEM_FRONT_BASE = 0`
+  * `EXTMEM_BACK_BASE  = 76800`
+  * `EXTMEM_STRIDE     = 320`
+
+Those base addresses are byte addresses for packed 8-bit color indices
+stored two pixels per 16-bit SDRAM word.
+
+Reference self-test
+-------------------
+
+`sdram_selftest_vga.sv` is still kept in-tree as a known-good local SDRAM smoke
+test, but it is no longer the default top-level owner of the board pins. If you
+need to fall back to the old standalone test, re-hook it in `soc_system_top.sv`
+and rebuild.

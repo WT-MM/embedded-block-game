@@ -47,7 +47,7 @@ DTB = $(SYSTEM).dtb
 
 SOF = output_files/$(SYSTEM).sof
 RBF = output_files/$(SYSTEM).rbf
-RBF_INSTALL_SRC ?= $(SYSTEM).rbf
+RBF_INSTALL_SRC ?= $(RBF)
 BOOT_DEV ?= /dev/mmcblk0p1
 BOOT_MOUNT ?= /mnt
 
@@ -123,10 +123,12 @@ project19 :
 .PHONY : qsys
 qsys : $(SOPCINFO)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.hex generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl
-TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv sdram_selftest_vga.sv \
+QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.hex \
+	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
 	$(wildcard sdram_local_test/*.v) \
+	$(wildcard sdram_local_test/*.h) \
 	$(wildcard sdram_local_test/sdram_pll0/*.v)
+TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv
 
 $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
@@ -193,7 +195,8 @@ print-quartus19-tools :
 # install-rbf
 #
 # Copy an already-built .rbf into the mounted SD boot partition and flush it.
-# By default this uses ./soc_system.rbf; override RBF_INSTALL_SRC if needed.
+# By default this uses the freshly built output under output_files/; override
+# RBF_INSTALL_SRC if you intentionally want to install a different .rbf.
 # Use mount-boot first if the boot partition is not yet mounted.
 .PHONY : mount-boot install-rbf install-built-rbf
 mount-boot :

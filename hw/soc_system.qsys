@@ -84,6 +84,11 @@
    internal="sdram_clocks.sdram_clk"
    type="clock"
    dir="start" />
+ <interface
+   name="voxel_sdram"
+   internal="voxel_gpu_0.voxel_sdram"
+   type="conduit"
+   dir="end" />
  <interface name="vga" internal="voxel_gpu_0.vga" type="conduit" dir="end" />
  <module name="clk_0" kind="clock_source" version="19.1" enabled="1">
   <parameter name="clockFrequency" value="50000000" />

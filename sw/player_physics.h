@@ -1,0 +1,32 @@
+#ifndef PLAYER_PHYSICS_H
+#define PLAYER_PHYSICS_H
+
+#include <stdbool.h>
+#include "world.h"
+
+#define PLAYER_WIDTH       0.5f
+#define PLAYER_DEPTH       0.5f
+#define PLAYER_HEIGHT      1.8f
+
+#define EYE_HEIGHT_NORMAL  1.5f
+#define EYE_HEIGHT_SHIFT   1.3f
+
+#define GRAVITY            1.0f  /* blocks per second squared */
+#define JUMP_VELOCITY      1.549f /* derived from 1.2 max jump height */
+#define MAX_SPEED          4.0f  /* blocks per second */
+#define ACCELERATION       15.0f /* rate of slewing/acceleration */
+#define FRICTION           10.0f /* deceleration when no input is applied */
+
+typedef struct {
+    float x, y, z;        /* position of the player's feet */
+    float vx, vy, vz;     /* current velocity */
+    bool is_grounded;
+    bool is_shifting;
+    float current_eye_y;  /* dynamic eye offset */
+} Player;
+
+void player_init(Player *p, float start_x, float start_y, float start_z);
+void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z, bool jump, bool shift, float dt);
+float player_get_eye_height(const Player *p);
+
+#endif

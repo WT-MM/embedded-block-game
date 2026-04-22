@@ -8,12 +8,11 @@
 #include "input.h"
 #include "block_types.h"
 #include "world.h"
+#include "player_physics.h" /* Added physics integration */
 
-#define EYE_HEIGHT   1.7f
-#define MOVE_SPEED   5.0f      /* blocks per second */
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
-#define LOOK_SPEED   1.8f      /* radians per second (arrow keys) */
-#define PITCH_LIMIT  1.48f     /* ~85 degrees, avoids gimbal flip */
+#define LOOK_SPEED   1.8f         /* radians per second (arrow keys) */
+#define PITCH_LIMIT  1.48f        /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
 #define WORLD_RENDER_DISTANCE_CHUNKS 3
@@ -57,8 +56,13 @@ int main(void)
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
 
+    /* Initialize Player */
+    Player player;
+    /* Spawning a bit higher so the player drops onto the terrain */
+    player_init(&player, 0.0f, 10.0f, -1.5f);
+
     Camera cam = {
-        .position = { 0.0f, EYE_HEIGHT, -1.5f },
+        .position = { player.x, player_get_eye_height(&player), player.z },
         .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
         .depth    = 170.0f,
@@ -68,15 +72,15 @@ int main(void)
                                         STONE_SEED,
                                         STONE_TRIES_PER_CHUNK,
                                         WORLD_RENDER_DISTANCE_CHUNKS,
-                                        cam.position.x,
-                                        cam.position.z)) {
+                                        player.x,
+                                        player.z)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
         renderer_shutdown(ctx);
         return 1;
     }
 
-    printf("Controls: WASD=move  Space/Shift=up/down  Arrows=look  Mouse=look  Esc=quit\n");
+    printf("Controls: WASD=move  Space=jump  Shift=crouch  Arrows=look  Mouse=look  Esc=quit\n");
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
            WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
     printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border)\n",
@@ -110,21 +114,34 @@ int main(void)
         if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
         input_clear_mouse(&inp);
 
-        /* Move in the horizontal plane relative to yaw.
-         * Forward world vector: (sin(yaw), 0, cos(yaw))
-         * Right   world vector: (cos(yaw), 0, -sin(yaw))  */
+        /* Determine walking direction vector from camera yaw */
         float fwd_x =  sinf(cam.yaw), fwd_z = cosf(cam.yaw);
         float rgt_x =  cosf(cam.yaw), rgt_z = -sinf(cam.yaw);
-        float d = MOVE_SPEED * dt;
+        
+        float wish_x = 0.0f;
+        float wish_z = 0.0f;
 
-        if (inp.forward) { cam.position.x += fwd_x * d; cam.position.z += fwd_z * d; }
-        if (inp.back)    { cam.position.x -= fwd_x * d; cam.position.z -= fwd_z * d; }
-        if (inp.right)   { cam.position.x += rgt_x * d; cam.position.z += rgt_z * d; }
-        if (inp.left)    { cam.position.x -= rgt_x * d; cam.position.z -= rgt_z * d; }
-        if (inp.up)      cam.position.y += d;
-        if (inp.down)    cam.position.y -= d;
+        if (inp.forward) { wish_x += fwd_x; wish_z += fwd_z; }
+        if (inp.back)    { wish_x -= fwd_x; wish_z -= fwd_z; }
+        if (inp.right)   { wish_x += rgt_x; wish_z += rgt_z; }
+        if (inp.left)    { wish_x -= rgt_x; wish_z -= rgt_z; }
 
-        if (!world_stream_around(&world, cam.position.x, cam.position.z)) {
+        /* Normalize wish direction so diagonal movement isn't faster */
+        float wish_len = sqrtf(wish_x * wish_x + wish_z * wish_z);
+        if (wish_len > 0.0f) {
+            wish_x /= wish_len;
+            wish_z /= wish_len;
+        }
+
+        /* Update Physics (inp.up = Jump, inp.down = Shift/Crouch) */
+        player_update(&player, &world, wish_x, wish_z, inp.up, inp.down, dt);
+
+        /* Sync Camera to Player's updated physical position */
+        cam.position.x = player.x;
+        cam.position.y = player_get_eye_height(&player);
+        cam.position.z = player.z;
+
+        if (!world_stream_around(&world, player.x, player.z)) {
             fprintf(stderr, "\nchunk streaming failed\n");
             break;
         }
@@ -136,9 +153,10 @@ int main(void)
         renderer_draw_crosshair(ctx);
         renderer_end_frame(ctx);
 
-        printf("\rpos=(%.1f,%.1f,%.1f) chunk=(%d,%d) yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
-               cam.position.x, cam.position.y, cam.position.z,
-               world.center_chunk_x, world.center_chunk_z,
+        /* Added grounded status and velocity to debug readout */
+        printf("\rpos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) gnd=%d yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
+               player.x, player.y, player.z,
+               player.vx, player.vy, player.vz, player.is_grounded,
                cam.yaw, cam.pitch, quads, sky_quads);
         fflush(stdout);
 

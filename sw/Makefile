@@ -41,8 +41,8 @@ tests/renderer_edge_test: tests/renderer_edge_test.c renderer.c renderer.h voxel
 tests/renderer_fog_test: tests/renderer_fog_test.c renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h
 	${CC} ${CFLAGS} -I. -o $@ tests/renderer_fog_test.c renderer.c gpu_transport.c block_types.c world.c -lm
 
-game: game.c input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h
-	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c -lm
+game: game.c player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h
+	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c player_physics.c -lm
 
 laptop_run:
 	VOXEL_MOUSE_INVERT_Y=1 VOXEL_GPU_BACKEND=socket ./game

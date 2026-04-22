@@ -11,7 +11,7 @@
 #define EYE_HEIGHT_NORMAL  1.5f
 #define EYE_HEIGHT_SHIFT   1.3f
 
-#define GRAVITY            1.0f  /* blocks per second squared */
+#define GRAVITY            9.8f  /* blocks per second squared */
 #define JUMP_VELOCITY      1.549f /* derived from 1.2 max jump height */
 #define MAX_SPEED          4.0f  /* blocks per second */
 #define ACCELERATION       15.0f /* rate of slewing/acceleration */

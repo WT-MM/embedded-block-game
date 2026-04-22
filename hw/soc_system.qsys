@@ -723,16 +723,6 @@
  <connection
    kind="reset"
    version="19.1"
-   start="clk_0.clk_reset"
-   end="voxel_gpu_0.reset" />
- <connection
-   kind="reset"
-   version="19.1"
-   start="clk_0.clk_reset"
-   end="fpga_sdram.reset" />
- <connection
-   kind="reset"
-   version="19.1"
    start="sdram_clocks.reset_source"
    end="fpga_sdram.reset" />
  <connection

@@ -189,6 +189,11 @@ module soc_system_top(
  output        VGA_VS
 );
 
+   logic sdram_test_running;
+   logic sdram_test_pass;
+   logic sdram_test_fail;
+   logic [3:0] sdram_test_state;
+
    soc_system soc_system0(
      .clk_clk                      ( CLOCK_50 ),
      .reset_reset_n                ( 1'b1 ),
@@ -266,30 +271,38 @@ module soc_system_top(
      .hps_hps_io_gpio_inst_GPIO48  ( HPS_I2C_CONTROL ),
      .hps_hps_io_gpio_inst_GPIO53  ( HPS_LED ),
      .hps_hps_io_gpio_inst_GPIO54  ( HPS_KEY ),
-     .hps_hps_io_gpio_inst_GPIO61  ( HPS_GSENSOR_INT ),
-
-     .fpga_sdram_wire_addr ( DRAM_ADDR ),
-     .fpga_sdram_wire_ba ( DRAM_BA ),
-     .fpga_sdram_wire_cas_n ( DRAM_CAS_N ),
-     .fpga_sdram_wire_cke ( DRAM_CKE ),
-     .fpga_sdram_wire_cs_n ( DRAM_CS_N ),
-     .fpga_sdram_wire_dq (DRAM_DQ),
-     .fpga_sdram_wire_dqm ( {DRAM_UDQM, DRAM_LDQM} ),
-     .fpga_sdram_wire_ras_n ( DRAM_RAS_N ),
-     .fpga_sdram_wire_we_n ( DRAM_WE_N ),
-     .sdram_clk_clk ( DRAM_CLK ),
-
-     .vga_r (VGA_R),
-     .vga_g (VGA_G),
-     .vga_b (VGA_B), 
-     .vga_clk (VGA_CLK), 
-     .vga_hs (VGA_HS), 
-     .vga_vs (VGA_VS), 
-     .vga_blank_n (VGA_BLANK_N), 
-     .vga_sync_n (VGA_SYNC_N)
+     .hps_hps_io_gpio_inst_GPIO61  ( HPS_GSENSOR_INT )
 
 
   );
+
+   sdram_selftest_vga sdram_selftest0 (
+     .clk50        ( CLOCK_50 ),
+     .reset_req    ( ~KEY[0] ),
+     .DRAM_ADDR    ( DRAM_ADDR ),
+     .DRAM_BA      ( DRAM_BA ),
+     .DRAM_CAS_N   ( DRAM_CAS_N ),
+     .DRAM_CKE     ( DRAM_CKE ),
+     .DRAM_CLK     ( DRAM_CLK ),
+     .DRAM_CS_N    ( DRAM_CS_N ),
+     .DRAM_DQ      ( DRAM_DQ ),
+     .DRAM_LDQM    ( DRAM_LDQM ),
+     .DRAM_RAS_N   ( DRAM_RAS_N ),
+     .DRAM_UDQM    ( DRAM_UDQM ),
+     .DRAM_WE_N    ( DRAM_WE_N ),
+     .VGA_B        ( VGA_B ),
+     .VGA_BLANK_N  ( VGA_BLANK_N ),
+     .VGA_CLK      ( VGA_CLK ),
+     .VGA_G        ( VGA_G ),
+     .VGA_HS       ( VGA_HS ),
+     .VGA_R        ( VGA_R ),
+     .VGA_SYNC_N   ( VGA_SYNC_N ),
+     .VGA_VS       ( VGA_VS ),
+     .test_running ( sdram_test_running ),
+     .test_pass    ( sdram_test_pass ),
+     .test_fail    ( sdram_test_fail ),
+     .test_state   ( sdram_test_state )
+   );
 
    // The following quiet the "no driver" warnings for output
    // pins and should be removed if you use any of these peripherals
@@ -321,7 +334,13 @@ module soc_system_top(
 
    assign IRDA_TXD = SW[0];
 
-   assign LEDR = { 10{SW[7]} };
+   assign LEDR = {
+      3'b000,
+      sdram_test_state,
+      sdram_test_fail,
+      sdram_test_pass,
+      sdram_test_running
+   };
 
    assign PS2_CLK = SW[1] ? SW[0] : 1'bZ;
    assign PS2_CLK2 = SW[1] ? SW[0] : 1'bZ;
@@ -331,3 +350,5 @@ module soc_system_top(
    assign TD_RESET_N = SW[0];
                                                                   
 endmodule
+
+`include "sdram_selftest_vga.sv"

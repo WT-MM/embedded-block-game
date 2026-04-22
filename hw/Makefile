@@ -1,5 +1,13 @@
 SYSTEM = soc_system
 
+QUARTUS_19_BIN ?= /tools/intel/intelFPGA/19.1/quartus/bin
+
+QSYS_GENERATE ?= qsys-generate
+QUARTUS_SH ?= quartus_sh
+QUARTUS_MAP ?= quartus_map
+QUARTUS_STA ?= quartus_sta
+QUARTUS_CPF ?= quartus_cpf
+
 TCL = $(SYSTEM).tcl
 QSYS = $(SYSTEM).qsys
 SOPCINFO = $(SYSTEM).sopcinfo
@@ -73,9 +81,17 @@ TARFILE = lab3-hw.tar.gz
 project : $(QPF) $(QSF) $(SDC)
 
 $(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
-	quartus_sh -t $(TCL)
-	quartus_map $(SYSTEM)
-	quartus_sta -t $(HPS_PIN_TCL) $(SYSTEM)
+	$(QUARTUS_SH) -t $(TCL)
+	$(QUARTUS_MAP) $(SYSTEM)
+	$(QUARTUS_STA) -t $(HPS_PIN_TCL) $(SYSTEM)
+
+.PHONY : project19
+project19 :
+	$(MAKE) \
+	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
+	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
+	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
+	  project
 
 # qsys
 #
@@ -89,7 +105,11 @@ QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.he
 
 $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
-	qsys-generate $(QSYS) --synthesis=VERILOG
+	$(QSYS_GENERATE) $(QSYS) --synthesis=VERILOG
+
+.PHONY : qsys19
+qsys19 :
+	$(MAKE) QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate qsys
 
 # quartus
 #
@@ -103,7 +123,16 @@ $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS)
 quartus : $(SOF)
 
 $(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL)
-	quartus_sh --flow compile $(QPF)
+	$(QUARTUS_SH) --flow compile $(QPF)
+
+.PHONY : quartus19
+quartus19 :
+	$(MAKE) \
+	  QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate \
+	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
+	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
+	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
+	  quartus
 
 # rbf
 #
@@ -113,7 +142,17 @@ $(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL)
 rbf : $(RBF)
 
 $(RBF) : $(SOF)
-	quartus_cpf -c $(SOF) $(RBF)
+	$(QUARTUS_CPF) -c $(SOF) $(RBF)
+
+.PHONY : rbf19
+rbf19 :
+	$(MAKE) \
+	  QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate \
+	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
+	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
+	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
+	  QUARTUS_CPF=$(QUARTUS_19_BIN)/quartus_cpf \
+	  rbf
 
 # install-rbf
 #

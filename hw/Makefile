@@ -102,6 +102,9 @@ project19 :
 qsys : $(SOPCINFO)
 
 QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.hex generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl
+TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv sdram_selftest_vga.sv \
+	$(wildcard sdram_local_test/*.v) \
+	$(wildcard sdram_local_test/sdram_pll0/*.v)
 
 $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
@@ -122,7 +125,7 @@ qsys19 :
 .PHONY : quartus
 quartus : $(SOF)
 
-$(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL)
+$(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL) $(TOP_LEVEL_SOURCES)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
 .PHONY : quartus19

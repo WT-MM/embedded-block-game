@@ -96,6 +96,7 @@ module sdram_selftest_vga (
     logic [23:0] pixel_rgb;
     logic [31:0] progress_words;
     logic [9:0]  bar_fill_px;
+    logic [4:0]  glyph_row;
     status_t     status_code;
 
     always_ff @(posedge clk50 or posedge reset_req) begin
@@ -259,6 +260,7 @@ module sdram_selftest_vga (
         bar_fill_on = 1'b0;
         bg_rgb = 24'h000000;
         pixel_rgb = 24'h000000;
+        glyph_row = 5'b00000;
 
         case (status_code)
             STATUS_WRITE: bg_rgb = 24'h102A56;
@@ -281,7 +283,8 @@ module sdram_selftest_vga (
                 (glyph_x >= 0) && (glyph_x < FONT_W) &&
                 (glyph_y >= 0) && (glyph_y < FONT_H)) begin
                 ch = title_char(char_idx[3:0]);
-                title_on = glyph_bits(ch, glyph_y[2:0])[FONT_W - 1 - glyph_x];
+                glyph_row = glyph_bits(ch, glyph_y[2:0]);
+                title_on = glyph_row[FONT_W - 1 - glyph_x];
             end
         end
 
@@ -298,7 +301,8 @@ module sdram_selftest_vga (
                 (glyph_x >= 0) && (glyph_x < FONT_W) &&
                 (glyph_y >= 0) && (glyph_y < FONT_H)) begin
                 ch = status_char(status_code, char_idx[3:0]);
-                status_on = glyph_bits(ch, glyph_y[2:0])[FONT_W - 1 - glyph_x];
+                glyph_row = glyph_bits(ch, glyph_y[2:0]);
+                status_on = glyph_row[FONT_W - 1 - glyph_x];
             end
         end
 

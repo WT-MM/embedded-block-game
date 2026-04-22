@@ -84,6 +84,10 @@ tool paths:
   * `make project19`
   * `make quartus19`
   * `make rbf19`
+  * `make print-quartus19-tools`
+
+Note: `qsys-generate` is a Platform Designer utility, so it lives under
+`quartus/sopc_builder/bin`, not `quartus/bin`.
 
 CLI Alternative
 ---------------
@@ -92,7 +96,7 @@ To test HDL generation without reopening the GUI, run:
 
 ```bash
 cd /homes/user/stud/fall25/wm2505/Github/embedded-block-game/hw
-/tools/intel/intelFPGA/19.1/quartus/bin/qsys-generate soc_system.qsys \
+/tools/intel/intelFPGA/19.1/quartus/sopc_builder/bin/qsys-generate soc_system.qsys \
   --synthesis=VERILOG \
   --output-directory=./soc_system/synthesis \
   --family="Cyclone V" \

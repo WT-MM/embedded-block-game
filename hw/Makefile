@@ -1,6 +1,28 @@
 SYSTEM = soc_system
 
-QUARTUS_19_BIN ?= /tools/intel/intelFPGA/19.1/quartus/bin
+# Optional fixed Quartus 19.1 install root. If these paths do not exist on a
+# given lab machine, the *19 targets fall back to the matching tools on PATH.
+QUARTUS_19_ROOT ?= /tools/intel/intelFPGA/19.1
+QUARTUS_19_BIN ?= $(QUARTUS_19_ROOT)/quartus/bin
+QSYS_19_BIN ?= $(QUARTUS_19_ROOT)/quartus/sopc_builder/bin
+
+ifneq ($(wildcard $(QSYS_19_BIN)/qsys-generate),)
+QSYS_GENERATE_19 = $(QSYS_19_BIN)/qsys-generate
+else
+QSYS_GENERATE_19 = qsys-generate
+endif
+
+ifneq ($(wildcard $(QUARTUS_19_BIN)/quartus_sh),)
+QUARTUS_SH_19 = $(QUARTUS_19_BIN)/quartus_sh
+QUARTUS_MAP_19 = $(QUARTUS_19_BIN)/quartus_map
+QUARTUS_STA_19 = $(QUARTUS_19_BIN)/quartus_sta
+QUARTUS_CPF_19 = $(QUARTUS_19_BIN)/quartus_cpf
+else
+QUARTUS_SH_19 = quartus_sh
+QUARTUS_MAP_19 = quartus_map
+QUARTUS_STA_19 = quartus_sta
+QUARTUS_CPF_19 = quartus_cpf
+endif
 
 QSYS_GENERATE ?= qsys-generate
 QUARTUS_SH ?= quartus_sh
@@ -88,9 +110,9 @@ $(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
 .PHONY : project19
 project19 :
 	$(MAKE) \
-	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
-	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
-	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
+	  QUARTUS_SH=$(QUARTUS_SH_19) \
+	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
+	  QUARTUS_STA=$(QUARTUS_STA_19) \
 	  project
 
 # qsys
@@ -112,7 +134,7 @@ $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS)
 
 .PHONY : qsys19
 qsys19 :
-	$(MAKE) QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate qsys
+	$(MAKE) QSYS_GENERATE=$(QSYS_GENERATE_19) qsys
 
 # quartus
 #
@@ -131,10 +153,10 @@ $(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL) $(TOP_LEVEL_SOURCES)
 .PHONY : quartus19
 quartus19 :
 	$(MAKE) \
-	  QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate \
-	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
-	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
-	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
+	  QSYS_GENERATE=$(QSYS_GENERATE_19) \
+	  QUARTUS_SH=$(QUARTUS_SH_19) \
+	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
+	  QUARTUS_STA=$(QUARTUS_STA_19) \
 	  quartus
 
 # rbf
@@ -150,12 +172,23 @@ $(RBF) : $(SOF)
 .PHONY : rbf19
 rbf19 :
 	$(MAKE) \
-	  QSYS_GENERATE=$(QUARTUS_19_BIN)/qsys-generate \
-	  QUARTUS_SH=$(QUARTUS_19_BIN)/quartus_sh \
-	  QUARTUS_MAP=$(QUARTUS_19_BIN)/quartus_map \
-	  QUARTUS_STA=$(QUARTUS_19_BIN)/quartus_sta \
-	  QUARTUS_CPF=$(QUARTUS_19_BIN)/quartus_cpf \
+	  QSYS_GENERATE=$(QSYS_GENERATE_19) \
+	  QUARTUS_SH=$(QUARTUS_SH_19) \
+	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
+	  QUARTUS_STA=$(QUARTUS_STA_19) \
+	  QUARTUS_CPF=$(QUARTUS_CPF_19) \
 	  rbf
+
+.PHONY : print-quartus19-tools
+print-quartus19-tools :
+	@echo "QUARTUS_19_ROOT=$(QUARTUS_19_ROOT)"
+	@echo "QUARTUS_19_BIN=$(QUARTUS_19_BIN)"
+	@echo "QSYS_19_BIN=$(QSYS_19_BIN)"
+	@echo "QSYS_GENERATE_19=$(QSYS_GENERATE_19)"
+	@echo "QUARTUS_SH_19=$(QUARTUS_SH_19)"
+	@echo "QUARTUS_MAP_19=$(QUARTUS_MAP_19)"
+	@echo "QUARTUS_STA_19=$(QUARTUS_STA_19)"
+	@echo "QUARTUS_CPF_19=$(QUARTUS_CPF_19)"
 
 # install-rbf
 #

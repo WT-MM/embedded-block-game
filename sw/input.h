@@ -2,6 +2,7 @@
 #define INPUT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define INPUT_MAX_POINTERS 8
 #define INPUT_TEXT_QUEUE_MAX 64
@@ -29,6 +30,7 @@ typedef struct {
     int last_abs_y;
     bool have_abs_x;
     bool have_abs_y;
+    bool grabbed;
 } InputPointer;
 
 typedef struct {
@@ -55,6 +57,9 @@ typedef struct {
 
     bool _text_mode;
     bool _shift_down;
+    bool _grab_pointers;
+    bool _forward_tap_armed;
+    uint64_t _last_forward_press_ns;
 
     int _kbd_fd;
     int _pointer_count;

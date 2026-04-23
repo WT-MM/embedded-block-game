@@ -106,6 +106,8 @@ Environment variables:
     VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
     VOXEL_RENDER_DISTANCE=1..8           # chunk radius; default: 3
     VOXEL_STATUS_LOG=auto|0|1            # per-frame HUD; auto only on TTY
+    VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
+    VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 0, prefer rel mice over VM tablets
 
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
 same command stream to both backends.

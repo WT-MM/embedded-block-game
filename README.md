@@ -35,9 +35,10 @@ Notes
 - `VOXEL_GPU_BACKEND=hw` is the default and uses `/dev/voxel_gpu`.
 - `VOXEL_GPU_BACKEND=socket` avoids the kernel driver entirely.
 - `./game` reads keyboard and mouse input from `/dev/input/event*` on Linux.
-- The input layer now accepts both relative mice and absolute VM tablet devices.
+- The input layer prefers relative mice, grabs pointer devices by default, and falls back to absolute VM tablet devices only when needed.
 - Use `VOXEL_MOUSE_INVERT_X=1` and/or `VOXEL_MOUSE_INVERT_Y=1` to flip axes.
 - Use `VOXEL_MOUSE_SENS=0.004` to override mouse sensitivity at launch.
+- Use `VOXEL_MOUSE_GRAB=0` to leave the guest cursor free, or `VOXEL_MOUSE_ALLOW_ABS=1` to keep absolute tablet input enabled alongside relative mice.
 
 If input only works under `sudo`, add your user to the `input` group and start
 a new login session:

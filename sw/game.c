@@ -358,7 +358,7 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  Ctrl=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause  Q=quit\n");
+    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause  Q=quit\n");
     printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
            player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",

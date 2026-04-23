@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
@@ -11,6 +12,7 @@
 #define INPUT_SCAN_LIMIT 32
 #define ABS_MOUSE_SPAN_X 640.0f
 #define ABS_MOUSE_SPAN_Y 480.0f
+#define DOUBLE_TAP_SPRINT_NS 275000000ULL
 #define BITS_PER_LONG   (sizeof(long) * 8)
 #define BIT_WORD(nr)    ((nr) / BITS_PER_LONG)
 #define BIT_MASK(nr)    (1UL << ((nr) % BITS_PER_LONG))
@@ -72,6 +74,30 @@ static bool env_flag_enabled(const char *name)
     return true;
 }
 
+static bool env_flag_enabled_default_true(const char *name)
+{
+    const char *value = getenv(name);
+
+    if (!value || value[0] == '\0')
+        return true;
+    if (strcmp(value, "0") == 0)
+        return false;
+    if (strcmp(value, "false") == 0 || strcmp(value, "FALSE") == 0)
+        return false;
+    if (strcmp(value, "no") == 0 || strcmp(value, "NO") == 0)
+        return false;
+
+    return true;
+}
+
+static uint64_t monotonic_time_ns(void)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
 static int find_kbd(void)
 {
     char path[64];
@@ -126,6 +152,20 @@ static bool is_absolute_pointer(int fd)
            test_absbit(fd, ABS_Y);
 }
 
+static void maybe_grab_pointer(InputState *inp, InputPointer *pointer,
+                               const char *name)
+{
+    if (!inp->_grab_pointers)
+        return;
+
+    if (ioctl(pointer->fd, EVIOCGRAB, 1) == 0) {
+        pointer->grabbed = true;
+        fprintf(stderr, "input: pointer captured (%s)\n", name);
+    } else {
+        fprintf(stderr, "input: pointer capture failed (%s)\n", name);
+    }
+}
+
 static void add_pointer(InputState *inp, int fd, InputPointerMode mode)
 {
     if (inp->_pointer_count >= INPUT_MAX_POINTERS) {
@@ -146,12 +186,14 @@ static void add_pointer(InputState *inp, int fd, InputPointerMode mode)
     }
 
     describe_device(fd, name, sizeof(name));
-    fprintf(stderr, "input: pointer ready (%s, %s)\n",
+    maybe_grab_pointer(inp, pointer, name);
+    fprintf(stderr, "input: pointer ready (%s, %s%s)\n",
             mode == INPUT_POINTER_REL ? "relative" : "absolute",
-            name);
+            name,
+            pointer->grabbed ? ", captured" : "");
 }
 
-static void find_pointers(InputState *inp)
+static void scan_pointers(InputState *inp, InputPointerMode wanted_mode)
 {
     char path[64];
 
@@ -161,16 +203,42 @@ static void find_pointers(InputState *inp)
         if (fd < 0)
             continue;
 
-        if (is_relative_pointer(fd)) {
-            add_pointer(inp, fd, INPUT_POINTER_REL);
-            continue;
-        }
-        if (is_absolute_pointer(fd)) {
-            add_pointer(inp, fd, INPUT_POINTER_ABS);
-            continue;
+        if (wanted_mode == INPUT_POINTER_REL) {
+            if (is_relative_pointer(fd)) {
+                add_pointer(inp, fd, INPUT_POINTER_REL);
+                continue;
+            }
+        } else if (wanted_mode == INPUT_POINTER_ABS) {
+            if (!is_relative_pointer(fd) && is_absolute_pointer(fd)) {
+                add_pointer(inp, fd, INPUT_POINTER_ABS);
+                continue;
+            }
         }
 
         close(fd);
+    }
+}
+
+static void find_pointers(InputState *inp)
+{
+    bool allow_absolute_with_relative = env_flag_enabled("VOXEL_MOUSE_ALLOW_ABS");
+    int pointers_before = inp->_pointer_count;
+
+    scan_pointers(inp, INPUT_POINTER_REL);
+    if (inp->_pointer_count == pointers_before ||
+        allow_absolute_with_relative) {
+        scan_pointers(inp, INPUT_POINTER_ABS);
+    }
+
+    if (inp->_pointer_count > pointers_before &&
+        inp->_pointers[pointers_before].mode == INPUT_POINTER_REL &&
+        !allow_absolute_with_relative) {
+        fprintf(stderr,
+                "input: relative pointer mode active; absolute tablet fallback disabled\n");
+    } else if (inp->_pointer_count > pointers_before &&
+               inp->_pointers[pointers_before].mode == INPUT_POINTER_ABS) {
+        fprintf(stderr,
+                "input: using absolute pointer fallback; VM window edges may still limit look\n");
     }
 }
 
@@ -228,6 +296,7 @@ int input_init(InputState *inp)
     memset(inp, 0, sizeof(*inp));
     inp->_kbd_fd   = -1;
     inp->hotbar_slot_pressed = -1;
+    inp->_grab_pointers = env_flag_enabled_default_true("VOXEL_MOUSE_GRAB");
     inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
     inp->_mouse_scale_y = env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
@@ -247,6 +316,8 @@ int input_init(InputState *inp)
     fprintf(stderr, "input: mouse invert x=%s y=%s\n",
             inp->_mouse_scale_x < 0.0f ? "on" : "off",
             inp->_mouse_scale_y < 0.0f ? "on" : "off");
+    fprintf(stderr, "input: mouse capture=%s\n",
+            inp->_grab_pointers ? "on" : "off");
 
     return (inp->_kbd_fd >= 0) ? 0 : -1;
 }
@@ -310,7 +381,21 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             }
 
             switch (ev.code) {
-            case KEY_W:                      inp->forward = down; break;
+            case KEY_W:
+                inp->forward = down;
+                if (press_edge) {
+                    uint64_t now_ns = monotonic_time_ns();
+
+                    if (inp->_forward_tap_armed &&
+                        now_ns - inp->_last_forward_press_ns <= DOUBLE_TAP_SPRINT_NS)
+                        inp->sprint = true;
+
+                    inp->_forward_tap_armed = true;
+                    inp->_last_forward_press_ns = now_ns;
+                } else if (!down) {
+                    inp->sprint = false;
+                }
+                break;
             case KEY_S:                      inp->back    = down; break;
             case KEY_A:                      inp->left    = down; break;
             case KEY_D:                      inp->right   = down; break;
@@ -334,10 +419,6 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             case BTN_RIGHT:
                 if (press_edge)
                     inp->place_pressed = true;
-                break;
-            case KEY_LEFTCTRL:
-            case KEY_RIGHTCTRL:
-                inp->sprint = down;
                 break;
             case KEY_ESC:
                 if (press_edge)
@@ -451,11 +532,14 @@ void input_set_text_mode(InputState *inp, bool on)
          * while the user is typing. */
         inp->forward = inp->back = inp->left = inp->right = false;
         inp->up = inp->down = false;
+        inp->sprint = false;
         inp->jump_pressed = false;
         inp->mode_toggle_pressed = false;
         inp->break_pressed = false;
         inp->place_pressed = false;
         inp->hotbar_slot_pressed = -1;
+        inp->_forward_tap_armed = false;
+        inp->_last_forward_press_ns = 0;
     }
     inp->_text_mode = on;
     if (!on)
@@ -476,6 +560,8 @@ void input_shutdown(InputState *inp)
 
     for (int i = 0; i < inp->_pointer_count; i++) {
         if (inp->_pointers[i].fd >= 0) {
+            if (inp->_pointers[i].grabbed)
+                ioctl(inp->_pointers[i].fd, EVIOCGRAB, 0);
             close(inp->_pointers[i].fd);
             inp->_pointers[i].fd = -1;
         }

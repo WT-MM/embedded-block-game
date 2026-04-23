@@ -82,9 +82,13 @@ module voxel_gpu (
     localparam int SDRAM_ADDR_W    = 25;
     /* Flush cycles required to drain the rasterizer pipeline before
      * leaving ST_DRAW. Must match (number of *_valid flops between
-     * ST_FETCH and commit_color). Raising to 13 covers the pal stage
-     * that lives between draw_pipe and fog0. */
-    localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd13;
+     * ST_FETCH and commit_color). Raising to 14 covers both palette
+     * pipeline stages (pal_rd + plr) that live between draw_pipe and
+     * fog0. The pal_rd stage registers the palette address and the
+     * plr stage registers the palette output, which makes the timing
+     * deterministic regardless of whether Quartus implements the
+     * palette array as MLAB (async read) or M10K (sync read). */
+    localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
     localparam logic [24:0] FB_WORDS_25 = 25'd76800;
     localparam logic [24:0] LINE_WORDS_25 = 25'd320;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
@@ -141,16 +145,15 @@ module voxel_gpu (
     logic        copy_complete_pending;
 
     // Palette lookup path: draw_pipe_color -> apply_light_bank ->
-    // palette[] -> plr_src_rgb (registered) -> rgb888_to_rgb565 ->
-    // fog0_src_rgb565 (registered).
+    // pal_rd_src_addr (registered) -> palette[] -> plr_src_rgb
+    // (registered) -> rgb888_to_rgb565 -> fog0_src_rgb565 (registered).
     //
-    // MLAB storage lets the combinational read work cleanly, and the
-    // dedicated plr stage (between draw_pipe and fog0) registers the
-    // palette output in its own flop so it cannot skew against the
-    // other fog0 inputs even if Quartus tries to absorb a register
-    // into the memory block. The MLAB attribute + explicit pipelining
-    // is the belt-and-suspenders version of the "backup fix" described
-    // in PROJECT_NOTES.md.
+    // The pal_rd + plr split flops the palette address and its read
+    // output in two separate cycles, so the pipeline stays correct
+    // whether Quartus implements this array as MLAB (async read) or
+    // demotes it to M10K (sync read). The MLAB attribute still keeps
+    // the read cheap on paper; the explicit two-stage pipeline is the
+    // correctness guarantee. See PROJECT_NOTES.md for the history.
     (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
@@ -335,15 +338,41 @@ module voxel_gpu (
     logic  [8:0] draw_pipe_y;
     logic [31:0] draw_pipe_w_q;
 
-    /* Palette-lookup register (plr) stage: one pipeline cycle between
-     * draw_pipe and fog0 that explicitly registers the palette lookup.
-     * Even with palette in MLAB, isolating the read behind a dedicated
-     * flop removes any possibility of Quartus skewing the palette
-     * output relative to the rest of the fog0 inputs. See
-     * PROJECT_NOTES.md, "Backup Fix (Pipelined Read)". All fog0 inputs
-     * go through plr_* so every field arrives at fog0 on the same
-     * cycle. (Prefix avoids colliding with the existing CSR-side
-     * pal_addr register used to auto-increment palette writes.) */
+    /* Palette-address register (pal_rd) stage: first half of the
+     * pipelined palette read. We register the palette source/fog
+     * addresses coming out of apply_light_bank here so the palette
+     * array is indexed by a stable, flopped address on the following
+     * cycle. The plr stage below then captures the palette output.
+     * Splitting the read into two cycles (address flop, then data
+     * flop) makes the timing deterministic whether Quartus implements
+     * the palette array as MLAB (async read) or silently demotes it
+     * to M10K (sync read with a registered address internally). The
+     * old single-plr layout only worked when MLAB was inferred; if
+     * Quartus added its own address register on top we ended up one
+     * cycle behind and bled the previous quad's palette entry into
+     * the first pixel of each new quad, which manifested as colored
+     * fringes on every block edge (worst on stone, where any non-gray
+     * leak is maximally visible). */
+    logic        pal_rd_valid;
+    logic        pal_rd_pass;
+    logic        pal_rd_ztest;
+    logic  [1:0] pal_rd_alpha;
+    logic        pal_rd_fog;
+    logic [16:0] pal_rd_addr;
+    logic [15:0] pal_rd_z;
+    logic  [7:0] pal_rd_src_addr;
+    logic  [7:0] pal_rd_fog_addr;
+    logic [15:0] pal_rd_dst_rgb565;
+    logic [31:0] pal_rd_w_q;
+    logic [33:0] pal_rd_ray_scale_q16;
+
+    /* Palette-lookup register (plr) stage: second half of the
+     * pipelined palette read. Captures palette[pal_rd_src_addr] and
+     * palette[pal_rd_fog_addr] so fog0 sees RGB values that arrive
+     * on the same cycle as every other fog0 input. See PROJECT_NOTES.md
+     * for the reasoning. (Prefix avoids colliding with the existing
+     * CSR-side pal_addr register used to auto-increment palette
+     * writes.) */
     logic        plr_valid;
     logic        plr_pass;
     logic        plr_ztest;
@@ -1123,6 +1152,18 @@ module voxel_gpu (
         draw_pipe_x      = 10'd0;
         draw_pipe_y      = 9'd0;
         draw_pipe_w_q    = 32'd0;
+        pal_rd_valid     = 1'b0;
+        pal_rd_pass      = 1'b0;
+        pal_rd_ztest     = 1'b0;
+        pal_rd_alpha     = 2'd0;
+        pal_rd_fog       = 1'b0;
+        pal_rd_addr      = 17'd0;
+        pal_rd_z         = 16'd0;
+        pal_rd_src_addr  = 8'd0;
+        pal_rd_fog_addr  = 8'd0;
+        pal_rd_dst_rgb565 = 16'h0000;
+        pal_rd_w_q       = 32'd0;
+        pal_rd_ray_scale_q16 = 34'd0;
         plr_valid        = 1'b0;
         plr_pass         = 1'b0;
         plr_ztest        = 1'b0;
@@ -1508,6 +1549,18 @@ module voxel_gpu (
             draw_pipe_x      <= 10'd0;
             draw_pipe_y      <= 9'd0;
             draw_pipe_w_q    <= 32'd0;
+            pal_rd_valid     <= 1'b0;
+            pal_rd_pass      <= 1'b0;
+            pal_rd_ztest     <= 1'b0;
+            pal_rd_alpha     <= 2'd0;
+            pal_rd_fog       <= 1'b0;
+            pal_rd_addr      <= 17'd0;
+            pal_rd_z         <= 16'd0;
+            pal_rd_src_addr  <= 8'd0;
+            pal_rd_fog_addr  <= 8'd0;
+            pal_rd_dst_rgb565 <= 16'h0000;
+            pal_rd_w_q       <= 32'd0;
+            pal_rd_ray_scale_q16 <= 34'd0;
             plr_valid        <= 1'b0;
             plr_pass         <= 1'b0;
             plr_ztest        <= 1'b0;
@@ -1814,25 +1867,49 @@ module voxel_gpu (
                 copy_words_written <= copy_words_written + 17'd1;
             end
 
-            /* plr stage: register the combinational palette lookup and
-             * forward every other draw_pipe_* field that fog0 needs. The
-             * palette read is the long combinational path (tex_rd_data
-             * -> apply_light_bank -> palette[] -> ...); isolating it
-             * behind its own flop removes any timing skew against the
-             * other fog0 inputs and guarantees they all arrive together.
-             */
-            plr_valid          <= draw_pipe_valid;
-            plr_pass           <= draw_commit_pass;
-            plr_ztest          <= draw_pipe_ztest;
-            plr_alpha          <= draw_pipe_alpha;
-            plr_fog            <= draw_pipe_fog;
-            plr_addr           <= draw_pipe_addr;
-            plr_z              <= draw_pipe_z;
-            plr_src_rgb        <= palette[palette_src_addr];
-            plr_dst_rgb565     <= draw_pipe_dst_rgb565;
-            plr_fog_rgb        <= palette[fog_color];
-            plr_w_q            <= draw_pipe_w_q;
-            plr_ray_scale_q16  <= draw_pipe_ray_scale_q16;
+            /* pal_rd stage: register the palette source/fog addresses
+             * (both derived combinationally from draw_pipe_*) along
+             * with every other field fog0 needs. Having a dedicated
+             * address flop before the palette read lets Quartus pick
+             * either MLAB or M10K for the palette array without
+             * introducing a hidden 1-cycle skew: with MLAB the read
+             * is async out of pal_rd_*_addr and the plr stage flops
+             * it; with M10K the address flop is what the primitive
+             * expects internally and plr simply reads the next-cycle
+             * data. Either way, plr_src_rgb/plr_fog_rgb stay
+             * aligned with plr_pass/plr_alpha/... */
+            pal_rd_valid       <= draw_pipe_valid;
+            pal_rd_pass        <= draw_commit_pass;
+            pal_rd_ztest       <= draw_pipe_ztest;
+            pal_rd_alpha       <= draw_pipe_alpha;
+            pal_rd_fog         <= draw_pipe_fog;
+            pal_rd_addr        <= draw_pipe_addr;
+            pal_rd_z           <= draw_pipe_z;
+            pal_rd_src_addr    <= palette_src_addr;
+            pal_rd_fog_addr    <= fog_color;
+            pal_rd_dst_rgb565  <= draw_pipe_dst_rgb565;
+            pal_rd_w_q         <= draw_pipe_w_q;
+            pal_rd_ray_scale_q16 <= draw_pipe_ray_scale_q16;
+
+            /* plr stage: register the palette lookup output so every
+             * fog0 input arrives on the same cycle. The combinational
+             * chain here is now just palette[pal_rd_*_addr] (an array
+             * index with a registered address), which is MUCH shorter
+             * than the old tex_rd_data -> apply_light_bank -> palette
+             * -> rgb888_to_rgb565 path we used to have feeding fog0
+             * directly. */
+            plr_valid          <= pal_rd_valid;
+            plr_pass           <= pal_rd_pass;
+            plr_ztest          <= pal_rd_ztest;
+            plr_alpha          <= pal_rd_alpha;
+            plr_fog            <= pal_rd_fog;
+            plr_addr           <= pal_rd_addr;
+            plr_z              <= pal_rd_z;
+            plr_src_rgb        <= palette[pal_rd_src_addr];
+            plr_dst_rgb565     <= pal_rd_dst_rgb565;
+            plr_fog_rgb        <= palette[pal_rd_fog_addr];
+            plr_w_q            <= pal_rd_w_q;
+            plr_ray_scale_q16  <= pal_rd_ray_scale_q16;
 
             fog0_valid <= plr_valid;
             fog0_pass <= plr_pass;
@@ -1894,6 +1971,7 @@ module voxel_gpu (
                     tex0_valid <= 1'b0;
                     pipe2_valid <= 1'b0;
                     draw_pipe_valid <= 1'b0;
+                    pal_rd_valid <= 1'b0;
                     plr_valid <= 1'b0;
                     fog0_valid <= 1'b0;
                     fog1_valid <= 1'b0;
@@ -1972,6 +2050,7 @@ module voxel_gpu (
                         tex0_valid <= 1'b0;
                         pipe2_valid <= 1'b0;
                         draw_pipe_valid <= 1'b0;
+                        pal_rd_valid <= 1'b0;
                         plr_valid <= 1'b0;
                         fog0_valid <= 1'b0;
                         fog1_valid <= 1'b0;

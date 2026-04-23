@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 from .protocol import (
     CMD_CLEAR,
     CMD_FLIP,
@@ -27,7 +29,7 @@ from .protocol import (
     recv_request,
     send_reply,
 )
-from .raster import VirtualGPU, load_texture_mif, rgb565_to_rgb888
+from .raster import VirtualGPU, load_texture_mif
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
@@ -142,7 +144,7 @@ class Monitor:
         self.headless = headless
         self._window = None
         self._pygame = None
-        self._rgb_buffer = bytearray(width * height * 3)
+        self._rgb_buffer = np.empty(width * height * 3, dtype=np.uint8)
 
         if headless:
             return
@@ -176,16 +178,15 @@ class Monitor:
             if event.type == self._pygame.QUIT:
                 raise KeyboardInterrupt
 
-    def _frame_to_rgb(self, frame) -> bytearray:
-        out = self._rgb_buffer
-
-        for i, rgb565 in enumerate(frame):
-            r, g, b = rgb565_to_rgb888(rgb565)
-            base = i * 3
-            out[base] = r
-            out[base + 1] = g
-            out[base + 2] = b
-
+    def _frame_to_rgb(self, frame) -> np.ndarray:
+        # Vectorized RGB565 -> RGB888. frame is a numpy uint16 array.
+        rgb = self._rgb_buffer.reshape(-1, 3)
+        r5 = (frame >> 11) & 0x1F
+        g6 = (frame >> 5) & 0x3F
+        b5 = frame & 0x1F
+        rgb[:, 0] = (r5 << 3) | (r5 >> 2)
+        rgb[:, 1] = (g6 << 2) | (g6 >> 4)
+        rgb[:, 2] = (b5 << 3) | (b5 >> 2)
         return self._rgb_buffer
 
     def present(self, gpu: VirtualGPU) -> None:
@@ -197,7 +198,9 @@ class Monitor:
         assert self._window is not None
 
         rgb = self._frame_to_rgb(gpu.front_buffer)
-        surface = self._pygame.image.frombuffer(rgb, (self.width, self.height), "RGB")
+        surface = self._pygame.image.frombuffer(
+            rgb.tobytes(), (self.width, self.height), "RGB"
+        )
         if self.scale != 1:
             surface = self._pygame.transform.scale(
                 surface, (self.width * self.scale, self.height * self.scale)
@@ -206,8 +209,8 @@ class Monitor:
         self._window.blit(surface, (0, 0))
         self._pygame.display.flip()
 
-    def rgb_frame(self, gpu: VirtualGPU) -> bytearray:
-        return self._frame_to_rgb(gpu.front_buffer)
+    def rgb_frame(self, gpu: VirtualGPU) -> bytes:
+        return self._frame_to_rgb(gpu.front_buffer).tobytes()
 
 
 def write_ppm(path: Path, width: int, height: int, rgb: bytes) -> None:

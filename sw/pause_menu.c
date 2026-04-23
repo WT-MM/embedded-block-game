@@ -12,6 +12,7 @@ static const char *PAUSE_LINES[] = {
     "GAME MENU",
     "",
     "ESC   RESUME GAME",
+    "MOUSE FREE WHILE PAUSED",
     "Q     QUIT TO DESKTOP",
     "",
     "MULTIPLAYER - COMING SOON",

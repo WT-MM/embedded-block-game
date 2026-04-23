@@ -36,6 +36,7 @@ Notes
 - `VOXEL_GPU_BACKEND=socket` avoids the kernel driver entirely.
 - `./game` reads keyboard and mouse input from `/dev/input/event*` on Linux.
 - The input layer prefers relative mice, grabs pointer devices by default, and falls back to absolute VM tablet devices only when needed.
+- Press `Esc` to pause and release the grabbed mouse; resuming gameplay re-captures it.
 - Use `VOXEL_MOUSE_INVERT_X=1` and/or `VOXEL_MOUSE_INVERT_Y=1` to flip axes.
 - Use `VOXEL_MOUSE_SENS=0.004` to override mouse sensitivity at launch.
 - Use `VOXEL_MOUSE_GRAB=0` to leave the guest cursor free, or `VOXEL_MOUSE_ALLOW_ABS=0` to disable absolute tablet fallback when a relative mouse is present.

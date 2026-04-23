@@ -371,7 +371,7 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause  Q=quit\n");
+    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
     printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
            player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
@@ -438,7 +438,10 @@ int main(void)
             input_set_text_mode(&inp, chat_is_open(&chat));
         }
 
-        if (chat_is_open(&chat) && !paused) {
+        bool chat_open = chat_is_open(&chat);
+        input_set_pointer_capture(&inp, !paused && !chat_open);
+
+        if (chat_open && !paused) {
             for (int i = 0; i < inp.text_queue_len; i++) {
                 char ch = inp.text_queue[i];
                 if (ch == INPUT_TEXT_BACKSPACE)

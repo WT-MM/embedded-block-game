@@ -58,8 +58,10 @@ typedef struct {
     bool _text_mode;
     bool _shift_down;
     bool _grab_pointers;
+    bool _pointer_capture_wanted;
     bool _forward_tap_armed;
     uint64_t _last_forward_press_ns;
+    uint64_t _last_pointer_capture_attempt_ns;
     uint64_t _last_relative_motion_ns;
 
     int _kbd_fd;
@@ -79,6 +81,7 @@ bool input_consume_break(InputState *inp);
 bool input_consume_place(InputState *inp);
 bool input_consume_pause_toggle(InputState *inp);
 int input_consume_hotbar_slot(InputState *inp);
+void input_set_pointer_capture(InputState *inp, bool on);
 void input_set_text_mode(InputState *inp, bool on);
 void input_clear_text_queue(InputState *inp);
 void input_shutdown(InputState *inp);

@@ -14,6 +14,7 @@
 #define ABS_MOUSE_SPAN_Y 480.0f
 #define DOUBLE_TAP_SPRINT_NS 275000000ULL
 #define ABS_SUPPRESS_AFTER_REL_NS 50000000ULL
+#define POINTER_CAPTURE_RETRY_NS 250000000ULL
 #define BITS_PER_LONG   (sizeof(long) * 8)
 #define BIT_WORD(nr)    ((nr) / BITS_PER_LONG)
 #define BIT_MASK(nr)    (1UL << ((nr) % BITS_PER_LONG))
@@ -178,6 +179,65 @@ static void maybe_grab_pointer(InputState *inp, InputPointer *pointer,
     }
 }
 
+static void clear_pointer_motion_state(InputState *inp)
+{
+    if (!inp)
+        return;
+
+    inp->mouse_dx = 0.0f;
+    inp->mouse_dy = 0.0f;
+    inp->_last_relative_motion_ns = 0;
+
+    for (int i = 0; i < inp->_pointer_count; i++) {
+        InputPointer *pointer = &inp->_pointers[i];
+
+        pointer->have_abs_x = false;
+        pointer->have_abs_y = false;
+    }
+}
+
+static void set_pointer_grab_state(InputState *inp, InputPointer *pointer,
+                                   bool grab)
+{
+    char name[128] = {0};
+
+    if (!inp || !pointer || pointer->fd < 0)
+        return;
+    if (!inp->_grab_pointers)
+        return;
+    if (pointer->grabbed == grab)
+        return;
+
+    describe_device(pointer->fd, name, sizeof(name));
+    if (ioctl(pointer->fd, EVIOCGRAB, grab ? 1 : 0) == 0) {
+        pointer->grabbed = grab;
+        fprintf(stderr, "input: pointer %s (%s)\n",
+                grab ? "captured" : "released",
+                name);
+    } else {
+        fprintf(stderr, "input: pointer %s failed (%s)\n",
+                grab ? "capture" : "release",
+                name);
+    }
+}
+
+static bool pointer_capture_matches_request(const InputState *inp, bool on)
+{
+    if (!inp)
+        return true;
+    if (!inp->_grab_pointers)
+        return true;
+
+    for (int i = 0; i < inp->_pointer_count; i++) {
+        const InputPointer *pointer = &inp->_pointers[i];
+
+        if (pointer->fd >= 0 && pointer->grabbed != on)
+            return false;
+    }
+
+    return true;
+}
+
 static void add_pointer(InputState *inp, int fd, InputPointerMode mode)
 {
     if (inp->_pointer_count >= INPUT_MAX_POINTERS) {
@@ -320,6 +380,7 @@ int input_init(InputState *inp)
     inp->_kbd_fd   = -1;
     inp->hotbar_slot_pressed = -1;
     inp->_grab_pointers = env_flag_enabled_default_true("VOXEL_MOUSE_GRAB");
+    inp->_pointer_capture_wanted = inp->_grab_pointers;
     inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
     inp->_mouse_scale_y = env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
@@ -561,6 +622,34 @@ int input_consume_hotbar_slot(InputState *inp)
     int slot = inp->hotbar_slot_pressed;
     inp->hotbar_slot_pressed = -1;
     return slot;
+}
+
+void input_set_pointer_capture(InputState *inp, bool on)
+{
+    uint64_t now_ns;
+    bool wanted_changed;
+    bool capture_matches;
+
+    if (!inp)
+        return;
+    wanted_changed = inp->_pointer_capture_wanted != on;
+    capture_matches = pointer_capture_matches_request(inp, on);
+    if (!wanted_changed && capture_matches)
+        return;
+
+    now_ns = monotonic_time_ns();
+    if (!wanted_changed &&
+        now_ns - inp->_last_pointer_capture_attempt_ns < POINTER_CAPTURE_RETRY_NS)
+        return;
+
+    inp->_pointer_capture_wanted = on;
+    inp->_last_pointer_capture_attempt_ns = now_ns;
+
+    for (int i = 0; i < inp->_pointer_count; i++)
+        set_pointer_grab_state(inp, &inp->_pointers[i], on);
+
+    if (wanted_changed || !capture_matches)
+        clear_pointer_motion_state(inp);
 }
 
 void input_set_text_mode(InputState *inp, bool on)

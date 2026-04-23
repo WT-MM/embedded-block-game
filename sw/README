@@ -113,6 +113,10 @@ Environment variables:
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
 same command stream to both backends.
 
+While capture is enabled, `Esc` opens the pause menu and releases the grabbed
+pointer devices so the VM/desktop cursor can come back. Resuming gameplay
+re-captures them.
+
 Sysfs / debug peeks
 -------------------
     cat /proc/iomem             # voxel_gpu region appears here

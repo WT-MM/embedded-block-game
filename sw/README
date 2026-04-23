@@ -108,6 +108,7 @@ Environment variables:
     VOXEL_STATUS_LOG=auto|0|1            # per-frame HUD; auto only on TTY
     VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
     VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 1, keep abs-tablet fallback active
+    VOXEL_WORLD_DIR=/path/to/world       # default: ../worlds/default
 
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
 same command stream to both backends.
@@ -143,8 +144,9 @@ a z-disabled overlap control, an equal-depth tie case, and a sloped-depth
 gradient case. This covers descriptor/FIFO behavior and the hardware z path.
 
 `world_chunk_test` verifies the reusable chunk window: same-center streams
-generate nothing, one-chunk movement reuses the overlap, and boundary block
-edits rebuild both affected chunk meshes.
+generate nothing, one-chunk movement reuses the overlap, boundary block edits
+rebuild both affected chunk meshes, and modified chunks survive eviction plus
+full world reload.
 
 `renderer_scene_test` uses the real software renderer against a tiny fixed
 scene of blocks. It now relies on the FPGA z-buffer path by emitting

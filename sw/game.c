@@ -30,6 +30,7 @@
 #define HOTBAR_SLOT_COUNT 5
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
+#define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
 
 typedef struct {
     bool hit;
@@ -114,6 +115,16 @@ static int read_render_distance_chunks(void)
         return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
 
     return (int)parsed;
+}
+
+static const char *read_world_save_dir(void)
+{
+    const char *value = getenv("VOXEL_WORLD_DIR");
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_WORLD_SAVE_DIR;
+
+    return value;
 }
 
 static Vec3 camera_forward(const Camera *cam)
@@ -332,6 +343,7 @@ int main(void)
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
     int render_distance_chunks = read_render_distance_chunks();
+    const char *world_save_dir = read_world_save_dir();
     int selected_hotbar_slot = 0;
 
     /* Initialize Player */
@@ -351,7 +363,8 @@ int main(void)
                                         STONE_TRIES_PER_CHUNK,
                                         render_distance_chunks,
                                         player.x,
-                                        player.z)) {
+                                        player.z,
+                                        world_save_dir)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
         renderer_shutdown(ctx);
@@ -363,6 +376,7 @@ int main(void)
            player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
            WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
+    printf("World save dir: %s\n", world_save_dir);
     printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
            world.chunks_x, world.chunks_z, world.render_distance_chunks,
            world_chunk_capacity(&world));
@@ -641,6 +655,8 @@ int main(void)
     if (status_log_enabled)
         printf("\n");
     input_shutdown(&inp);
+    if (!world_flush(&world))
+        fprintf(stderr, "world: failed to flush modified chunks on shutdown\n");
     world_free(&world);
     renderer_shutdown(ctx);
     return 0;

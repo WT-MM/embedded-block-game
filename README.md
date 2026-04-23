@@ -39,6 +39,8 @@ Notes
 - Use `VOXEL_MOUSE_INVERT_X=1` and/or `VOXEL_MOUSE_INVERT_Y=1` to flip axes.
 - Use `VOXEL_MOUSE_SENS=0.004` to override mouse sensitivity at launch.
 - Use `VOXEL_MOUSE_GRAB=0` to leave the guest cursor free, or `VOXEL_MOUSE_ALLOW_ABS=0` to disable absolute tablet fallback when a relative mouse is present.
+- World edits are saved under `../worlds/default` when the game is launched from `sw/`; set `VOXEL_WORLD_DIR=/path/to/world` to use a different save root.
+- The save format keeps a small `world.meta` file plus per-chunk snapshots in `chunks/<x>_<z>.chk`, layered on top of the procedural world seed.
 
 If input only works under `sudo`, add your user to the `input` group and start
 a new login session:

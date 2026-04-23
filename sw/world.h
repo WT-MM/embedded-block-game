@@ -8,6 +8,7 @@
 
 #define WORLD_CHUNK_SIZE 16
 #define WORLD_CHUNK_HEIGHT 16
+#define WORLD_SAVE_PATH_MAX 512
 
 typedef struct {
     uint8_t x;
@@ -59,6 +60,8 @@ typedef struct VoxelWorld {
     int chunks_generated_last_stream;
     int chunks_reused_last_stream;
     int meshes_rebuilt_last_stream;
+    bool persistence_enabled;
+    char save_root[WORLD_SAVE_PATH_MAX];
 } VoxelWorld;
 
 void world_init(VoxelWorld *world);
@@ -69,8 +72,10 @@ bool world_init_infinite_procedural(VoxelWorld *world,
                                     int stone_tries_per_chunk,
                                     int render_distance_chunks,
                                     float center_x,
-                                    float center_z);
+                                    float center_z,
+                                    const char *save_root);
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
+bool world_flush(VoxelWorld *world);
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);

@@ -67,5 +67,9 @@ virtual_hw/test_frames/
 virtual_hw/.venv/
 virtual_hw/*.egg-info/
 
+# --- Local world saves ---
+worlds/*
+!worlds/README.md
+
 # --- Filesystem mount stub from old workflow ---
 usr/

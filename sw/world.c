@@ -1,8 +1,12 @@
 #include "world.h"
 
+#include <errno.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define CHUNK_LOOKUP_EMPTY (-1)
 
@@ -12,6 +16,49 @@
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
 #define NEAR_CHUNK_RADIUS 3
+#define WORLD_META_VERSION 1u
+#define WORLD_CHUNK_VERSION 1u
+
+/*
+ * Save format v1:
+ *   world.meta
+ *     - fixed-size WorldSaveHeader
+ *   chunks/<chunk_x>_<chunk_z>.chk
+ *     - fixed-size ChunkSaveHeader
+ *     - WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * WORLD_CHUNK_HEIGHT bytes
+ *       of uint8_t block ids in y/z/x order
+ *
+ * The world remains procedural by default; on-disk data stores only modified
+ * chunk snapshots, which are overlaid after deterministic terrain generation.
+ */
+typedef struct __attribute__((packed)) {
+    char magic[4];
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t procedural_seed;
+    uint32_t stone_tries_per_chunk;
+    uint16_t chunk_size;
+    uint16_t chunk_height;
+    uint32_t reserved2;
+} WorldSaveHeader;
+
+typedef struct __attribute__((packed)) {
+    char magic[4];
+    uint16_t version;
+    uint16_t reserved;
+    int32_t chunk_x;
+    int32_t chunk_z;
+    uint16_t chunk_size;
+    uint16_t chunk_height;
+    uint32_t block_count;
+} ChunkSaveHeader;
+
+_Static_assert(sizeof(WorldSaveHeader) == 24, "WorldSaveHeader must be 24 bytes");
+_Static_assert(sizeof(ChunkSaveHeader) == 24, "ChunkSaveHeader must be 24 bytes");
+
+static bool chunk_in_window(int chunk_x, int chunk_z,
+                            int origin_chunk_x, int origin_chunk_z,
+                            int diameter);
 
 static bool chunk_is_near(const VoxelWorld *world, const Chunk *chunk)
 {
@@ -81,6 +128,306 @@ static int positive_mod(int value, int divisor)
 static int chunk_coord_from_world(float world_pos)
 {
     return (int)floorf(world_pos / (float)WORLD_CHUNK_SIZE);
+}
+
+static size_t chunk_block_count(void)
+{
+    return (size_t)WORLD_CHUNK_SIZE *
+           (size_t)WORLD_CHUNK_SIZE *
+           (size_t)WORLD_CHUNK_HEIGHT;
+}
+
+static bool build_world_meta_path(const VoxelWorld *world,
+                                  char *path, size_t path_size)
+{
+    if (!world || !world->persistence_enabled || !path || path_size == 0)
+        return false;
+
+    return snprintf(path, path_size, "%s/world.meta", world->save_root) <
+           (int)path_size;
+}
+
+static bool build_chunk_directory_path(const VoxelWorld *world,
+                                       char *path, size_t path_size)
+{
+    if (!world || !world->persistence_enabled || !path || path_size == 0)
+        return false;
+
+    return snprintf(path, path_size, "%s/chunks", world->save_root) <
+           (int)path_size;
+}
+
+static bool build_chunk_save_path(const VoxelWorld *world,
+                                  int chunk_x, int chunk_z,
+                                  char *path, size_t path_size)
+{
+    if (!world || !world->persistence_enabled || !path || path_size == 0)
+        return false;
+
+    return snprintf(path, path_size, "%s/chunks/%d_%d.chk",
+                    world->save_root, chunk_x, chunk_z) < (int)path_size;
+}
+
+static bool build_chunk_temp_path(const VoxelWorld *world,
+                                  int chunk_x, int chunk_z,
+                                  char *path, size_t path_size)
+{
+    if (!world || !world->persistence_enabled || !path || path_size == 0)
+        return false;
+
+    return snprintf(path, path_size, "%s/chunks/%d_%d.chk.tmp",
+                    world->save_root, chunk_x, chunk_z) < (int)path_size;
+}
+
+static bool ensure_directory_recursive(const char *path)
+{
+    char partial[WORLD_SAVE_PATH_MAX];
+    size_t len;
+
+    if (!path || path[0] == '\0')
+        return false;
+
+    len = strlen(path);
+    if (len >= sizeof(partial))
+        return false;
+
+    memcpy(partial, path, len + 1);
+    for (size_t i = 1; i < len; i++) {
+        if (partial[i] != '/')
+            continue;
+
+        partial[i] = '\0';
+        if (partial[0] != '\0' &&
+            mkdir(partial, 0755) < 0 &&
+            errno != EEXIST)
+            return false;
+        partial[i] = '/';
+    }
+
+    if (mkdir(partial, 0755) < 0 && errno != EEXIST)
+        return false;
+
+    return true;
+}
+
+static bool ensure_world_save_layout(const VoxelWorld *world)
+{
+    char chunks_path[WORLD_SAVE_PATH_MAX];
+
+    if (!world || !world->persistence_enabled)
+        return true;
+    if (!ensure_directory_recursive(world->save_root))
+        return false;
+    if (!build_chunk_directory_path(world, chunks_path, sizeof(chunks_path)))
+        return false;
+    return ensure_directory_recursive(chunks_path);
+}
+
+static bool load_or_create_world_meta(VoxelWorld *world)
+{
+    char meta_path[WORLD_SAVE_PATH_MAX];
+    WorldSaveHeader header = {0};
+    FILE *file;
+
+    if (!world || !world->persistence_enabled)
+        return true;
+    if (!build_world_meta_path(world, meta_path, sizeof(meta_path)))
+        return false;
+
+    file = fopen(meta_path, "rb");
+    if (!file) {
+        if (errno != ENOENT)
+            return false;
+
+        memcpy(header.magic, "VWLD", 4);
+        header.version = WORLD_META_VERSION;
+        header.procedural_seed = world->procedural_seed;
+        header.stone_tries_per_chunk = (uint32_t)world->stone_tries_per_chunk;
+        header.chunk_size = WORLD_CHUNK_SIZE;
+        header.chunk_height = WORLD_CHUNK_HEIGHT;
+
+        file = fopen(meta_path, "wb");
+        if (!file)
+            return false;
+        if (fwrite(&header, sizeof(header), 1, file) != 1) {
+            fclose(file);
+            return false;
+        }
+        return fclose(file) == 0;
+    }
+
+    if (fread(&header, sizeof(header), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+
+    if (memcmp(header.magic, "VWLD", 4) != 0 ||
+        header.version != WORLD_META_VERSION ||
+        header.chunk_size != WORLD_CHUNK_SIZE ||
+        header.chunk_height != WORLD_CHUNK_HEIGHT ||
+        header.procedural_seed != world->procedural_seed ||
+        header.stone_tries_per_chunk != (uint32_t)world->stone_tries_per_chunk)
+        return false;
+
+    return true;
+}
+
+static bool initialize_world_persistence(VoxelWorld *world,
+                                         const char *save_root)
+{
+    if (!world)
+        return false;
+
+    world->persistence_enabled = false;
+    world->save_root[0] = '\0';
+
+    if (!save_root || save_root[0] == '\0')
+        return true;
+
+    if (strlen(save_root) >= sizeof(world->save_root))
+        return false;
+
+    memcpy(world->save_root, save_root, strlen(save_root) + 1);
+    world->persistence_enabled = true;
+
+    if (!ensure_world_save_layout(world) ||
+        !load_or_create_world_meta(world)) {
+        world->persistence_enabled = false;
+        world->save_root[0] = '\0';
+        return false;
+    }
+
+    return true;
+}
+
+static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
+{
+    char path[WORLD_SAVE_PATH_MAX];
+    char temp_path[WORLD_SAVE_PATH_MAX];
+    ChunkSaveHeader header = {0};
+    uint8_t blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    FILE *file;
+
+    if (!world || !chunk || !world->persistence_enabled)
+        return true;
+    if (!(chunk->flags & CHUNK_FLAG_MODIFIED))
+        return true;
+    if (!build_chunk_save_path(world, chunk->chunk_x, chunk->chunk_z,
+                               path, sizeof(path)) ||
+        !build_chunk_temp_path(world, chunk->chunk_x, chunk->chunk_z,
+                               temp_path, sizeof(temp_path)))
+        return false;
+
+    memcpy(header.magic, "VCHK", 4);
+    header.version = WORLD_CHUNK_VERSION;
+    header.chunk_x = chunk->chunk_x;
+    header.chunk_z = chunk->chunk_z;
+    header.chunk_size = WORLD_CHUNK_SIZE;
+    header.chunk_height = WORLD_CHUNK_HEIGHT;
+    header.block_count = (uint32_t)chunk_block_count();
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++)
+                blocks[y][z][x] = (uint8_t)chunk->blocks[y][z][x];
+        }
+    }
+
+    file = fopen(temp_path, "wb");
+    if (!file)
+        return false;
+    if (fwrite(&header, sizeof(header), 1, file) != 1 ||
+        fwrite(blocks, sizeof(blocks), 1, file) != 1) {
+        fclose(file);
+        unlink(temp_path);
+        return false;
+    }
+    if (fclose(file) != 0) {
+        unlink(temp_path);
+        return false;
+    }
+    if (rename(temp_path, path) < 0) {
+        unlink(temp_path);
+        return false;
+    }
+
+    chunk->flags &= ~CHUNK_FLAG_MODIFIED;
+    return true;
+}
+
+static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
+{
+    char path[WORLD_SAVE_PATH_MAX];
+    ChunkSaveHeader header = {0};
+    uint8_t blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    FILE *file;
+
+    if (!world || !chunk || !world->persistence_enabled)
+        return true;
+    if (!build_chunk_save_path(world, chunk->chunk_x, chunk->chunk_z,
+                               path, sizeof(path)))
+        return false;
+
+    file = fopen(path, "rb");
+    if (!file) {
+        if (errno == ENOENT)
+            return true;
+        return false;
+    }
+
+    if (fread(&header, sizeof(header), 1, file) != 1 ||
+        fread(blocks, sizeof(blocks), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+
+    if (memcmp(header.magic, "VCHK", 4) != 0 ||
+        header.version != WORLD_CHUNK_VERSION ||
+        header.chunk_x != chunk->chunk_x ||
+        header.chunk_z != chunk->chunk_z ||
+        header.chunk_size != WORLD_CHUNK_SIZE ||
+        header.chunk_height != WORLD_CHUNK_HEIGHT ||
+        header.block_count != chunk_block_count())
+        return false;
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                uint8_t id = blocks[y][z][x];
+
+                if (id >= NUM_BLOCK_TYPES)
+                    return false;
+                chunk->blocks[y][z][x] = (BlockID)id;
+            }
+        }
+    }
+
+    chunk->flags &= ~CHUNK_FLAG_MODIFIED;
+    return true;
+}
+
+static bool persist_chunks_outside_window(VoxelWorld *world,
+                                          int origin_chunk_x,
+                                          int origin_chunk_z,
+                                          int diameter)
+{
+    if (!world || !world->persistence_enabled)
+        return true;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+        bool keep = (chunk->flags & CHUNK_FLAG_LOADED) &&
+                    chunk_in_window(chunk->chunk_x, chunk->chunk_z,
+                                    origin_chunk_x, origin_chunk_z,
+                                    diameter);
+
+        if (!keep && !save_chunk_snapshot(world, chunk))
+            return false;
+    }
+
+    return true;
 }
 
 static void clear_chunk_lookup(VoxelWorld *world)
@@ -209,6 +556,9 @@ static void free_chunk_storage(VoxelWorld *world)
 {
     if (!world)
         return;
+
+    if (world->persistence_enabled && !world_flush(world))
+        fprintf(stderr, "world: failed to flush modified chunks before free\n");
 
     if (world->chunks) {
         for (int i = 0; i < world->chunk_capacity; i++)
@@ -827,6 +1177,10 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     int old_origin_x = world->origin_chunk_x;
     int old_origin_z = world->origin_chunk_z;
 
+    if (!persist_chunks_outside_window(world,
+                                       origin_chunk_x, origin_chunk_z,
+                                       diameter))
+        return false;
     retain_chunks_in_window(world, origin_chunk_x, origin_chunk_z, diameter);
     if (!rebuild_chunk_lookup(world))
         return false;
@@ -848,6 +1202,8 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
             generate_chunk_terrain(chunk,
                                    world->procedural_seed,
                                    world->stone_tries_per_chunk);
+            if (!load_chunk_snapshot(world, chunk))
+                return false;
 
             world->chunk_count++;
             if (!chunk_lookup_insert(world, world->chunk_count - 1))
@@ -871,7 +1227,8 @@ bool world_init_infinite_procedural(VoxelWorld *world,
                                     int stone_tries_per_chunk,
                                     int render_distance_chunks,
                                     float center_x,
-                                    float center_z)
+                                    float center_z,
+                                    const char *save_root)
 {
     if (!world || render_distance_chunks < 0)
         return false;
@@ -884,6 +1241,8 @@ bool world_init_infinite_procedural(VoxelWorld *world,
     /* Keep a one-chunk procedural border around the visible radius so
      * exposed-face caches stay correct at the render edge. */
     world->load_radius_chunks = render_distance_chunks + 1;
+    if (!initialize_world_persistence(world, save_root))
+        return false;
 
     return stream_world_to_chunk_center(world,
                                         chunk_coord_from_world(center_x),
@@ -898,6 +1257,22 @@ bool world_stream_around(VoxelWorld *world, float world_x, float world_z)
     return stream_world_to_chunk_center(world,
                                         chunk_coord_from_world(world_x),
                                         chunk_coord_from_world(world_z));
+}
+
+bool world_flush(VoxelWorld *world)
+{
+    if (!world || !world->persistence_enabled)
+        return true;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+
+        if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            !save_chunk_snapshot(world, chunk))
+            return false;
+    }
+
+    return true;
 }
 
 bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)

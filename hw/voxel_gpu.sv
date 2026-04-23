@@ -74,12 +74,15 @@ module voxel_gpu (
     localparam int FB_WORDS        = FB_PIXELS;
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
+    localparam int READ_BURST_WORDS = 64;
     localparam int SDRAM_ADDR_W    = 25;
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd12;
     localparam logic [24:0] FB_WORDS_25 = 25'd76800;
     localparam logic [24:0] LINE_WORDS_25 = 25'd320;
+    localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
     localparam logic [8:0]  LINE_WORDS_9 = 9'd320;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
+    localparam logic [8:0]  READ_BURST_WORDS_9 = 9'd64;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
     localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd153600;
@@ -420,9 +423,16 @@ module voxel_gpu (
                                           (scan_active_bank_row == scan_current_row);
     wire [8:0]  scan_fill_words_complete =
         scan_fill_store_idx + (scan_fill_pop_d ? 9'd1 : 9'd0);
+    wire        scan_fill_line_done =
+        scan_fill_pop_d && (scan_fill_words_complete == LINE_WORDS_9);
+    wire        scan_fill_chunk_done =
+        scan_fill_pop_d && (scan_fill_words_complete[5:0] == 6'd0);
+    wire [24:0] scan_fill_next_chunk_base_words =
+        scan_fill_base_words + {16'd0, scan_fill_words_complete};
     wire        sdram_wr_push = (state == ST_COPY) && copy_word_pending_valid && !sdram_wr_full;
     wire        sdram_rd_pop = scan_fill_active && !sdram_rd_empty &&
-                               (scan_fill_words_complete < LINE_WORDS_9);
+                               (scan_fill_words_complete < LINE_WORDS_9) &&
+                               !scan_fill_chunk_done;
     wire        copy_can_issue_read =
         (state == ST_COPY) &&
         (copy_pixels_issued < FB_PIXELS) &&
@@ -430,7 +440,12 @@ module voxel_gpu (
         !copy_palette_inflight &&
         (!copy_word_pending_valid || sdram_wr_push);
     wire [8:0]  sdram_wr_length_cfg = (state == ST_COPY) ? COPY_BURST_WORDS_9 : 9'd0;
-    wire [8:0]  sdram_rd_length_cfg = scan_fill_armed ? LINE_WORDS_9 : 9'd0;
+    /*
+     * Keep SDRAM reads in 64-word chunks. A 320-word line burst can cross the
+     * SDRAM row/column boundary; 64-word chunks stay aligned because both the
+     * frame line width and SDRAM column size are multiples of 64.
+     */
+    wire [8:0]  sdram_rd_length_cfg = scan_fill_armed ? READ_BURST_WORDS_9 : 9'd0;
 
     wire signed [15:0] desc_x_min_raw = $signed(desc_words[0][15:0]);
     wire signed [15:0] desc_y_min_raw = $signed(desc_words[0][31:16]);
@@ -1485,7 +1500,7 @@ module voxel_gpu (
                         scan_fill_base_words <= copy_target_base_words;
                         scan_fill_store_idx <= 9'd0;
                         sdram_rd_addr_cfg <= copy_target_base_words;
-                        sdram_rd_max_addr_cfg <= copy_target_base_words + LINE_WORDS_25;
+                        sdram_rd_max_addr_cfg <= copy_target_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end else begin
@@ -1498,7 +1513,7 @@ module voxel_gpu (
                         scan_fill_base_words <= display_base_words;
                         scan_fill_store_idx <= 9'd0;
                         sdram_rd_addr_cfg <= display_base_words;
-                        sdram_rd_max_addr_cfg <= display_base_words + LINE_WORDS_25;
+                        sdram_rd_max_addr_cfg <= display_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end
@@ -1562,7 +1577,7 @@ module voxel_gpu (
             endcase
 
             if (!vsync_pulse) begin
-                if (scan_fill_armed && !sdram_rd_empty)
+                if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty)
                     scan_fill_armed <= 1'b0;
 
                 if (scan_fill_pop_d) begin
@@ -1571,7 +1586,7 @@ module voxel_gpu (
                     else
                         scan_linebuf0[scan_fill_store_idx] <= sdram_rd_data;
 
-                    if (scan_fill_words_complete == LINE_WORDS_9) begin
+                    if (scan_fill_line_done) begin
                         scan_fill_active <= 1'b0;
                         scan_fill_armed <= 1'b0;
                         if (scan_fill_bank) begin
@@ -1592,6 +1607,13 @@ module voxel_gpu (
                         end
                     end else begin
                         scan_fill_store_idx <= scan_fill_store_idx + 9'd1;
+                        if (scan_fill_chunk_done) begin
+                            scan_fill_armed <= 1'b1;
+                            sdram_rd_addr_cfg <= scan_fill_next_chunk_base_words;
+                            sdram_rd_max_addr_cfg <= scan_fill_next_chunk_base_words +
+                                                     READ_BURST_WORDS_25;
+                            sdram_rd_load_pulse <= 1'b1;
+                        end
                     end
                 end
 
@@ -1622,7 +1644,7 @@ module voxel_gpu (
                         scan_line1_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
                         sdram_rd_max_addr_cfg <= scan_active_base_words +
-                                                 (LINE_WORDS_25 + LINE_WORDS_25);
+                                                 (LINE_WORDS_25 + READ_BURST_WORDS_25);
                         sdram_rd_load_pulse <= 1'b1;
                     end else if (scan_active_bank && !scan_bank0_next_ready) begin
                         scan_fill_active <= 1'b1;
@@ -1634,7 +1656,7 @@ module voxel_gpu (
                         scan_line0_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
                         sdram_rd_max_addr_cfg <= scan_active_base_words +
-                                                 (LINE_WORDS_25 + LINE_WORDS_25);
+                                                 (LINE_WORDS_25 + READ_BURST_WORDS_25);
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end

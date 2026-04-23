@@ -268,14 +268,26 @@ module soc_system_top(
      .hps_hps_io_gpio_inst_GPIO54  ( HPS_KEY ),
      .hps_hps_io_gpio_inst_GPIO61  ( HPS_GSENSOR_INT ),
 
-     .vga_r (VGA_R),
-     .vga_g (VGA_G),
-     .vga_b (VGA_B), 
-     .vga_clk (VGA_CLK), 
-     .vga_hs (VGA_HS), 
-     .vga_vs (VGA_VS), 
-     .vga_blank_n (VGA_BLANK_N), 
-     .vga_sync_n (VGA_SYNC_N)
+     .vga_b                        ( VGA_B ),
+     .vga_blank_n                  ( VGA_BLANK_N ),
+     .vga_clk                      ( VGA_CLK ),
+     .vga_g                        ( VGA_G ),
+     .vga_hs                       ( VGA_HS ),
+     .vga_r                        ( VGA_R ),
+     .vga_sync_n                   ( VGA_SYNC_N ),
+     .vga_vs                       ( VGA_VS ),
+
+     .voxel_sdram_addr             ( DRAM_ADDR ),
+     .voxel_sdram_ba               ( DRAM_BA ),
+     .voxel_sdram_cas_n            ( DRAM_CAS_N ),
+     .voxel_sdram_cke              ( DRAM_CKE ),
+     .voxel_sdram_dram_clk         ( DRAM_CLK ),
+     .voxel_sdram_cs_n             ( DRAM_CS_N ),
+     .voxel_sdram_dq               ( DRAM_DQ ),
+     .voxel_sdram_ldqm             ( DRAM_LDQM ),
+     .voxel_sdram_ras_n            ( DRAM_RAS_N ),
+     .voxel_sdram_udqm             ( DRAM_UDQM ),
+     .voxel_sdram_we_n             ( DRAM_WE_N )
 
 
   );
@@ -292,12 +304,6 @@ module soc_system_top(
    assign AUD_DACDAT = SW[0];
    assign AUD_DACLRCK = SW[1] ? SW[0] : 1'bZ;
    assign AUD_XCK = SW[0];      
-
-   assign DRAM_ADDR = { 13{ SW[0] } };
-   assign DRAM_BA = { 2{ SW[0] } };
-   assign DRAM_DQ = SW[1] ? { 16{ SW[0] } } : { 16{ 1'bZ } };
-   assign {DRAM_CAS_N, DRAM_CKE, DRAM_CLK, DRAM_CS_N,
-           DRAM_LDQM, DRAM_RAS_N, DRAM_UDQM, DRAM_WE_N} = { 8{SW[0]} };
 
    assign FAN_CTRL = SW[0];
 
@@ -316,7 +322,7 @@ module soc_system_top(
 
    assign IRDA_TXD = SW[0];
 
-   assign LEDR = { 10{SW[7]} };
+   assign LEDR = 10'b0;
 
    assign PS2_CLK = SW[1] ? SW[0] : 1'bZ;
    assign PS2_CLK2 = SW[1] ? SW[0] : 1'bZ;

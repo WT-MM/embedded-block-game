@@ -48,4 +48,6 @@ More Detail
 -----------
 
 - `sw/README` covers the kernel module, renderer tests, and transport modes.
+- `hw/README.md` covers Quartus / Platform Designer notes, including the
+  Quartus 19.1 HDL-regeneration workaround for the SDRAM controller IP.
 - `virtual_hw/README.md` covers the Python virtual GPU package and options.

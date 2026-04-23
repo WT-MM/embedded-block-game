@@ -26,7 +26,7 @@ from .protocol import (
     recv_request,
     send_reply,
 )
-from .raster import VirtualGPU, load_texture_hex
+from .raster import VirtualGPU, load_texture_hex, rgb565_to_rgb888
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
@@ -103,11 +103,12 @@ class Monitor:
     def _frame_to_rgb(self, frame) -> bytearray:
         out = self._rgb_buffer
 
-        for i, rgb444 in enumerate(frame):
+        for i, rgb565 in enumerate(frame):
+            r, g, b = rgb565_to_rgb888(rgb565)
             base = i * 3
-            out[base] = ((rgb444 >> 8) & 0xF) * 17
-            out[base + 1] = ((rgb444 >> 4) & 0xF) * 17
-            out[base + 2] = (rgb444 & 0xF) * 17
+            out[base] = r
+            out[base + 1] = g
+            out[base + 2] = b
 
         return self._rgb_buffer
 

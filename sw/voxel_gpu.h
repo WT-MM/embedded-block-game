@@ -13,6 +13,12 @@
  *   0x0010  PALETTE_DATA  [23:16]=R [15:8]=G [7:0]=B             (W)
  *   0x0014  FOG_RANGE   [15:0]=start_dist [31:16]=end_dist       (W)
  *   0x0018  FOG_CTRL    [31:16]=inv_proj_sq [8]=EN [7:0]=pal idx (W)
+ *   0x001C  EXTMEM_CTRL  SDRAM display-path control               (R/W)
+ *   0x0020  EXTMEM_FRONT_BASE front color buffer byte address     (R/W)
+ *   0x0024  EXTMEM_BACK_BASE  second color buffer byte address    (R/W)
+ *   0x0028  EXTMEM_STRIDE bytes per scanline in SDRAM             (R/W)
+ *   0x002C  EXTMEM_TILE  [15:0]=tile_w [31:16]=tile_h            (R/W)
+ *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -44,6 +50,12 @@ typedef int32_t  __s32;
 #define VOXEL_REG_PALETTE_DATA  0x0010
 #define VOXEL_REG_FOG_RANGE     0x0014
 #define VOXEL_REG_FOG_CTRL      0x0018
+#define VOXEL_REG_EXTMEM_CTRL   0x001C
+#define VOXEL_REG_EXTMEM_FRONT  0x0020
+#define VOXEL_REG_EXTMEM_BACK   0x0024
+#define VOXEL_REG_EXTMEM_STRIDE 0x0028
+#define VOXEL_REG_EXTMEM_TILE   0x002C
+#define VOXEL_REG_EXTMEM_STAT   0x0030
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x3000          /* exclusive */
@@ -91,6 +103,15 @@ struct voxel_fog_state {
 	__u16 inv_proj_sq;      /* Q0.16 approximation of 1 / projection_depth^2 */
 };
 
+struct voxel_extmem_state {
+	__u32 ctrl;             /* VOXEL_EXTMEM_CTRL_* */
+	__u32 front_base;       /* byte address of SDRAM frame 0 */
+	__u32 back_base;        /* byte address of SDRAM frame 1 */
+	__u32 stride_bytes;     /* bytes per scanline */
+	__u32 tile_cfg;         /* reserved for later tile-cache work */
+	__u32 dma_status;       /* read-only SDRAM copy/scanout status */
+};
+
 /* ----- ioctl numbers ----- */
 #define VOXEL_IOC_MAGIC 'v'
 
@@ -100,8 +121,16 @@ struct voxel_fog_state {
 #define VOXEL_IOC_GET_STATUS       _IOR(VOXEL_IOC_MAGIC, 4, struct voxel_status)
 #define VOXEL_IOC_GET_FRAME_COUNT  _IOR(VOXEL_IOC_MAGIC, 5, __u32)
 #define VOXEL_IOC_SET_FOG          _IOW(VOXEL_IOC_MAGIC, 6, struct voxel_fog_state)
+#define VOXEL_IOC_SET_EXTMEM       _IOW(VOXEL_IOC_MAGIC, 7, struct voxel_extmem_state)
+#define VOXEL_IOC_GET_EXTMEM       _IOR(VOXEL_IOC_MAGIC, 8, struct voxel_extmem_state)
 
-#define VOXEL_IOC_MAXNR            6
+#define VOXEL_IOC_MAXNR            8
+
+#define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
+#define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)
+#define VOXEL_EXTMEM_CTRL_BACKBUF_EN    (1u << 2)
+#define VOXEL_EXTMEM_CTRL_RGB565        (1u << 3)
+#define VOXEL_EXTMEM_CTRL_TILE_CACHE_EN (1u << 4)
 
 /* ----- quad descriptor layout (§5.2) ----- */
 
@@ -159,5 +188,6 @@ _Static_assert(sizeof(struct edge_coef) == 12, "edge_coef must be 12 bytes");
 _Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 bytes");
 _Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 bytes");
 _Static_assert(sizeof(struct voxel_fog_state) == 8, "voxel_fog_state must be 8 bytes");
+_Static_assert(sizeof(struct voxel_extmem_state) == 24, "voxel_extmem_state must be 24 bytes");
 
 #endif /* _VOXEL_GPU_H */

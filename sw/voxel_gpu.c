@@ -6,7 +6,7 @@
  *   (B) Expose /dev/voxel_gpu via the misc subsystem.
  *   (C) Stream user-space command bytes into the on-chip FIFO via write().
  *   (D) Provide the control ioctls: CLEAR_FRAME, FLIP, SET_PALETTE,
- *       GET_STATUS, GET_FRAME_COUNT, SET_FOG.
+ *       GET_STATUS, GET_FRAME_COUNT, SET_FOG, SET_EXTMEM, GET_EXTMEM.
  *   (E) Use polling on STATUS for synchronization (no interrupts).
  *
  * The driver is intentionally thin: it does not parse, validate, or
@@ -306,6 +306,42 @@ static long voxel_ioc_set_fog(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_set_extmem(void __user *uarg)
+{
+	struct voxel_extmem_state ext;
+
+	if (copy_from_user(&ext, uarg, sizeof(ext)))
+		return -EFAULT;
+
+	mutex_lock(&voxdev.lock);
+	voxel_wr(VOXEL_REG_EXTMEM_CTRL, ext.ctrl);
+	voxel_wr(VOXEL_REG_EXTMEM_FRONT, ext.front_base);
+	voxel_wr(VOXEL_REG_EXTMEM_BACK, ext.back_base);
+	voxel_wr(VOXEL_REG_EXTMEM_STRIDE, ext.stride_bytes);
+	voxel_wr(VOXEL_REG_EXTMEM_TILE, ext.tile_cfg);
+	mutex_unlock(&voxdev.lock);
+
+	return 0;
+}
+
+static long voxel_ioc_get_extmem(void __user *uarg)
+{
+	struct voxel_extmem_state ext;
+
+	mutex_lock(&voxdev.lock);
+	ext.ctrl = voxel_rd(VOXEL_REG_EXTMEM_CTRL);
+	ext.front_base = voxel_rd(VOXEL_REG_EXTMEM_FRONT);
+	ext.back_base = voxel_rd(VOXEL_REG_EXTMEM_BACK);
+	ext.stride_bytes = voxel_rd(VOXEL_REG_EXTMEM_STRIDE);
+	ext.tile_cfg = voxel_rd(VOXEL_REG_EXTMEM_TILE);
+	ext.dma_status = voxel_rd(VOXEL_REG_EXTMEM_STAT);
+	mutex_unlock(&voxdev.lock);
+
+	if (copy_to_user(uarg, &ext, sizeof(ext)))
+		return -EFAULT;
+	return 0;
+}
+
 static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (_IOC_TYPE(cmd) != VOXEL_IOC_MAGIC)
@@ -326,6 +362,10 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_get_frame_count((void __user *)arg);
 	case VOXEL_IOC_SET_FOG:
 		return voxel_ioc_set_fog((void __user *)arg);
+	case VOXEL_IOC_SET_EXTMEM:
+		return voxel_ioc_set_extmem((void __user *)arg);
+	case VOXEL_IOC_GET_EXTMEM:
+		return voxel_ioc_get_extmem((void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

@@ -36,6 +36,10 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_GRASS], TEX_TILE_GRASS_SIDE);
     BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_TOP] = TEX_TILE_GRASS_TOP;
     BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_BOTTOM] = TEX_TILE_DIRT;
+
+    BlockRegistry[BLOCK_GLASS].id = BLOCK_GLASS;
+    BlockRegistry[BLOCK_GLASS].name = "Glass";
+    set_all_faces(&BlockRegistry[BLOCK_GLASS], TEX_TILE_GLASS);
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -66,7 +70,19 @@ uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
         return lod >= 2 ? TEX_TILE_WOOD_SIDE_MIP2 : TEX_TILE_WOOD_SIDE_MIP1;
     case TEX_TILE_WOOD_TOP:
         return lod >= 2 ? TEX_TILE_WOOD_TOP_MIP2 : TEX_TILE_WOOD_TOP_MIP1;
+    case TEX_TILE_GLASS:
+        return lod >= 2 ? TEX_TILE_GLASS_MIP2 : TEX_TILE_GLASS_MIP1;
     default:
         return tile_id;
     }
+}
+
+bool block_is_transparent(BlockID id)
+{
+    return id == BLOCK_AIR || id == BLOCK_GLASS;
+}
+
+bool block_is_translucent(BlockID id)
+{
+    return id == BLOCK_GLASS;
 }

@@ -5,12 +5,12 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .protocol import (
-    QUAD_ALPHA_MASK,
-    QUAD_ALPHA_SHIFT,
     QUAD_FLAG_ALPHA_KEY,
     QUAD_FLAG_FOG,
     QUAD_FLAG_TEX,
     QUAD_FLAG_ZTEST,
+    QUAD_ALPHA_MASK,
+    QUAD_ALPHA_SHIFT,
     QUAD_LIGHT_MASK,
     QUAD_LIGHT_SHIFT,
     QuadDesc,
@@ -20,6 +20,16 @@ CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 64
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
+
+# Standard 4x4 ordered-dither Bayer matrix, values 0..15. Matches the
+# bayer4() function in hw/voxel_gpu.sv exactly so the virtual output is
+# visually interchangeable with the real GPU.
+BAYER4 = (
+    ( 0,  8,  2, 10),
+    (12,  4, 14,  6),
+    ( 3, 11,  1,  9),
+    (15,  7, 13,  5),
+)
 
 
 def apply_light_bank(color: int, flags: int) -> int:
@@ -33,37 +43,45 @@ def apply_light_bank(color: int, flags: int) -> int:
     return (bank << 6) | color
 
 
-def alpha_nibble(flags: int) -> int:
-    level = (flags & QUAD_ALPHA_MASK) >> QUAD_ALPHA_SHIFT
-    return (16, 12, 8, 4)[level]
+def rgb888_to_rgb565(rgb: tuple[int, int, int]) -> int:
+    r, g, b = rgb
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
-def rgb24_to_rgb444(color: tuple[int, int, int]) -> int:
-    r, g, b = color
-    return ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+def rgb565_to_rgb888(value: int) -> tuple[int, int, int]:
+    r5 = (value >> 11) & 0x1F
+    g6 = (value >> 5) & 0x3F
+    b5 = value & 0x1F
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
 
 
-def blend_rgb444(src: int, dst: int, alpha: int) -> int:
-    if alpha <= 0:
-        return dst
-    if alpha >= 16:
-        return src
+def blend_rgb565(src: int, dst: int, alpha: int) -> int:
+    src_r = (src >> 11) & 0x1F
+    src_g = (src >> 5) & 0x3F
+    src_b = src & 0x1F
+    dst_r = (dst >> 11) & 0x1F
+    dst_g = (dst >> 5) & 0x3F
+    dst_b = dst & 0x1F
 
-    inv_alpha = 16 - alpha
-    src_r = (src >> 8) & 0xF
-    src_g = (src >> 4) & 0xF
-    src_b = src & 0xF
-    dst_r = (dst >> 8) & 0xF
-    dst_g = (dst >> 4) & 0xF
-    dst_b = dst & 0xF
+    if alpha == 1:
+        out_r = ((src_r * 3) + dst_r + 2) >> 2
+        out_g = ((src_g * 3) + dst_g + 2) >> 2
+        out_b = ((src_b * 3) + dst_b + 2) >> 2
+    elif alpha == 2:
+        out_r = (src_r + dst_r + 1) >> 1
+        out_g = (src_g + dst_g + 1) >> 1
+        out_b = (src_b + dst_b + 1) >> 1
+    elif alpha == 3:
+        out_r = (src_r + (dst_r * 3) + 2) >> 2
+        out_g = (src_g + (dst_g * 3) + 2) >> 2
+        out_b = (src_b + (dst_b * 3) + 2) >> 2
+    else:
+        return src & 0xFFFF
 
-    out_r = (src_r * alpha + dst_r * inv_alpha + 8) >> 4
-    out_g = (src_g * alpha + dst_g * inv_alpha + 8) >> 4
-    out_b = (src_b * alpha + dst_b * inv_alpha + 8) >> 4
-    return (out_r << 8) | (out_g << 4) | out_b
+    return ((out_r & 0x1F) << 11) | ((out_g & 0x3F) << 5) | (out_b & 0x1F)
 
 
-def fog_alpha_nibble(
+def _fog_replace(
     flags: int,
     fog_enabled: bool,
     fog_start: int,
@@ -74,31 +92,52 @@ def fog_alpha_nibble(
     y: int,
     width: int,
     height: int,
-) -> int:
+) -> bool:
+    """Return True if the pixel should be replaced by the fog color.
+
+    Mirrors the hardware path in hw/voxel_gpu.sv: we estimate radial
+    distance from per-pixel w by scaling with sqrt(1 + r^2/f^2) (linearly
+    approximated as 1 + 3/8 * r^2/f^2), bucket it against the quartile
+    thresholds derived from fog_start/fog_end, then gate that threshold
+    with an ordered 4x4 Bayer dither.
+    """
+
     if (
         not fog_enabled
         or not (flags & QUAD_FLAG_FOG)
         or fog_end <= fog_start
         or forward_z_q16_16 <= 0
     ):
-        return 0
+        return False
 
     dx = x - (width // 2)
     dy = (height // 2) - y
     radial_sq = dx * dx + dy * dy
     radial_sq_q16 = radial_sq * fog_inv_proj_sq
     ray_scale_q16 = 65536 + ((radial_sq_q16 * 3) >> 3)
-    radial_dist_q8_8 = ((forward_z_q16_16 * ray_scale_q16) >> 16) >> 8
+    radial_q8_8 = ((forward_z_q16_16 * ray_scale_q16) >> 16) >> 8
+    radial_q8_8 &= 0xFFFF
 
-    if radial_dist_q8_8 <= fog_start:
-        return 0
-    if radial_dist_q8_8 >= fog_end:
-        return 16
+    if radial_q8_8 <= fog_start:
+        return False
+    if radial_q8_8 >= fog_end:
+        return True
 
-    fog_delta = radial_dist_q8_8 - fog_start
-    if fog_delta >= (16 << 8):
-        return 16
-    return fog_delta >> 8
+    span = fog_end - fog_start
+    q1 = fog_start + (span >> 2)
+    q2 = fog_start + (span >> 1)
+    q3 = fog_end - (span >> 2)
+
+    if radial_q8_8 < q1:
+        threshold = 4
+    elif radial_q8_8 < q2:
+        threshold = 8
+    elif radial_q8_8 < q3:
+        threshold = 12
+    else:
+        threshold = 15
+
+    return BAYER4[y & 3][x & 3] < threshold
 
 
 def load_texture_hex(path: str | Path) -> bytes:
@@ -132,6 +171,8 @@ class VirtualGPU:
         self.width = width
         self.height = height
         self.pixel_count = width * height
+        # Framebuffers hold resolved RGB565 pixels to match the real HW's
+        # translucent draw path.
         self.front_buffer = array("H", [0]) * self.pixel_count
         self.back_buffer = array("H", [0]) * self.pixel_count
         self._cleared_depth = array("H", [CLEAR_DEPTH]) * self.pixel_count
@@ -153,7 +194,9 @@ class VirtualGPU:
         self.textures = textures
 
     def clear(self) -> None:
-        clear_rgb = rgb24_to_rgb444(self.palette[0])
+        # The real HW's ST_CLEAR sweep resolves palette index 0 into the
+        # RGB565 framebuffer.
+        clear_rgb = rgb888_to_rgb565(self.palette[0])
         self.back_buffer[:] = array("H", [clear_rgb]) * self.pixel_count
         self.z_buffer[:] = self._cleared_depth
         self.vsync_latch = 0
@@ -210,7 +253,7 @@ class VirtualGPU:
         textured = (quad.flags & QUAD_FLAG_TEX) != 0
         ztest = (quad.flags & QUAD_FLAG_ZTEST) != 0
         alpha_key = (quad.flags & QUAD_FLAG_ALPHA_KEY) != 0
-        src_alpha = alpha_nibble(quad.flags)
+        alpha = (quad.flags & QUAD_ALPHA_MASK) >> QUAD_ALPHA_SHIFT
 
         if textured:
             if quad.uv is None:
@@ -229,8 +272,6 @@ class VirtualGPU:
             tile_offset = (quad.tex_or_color & 0x3F) << 8
         else:
             color_index = apply_light_bank(quad.tex_or_color, quad.flags)
-
-        fog_rgb = rgb24_to_rgb444(self.palette[self.fog_color])
 
         for y in range(y_min, y_max + 1):
             row_base = y * width
@@ -273,11 +314,9 @@ class VirtualGPU:
                 if ztest:
                     if z_value >= self.z_buffer[pixel_index]:
                         continue
-                    if src_alpha >= 16:
-                        self.z_buffer[pixel_index] = z_value
+                    self.z_buffer[pixel_index] = z_value
 
-                src_rgb = rgb24_to_rgb444(self.palette[color_index])
-                fog_alpha = fog_alpha_nibble(
+                if _fog_replace(
                     quad.flags,
                     self.fog_enabled,
                     self.fog_start,
@@ -288,12 +327,12 @@ class VirtualGPU:
                     y,
                     self.width,
                     self.height,
+                ):
+                    src_rgb565 = rgb888_to_rgb565(self.palette[self.fog_color])
+                else:
+                    src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
+
+                dst_rgb565 = self.back_buffer[pixel_index]
+                self.back_buffer[pixel_index] = blend_rgb565(
+                    src_rgb565, dst_rgb565, alpha
                 )
-                if fog_alpha:
-                    src_rgb = blend_rgb444(fog_rgb, src_rgb, fog_alpha)
-
-                if src_alpha < 16:
-                    dst_rgb = self.back_buffer[pixel_index]
-                    src_rgb = blend_rgb444(src_rgb, dst_rgb, src_alpha)
-
-                self.back_buffer[pixel_index] = src_rgb

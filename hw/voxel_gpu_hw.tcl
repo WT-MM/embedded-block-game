@@ -43,7 +43,16 @@ set_fileset_property QUARTUS_SYNTH ENABLE_RELATIVE_INCLUDE_PATHS false
 set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
 add_fileset_file voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu.sv TOP_LEVEL_FILE
 add_fileset_file textures.hex HEX PATH textures.hex
+add_fileset_file textures.mif MIF PATH textures.mif
 add_fileset_file recip_lut.hex HEX PATH recip_lut.hex
+add_fileset_file sdram_local_test/Sdram_Control.v VERILOG PATH sdram_local_test/Sdram_Control.v
+add_fileset_file sdram_local_test/control_interface.v VERILOG PATH sdram_local_test/control_interface.v
+add_fileset_file sdram_local_test/command.v VERILOG PATH sdram_local_test/command.v
+add_fileset_file sdram_local_test/sdr_data_path.v VERILOG PATH sdram_local_test/sdr_data_path.v
+add_fileset_file sdram_local_test/Sdram_RD_FIFO.v VERILOG PATH sdram_local_test/Sdram_RD_FIFO.v
+add_fileset_file sdram_local_test/Sdram_WR_FIFO.v VERILOG PATH sdram_local_test/Sdram_WR_FIFO.v
+add_fileset_file sdram_local_test/sdram_pll0.v VERILOG PATH sdram_local_test/sdram_pll0.v
+add_fileset_file sdram_local_test/sdram_pll0/sdram_pll0_0002.v VERILOG PATH sdram_local_test/sdram_pll0/sdram_pll0_0002.v
 
 
 # 
@@ -143,3 +152,28 @@ add_interface_port vga VGA_HS hs Output 1
 add_interface_port vga VGA_R r Output 8
 add_interface_port vga VGA_SYNC_n sync_n Output 1
 add_interface_port vga VGA_VS vs Output 1
+
+
+# 
+# connection point voxel_sdram
+# 
+add_interface voxel_sdram conduit end
+set_interface_property voxel_sdram associatedClock clock
+set_interface_property voxel_sdram associatedReset ""
+set_interface_property voxel_sdram ENABLED true
+set_interface_property voxel_sdram EXPORT_OF ""
+set_interface_property voxel_sdram PORT_NAME_MAP ""
+set_interface_property voxel_sdram CMSIS_SVD_VARIABLES ""
+set_interface_property voxel_sdram SVD_ADDRESS_GROUP ""
+
+add_interface_port voxel_sdram DRAM_ADDR addr Output 13
+add_interface_port voxel_sdram DRAM_BA ba Output 2
+add_interface_port voxel_sdram DRAM_CAS_N cas_n Output 1
+add_interface_port voxel_sdram DRAM_CKE cke Output 1
+add_interface_port voxel_sdram DRAM_CLK dram_clk Output 1
+add_interface_port voxel_sdram DRAM_CS_N cs_n Output 1
+add_interface_port voxel_sdram DRAM_DQ dq Bidir 16
+add_interface_port voxel_sdram DRAM_LDQM ldqm Output 1
+add_interface_port voxel_sdram DRAM_RAS_N ras_n Output 1
+add_interface_port voxel_sdram DRAM_UDQM udqm Output 1
+add_interface_port voxel_sdram DRAM_WE_N we_n Output 1

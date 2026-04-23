@@ -1,11 +1,43 @@
 SYSTEM = soc_system
 
+# Optional fixed Quartus 19.1 install root. If these paths do not exist on a
+# given lab machine, the *19 targets fall back to the matching tools on PATH.
+QUARTUS_19_ROOT ?= /tools/intel/intelFPGA/19.1
+QUARTUS_19_BIN ?= $(QUARTUS_19_ROOT)/quartus/bin
+QSYS_19_BIN ?= $(QUARTUS_19_ROOT)/quartus/sopc_builder/bin
+
+ifneq ($(wildcard $(QSYS_19_BIN)/qsys-generate),)
+QSYS_GENERATE_19 = $(QSYS_19_BIN)/qsys-generate
+else
+QSYS_GENERATE_19 = qsys-generate
+endif
+
+ifneq ($(wildcard $(QUARTUS_19_BIN)/quartus_sh),)
+QUARTUS_SH_19 = $(QUARTUS_19_BIN)/quartus_sh
+QUARTUS_MAP_19 = $(QUARTUS_19_BIN)/quartus_map
+QUARTUS_STA_19 = $(QUARTUS_19_BIN)/quartus_sta
+QUARTUS_CPF_19 = $(QUARTUS_19_BIN)/quartus_cpf
+else
+QUARTUS_SH_19 = quartus_sh
+QUARTUS_MAP_19 = quartus_map
+QUARTUS_STA_19 = quartus_sta
+QUARTUS_CPF_19 = quartus_cpf
+endif
+
+QSYS_GENERATE ?= qsys-generate
+QUARTUS_SH ?= quartus_sh
+QUARTUS_MAP ?= quartus_map
+QUARTUS_STA ?= quartus_sta
+QUARTUS_CPF ?= quartus_cpf
+
 TCL = $(SYSTEM).tcl
 QSYS = $(SYSTEM).qsys
 SOPCINFO = $(SYSTEM).sopcinfo
 QIP = $(SYSTEM)/synthesis/$(SYSTEM).qip
 HPS_PIN_TCL = $(SYSTEM)/synthesis/submodules/hps_sdram_p0_pin_assignments.tcl
 HPS_PIN_MAP = hps_sdram_p0_all_pins.txt
+QSYS_STAMP = $(SYSTEM)/synthesis/.qsys-stamp
+PROJECT_STAMP = output_files/.project-stamp
 QPF = $(SYSTEM).qpf
 QSF = $(SYSTEM).qsf
 SDC = $(SYSTEM).sdc
@@ -17,7 +49,7 @@ DTB = $(SYSTEM).dtb
 
 SOF = output_files/$(SYSTEM).sof
 RBF = output_files/$(SYSTEM).rbf
-RBF_INSTALL_SRC ?= $(SYSTEM).rbf
+RBF_INSTALL_SRC ?= ./$(SYSTEM).rbf
 BOOT_DEV ?= /dev/mmcblk0p1
 BOOT_MOUNT ?= /mnt
 
@@ -53,6 +85,7 @@ TARFILES = Makefile \
 	generate_textures.py \
 	recip_lut.hex \
 	textures.hex \
+	textures.mif \
 	ip/intr_capturer/intr_capturer.v \
 	ip/intr_capturer/intr_capturer_hw.tcl \
 	vga_ball.sv
@@ -70,12 +103,20 @@ TARFILE = lab3-hw.tar.gz
 # enough so that the HPS_PIN_TCL script can run
 
 .PHONY : project
-project : $(QPF) $(QSF) $(SDC)
+project : $(PROJECT_STAMP)
 
-$(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
-	quartus_sh -t $(TCL)
-	quartus_map $(SYSTEM)
-	quartus_sta -t $(HPS_PIN_TCL) $(SYSTEM)
+$(PROJECT_STAMP) : $(TCL) $(QSYS_STAMP)
+	$(QUARTUS_SH) -t $(TCL)
+	$(QUARTUS_MAP) $(SYSTEM)
+	$(QUARTUS_STA) -t $(HPS_PIN_TCL) $(SYSTEM)
+	mkdir -p $(dir $@)
+	touch $@
+
+.PHONY : project19
+project19 : QUARTUS_SH=$(QUARTUS_SH_19)
+project19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+project19 : QUARTUS_STA=$(QUARTUS_STA_19)
+project19 : project
 
 # qsys
 #
@@ -83,13 +124,26 @@ $(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
 # (named according to the system) with all the Verilog files, etc.
 
 .PHONY : qsys
-qsys : $(SOPCINFO)
+qsys : $(QSYS_STAMP)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.hex generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl
+QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex textures.mif recip_lut.hex \
+	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
+	$(wildcard sdram_local_test/*.v) \
+	$(wildcard sdram_local_test/*.h) \
+	$(wildcard sdram_local_test/sdram_pll0/*.v)
+TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv
 
-$(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
+$(QSYS_STAMP) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
-	qsys-generate $(QSYS) --synthesis=VERILOG
+	$(QSYS_GENERATE) $(QSYS) --synthesis=VERILOG
+	test -f $(SOPCINFO)
+	test -f $(QIP)
+	test -f $(HPS_PIN_TCL)
+	touch $@
+
+.PHONY : qsys19
+qsys19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
+qsys19 : qsys
 
 # quartus
 #
@@ -102,8 +156,9 @@ $(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS)
 .PHONY : quartus
 quartus : $(SOF)
 
-$(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL)
-	quartus_sh --flow compile $(QPF)
+$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
+	$(QUARTUS_SH) --flow compile $(QPF)
+
 
 # rbf
 #
@@ -113,12 +168,25 @@ $(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL)
 rbf : $(RBF)
 
 $(RBF) : $(SOF)
-	quartus_cpf -c $(SOF) $(RBF)
+	$(QUARTUS_CPF) -c $(SOF) $(RBF)
+
+.PHONY : print-quartus19-tools
+print-quartus19-tools :
+	@echo "QUARTUS_19_ROOT=$(QUARTUS_19_ROOT)"
+	@echo "QUARTUS_19_BIN=$(QUARTUS_19_BIN)"
+	@echo "QSYS_19_BIN=$(QSYS_19_BIN)"
+	@echo "QSYS_GENERATE_19=$(QSYS_GENERATE_19)"
+	@echo "QUARTUS_SH_19=$(QUARTUS_SH_19)"
+	@echo "QUARTUS_MAP_19=$(QUARTUS_MAP_19)"
+	@echo "QUARTUS_STA_19=$(QUARTUS_STA_19)"
+	@echo "QUARTUS_CPF_19=$(QUARTUS_CPF_19)"
 
 # install-rbf
 #
 # Copy an already-built .rbf into the mounted SD boot partition and flush it.
-# By default this uses ./soc_system.rbf; override RBF_INSTALL_SRC if needed.
+# By default this uses ./$(SYSTEM).rbf (the copy in the hw/ working directory);
+# override RBF_INSTALL_SRC if you want to install a different .rbf (e.g. the
+# freshly built one under output_files/).
 # Use mount-boot first if the boot partition is not yet mounted.
 .PHONY : mount-boot install-rbf install-built-rbf
 mount-boot :

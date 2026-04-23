@@ -47,8 +47,8 @@ tests/renderer_fog_test: tests/renderer_fog_test.c renderer.c renderer.h voxel_g
 tests/fpga_sdram_test: tests/fpga_sdram_test.c
 	${CC} ${CFLAGS} -I. -o $@ tests/fpga_sdram_test.c
 
-game: game.c player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h chat.c chat.h
-	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c player_physics.c chat.c -lm
+game: game.c player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h chat.c chat.h pause_menu.c pause_menu.h
+	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c player_physics.c chat.c pause_menu.c -lm
 
 laptop_run:
 	VOXEL_MOUSE_INVERT_Y=1 VOXEL_GPU_BACKEND=socket ./game

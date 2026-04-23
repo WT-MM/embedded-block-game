@@ -60,13 +60,16 @@ static bool check_collision(VoxelWorld *world, float px, float py, float pz) {
     return false;
 }
 
-void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z, bool jump, bool shift, float dt) {
+void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
+                   bool jump, bool shift, bool sprint, float dt) {
     bool apply_gravity   = (p->mode == PLAYER_MODE_SURVIVAL);
     bool apply_collision = (p->mode != PLAYER_MODE_SPECTATOR);
 
-    /* Horizontal slewing (same in all modes) */
-    float target_vx = wish_dir_x * MAX_SPEED;
-    float target_vz = wish_dir_z * MAX_SPEED;
+    /* Horizontal slewing (same in all modes). Sprint scales the target
+     * speed — not the current velocity — so acceleration feels natural. */
+    float horiz_speed = sprint ? (MAX_SPEED * SPRINT_MULTIPLIER) : MAX_SPEED;
+    float target_vx = wish_dir_x * horiz_speed;
+    float target_vz = wish_dir_z * horiz_speed;
     float accel_rate = (wish_dir_x != 0.0f || wish_dir_z != 0.0f) ? ACCELERATION : FRICTION;
 
     p->vx = approach(p->vx, target_vx, accel_rate * dt);

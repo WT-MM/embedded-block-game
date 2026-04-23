@@ -1819,6 +1819,17 @@ static bool push_screen_flat_quad(RenderContext *ctx,
     return renderer_fill_rect(ctx, x0, y0, x1, y1, palette_index, 0);
 }
 
+bool renderer_draw_screen_tile(RenderContext *ctx,
+                               float x0, float y0, float x1, float y1,
+                               uint8_t texture_id, uint8_t extra_flags)
+{
+    return push_screen_textured_quad(ctx,
+                                     x0, y0, x1, y1,
+                                     0.0f, 0.0f, 16.0f, 16.0f,
+                                     texture_id,
+                                     extra_flags);
+}
+
 bool renderer_fill_rect(RenderContext *ctx,
                         float x0, float y0, float x1, float y1,
                         uint8_t palette_index, uint8_t extra_flags)

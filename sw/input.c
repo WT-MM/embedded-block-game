@@ -200,10 +200,34 @@ static void text_queue_push(InputState *inp, char ch)
     inp->text_queue[inp->text_queue_len++] = ch;
 }
 
+static int hotbar_slot_for_key(int code)
+{
+    switch (code) {
+    case KEY_1:
+    case KEY_KP1:
+        return 0;
+    case KEY_2:
+    case KEY_KP2:
+        return 1;
+    case KEY_3:
+    case KEY_KP3:
+        return 2;
+    case KEY_4:
+    case KEY_KP4:
+        return 3;
+    case KEY_5:
+    case KEY_KP5:
+        return 4;
+    default:
+        return -1;
+    }
+}
+
 int input_init(InputState *inp)
 {
     memset(inp, 0, sizeof(*inp));
     inp->_kbd_fd   = -1;
+    inp->hotbar_slot_pressed = -1;
     inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
     inp->_mouse_scale_y = env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
@@ -278,6 +302,13 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 continue;
             }
 
+            {
+                int hotbar_slot = hotbar_slot_for_key(ev.code);
+
+                if (press_edge && hotbar_slot >= 0)
+                    inp->hotbar_slot_pressed = hotbar_slot;
+            }
+
             switch (ev.code) {
             case KEY_W:                      inp->forward = down; break;
             case KEY_S:                      inp->back    = down; break;
@@ -294,7 +325,24 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 if (press_edge)
                     inp->mode_toggle_pressed = true;
                 break;
-            case KEY_ESC:   if (down) inp->quit = true;   break;
+            case KEY_F:
+            case BTN_LEFT:
+                if (press_edge)
+                    inp->break_pressed = true;
+                break;
+            case KEY_R:
+            case BTN_RIGHT:
+                if (press_edge)
+                    inp->place_pressed = true;
+                break;
+            case KEY_LEFTCTRL:
+            case KEY_RIGHTCTRL:
+                inp->sprint = down;
+                break;
+            case KEY_ESC:
+                if (press_edge)
+                    inp->pause_toggle_pressed = true;
+                break;
             case KEY_Q:     if (down) inp->quit = true;   break;
             default: break;
             }
@@ -368,6 +416,34 @@ bool input_consume_chat_toggle(InputState *inp)
     return pressed;
 }
 
+bool input_consume_break(InputState *inp)
+{
+    bool pressed = inp->break_pressed;
+    inp->break_pressed = false;
+    return pressed;
+}
+
+bool input_consume_place(InputState *inp)
+{
+    bool pressed = inp->place_pressed;
+    inp->place_pressed = false;
+    return pressed;
+}
+
+bool input_consume_pause_toggle(InputState *inp)
+{
+    bool pressed = inp->pause_toggle_pressed;
+    inp->pause_toggle_pressed = false;
+    return pressed;
+}
+
+int input_consume_hotbar_slot(InputState *inp)
+{
+    int slot = inp->hotbar_slot_pressed;
+    inp->hotbar_slot_pressed = -1;
+    return slot;
+}
+
 void input_set_text_mode(InputState *inp, bool on)
 {
     if (on && !inp->_text_mode) {
@@ -377,6 +453,9 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->up = inp->down = false;
         inp->jump_pressed = false;
         inp->mode_toggle_pressed = false;
+        inp->break_pressed = false;
+        inp->place_pressed = false;
+        inp->hotbar_slot_pressed = -1;
     }
     inp->_text_mode = on;
     if (!on)

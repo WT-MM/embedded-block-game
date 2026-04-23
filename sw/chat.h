@@ -40,4 +40,14 @@ void chat_handle_enter(Chat *chat);
 
 void chat_draw(const Chat *chat, RenderContext *ctx);
 
+/* Cell dimensions of the chat's bitmap font at CHAT_TEXT_SCALE, exposed so
+ * other overlays (pause menu, HUD) can lay out shared-font text. */
+int  chat_font_cell_w(void);
+int  chat_font_cell_h(void);
+
+/* Draw a string at (x, y) in screen pixels using the chat bitmap font.
+ * Clips at SCREEN_WIDTH; length is the number of chars to render. */
+void chat_draw_text(RenderContext *ctx, const char *s, int len,
+                    float x, float y, uint8_t palette_index);
+
 #endif

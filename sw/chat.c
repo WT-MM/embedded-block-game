@@ -606,6 +606,17 @@ static void draw_line(RenderContext *ctx, const char *s, int len,
     }
 }
 
+int chat_font_cell_w(void) { return CELL_W; }
+int chat_font_cell_h(void) { return CELL_H; }
+
+void chat_draw_text(RenderContext *ctx, const char *s, int len,
+                    float x, float y, uint8_t palette_index)
+{
+    if (!ctx || !s || len <= 0) return;
+    build_glyph_tables();
+    draw_line(ctx, s, len, x, y, palette_index);
+}
+
 void chat_draw(const Chat *chat, RenderContext *ctx)
 {
     if (!ctx) return;

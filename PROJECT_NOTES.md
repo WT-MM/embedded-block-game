@@ -240,3 +240,55 @@ rasterization.
 
 Cost: +1 cycle of end-to-end latency per pixel (harmless at our throughput),
 a handful of flops, and no change to the software-visible interface.
+
+Follow-up: Two-Stage Palette Read (pal_rd + plr)
+------------------------------------------------
+After reflashing the MLAB + single-plr version, chromatic fringing was STILL
+present on every block (worst on grayscale stone) and was stable with camera
+motion, i.e. locked to geometry rather than screen pixels. For a gray-in /
+gray-out pipeline, any non-gray RGB coming back on a stone edge means the
+palette lookup itself is returning the wrong entry at quad boundaries.
+
+The single-`plr` layout works correctly only if the palette RAM presents an
+asynchronous read (MLAB: combinational `palette[addr]`, registered into
+`plr_src_rgb` at the next clock edge). If Quartus ignores the `ramstyle`
+hint and demotes the array to M10K, the primitive has its own internal
+address register, which inserts a hidden 1-cycle delay on the read. In that
+case `plr_src_rgb` ends up holding `palette[palette_src_addr_from_prev_cycle]`,
+so the first pixel of every new quad takes the previous quad's palette color.
+That is exactly the "colored fringe at every block border, worst on stone"
+artifact we were observing.
+
+To make the pipeline correct regardless of how the palette is implemented,
+the palette read is now split across two pipeline stages:
+
+  * `pal_rd` (new) registers the palette source/fog addresses
+    (`palette_src_addr`, `fog_color`) along with every other field fog0
+    needs. The addresses are stable and flopped on one full cycle.
+  * `plr` (existing, now consumes `pal_rd_*`) registers
+    `palette[pal_rd_src_addr]` and `palette[pal_rd_fog_addr]`.
+
+With the address flop in place, MLAB and M10K both produce the correct
+palette entry at `plr_src_rgb` / `plr_fog_rgb` — MLAB reads combinationally
+out of `pal_rd_*_addr` and gets flopped by `plr`, while M10K uses
+`pal_rd_*_addr` as its own internal-register input and delivers data on
+the cycle after `plr` would have captured it. Either way, every field
+`fog0` consumes arrives on the same clock edge.
+
+`DRAW_FLUSH_CYCLES` was bumped from 13 to 14 to account for the extra
+pipeline stage, and `pal_rd_valid` is invalidated alongside the other
+`*_valid` registers in ST_IDLE / ST_FETCH. `ST_CLEAR` still uses the
+direct `clear_rgb565` combinational wire for the background; it does
+not go through `pal_rd` / `plr`.
+
+Cost: +1 cycle of end-to-end latency per pixel on top of the previous
+change, a handful of additional flops, and no change to the software-
+visible interface.
+
+Verification (next reflash):
+  1. Confirm the colored borders are gone.
+  2. Sanity-check `output_files/*.fit.rpt` for the palette RAM type; with
+     this fix we no longer care which one Quartus picks, but it's useful
+     to know (grep for `palette`).
+  3. Optional regression: temporarily force every face to light bank 0
+     in `choose_face_light_flags` and verify the image stays clean.

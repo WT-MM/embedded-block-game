@@ -1377,7 +1377,31 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     d->tex_or_color = (quad.flags & QUAD_FLAG_TEX) ? quad.texture_id : quad.color_tint;
     d->flags = quad.flags;
 
-    if (quad.flags & QUAD_FLAG_TEX) {
+#ifdef DEBUG_FLAT_COLOR
+    /*
+     * Diagnostic mode: force every quad to render as a flat palette
+     * entry (bypasses the texture ROM + UV interpolation + light-bank
+     * indirection) while keeping rasterization, z-test, fog and
+     * alpha-blending paths intact.
+     *
+     * Use this to narrow down where "chromatic aberration" lives: if
+     * every block becomes a uniform gray/whatever-you-set with no
+     * colored edges in this mode, the culprit is the texture sampling
+     * path (ROM latency, UV step, tex0_tex_addr). If fringes persist,
+     * look further downstream (palette, fog blend, framebuffer RMW,
+     * VGA scanout).
+     *
+     * DEBUG_FLAT_COLOR_INDEX defaults to PAL_STONE_LIGHT (24) which is
+     * a neutral mid-gray -- any palette index works.
+     */
+#ifndef DEBUG_FLAT_COLOR_INDEX
+#define DEBUG_FLAT_COLOR_INDEX 24
+#endif
+    d->flags = (uint16_t)(quad.flags & ~(QUAD_FLAG_TEX));
+    d->tex_or_color = (uint8_t)DEBUG_FLAT_COLOR_INDEX;
+#endif
+
+    if (d->flags & QUAD_FLAG_TEX) {
         fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, &staged->uv);
         staged->descriptor_bytes = sizeof(staged->desc) + sizeof(staged->uv);
     } else {

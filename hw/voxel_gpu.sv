@@ -156,7 +156,11 @@ module voxel_gpu (
     // correctness guarantee. See PROJECT_NOTES.md for the history.
     (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
-    (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
+    // texture_mem is implemented as an explicit altsyncram ROM below
+    // (see voxel_texture_rom). Do NOT reintroduce an inferred array here:
+    // inference lets Quartus silently pick between 1-cycle and 2-cycle
+    // read latency, which is what caused the quad-boundary colored
+    // fringes / "chromatic aberration" we chased for weeks.
     (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
 
     logic [10:0] fifo_wr_ptr;
@@ -415,7 +419,12 @@ module voxel_gpu (
     logic [16:0] commit_addr;
     logic [15:0] commit_z;
     logic [15:0] commit_color;
-    logic  [7:0] tex_rd_data;
+    // tex_rd_data is driven combinationally by voxel_texture_rom's
+    // registered output. The ROM takes pipe2_tex_addr on cycle T and
+    // presents mem[pipe2_tex_addr[T]] on cycle T+1, which is the same
+    // 1-cycle latency the draw_pipe stage expects (see the instance
+    // below and the voxel_texture_rom module header for rationale).
+    wire   [7:0] tex_rd_data;
 
     logic [10:0] hcount;
     logic  [9:0] vcount;
@@ -954,6 +963,25 @@ module voxel_gpu (
         .wr_en   (z_wr_en)
     );
 
+    /*
+     * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 64 tiles *
+     * 16 * 16 = 16384 entries (14-bit address). See voxel_texture_rom
+     * for why we instantiate altsyncram directly instead of letting
+     * Quartus infer a ramstyle="M10K" array -- the short version is
+     * that inference can silently pick 2-cycle latency, producing
+     * colored 1-pixel fringes at every quad boundary.
+     */
+    voxel_texture_rom #(
+        .DATA_W(8),
+        .ADDR_W(14),
+        .DEPTH(TEXTURE_BYTES),
+        .INIT_FILE("textures.hex")
+    ) texture_rom (
+        .clk     (clk),
+        .rd_addr (pipe2_tex_addr),
+        .rd_data (tex_rd_data)
+    );
+
     integer i;
     integer ei;
     initial begin
@@ -1205,7 +1233,6 @@ module voxel_gpu (
         commit_addr      = 17'd0;
         commit_z         = 16'd0;
         commit_color     = 16'h0000;
-        tex_rd_data      = 8'd0;
         scan_rgb565_r    = 16'h0000;
         scan_visible_r   = 1'b0;
         copy_fb_rd_addr  = 17'd0;
@@ -1277,11 +1304,9 @@ module voxel_gpu (
             fifo_mem[i] = 32'h0;
 
         /*
-         * textures.hex always contains the full 64 * 16 * 16 atlas, so avoid
-         * an explicit 16k-entry zero-fill loop here. Quartus tries to
-         * elaborate that loop and trips its 5000-iteration limit.
+         * textures.hex is loaded by the altsyncram init_file in
+         * voxel_texture_rom; no $readmemh needed here anymore.
          */
-        $readmemh("textures.hex", texture_mem);
         $readmemh("recip_lut.hex", recip_lut);
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
@@ -1602,7 +1627,6 @@ module voxel_gpu (
             commit_addr      <= 17'd0;
             commit_z         <= 16'd0;
             commit_color     <= 16'h0000;
-            tex_rd_data      <= 8'd0;
             scan_rgb565_r    <= 16'h0000;
             copy_fb_rd_addr  <= 17'd0;
             scan_line0_ready <= 1'b0;
@@ -1647,7 +1671,14 @@ module voxel_gpu (
                 edge_C[ei] <= 32'sd0;
             end
         end else begin
-            tex_rd_data <= texture_mem[pipe2_tex_addr];
+            /*
+             * Texture read no longer happens here -- voxel_texture_rom
+             * drives tex_rd_data directly from pipe2_tex_addr with a
+             * fixed 1-cycle latency. Leaving it as an always_ff
+             * assignment let Quartus silently stack an extra flop on
+             * top of the M10K's internal output register, which pushed
+             * tex_rd_data one cycle late on real hardware.
+             */
             vga_vs_d <= VGA_VS;
             scan_rgb565_r <= scan_rgb565_now;
             scan_visible_r <= scan_visible_now;
@@ -2415,6 +2446,88 @@ module voxel_sdp_ram #(
         altsyncram_component.width_b = DATA_W,
         altsyncram_component.width_byteena_a = 1,
         altsyncram_component.width_byteena_b = 1;
+
+endmodule
+
+// ====================================================================
+// Texture-atlas ROM. Previously we let Quartus infer this from
+//
+//     (* ramstyle = "M10K" *) logic [7:0] texture_mem [0:TEXTURE_BYTES-1];
+//     ...
+//     always_ff @(posedge clk) tex_rd_data <= texture_mem[pipe2_tex_addr];
+//
+// but Quartus is free to implement that pattern with EITHER a 1-cycle
+// latency (addr_reg_a = CLOCK0, outdata_reg_a = UNREGISTERED, tex_rd_data
+// is absorbed as the output register) OR a 2-cycle latency (addr_reg_a +
+// outdata_reg_a BOTH registered, with tex_rd_data acting as a post-RAM
+// flop on top). On real silicon we saw the latter: tex_rd_data arrived
+// one cycle later than the rest of the draw_pipe metadata, so the first
+// pixel of each quad read the previous quad's final texel. That showed
+// up as 1-pixel colored fringes on every block edge whose color depended
+// on the immediately preceding quad's texture (e.g. stones next to sky
+// tiles picked up light-blue fringes) -- a "chromatic aberration" / edge
+// flicker symptom that did not go away even after pipelining the palette
+// read explicitly.
+//
+// Instantiating altsyncram directly with address_reg_a = CLOCK0 and
+// outdata_reg_a = UNREGISTERED pins the latency to a known 1 cycle, so
+// pipe2_tex_addr at cycle T drives rd_data at cycle T+1, in lockstep
+// with pipe2 -> draw_pipe. The init_file stays textures.hex.
+// ====================================================================
+module voxel_texture_rom #(
+    parameter int DATA_W = 8,
+    parameter int ADDR_W = 14,
+    parameter int DEPTH  = 16384,
+    parameter      INIT_FILE = "textures.hex"
+) (
+    input  logic                clk,
+    input  logic [ADDR_W-1:0]   rd_addr,
+    output logic [DATA_W-1:0]   rd_data
+);
+    wire [DATA_W-1:0] q_a;
+    assign rd_data = q_a;
+
+    altsyncram altsyncram_rom (
+        .address_a      (rd_addr),
+        .clock0         (clk),
+        .q_a            (q_a),
+        .aclr0          (1'b0),
+        .aclr1          (1'b0),
+        .address_b      ({ADDR_W{1'b0}}),
+        .addressstall_a (1'b0),
+        .addressstall_b (1'b0),
+        .byteena_a      (1'b1),
+        .byteena_b      (1'b1),
+        .clock1         (1'b1),
+        .clocken0       (1'b1),
+        .clocken1       (1'b1),
+        .clocken2       (1'b1),
+        .clocken3       (1'b1),
+        .data_a         ({DATA_W{1'b0}}),
+        .data_b         ({DATA_W{1'b0}}),
+        .eccstatus      (),
+        .q_b            (),
+        .rden_a         (1'b1),
+        .rden_b         (1'b1),
+        .wren_a         (1'b0),
+        .wren_b         (1'b0)
+    );
+    defparam
+        altsyncram_rom.address_aclr_a = "NONE",
+        altsyncram_rom.clock_enable_input_a = "BYPASS",
+        altsyncram_rom.clock_enable_output_a = "BYPASS",
+        altsyncram_rom.init_file = INIT_FILE,
+        altsyncram_rom.intended_device_family = "Cyclone V",
+        altsyncram_rom.lpm_hint = "ENABLE_RUNTIME_MOD=NO",
+        altsyncram_rom.lpm_type = "altsyncram",
+        altsyncram_rom.numwords_a = DEPTH,
+        altsyncram_rom.operation_mode = "ROM",
+        altsyncram_rom.outdata_aclr_a = "NONE",
+        altsyncram_rom.outdata_reg_a = "UNREGISTERED",
+        altsyncram_rom.ram_block_type = "M10K",
+        altsyncram_rom.widthad_a = ADDR_W,
+        altsyncram_rom.width_a = DATA_W,
+        altsyncram_rom.width_byteena_a = 1;
 
 endmodule
 

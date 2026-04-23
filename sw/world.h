@@ -20,10 +20,11 @@ typedef struct {
 } ChunkFace;
 
 typedef enum {
-    CHUNK_FLAG_LOADED     = 1u << 0,
-    CHUNK_FLAG_MESH_DIRTY = 1u << 1,
-    CHUNK_FLAG_MESH_READY = 1u << 2,
-    CHUNK_FLAG_MODIFIED   = 1u << 3,
+    CHUNK_FLAG_LOADED       = 1u << 0,
+    CHUNK_FLAG_MESH_DIRTY   = 1u << 1,
+    CHUNK_FLAG_MESH_READY   = 1u << 2,
+    CHUNK_FLAG_MODIFIED     = 1u << 3,
+    CHUNK_FLAG_MESHED_NEAR  = 1u << 4,
 } ChunkFlags;
 
 typedef struct {

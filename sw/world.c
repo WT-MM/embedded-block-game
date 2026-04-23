@@ -6,6 +6,26 @@
 
 #define CHUNK_LOOKUP_EMPTY (-1)
 
+/* Greedy face merging runs only on chunks farther than this (Chebyshev)
+ * distance from the player's chunk. Near chunks emit 1x1 faces so the
+ * T-junction / UV-shimmer artifacts caused by merged quads stay out of
+ * the viewer's foreground, while distant chunks (which dominate face
+ * counts at large render distances) still get the merge win. */
+#define NEAR_CHUNK_RADIUS 3
+
+static bool chunk_is_near(const VoxelWorld *world, const Chunk *chunk)
+{
+    int dx = chunk->chunk_x - world->center_chunk_x;
+    int dz = chunk->chunk_z - world->center_chunk_z;
+
+    if (dx < 0)
+        dx = -dx;
+    if (dz < 0)
+        dz = -dz;
+
+    return (dx <= NEAR_CHUNK_RADIUS) && (dz <= NEAR_CHUNK_RADIUS);
+}
+
 static uint32_t rng_next(uint32_t *state)
 {
     *state = (*state * 1664525u) + 1013904223u;
@@ -523,11 +543,17 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
     if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
         return false;
 
+    bool is_near = chunk_is_near(world, chunk);
+
     max_face_count = count_exposed_faces_for_chunk(world, chunk);
     if (max_face_count == 0) {
         chunk->face_count = 0;
         chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
         chunk->flags |= CHUNK_FLAG_MESH_READY;
+        if (is_near)
+            chunk->flags |= CHUNK_FLAG_MESHED_NEAR;
+        else
+            chunk->flags &= ~CHUNK_FLAG_MESHED_NEAR;
         return true;
     }
 
@@ -582,28 +608,39 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
                         continue;
                     }
 
-                    while (u + merge_w < width &&
-                           !used[v][u + merge_w] &&
-                           mask[v][u + merge_w] == id) {
-                        merge_w++;
-                    }
-
-                    bool can_extend = true;
-                    while (v + merge_h < height && can_extend) {
-                        for (int du = 0; du < merge_w; du++) {
-                            if (used[v + merge_h][u + du] ||
-                                mask[v + merge_h][u + du] != id) {
-                                can_extend = false;
-                                break;
-                            }
+                    /*
+                     * Greedy merging introduces T-junctions and wide-quad UV
+                     * shimmer. Both artifacts are conspicuous up close but
+                     * disappear into the depth/perspective noise far away, so
+                     * run the merge only on distant chunks where the face-
+                     * count win matters most.
+                     */
+                    if (!is_near) {
+                        while (u + merge_w < width &&
+                               !used[v][u + merge_w] &&
+                               mask[v][u + merge_w] == id) {
+                            merge_w++;
                         }
-                        if (can_extend)
-                            merge_h++;
-                    }
 
-                    for (int dv = 0; dv < merge_h; dv++) {
-                        for (int du = 0; du < merge_w; du++)
-                            used[v + dv][u + du] = true;
+                        bool can_extend = true;
+                        while (v + merge_h < height && can_extend) {
+                            for (int du = 0; du < merge_w; du++) {
+                                if (used[v + merge_h][u + du] ||
+                                    mask[v + merge_h][u + du] != id) {
+                                    can_extend = false;
+                                    break;
+                                }
+                            }
+                            if (can_extend)
+                                merge_h++;
+                        }
+
+                        for (int dv = 0; dv < merge_h; dv++) {
+                            for (int du = 0; du < merge_w; du++)
+                                used[v + dv][u + du] = true;
+                        }
+                    } else {
+                        used[v][u] = true;
                     }
 
                     append_chunk_face(chunk->faces, &out, x, y, z,
@@ -616,7 +653,27 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
     chunk->face_count = out;
     chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
     chunk->flags |= CHUNK_FLAG_MESH_READY;
+    if (is_near)
+        chunk->flags |= CHUNK_FLAG_MESHED_NEAR;
+    else
+        chunk->flags &= ~CHUNK_FLAG_MESHED_NEAR;
     return true;
+}
+
+static void mark_near_far_transitions_dirty(VoxelWorld *world)
+{
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        bool is_near = chunk_is_near(world, chunk);
+        bool was_near = (chunk->flags & CHUNK_FLAG_MESHED_NEAR) != 0;
+
+        if (is_near != was_near)
+            chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+    }
 }
 
 static bool rebuild_dirty_chunk_meshes(VoxelWorld *world)
@@ -778,6 +835,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     }
 
     mark_window_perimeter_dirty(world, origin_chunk_x, origin_chunk_z, diameter);
+    mark_near_far_transitions_dirty(world);
     return rebuild_dirty_chunk_meshes(world);
 }
 

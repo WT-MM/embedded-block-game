@@ -36,6 +36,8 @@ SOPCINFO = $(SYSTEM).sopcinfo
 QIP = $(SYSTEM)/synthesis/$(SYSTEM).qip
 HPS_PIN_TCL = $(SYSTEM)/synthesis/submodules/hps_sdram_p0_pin_assignments.tcl
 HPS_PIN_MAP = hps_sdram_p0_all_pins.txt
+QSYS_STAMP = $(SYSTEM)/synthesis/.qsys-stamp
+PROJECT_STAMP = output_files/.project-stamp
 QPF = $(SYSTEM).qpf
 QSF = $(SYSTEM).qsf
 SDC = $(SYSTEM).sdc
@@ -47,7 +49,7 @@ DTB = $(SYSTEM).dtb
 
 SOF = output_files/$(SYSTEM).sof
 RBF = output_files/$(SYSTEM).rbf
-RBF_INSTALL_SRC ?= $(RBF)
+RBF_INSTALL_SRC ?= ./$(SYSTEM).rbf
 BOOT_DEV ?= /dev/mmcblk0p1
 BOOT_MOUNT ?= /mnt
 
@@ -100,20 +102,20 @@ TARFILE = lab3-hw.tar.gz
 # enough so that the HPS_PIN_TCL script can run
 
 .PHONY : project
-project : $(QPF) $(QSF) $(SDC)
+project : $(PROJECT_STAMP)
 
-$(QPF) $(QSF) $(SDC) : $(TCL) $(HPS_PIN_TCL)
+$(PROJECT_STAMP) : $(TCL) $(QSYS_STAMP)
 	$(QUARTUS_SH) -t $(TCL)
 	$(QUARTUS_MAP) $(SYSTEM)
 	$(QUARTUS_STA) -t $(HPS_PIN_TCL) $(SYSTEM)
+	mkdir -p $(dir $@)
+	touch $@
 
 .PHONY : project19
-project19 :
-	$(MAKE) \
-	  QUARTUS_SH=$(QUARTUS_SH_19) \
-	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
-	  QUARTUS_STA=$(QUARTUS_STA_19) \
-	  project
+project19 : QUARTUS_SH=$(QUARTUS_SH_19)
+project19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+project19 : QUARTUS_STA=$(QUARTUS_STA_19)
+project19 : project
 
 # qsys
 #
@@ -121,7 +123,7 @@ project19 :
 # (named according to the system) with all the Verilog files, etc.
 
 .PHONY : qsys
-qsys : $(SOPCINFO)
+qsys : $(QSYS_STAMP)
 
 QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.hex \
 	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
@@ -130,13 +132,17 @@ QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex recip_lut.he
 	$(wildcard sdram_local_test/sdram_pll0/*.v)
 TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv
 
-$(SOPCINFO) $(QIP) $(HPS_PIN_TCL) $(SYSTEM)/ $(PRELOADER_SETTINGS_DIR) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
+$(QSYS_STAMP) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
 	$(QSYS_GENERATE) $(QSYS) --synthesis=VERILOG
+	test -f $(SOPCINFO)
+	test -f $(QIP)
+	test -f $(HPS_PIN_TCL)
+	touch $@
 
 .PHONY : qsys19
-qsys19 :
-	$(MAKE) QSYS_GENERATE=$(QSYS_GENERATE_19) qsys
+qsys19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
+qsys19 : qsys
 
 # quartus
 #
@@ -149,17 +155,15 @@ qsys19 :
 .PHONY : quartus
 quartus : $(SOF)
 
-$(SOF) $(HPS_PIN_MAP) : $(QIP) $(QPF) $(QSF) $(HPS_PIN_TCL) $(TOP_LEVEL_SOURCES)
+$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
 .PHONY : quartus19
-quartus19 :
-	$(MAKE) \
-	  QSYS_GENERATE=$(QSYS_GENERATE_19) \
-	  QUARTUS_SH=$(QUARTUS_SH_19) \
-	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
-	  QUARTUS_STA=$(QUARTUS_STA_19) \
-	  quartus
+quartus19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
+quartus19 : QUARTUS_SH=$(QUARTUS_SH_19)
+quartus19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+quartus19 : QUARTUS_STA=$(QUARTUS_STA_19)
+quartus19 : quartus
 
 # rbf
 #
@@ -172,14 +176,17 @@ $(RBF) : $(SOF)
 	$(QUARTUS_CPF) -c $(SOF) $(RBF)
 
 .PHONY : rbf19
-rbf19 :
-	$(MAKE) \
-	  QSYS_GENERATE=$(QSYS_GENERATE_19) \
-	  QUARTUS_SH=$(QUARTUS_SH_19) \
-	  QUARTUS_MAP=$(QUARTUS_MAP_19) \
-	  QUARTUS_STA=$(QUARTUS_STA_19) \
-	  QUARTUS_CPF=$(QUARTUS_CPF_19) \
-	  rbf
+rbf19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
+rbf19 : QUARTUS_SH=$(QUARTUS_SH_19)
+rbf19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+rbf19 : QUARTUS_STA=$(QUARTUS_STA_19)
+rbf19 : QUARTUS_CPF=$(QUARTUS_CPF_19)
+rbf19 : rbf
+
+# One-shot Quartus 19.1 flow. Prefer this or plain `make rbf19` over passing
+# multiple independent *19 goals on the same command line.
+.PHONY : bitstream19
+bitstream19 : rbf19
 
 .PHONY : print-quartus19-tools
 print-quartus19-tools :
@@ -195,8 +202,9 @@ print-quartus19-tools :
 # install-rbf
 #
 # Copy an already-built .rbf into the mounted SD boot partition and flush it.
-# By default this uses the freshly built output under output_files/; override
-# RBF_INSTALL_SRC if you intentionally want to install a different .rbf.
+# By default this uses ./$(SYSTEM).rbf (the copy in the hw/ working directory);
+# override RBF_INSTALL_SRC if you want to install a different .rbf (e.g. the
+# freshly built one under output_files/).
 # Use mount-boot first if the boot partition is not yet mounted.
 .PHONY : mount-boot install-rbf install-built-rbf
 mount-boot :

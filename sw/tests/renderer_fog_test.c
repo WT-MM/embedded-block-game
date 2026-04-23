@@ -50,7 +50,8 @@ int main(void)
                                         14,
                                         DEMO_RENDER_DISTANCE_CHUNKS,
                                         camera.position.x,
-                                        camera.position.z)) {
+                                        camera.position.z,
+                                        NULL)) {
         fprintf(stderr, "world_init_infinite_procedural failed\n");
         renderer_shutdown(ctx);
         return 1;

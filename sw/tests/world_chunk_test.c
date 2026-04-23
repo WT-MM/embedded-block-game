@@ -1,4 +1,8 @@
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "block_types.h"
 #include "world.h"
@@ -20,20 +24,59 @@ static int expected_loaded_chunks(int render_distance)
     return diameter * diameter;
 }
 
+static void cleanup_temp_world_dir(const char *world_dir)
+{
+    char path[WORLD_SAVE_PATH_MAX];
+    DIR *chunks_dir;
+    struct dirent *entry;
+
+    if (!world_dir || world_dir[0] == '\0')
+        return;
+
+    snprintf(path, sizeof(path), "%s/chunks", world_dir);
+    chunks_dir = opendir(path);
+    if (chunks_dir) {
+        while ((entry = readdir(chunks_dir)) != NULL) {
+            char chunk_path[WORLD_SAVE_PATH_MAX];
+
+            if (strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0)
+                continue;
+
+            snprintf(chunk_path, sizeof(chunk_path), "%s/%s", path, entry->d_name);
+            unlink(chunk_path);
+        }
+        closedir(chunks_dir);
+        rmdir(path);
+    }
+
+    snprintf(path, sizeof(path), "%s/world.meta", world_dir);
+    unlink(path);
+    rmdir(world_dir);
+}
+
 int main(void)
 {
     VoxelWorld world;
+    VoxelWorld reloaded_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
+    char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
+    char *world_dir;
 
     init_block_types();
     world_init(&world);
+    world_init(&reloaded_world);
+    world_dir = mkdtemp(world_dir_template);
+    if (!world_dir)
+        return check_failed("mkdtemp failed");
 
     if (!world_init_infinite_procedural(&world,
                                         TEST_WORLD_SEED,
                                         12,
                                         TEST_RENDER_DISTANCE,
                                         0.0f,
-                                        0.0f))
+                                        0.0f,
+                                        world_dir))
         return check_failed("initial procedural load failed");
 
     if (world.chunk_count != expected_chunks ||
@@ -107,6 +150,19 @@ int main(void)
         return check_failed("boundary edit did not rebuild multiple meshes");
 
     if (!world_stream_around(&world,
+                             (float)(5 * WORLD_CHUNK_SIZE + 1),
+                             1.0f))
+        return check_failed("eviction stream failed");
+    if (world_get_chunk(&world, 1, 0))
+        return check_failed("edited chunk did not stream out");
+    if (!world_stream_around(&world,
+                             (float)WORLD_CHUNK_SIZE + 1.0f,
+                             1.0f))
+        return check_failed("return stream failed");
+    if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
+        return check_failed("saved block edit did not reload after eviction");
+
+    if (!world_stream_around(&world,
                              (float)(-2 * WORLD_CHUNK_SIZE - 1),
                              (float)(-WORLD_CHUNK_SIZE - 1)))
         return check_failed("negative-coordinate stream failed");
@@ -116,7 +172,23 @@ int main(void)
                         -WORLD_CHUNK_SIZE - 1) == BLOCK_AIR)
         return check_failed("negative-coordinate ground lookup failed");
 
+    if (!world_flush(&world))
+        return check_failed("world_flush failed");
     world_free(&world);
+
+    if (!world_init_infinite_procedural(&reloaded_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        TEST_RENDER_DISTANCE,
+                                        0.0f,
+                                        0.0f,
+                                        world_dir))
+        return check_failed("reload world_init_infinite_procedural failed");
+    if (world_get_block(&reloaded_world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
+        return check_failed("saved block edit did not survive world reload");
+    world_free(&reloaded_world);
+    cleanup_temp_world_dir(world_dir);
+
     printf("world_chunk_test: ok\n");
     return 0;
 }

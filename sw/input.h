@@ -60,6 +60,7 @@ typedef struct {
     bool _grab_pointers;
     bool _forward_tap_armed;
     uint64_t _last_forward_press_ns;
+    uint64_t _last_relative_motion_ns;
 
     int _kbd_fd;
     int _pointer_count;

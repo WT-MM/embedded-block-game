@@ -13,6 +13,7 @@
 #define ABS_MOUSE_SPAN_X 640.0f
 #define ABS_MOUSE_SPAN_Y 480.0f
 #define DOUBLE_TAP_SPRINT_NS 275000000ULL
+#define ABS_SUPPRESS_AFTER_REL_NS 50000000ULL
 #define BITS_PER_LONG   (sizeof(long) * 8)
 #define BIT_WORD(nr)    ((nr) / BITS_PER_LONG)
 #define BIT_MASK(nr)    (1UL << ((nr) % BITS_PER_LONG))
@@ -96,6 +97,17 @@ static uint64_t monotonic_time_ns(void)
 
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static bool absolute_motion_allowed(const InputState *inp)
+{
+    uint64_t now_ns;
+
+    if (!inp || inp->_last_relative_motion_ns == 0)
+        return true;
+
+    now_ns = monotonic_time_ns();
+    return now_ns - inp->_last_relative_motion_ns > ABS_SUPPRESS_AFTER_REL_NS;
 }
 
 static int find_kbd(void)
@@ -221,20 +233,31 @@ static void scan_pointers(InputState *inp, InputPointerMode wanted_mode)
 
 static void find_pointers(InputState *inp)
 {
-    bool allow_absolute_with_relative = env_flag_enabled("VOXEL_MOUSE_ALLOW_ABS");
+    bool allow_absolute_with_relative =
+        env_flag_enabled_default_true("VOXEL_MOUSE_ALLOW_ABS");
     int pointers_before = inp->_pointer_count;
+    int pointers_after_relative;
 
     scan_pointers(inp, INPUT_POINTER_REL);
+    pointers_after_relative = inp->_pointer_count;
     if (inp->_pointer_count == pointers_before ||
         allow_absolute_with_relative) {
         scan_pointers(inp, INPUT_POINTER_ABS);
     }
 
-    if (inp->_pointer_count > pointers_before &&
-        inp->_pointers[pointers_before].mode == INPUT_POINTER_REL &&
-        !allow_absolute_with_relative) {
+    if (pointers_after_relative > pointers_before &&
+        inp->_pointer_count > pointers_after_relative) {
         fprintf(stderr,
-                "input: relative pointer mode active; absolute tablet fallback disabled\n");
+                "input: hybrid pointer mode active; relative motion preferred with absolute fallback\n");
+    } else if (inp->_pointer_count > pointers_before &&
+               inp->_pointers[pointers_before].mode == INPUT_POINTER_REL &&
+               !allow_absolute_with_relative) {
+        fprintf(stderr,
+                "input: relative pointer mode active; absolute tablet input disabled by config\n");
+    } else if (inp->_pointer_count > pointers_before &&
+               inp->_pointers[pointers_before].mode == INPUT_POINTER_REL) {
+        fprintf(stderr,
+                "input: relative pointer mode active\n");
     } else if (inp->_pointer_count > pointers_before &&
                inp->_pointers[pointers_before].mode == INPUT_POINTER_ABS) {
         fprintf(stderr,
@@ -428,32 +451,47 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             default: break;
             }
         } else if (pointer && pointer->mode == INPUT_POINTER_REL && ev.type == EV_REL) {
+            if (ev.value != 0)
+                inp->_last_relative_motion_ns = monotonic_time_ns();
+
             if (ev.code == REL_X)
                 inp->mouse_dx += (float)ev.value * inp->_mouse_scale_x;
             if (ev.code == REL_Y)
                 inp->mouse_dy += (float)ev.value * inp->_mouse_scale_y;
         } else if (pointer && pointer->mode == INPUT_POINTER_ABS && ev.type == EV_ABS) {
             if (ev.code == ABS_X) {
+                float delta = 0.0f;
+                bool have_delta = false;
+
                 if (pointer->have_abs_x) {
-                    inp->mouse_dx += scale_abs_delta(ev.value - pointer->last_abs_x,
-                                                     pointer->abs_x_min,
-                                                     pointer->abs_x_max,
-                                                     ABS_MOUSE_SPAN_X) *
-                                     inp->_mouse_scale_x;
+                    delta = scale_abs_delta(ev.value - pointer->last_abs_x,
+                                            pointer->abs_x_min,
+                                            pointer->abs_x_max,
+                                            ABS_MOUSE_SPAN_X) *
+                            inp->_mouse_scale_x;
+                    have_delta = true;
                 }
                 pointer->last_abs_x = ev.value;
                 pointer->have_abs_x = true;
+                if (have_delta && absolute_motion_allowed(inp))
+                    inp->mouse_dx += delta;
             }
             if (ev.code == ABS_Y) {
+                float delta = 0.0f;
+                bool have_delta = false;
+
                 if (pointer->have_abs_y) {
-                    inp->mouse_dy += scale_abs_delta(ev.value - pointer->last_abs_y,
-                                                     pointer->abs_y_min,
-                                                     pointer->abs_y_max,
-                                                     ABS_MOUSE_SPAN_Y) *
-                                     inp->_mouse_scale_y;
+                    delta = scale_abs_delta(ev.value - pointer->last_abs_y,
+                                            pointer->abs_y_min,
+                                            pointer->abs_y_max,
+                                            ABS_MOUSE_SPAN_Y) *
+                            inp->_mouse_scale_y;
+                    have_delta = true;
                 }
                 pointer->last_abs_y = ev.value;
                 pointer->have_abs_y = true;
+                if (have_delta && absolute_motion_allowed(inp))
+                    inp->mouse_dy += delta;
             }
         }
     }

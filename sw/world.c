@@ -284,23 +284,44 @@ static void mark_chunk_and_neighbors_dirty(VoxelWorld *world, int chunk_x, int c
     mark_chunk_coord_dirty(world, chunk_x, chunk_z + 1);
 }
 
-static void mark_window_perimeter_dirty(VoxelWorld *world,
-                                        int origin_chunk_x,
-                                        int origin_chunk_z,
-                                        int diameter)
+/*
+ * A chunk needs re-meshing when one of its neighbors has been added or removed
+ * since its last mesh, because an unloaded neighbor shows up as AIR in
+ * `world_get_block`, which changes face-exposure. `mark_chunk_and_neighbors_dirty`
+ * already covers every chunk adjacent to a newly *added* chunk (the leading-edge
+ * perimeter). This function covers the mirror case: chunks on the *trailing*
+ * edges whose outer neighbor was just dropped when the window shifted. The old
+ * implementation dirtied all four edges unconditionally, which redundantly
+ * re-meshed the leading and perpendicular sides too.
+ */
+static void mark_trailing_perimeter_dirty(VoxelWorld *world,
+                                          int old_origin_x,
+                                          int old_origin_z,
+                                          int new_origin_x,
+                                          int new_origin_z,
+                                          int diameter)
 {
-    int max_chunk_x = origin_chunk_x + diameter - 1;
-    int max_chunk_z = origin_chunk_z + diameter - 1;
+    bool west_lost_neighbor  = old_origin_x < new_origin_x;
+    bool east_lost_neighbor  = old_origin_x > new_origin_x;
+    bool north_lost_neighbor = old_origin_z < new_origin_z;
+    bool south_lost_neighbor = old_origin_z > new_origin_z;
+
+    if (!west_lost_neighbor && !east_lost_neighbor &&
+        !north_lost_neighbor && !south_lost_neighbor)
+        return;
+
+    int max_chunk_x = new_origin_x + diameter - 1;
+    int max_chunk_z = new_origin_z + diameter - 1;
 
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
 
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
-        if (chunk->chunk_x == origin_chunk_x ||
-            chunk->chunk_x == max_chunk_x ||
-            chunk->chunk_z == origin_chunk_z ||
-            chunk->chunk_z == max_chunk_z)
+        if ((west_lost_neighbor  && chunk->chunk_x == new_origin_x) ||
+            (east_lost_neighbor  && chunk->chunk_x == max_chunk_x) ||
+            (north_lost_neighbor && chunk->chunk_z == new_origin_z) ||
+            (south_lost_neighbor && chunk->chunk_z == max_chunk_z))
             mark_chunk_mesh_dirty(chunk);
     }
 }
@@ -803,6 +824,9 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     if (world->stream_epoch == 0)
         world->stream_epoch = 1;
 
+    int old_origin_x = world->origin_chunk_x;
+    int old_origin_z = world->origin_chunk_z;
+
     retain_chunks_in_window(world, origin_chunk_x, origin_chunk_z, diameter);
     if (!rebuild_chunk_lookup(world))
         return false;
@@ -834,7 +858,10 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
         }
     }
 
-    mark_window_perimeter_dirty(world, origin_chunk_x, origin_chunk_z, diameter);
+    mark_trailing_perimeter_dirty(world,
+                                  old_origin_x, old_origin_z,
+                                  origin_chunk_x, origin_chunk_z,
+                                  diameter);
     mark_near_far_transitions_dirty(world);
     return rebuild_dirty_chunk_meshes(world);
 }

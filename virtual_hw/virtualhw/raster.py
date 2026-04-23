@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from array import array
+import os
 from collections.abc import Iterable
 from pathlib import Path
+
+import numpy as np
 
 from .protocol import (
     QUAD_FLAG_ALPHA_KEY,
@@ -34,6 +36,25 @@ RECIP_LUT = tuple(
     round(Q32 / (Q16 + index * RECIP_LUT_STEP))
     for index in range(RECIP_LUT_SIZE)
 )
+RECIP_LUT_NP = np.asarray(RECIP_LUT, dtype=np.int64)
+
+# JIT dispatch. Set VIRTUALHW_JIT=0 to force the pure-Python path.
+_JIT_REQUEST = os.environ.get("VIRTUALHW_JIT", "1") != "0"
+try:
+    if _JIT_REQUEST:
+        from numba import njit as _njit  # type: ignore
+
+        JIT_ENABLED = True
+    else:  # pragma: no cover - explicit opt-out
+        JIT_ENABLED = False
+except ImportError:  # pragma: no cover - numba missing
+    JIT_ENABLED = False
+
+if JIT_ENABLED:
+    _kernel_jit = _njit(cache=True)
+else:
+    def _kernel_jit(fn):
+        return fn
 
 
 def apply_light_bank(color: int, flags: int) -> int:
@@ -85,116 +106,114 @@ def blend_rgb565(src: int, dst: int, alpha: int) -> int:
     return ((out_r & 0x1F) << 11) | ((out_g & 0x3F) << 5) | (out_b & 0x1F)
 
 
-def _clamp_x(value: int) -> int:
-    if value < 0:
+# ---------------------------------------------------------------------------
+# Numba-compatible kernel. Helpers below are intentionally written in a subset
+# of Python that Numba can compile: no dataclasses, no tuples as return values
+# containing mixed types, no str / bit_length() calls, only primitives and
+# numpy arrays.
+# ---------------------------------------------------------------------------
+
+
+@_kernel_jit
+def _k_apply_light_bank(color: int, flags: int) -> int:
+    if color == 0:
         return 0
-    if value > 319:
-        return 319
-    return value
+    bank = (flags & 0x30) >> 4  # QUAD_LIGHT_MASK >> QUAD_LIGHT_SHIFT
+    if bank == 0 or color >= 64:
+        return color
+    return (bank << 6) | color
 
 
-def _clamp_y(value: int) -> int:
-    if value < 0:
-        return 0
-    if value > 239:
-        return 239
-    return value
+@_kernel_jit
+def _k_blend_rgb565(src: int, dst: int, alpha: int) -> int:
+    src_r = (src >> 11) & 0x1F
+    src_g = (src >> 5) & 0x3F
+    src_b = src & 0x1F
+    dst_r = (dst >> 11) & 0x1F
+    dst_g = (dst >> 5) & 0x3F
+    dst_b = dst & 0x1F
+
+    if alpha == 1:
+        out_r = ((src_r * 3) + dst_r + 2) >> 2
+        out_g = ((src_g * 3) + dst_g + 2) >> 2
+        out_b = ((src_b * 3) + dst_b + 2) >> 2
+    elif alpha == 2:
+        out_r = (src_r + dst_r + 1) >> 1
+        out_g = (src_g + dst_g + 1) >> 1
+        out_b = (src_b + dst_b + 1) >> 1
+    elif alpha == 3:
+        out_r = (src_r + (dst_r * 3) + 2) >> 2
+        out_g = (src_g + (dst_g * 3) + 2) >> 2
+        out_b = (src_b + (dst_b * 3) + 2) >> 2
+    else:
+        return src & 0xFFFF
+    return ((out_r & 0x1F) << 11) | ((out_g & 0x3F) << 5) | (out_b & 0x1F)
 
 
-def _clamp_z(value: int) -> int:
-    if value < 0:
-        return 0
-    if value > CLEAR_DEPTH:
-        return CLEAR_DEPTH
-    return value
-
-
-def _clamp_s32(value: int) -> int:
-    if value > I32_MAX:
-        return I32_MAX
-    if value < I32_MIN:
-        return I32_MIN
-    return value
-
-
-def _clamp_pos_u32(value: int) -> int:
-    if value <= 0:
-        return 0
-    if value > I32_MAX:
-        return I32_MAX
-    return value
-
-
-def _to_signed32(value: int) -> int:
-    value &= U32_MASK
-    if value & (1 << 31):
-        return value - (1 << 32)
-    return value
-
-
-def _inside_edges(edges, x: int, y: int) -> bool:
-    for a_coef, b_coef, c_coef in edges:
-        if a_coef * x + b_coef * y + c_coef < 0:
-            return False
-    return True
-
-
-def _edges_cover_bbox(edges, x_min: int, y_min: int, x_max: int, y_max: int) -> bool:
-    return (
-        _inside_edges(edges, x_min, y_min)
-        and _inside_edges(edges, x_max, y_min)
-        and _inside_edges(edges, x_min, y_max)
-        and _inside_edges(edges, x_max, y_max)
-    )
-
-
-def _msb_index32(value: int) -> int:
+@_kernel_jit
+def _k_msb_index32(value: int) -> int:
+    # Equivalent to value.bit_length() - 1 for nonzero inputs, which Numba
+    # does not support. Loop bound is at most 32.
     if value == 0:
         return 0
-    return value.bit_length() - 1
+    idx = 0
+    v = value
+    while v > 1:
+        v >>= 1
+        idx += 1
+    return idx
 
 
-def _reciprocal_q16_16(iw_q: int) -> int:
-    """Return the FPGA reciprocal-unit result for Q16.16 1/w."""
-
-    iw_q &= U32_MASK
+@_kernel_jit
+def _k_reciprocal_q16_16(iw_q: int, recip_lut) -> int:
+    iw_q &= 0xFFFF_FFFF
     if iw_q == 0:
         return 0
 
-    iw_msb = _msb_index32(iw_q)
+    iw_msb = _k_msb_index32(iw_q)
     if iw_msb >= 16:
         iw_norm_q = iw_q >> (iw_msb - 16)
     else:
-        iw_norm_q = (iw_q << (16 - iw_msb)) & U32_MASK
+        iw_norm_q = (iw_q << (16 - iw_msb)) & 0xFFFF_FFFF
 
     phase = iw_norm_q & 0xFFFF
     lut_idx = phase >> 6
     lut_frac = phase & 0x3F
-    w_norm_lo = RECIP_LUT[lut_idx]
-    w_norm_hi = RECIP_LUT[lut_idx + 1]
+    w_norm_lo = recip_lut[lut_idx]
+    w_norm_hi = recip_lut[lut_idx + 1]
     interp_step = ((w_norm_lo - w_norm_hi) * lut_frac + 32) >> 6
-    w_norm_q = (w_norm_lo - interp_step) & U32_MASK
+    w_norm_q = (w_norm_lo - interp_step) & 0xFFFF_FFFF
 
     if iw_msb >= 16:
-        return (w_norm_q >> (iw_msb - 16)) & U32_MASK
-    return (w_norm_q << (16 - iw_msb)) & U32_MASK
+        return (w_norm_q >> (iw_msb - 16)) & 0xFFFF_FFFF
+    return (w_norm_q << (16 - iw_msb)) & 0xFFFF_FFFF
 
 
-def _texture_coord_from_product(value: int, repeat: bool = False) -> int:
+@_kernel_jit
+def _k_to_signed32(value: int) -> int:
+    value &= 0xFFFF_FFFF
+    if value & 0x8000_0000:
+        return value - 0x1_0000_0000
+    return value
+
+
+@_kernel_jit
+def _k_texture_coord(value: int, repeat: int) -> int:
     if value <= 0:
         return 0
-    if repeat:
+    if repeat != 0:
         return (value >> 32) & 0xF
-    if value >= TEXTURE_COORD_MAX_Q32:
-        return TEXTURE_TILE_SIZE - 1
+    if value >= (16 << 32):
+        return 15
     return (value >> 32) & 0xF
 
 
-def _apply_fog_rgb565(
+@_kernel_jit
+def _k_apply_fog_rgb565(
     src_rgb565: int,
     fog_rgb565: int,
     flags: int,
-    fog_enabled: bool,
+    fog_enabled: int,
     fog_start: int,
     fog_end: int,
     fog_inv_proj_sq: int,
@@ -202,18 +221,13 @@ def _apply_fog_rgb565(
     x: int,
     y: int,
 ) -> int:
-    if (
-        not fog_enabled
-        or not (flags & QUAD_FLAG_FOG)
-        or fog_end <= fog_start
-        or w_q16_16 <= 0
-    ):
+    if fog_enabled == 0 or (flags & 0x8) == 0 or fog_end <= fog_start or w_q16_16 <= 0:
         return src_rgb565
 
     dx = x - 160
     dy = 120 - y
     radial_sq = dx * dx + dy * dy
-    radial_sq_q16 = (radial_sq * fog_inv_proj_sq) & U32_MASK
+    radial_sq_q16 = (radial_sq * fog_inv_proj_sq) & 0xFFFF_FFFF
     ray_scale_q16 = 65536 + ((radial_sq_q16 * 3) >> 3)
     radial_q8_8 = ((w_q16_16 * ray_scale_q16) >> 24) & 0xFFFF
 
@@ -233,7 +247,221 @@ def _apply_fog_rgb565(
     else:
         fog_alpha = 3
 
-    return blend_rgb565(src_rgb565, fog_rgb565, fog_alpha)
+    return _k_blend_rgb565(src_rgb565, fog_rgb565, fog_alpha)
+
+
+@_kernel_jit
+def _k_rasterize_quad(
+    back_buffer,
+    z_buffer,
+    width: int,
+    height: int,
+    palette_rgb565,
+    textures,
+    recip_lut,
+    fog_enabled: int,
+    fog_start: int,
+    fog_end: int,
+    fog_color_rgb565: int,
+    fog_inv_proj_sq: int,
+    x_min: int,
+    y_min: int,
+    x_max: int,
+    y_max: int,
+    edges,  # shape (4, 3), int64
+    z0: int,
+    dz_dx: int,
+    dz_dy: int,
+    tex_or_color: int,
+    flags: int,
+    has_uv: int,
+    uv,  # shape (9,), int64; ignored when has_uv == 0
+) -> None:
+    fb_x_limit = width - 1 if width - 1 < 319 else 319
+    fb_y_limit = height - 1 if height - 1 < 239 else 239
+
+    if x_min < 0:
+        x_min = 0
+    elif x_min > fb_x_limit:
+        x_min = fb_x_limit
+    if y_min < 0:
+        y_min = 0
+    elif y_min > fb_y_limit:
+        y_min = fb_y_limit
+    if x_max < 0:
+        x_max = 0
+    elif x_max > fb_x_limit:
+        x_max = fb_x_limit
+    if y_max < 0:
+        y_max = 0
+    elif y_max > fb_y_limit:
+        y_max = fb_y_limit
+
+    if x_min > x_max or y_min > y_max:
+        return
+
+    textured = 1 if (flags & 0x1) != 0 else 0
+    ztest = 1 if (flags & 0x2) != 0 else 0
+    alpha_key = 1 if (flags & 0x4) != 0 else 0
+    fog_flag = 1 if (flags & 0x8) != 0 else 0
+    alpha = (flags & 0xC0) >> 6
+
+    a0 = edges[0, 0]; b0 = edges[0, 1]; c0 = edges[0, 2]
+    a1 = edges[1, 0]; b1 = edges[1, 1]; c1 = edges[1, 2]
+    a2 = edges[2, 0]; b2 = edges[2, 1]; c2 = edges[2, 2]
+    a3 = edges[3, 0]; b3 = edges[3, 1]; c3 = edges[3, 2]
+
+    # Opaque, non-textured, no ztest, no fog, edges cover bbox -> scanline fill.
+    if textured == 0 and ztest == 0 and alpha == 0 and fog_flag == 0:
+        covers = 1
+        for (xx, yy) in ((x_min, y_min), (x_max, y_min), (x_min, y_max), (x_max, y_max)):
+            if a0 * xx + b0 * yy + c0 < 0:
+                covers = 0
+            elif a1 * xx + b1 * yy + c1 < 0:
+                covers = 0
+            elif a2 * xx + b2 * yy + c2 < 0:
+                covers = 0
+            elif a3 * xx + b3 * yy + c3 < 0:
+                covers = 0
+        if covers == 1:
+            color_index = _k_apply_light_bank(tex_or_color, flags)
+            src_rgb565 = palette_rgb565[color_index]
+            for y in range(y_min, y_max + 1):
+                row_start = y * width
+                for x in range(x_min, x_max + 1):
+                    back_buffer[row_start + x] = src_rgb565
+            return
+
+    if textured != 0:
+        u_over_w_0 = uv[0]
+        u_over_w_dx = uv[1]
+        u_over_w_dy = uv[2]
+        v_over_w_0 = uv[3]
+        v_over_w_dx = uv[4]
+        v_over_w_dy = uv[5]
+        one_over_w_0 = uv[6]
+        one_over_w_dx = uv[7]
+        one_over_w_dy = uv[8]
+        tile_offset = (tex_or_color & 0x3F) << 8
+        repeat_uv = 1 if (tex_or_color & 0x40) != 0 else 0
+    else:
+        u_over_w_0 = 0
+        u_over_w_dx = 0
+        u_over_w_dy = 0
+        v_over_w_0 = 0
+        v_over_w_dx = 0
+        v_over_w_dy = 0
+        one_over_w_0 = 0
+        one_over_w_dx = 0
+        one_over_w_dy = 0
+        tile_offset = 0
+        repeat_uv = 0
+        color_index_flat = _k_apply_light_bank(tex_or_color, flags)
+
+    e0_row = a0 * x_min + b0 * y_min + c0
+    e1_row = a1 * x_min + b1 * y_min + c1
+    e2_row = a2 * x_min + b2 * y_min + c2
+    e3_row = a3 * x_min + b3 * y_min + c3
+    z_row = z0
+    uw_row = u_over_w_0
+    vw_row = v_over_w_0
+    iw_row = one_over_w_0
+
+    for y in range(y_min, y_max + 1):
+        row_base = y * width
+        e0 = e0_row
+        e1 = e1_row
+        e2 = e2_row
+        e3 = e3_row
+        z_raw = z_row
+        uw_raw = uw_row
+        vw_raw = vw_row
+        iw_raw = iw_row
+
+        for x in range(x_min, x_max + 1):
+            if e0 >= 0 and e1 >= 0 and e2 >= 0 and e3 >= 0:
+                pixel_index = row_base + x
+                z_value = z_raw
+                if z_value < 0:
+                    z_value = 0
+                elif z_value > 0xFFFF:
+                    z_value = 0xFFFF
+
+                if ztest == 0 or z_value < z_buffer[pixel_index]:
+                    w_q16_16 = 0
+                    transparent = 0
+                    if textured != 0:
+                        uw = uw_raw
+                        if uw > 0x7FFF_FFFF:
+                            uw = 0x7FFF_FFFF
+                        elif uw < -0x8000_0000:
+                            uw = -0x8000_0000
+                        vw = vw_raw
+                        if vw > 0x7FFF_FFFF:
+                            vw = 0x7FFF_FFFF
+                        elif vw < -0x8000_0000:
+                            vw = -0x8000_0000
+                        iw = iw_raw
+                        if iw <= 0:
+                            iw = 0
+                        elif iw > 0x7FFF_FFFF:
+                            iw = 0x7FFF_FFFF
+                        w_q16_16 = _k_reciprocal_q16_16(iw, recip_lut)
+                        tex_u = _k_texture_coord(
+                            _k_to_signed32(uw) * _k_to_signed32(w_q16_16),
+                            repeat_uv,
+                        )
+                        tex_v = _k_texture_coord(
+                            _k_to_signed32(vw) * _k_to_signed32(w_q16_16),
+                            repeat_uv,
+                        )
+                        raw_color = textures[tile_offset | (tex_v << 4) | tex_u]
+                        if alpha_key != 0 and raw_color == 0:
+                            transparent = 1
+                        else:
+                            color_index = _k_apply_light_bank(raw_color, flags)
+                    else:
+                        color_index = color_index_flat
+
+                    if transparent == 0:
+                        if ztest != 0:
+                            z_buffer[pixel_index] = z_value
+
+                        src_rgb565 = palette_rgb565[color_index]
+                        src_rgb565 = _k_apply_fog_rgb565(
+                            src_rgb565,
+                            fog_color_rgb565,
+                            flags,
+                            fog_enabled,
+                            fog_start,
+                            fog_end,
+                            fog_inv_proj_sq,
+                            w_q16_16,
+                            x,
+                            y,
+                        )
+                        dst_rgb565 = back_buffer[pixel_index]
+                        back_buffer[pixel_index] = _k_blend_rgb565(
+                            src_rgb565, dst_rgb565, alpha
+                        )
+
+            e0 += a0
+            e1 += a1
+            e2 += a2
+            e3 += a3
+            z_raw += dz_dx
+            uw_raw += u_over_w_dx
+            vw_raw += v_over_w_dx
+            iw_raw += one_over_w_dx
+
+        e0_row += b0
+        e1_row += b1
+        e2_row += b2
+        e3_row += b3
+        z_row += dz_dy
+        uw_row += u_over_w_dy
+        vw_row += v_over_w_dy
+        iw_row += one_over_w_dy
 
 
 def load_texture_mif(path: str | Path) -> bytes:
@@ -347,6 +575,9 @@ def load_texture_mif(path: str | Path) -> bytes:
     return bytes(data)
 
 
+_EMPTY_UV_NP = np.zeros(9, dtype=np.int64)
+
+
 class VirtualGPU:
     def __init__(
         self, width: int = 320, height: int = 240, textures: bytes | None = None
@@ -356,12 +587,11 @@ class VirtualGPU:
         self.pixel_count = width * height
         # Framebuffers hold resolved RGB565 pixels to match the real HW's
         # translucent draw path.
-        self.front_buffer = array("H", [0]) * self.pixel_count
-        self.back_buffer = array("H", [0]) * self.pixel_count
-        self._cleared_depth = array("H", [CLEAR_DEPTH]) * self.pixel_count
-        self.z_buffer = self._cleared_depth[:]
+        self.front_buffer = np.zeros(self.pixel_count, dtype=np.uint16)
+        self.back_buffer = np.zeros(self.pixel_count, dtype=np.uint16)
+        self.z_buffer = np.full(self.pixel_count, CLEAR_DEPTH, dtype=np.uint16)
         self.palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
-        self.palette_rgb565: list[int] = [0] * 256
+        self.palette_rgb565 = np.zeros(256, dtype=np.uint16)
         self.frame_count = 0
         self.vsync_latch = 0
         self.fog_start = 0
@@ -376,13 +606,13 @@ class VirtualGPU:
                 f"texture atlas must contain {TEXTURE_BYTES} bytes, got {len(textures)}"
             )
         self.textures = textures
+        self._textures_np = np.frombuffer(textures, dtype=np.uint8)
 
     def clear(self) -> None:
         # The real HW's ST_CLEAR sweep resolves palette index 0 into the
         # RGB565 framebuffer.
-        clear_rgb = self.palette_rgb565[0]
-        self.back_buffer[:] = array("H", [clear_rgb]) * self.pixel_count
-        self.z_buffer[:] = self._cleared_depth
+        self.back_buffer[:] = self.palette_rgb565[0]
+        self.z_buffer[:] = CLEAR_DEPTH
         self.vsync_latch = 0
 
     def set_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
@@ -423,148 +653,37 @@ class VirtualGPU:
         return raw, 0, busy, fifo_full, fifo_empty, self.vsync_latch
 
     def _rasterize_quad(self, quad: QuadDesc) -> None:
-        fb_x_limit = min(self.width - 1, 319)
-        fb_y_limit = min(self.height - 1, 239)
-        x_min = min(_clamp_x(quad.x_min), fb_x_limit)
-        y_min = min(_clamp_y(quad.y_min), fb_y_limit)
-        x_max = min(_clamp_x(quad.x_max), fb_x_limit)
-        y_max = min(_clamp_y(quad.y_max), fb_y_limit)
-
-        if x_min > x_max or y_min > y_max:
-            return
-
-        width = self.width
-        z0 = quad.z0
-        dz_dx = quad.dz_dx
-        dz_dy = quad.dz_dy
-        edges = quad.edges
-        textured = (quad.flags & QUAD_FLAG_TEX) != 0
-        ztest = (quad.flags & QUAD_FLAG_ZTEST) != 0
-        alpha_key = (quad.flags & QUAD_FLAG_ALPHA_KEY) != 0
-        alpha = (quad.flags & QUAD_ALPHA_MASK) >> QUAD_ALPHA_SHIFT
-
-        if textured:
-            if quad.uv is None:
-                raise ValueError("textured quad is missing a UV block")
-            (
-                u_over_w_0,
-                u_over_w_dx,
-                u_over_w_dy,
-                v_over_w_0,
-                v_over_w_dx,
-                v_over_w_dy,
-                one_over_w_0,
-                one_over_w_dx,
-                one_over_w_dy,
-            ) = quad.uv
-            tile_offset = (quad.tex_or_color & 0x3F) << 8
-            repeat_uv = (quad.tex_or_color & TEX_REPEAT_UV) != 0
+        edges = np.asarray(quad.edges, dtype=np.int64)
+        if quad.uv is not None:
+            uv = np.asarray(quad.uv, dtype=np.int64)
+            has_uv = 1
         else:
-            color_index = apply_light_bank(quad.tex_or_color, quad.flags)
+            uv = _EMPTY_UV_NP
+            has_uv = 0
 
-        if (
-            not textured
-            and not ztest
-            and alpha == 0
-            and not (quad.flags & QUAD_FLAG_FOG)
-            and _edges_cover_bbox(edges, x_min, y_min, x_max, y_max)
-        ):
-            src_rgb565 = self.palette_rgb565[color_index]
-            span = x_max - x_min + 1
-            fill_row = array("H", [src_rgb565]) * span
-            for y in range(y_min, y_max + 1):
-                row_start = y * width + x_min
-                self.back_buffer[row_start : row_start + span] = fill_row
-            return
-
-        (a0, b0, c0), (a1, b1, c1), (a2, b2, c2), (a3, b3, c3) = edges
-        e0_row = a0 * x_min + b0 * y_min + c0
-        e1_row = a1 * x_min + b1 * y_min + c1
-        e2_row = a2 * x_min + b2 * y_min + c2
-        e3_row = a3 * x_min + b3 * y_min + c3
-        z_row = z0
-        if textured:
-            uw_row = u_over_w_0
-            vw_row = v_over_w_0
-            iw_row = one_over_w_0
-
-        for y in range(y_min, y_max + 1):
-            row_base = y * width
-            e0 = e0_row
-            e1 = e1_row
-            e2 = e2_row
-            e3 = e3_row
-            z_raw = z_row
-            if textured:
-                uw_raw = uw_row
-                vw_raw = vw_row
-                iw_raw = iw_row
-
-            for x in range(x_min, x_max + 1):
-                if e0 >= 0 and e1 >= 0 and e2 >= 0 and e3 >= 0:
-                    pixel_index = row_base + x
-                    z_value = _clamp_z(z_raw)
-
-                    if not ztest or z_value < self.z_buffer[pixel_index]:
-                        w_q16_16 = 0
-                        transparent = False
-                        if textured:
-                            uw = _clamp_s32(uw_raw)
-                            vw = _clamp_s32(vw_raw)
-                            iw = _clamp_pos_u32(iw_raw)
-                            w_q16_16 = _reciprocal_q16_16(iw)
-                            tex_u = _texture_coord_from_product(
-                                _to_signed32(uw) * _to_signed32(w_q16_16),
-                                repeat_uv,
-                            )
-                            tex_v = _texture_coord_from_product(
-                                _to_signed32(vw) * _to_signed32(w_q16_16),
-                                repeat_uv,
-                            )
-                            raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
-                            if alpha_key and raw_color == 0:
-                                transparent = True
-                            else:
-                                color_index = apply_light_bank(raw_color, quad.flags)
-
-                        if not transparent:
-                            if ztest:
-                                self.z_buffer[pixel_index] = z_value
-
-                            src_rgb565 = self.palette_rgb565[color_index]
-                            src_rgb565 = _apply_fog_rgb565(
-                                src_rgb565,
-                                self.palette_rgb565[self.fog_color],
-                                quad.flags,
-                                self.fog_enabled,
-                                self.fog_start,
-                                self.fog_end,
-                                self.fog_inv_proj_sq,
-                                w_q16_16,
-                                x,
-                                y,
-                            )
-                            dst_rgb565 = self.back_buffer[pixel_index]
-                            self.back_buffer[pixel_index] = blend_rgb565(
-                                src_rgb565, dst_rgb565, alpha
-                            )
-
-                e0 += a0
-                e1 += a1
-                e2 += a2
-                e3 += a3
-                z_raw += dz_dx
-                if textured:
-                    uw_raw += u_over_w_dx
-                    vw_raw += v_over_w_dx
-                    iw_raw += one_over_w_dx
-
-            e0_row += b0
-            e1_row += b1
-            e2_row += b2
-            e3_row += b3
-            z_row += dz_dy
-            if textured:
-                uw_row += u_over_w_dy
-                vw_row += v_over_w_dy
-                iw_row += one_over_w_dy
+        _k_rasterize_quad(
+            self.back_buffer,
+            self.z_buffer,
+            self.width,
+            self.height,
+            self.palette_rgb565,
+            self._textures_np,
+            RECIP_LUT_NP,
+            1 if self.fog_enabled else 0,
+            self.fog_start,
+            self.fog_end,
+            int(self.palette_rgb565[self.fog_color]),
+            self.fog_inv_proj_sq,
+            quad.x_min,
+            quad.y_min,
+            quad.x_max,
+            quad.y_max,
+            edges,
+            quad.z0,
+            quad.dz_dx,
+            quad.dz_dy,
+            quad.tex_or_color,
+            quad.flags,
+            has_uv,
+            uv,
+        )

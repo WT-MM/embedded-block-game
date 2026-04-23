@@ -13,6 +13,19 @@ Run With The Game
     uv sync
     uv run virtualhw --scale 4
 
+For the JIT-compiled rasterizer (roughly two orders of magnitude faster on
+the per-pixel path), install the optional `jit` extra once:
+
+    uv sync --extra jit
+    uv run virtualhw --scale 4
+
+The first frame pays a one-time Numba compile cost (~1s); subsequent runs
+reuse the on-disk cache. Set `VIRTUALHW_JIT=0` to force the pure-Python
+reference path — useful when debugging bit-exact divergence against the
+FPGA. You can probe which path is active with:
+
+    uv run python -c "from virtualhw.raster import JIT_ENABLED; print(JIT_ENABLED)"
+
 In another shell:
 
     cd sw

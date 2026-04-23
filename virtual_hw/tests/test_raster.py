@@ -209,7 +209,9 @@ class RasterBehaviorTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(fast.back_buffer, generic.back_buffer)
+        import numpy as np
+
+        self.assertTrue(np.array_equal(fast.back_buffer, generic.back_buffer))
 
     def test_alpha_keyed_transparent_texel_does_not_write_z(self) -> None:
         gpu = VirtualGPU(textures=bytes(TEXTURE_BYTES))

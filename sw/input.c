@@ -242,12 +242,13 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
                 inp->_shift_down = down;
 
-            /* Chat toggle and look keys are always live. ESC closes the
-             * chat when open (below) or quits the game (in the game
-             * branch farther down). */
+            /* Look keys are always live. T opens the chat only when it
+             * is closed — once open, T is a regular letter and ESC or
+             * Enter closes the chat. */
             switch (ev.code) {
             case KEY_T:
-                if (press_edge) inp->chat_toggle_pressed = true;
+                if (press_edge && !inp->_text_mode)
+                    inp->chat_toggle_pressed = true;
                 break;
             case KEY_LEFT:   inp->look_left  = down; break;
             case KEY_RIGHT:  inp->look_right = down; break;
@@ -264,13 +265,12 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
 
             if (inp->_text_mode) {
                 /* Suppress movement/game actions; capture printable text
-                 * and editing keys into the queue. T is reserved for the
-                 * chat toggle above and must not also type a letter. */
+                 * and editing keys into the queue. */
                 if (ev.code == KEY_BACKSPACE && press_or_repeat) {
                     text_queue_push(inp, INPUT_TEXT_BACKSPACE);
                 } else if (ev.code == KEY_ENTER && press_edge) {
                     text_queue_push(inp, INPUT_TEXT_ENTER);
-                } else if (ev.code != KEY_T && press_or_repeat) {
+                } else if (press_or_repeat) {
                     char ch = scancode_to_ascii(ev.code, inp->_shift_down);
                     if (ch)
                         text_queue_push(inp, ch);

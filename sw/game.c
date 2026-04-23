@@ -176,6 +176,8 @@ int main(void)
 
         input_update(&inp);
 
+        chat_tick(&chat, frame_dt);
+
         if (input_consume_chat_toggle(&inp)) {
             chat_toggle(&chat);
             input_set_text_mode(&inp, chat_is_open(&chat));

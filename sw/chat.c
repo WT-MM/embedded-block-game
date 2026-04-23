@@ -8,14 +8,16 @@
 
 #define GLYPH_W        5
 #define GLYPH_H        7
-#define CELL_W         (GLYPH_W * CHAT_TEXT_SCALE + CHAT_TEXT_SCALE) /* 12 at scale 2 */
-#define CELL_H         (GLYPH_H * CHAT_TEXT_SCALE + CHAT_TEXT_SCALE) /* 16 at scale 2 */
+#define CELL_W         (GLYPH_W * CHAT_TEXT_SCALE + CHAT_TEXT_SCALE)
+#define CELL_H         (GLYPH_H * CHAT_TEXT_SCALE + CHAT_TEXT_SCALE)
 
 #define PAL_TEXT       5   /* bright white in default palette */
-#define PAL_BG         0   /* near-black in default palette */
+#define PAL_BG         14  /* medium grey (0x5c5c5c) — reads like Minecraft's bg */
 
 #define CHAT_MARGIN_X  4.0f
 #define CHAT_PAD_Y     3.0f
+
+#define CHAT_FADE_SECONDS 8.0f   /* closed-chat history stays visible this long */
 
 typedef struct {
     char code;
@@ -476,11 +478,28 @@ void chat_toggle(Chat *chat)
     chat->open = !chat->open;
     chat->input_len = 0;
     chat->input[0] = '\0';
+    /* Opening chat always brings history back into view, regardless of how
+     * long ago the last log was. */
+    if (chat->open)
+        chat->age_since_activity = 0.0f;
 }
 
 bool chat_is_open(const Chat *chat)
 {
     return chat->open;
+}
+
+void chat_tick(Chat *chat, float dt)
+{
+    if (!chat) return;
+    if (chat->open) {
+        /* History is always visible while the chat is open. */
+        chat->age_since_activity = 0.0f;
+        return;
+    }
+    chat->age_since_activity += dt;
+    if (chat->age_since_activity > CHAT_FADE_SECONDS * 2.0f)
+        chat->age_since_activity = CHAT_FADE_SECONDS * 2.0f; /* saturate */
 }
 
 static void push_history_line(Chat *chat, const char *line, int len)
@@ -495,6 +514,9 @@ static void push_history_line(Chat *chat, const char *line, int len)
     chat->history_head = (chat->history_head + 1) % CHAT_HISTORY_LINES;
     if (chat->history_count < CHAT_HISTORY_LINES)
         chat->history_count++;
+
+    /* Any new line re-shows the history and restarts the fade timer. */
+    chat->age_since_activity = 0.0f;
 }
 
 void chat_log(Chat *chat, const char *fmt, ...)
@@ -591,15 +613,23 @@ void chat_draw(const Chat *chat, RenderContext *ctx)
     int visible_history = chat->history_count;
     if (visible_history > CHAT_HISTORY_LINES) visible_history = CHAT_HISTORY_LINES;
 
-    if (!chat->open && visible_history == 0) return;
+    /* When chat is closed, history stays visible only for the fade window. */
+    bool show_history = chat->open || (chat->age_since_activity < CHAT_FADE_SECONDS);
+    if (!chat->open && !show_history)
+        return;
+    if (!chat->open && visible_history == 0)
+        return;
 
-    int total_lines = visible_history + (chat->open ? 1 : 0);
+    int rendered_history = show_history ? visible_history : 0;
+    int total_lines = rendered_history + (chat->open ? 1 : 0);
     if (total_lines <= 0) return;
 
     float content_h = (float)(total_lines * CELL_H) + 2.0f * CHAT_PAD_Y;
     float y_bot     = SCREEN_HEIGHT;
     float y_top     = y_bot - content_h;
 
+    /* Background only while the chat is actively open — fading history
+     * shows as bare text, matching Minecraft's floating message style. */
     if (chat->open) {
         renderer_fill_rect(ctx, 0.0f, y_top, SCREEN_WIDTH, y_bot,
                            PAL_BG, QUAD_ALPHA_50);
@@ -607,10 +637,10 @@ void chat_draw(const Chat *chat, RenderContext *ctx)
 
     float input_y = y_bot - (float)CELL_H - CHAT_PAD_Y;
 
-    for (int row = 0; row < visible_history; row++) {
-        int idx = (chat->history_head - visible_history + row + CHAT_HISTORY_LINES * 2) %
+    for (int row = 0; row < rendered_history; row++) {
+        int idx = (chat->history_head - rendered_history + row + CHAT_HISTORY_LINES * 2) %
                   CHAT_HISTORY_LINES;
-        float y = input_y - (float)((visible_history - row) * CELL_H);
+        float y = input_y - (float)((rendered_history - row) * CELL_H);
         draw_line(ctx,
                   chat->history[idx], chat->history_len[idx],
                   CHAT_MARGIN_X, y, PAL_TEXT);

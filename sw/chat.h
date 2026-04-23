@@ -18,11 +18,16 @@ typedef struct {
     int  history_count;  /* min(written, CHAT_HISTORY_LINES) */
     char input[CHAT_LINE_MAX + 1];
     int  input_len;
+    /* Seconds since the last chat_log; drives the closed-chat fade-out. */
+    float age_since_activity;
 } Chat;
 
 void chat_init(Chat *chat);
 void chat_toggle(Chat *chat);
 bool chat_is_open(const Chat *chat);
+
+/* Advance fade timer. Call once per frame with the real-time dt. */
+void chat_tick(Chat *chat, float dt);
 
 /* Printf-style append to the scrollback; visible whether chat is open or not. */
 void chat_log(Chat *chat, const char *fmt, ...)

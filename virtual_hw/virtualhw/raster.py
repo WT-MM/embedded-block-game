@@ -382,9 +382,12 @@ class VirtualGPU:
         self.fog_enabled = bool(enabled)
         self.fog_inv_proj_sq = inv_proj_sq & 0xFFFF
 
-    def submit_quads(self, quads: Iterable[QuadDesc]) -> None:
+    def submit_quads(self, quads: Iterable[QuadDesc]) -> int:
+        count = 0
         for quad in quads:
             self._rasterize_quad(quad)
+            count += 1
+        return count
 
     def flip(self) -> None:
         self.front_buffer, self.back_buffer = self.back_buffer, self.front_buffer

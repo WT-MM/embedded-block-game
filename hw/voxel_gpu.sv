@@ -77,6 +77,8 @@ module voxel_gpu (
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int READ_BURST_WORDS = 64;
+    localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd64;
+    localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
     localparam int SDRAM_ADDR_W    = 25;
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd12;
     localparam logic [24:0] FB_WORDS_25 = 25'd76800;
@@ -399,6 +401,7 @@ module voxel_gpu (
     logic [16:0] copy_pixels_issued;
     logic [16:0] copy_words_written;
     logic        copy_fetch_inflight;
+    logic  [7:0] copy_drain_count;
     logic        copy_word_pending_valid;
     logic [15:0] copy_word_pending;
     logic [24:0] sdram_wr_addr_cfg;
@@ -456,10 +459,12 @@ module voxel_gpu (
     wire        sdram_rd_pop = scan_fill_active && !sdram_rd_empty &&
                                (scan_fill_words_complete < LINE_WORDS_9) &&
                                !scan_fill_chunk_done;
+    // Leave scanout regular SDRAM read slots between copy write bursts.
     wire        copy_can_issue_read =
         (state == ST_COPY) &&
         (copy_pixels_issued < FB_PIXELS) &&
         !copy_fetch_inflight &&
+        (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!copy_word_pending_valid || sdram_wr_push);
     wire        copy_issue_read = copy_can_issue_read;
     wire [8:0]  sdram_wr_length_cfg = (state == ST_COPY) ? COPY_BURST_WORDS_9 : 9'd0;
@@ -1155,6 +1160,7 @@ module voxel_gpu (
         copy_pixels_issued = 17'd0;
         copy_words_written = 17'd0;
         copy_fetch_inflight = 1'b0;
+        copy_drain_count = 8'd0;
         copy_word_pending_valid = 1'b0;
         copy_word_pending = 16'd0;
         sdram_wr_addr_cfg = 25'd0;
@@ -1530,6 +1536,7 @@ module voxel_gpu (
             copy_pixels_issued <= 17'd0;
             copy_words_written <= 17'd0;
             copy_fetch_inflight <= 1'b0;
+            copy_drain_count <= 8'd0;
             copy_word_pending_valid <= 1'b0;
             copy_word_pending <= 16'd0;
             sdram_wr_addr_cfg <= 25'd0;
@@ -1841,6 +1848,7 @@ module voxel_gpu (
                         copy_pixels_issued <= 17'd0;
                         copy_words_written <= 17'd0;
                         copy_fetch_inflight <= 1'b0;
+                        copy_drain_count <= 8'd0;
                         copy_word_pending_valid <= 1'b0;
                         copy_fb_rd_addr <= 17'd0;
                         sdram_wr_addr_cfg <= (~display_sel) ? extmem_back_base_words : extmem_front_base_words;
@@ -2131,9 +2139,17 @@ module voxel_gpu (
                 ST_COPY: begin
                     if ((copy_words_written == FB_WORDS) &&
                         !copy_word_pending_valid &&
-                        !copy_fetch_inflight) begin
-                        state <= ST_IDLE;
-                        copy_complete_pending <= 1'b1;
+                        !copy_fetch_inflight &&
+                        (sdram_wr_use[8:0] == 9'd0)) begin
+                        if (copy_drain_count == COPY_DRAIN_CYCLES) begin
+                            state <= ST_IDLE;
+                            copy_complete_pending <= 1'b1;
+                            copy_drain_count <= 8'd0;
+                        end else begin
+                            copy_drain_count <= copy_drain_count + 8'd1;
+                        end
+                    end else begin
+                        copy_drain_count <= 8'd0;
                     end
                 end
 

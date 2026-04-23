@@ -75,7 +75,7 @@ module voxel_gpu (
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int SDRAM_ADDR_W    = 25;
-    localparam logic [2:0] DRAW_FLUSH_CYCLES = 3'd5;
+    localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd12;
     localparam logic [24:0] FB_WORDS_25 = 25'd76800;
     localparam logic [24:0] LINE_WORDS_25 = 25'd320;
     localparam logic [8:0]  LINE_WORDS_9 = 9'd320;
@@ -141,7 +141,7 @@ module voxel_gpu (
 
     logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
     logic  [5:0] fetch_count;
-    logic  [2:0] draw_flush_count;
+    logic  [3:0] draw_flush_count;
 
     logic [16:0] clear_addr;
     logic [16:0] draw_row_base;
@@ -180,6 +180,61 @@ module voxel_gpu (
     logic signed [31:0] pipe0_uw_q;
     logic signed [31:0] pipe0_vw_q;
     logic [31:0] pipe0_iw_q;
+    logic        recip0_valid;
+    logic        recip0_inside;
+    logic        recip0_ztest;
+    logic        recip0_textured;
+    logic        recip0_alpha_key;
+    logic        recip0_fog;
+    logic  [1:0] recip0_light_bank;
+    logic  [7:0] recip0_tex_or_color;
+    logic [16:0] recip0_addr;
+    logic [15:0] recip0_z;
+    logic  [9:0] recip0_x;
+    logic  [8:0] recip0_y;
+    logic signed [31:0] recip0_uw_q;
+    logic signed [31:0] recip0_vw_q;
+    logic        recip0_iw_zero;
+    logic  [5:0] recip0_iw_msb;
+    logic [31:0] recip0_iw_norm_q;
+    logic        recip1_valid;
+    logic        recip1_inside;
+    logic        recip1_ztest;
+    logic        recip1_textured;
+    logic        recip1_alpha_key;
+    logic        recip1_fog;
+    logic  [1:0] recip1_light_bank;
+    logic  [7:0] recip1_tex_or_color;
+    logic [16:0] recip1_addr;
+    logic [15:0] recip1_z;
+    logic [15:0] recip1_z_ref;
+    logic  [9:0] recip1_x;
+    logic  [8:0] recip1_y;
+    logic signed [31:0] recip1_uw_q;
+    logic signed [31:0] recip1_vw_q;
+    logic        recip1_iw_zero;
+    logic  [5:0] recip1_iw_msb;
+    logic  [5:0] recip1_iw_lut_frac;
+    logic [31:0] recip1_w_norm_lo;
+    logic [31:0] recip1_w_norm_hi;
+    logic        recip2_valid;
+    logic        recip2_inside;
+    logic        recip2_ztest;
+    logic        recip2_textured;
+    logic        recip2_alpha_key;
+    logic        recip2_fog;
+    logic  [1:0] recip2_light_bank;
+    logic  [7:0] recip2_tex_or_color;
+    logic [16:0] recip2_addr;
+    logic [15:0] recip2_z;
+    logic [15:0] recip2_z_ref;
+    logic  [9:0] recip2_x;
+    logic  [8:0] recip2_y;
+    logic signed [31:0] recip2_uw_q;
+    logic signed [31:0] recip2_vw_q;
+    logic        recip2_iw_zero;
+    logic  [5:0] recip2_iw_msb;
+    logic [31:0] recip2_w_norm_q;
     logic        pipe1_valid;
     logic        pipe1_inside;
     logic        pipe1_ztest;
@@ -190,11 +245,28 @@ module voxel_gpu (
     logic  [7:0] pipe1_tex_or_color;
     logic [16:0] pipe1_addr;
     logic [15:0] pipe1_z;
+    logic [15:0] pipe1_z_ref;
     logic  [9:0] pipe1_x;
     logic  [8:0] pipe1_y;
     logic signed [31:0] pipe1_uw_q;
     logic signed [31:0] pipe1_vw_q;
     logic [31:0] pipe1_w_q;
+    logic        tex0_valid;
+    logic        tex0_inside;
+    logic        tex0_ztest;
+    logic        tex0_textured;
+    logic        tex0_alpha_key;
+    logic        tex0_fog;
+    logic  [1:0] tex0_light_bank;
+    logic  [7:0] tex0_tex_or_color;
+    logic [16:0] tex0_addr;
+    logic [15:0] tex0_z;
+    logic [15:0] tex0_z_ref;
+    logic  [9:0] tex0_x;
+    logic  [8:0] tex0_y;
+    logic [31:0] tex0_w_q;
+    logic signed [63:0] tex0_u_prod;
+    logic signed [63:0] tex0_v_prod;
     logic        pipe2_valid;
     logic        pipe2_inside;
     logic        pipe2_ztest;
@@ -224,6 +296,27 @@ module voxel_gpu (
     logic  [9:0] draw_pipe_x;
     logic  [8:0] draw_pipe_y;
     logic [31:0] draw_pipe_w_q;
+    logic        fog0_valid;
+    logic        fog0_pass;
+    logic        fog0_ztest;
+    logic        fog0_fog;
+    logic [16:0] fog0_addr;
+    logic [15:0] fog0_z;
+    logic  [7:0] fog0_color;
+    logic  [9:0] fog0_x;
+    logic  [8:0] fog0_y;
+    logic [31:0] fog0_w_q;
+    logic [33:0] fog0_ray_scale_q16;
+    logic        fog1_valid;
+    logic        fog1_pass;
+    logic        fog1_ztest;
+    logic        fog1_fog;
+    logic [16:0] fog1_addr;
+    logic [15:0] fog1_z;
+    logic  [7:0] fog1_color;
+    logic  [9:0] fog1_x;
+    logic  [8:0] fog1_y;
+    logic [15:0] fog1_radial_q8_8;
     logic        commit_valid;
     logic        commit_pass;
     logic        commit_ztest;
@@ -278,8 +371,10 @@ module voxel_gpu (
     logic [16:0] copy_pixels_issued;
     logic [16:0] copy_words_written;
     logic        copy_fetch_inflight;
+    logic        copy_palette_inflight;
     logic        copy_word_pending_valid;
     logic [15:0] copy_word_pending;
+    logic [23:0] copy_palette_rgb;
     logic [24:0] sdram_wr_addr_cfg;
     logic [24:0] sdram_wr_max_addr_cfg;
     logic        sdram_wr_load_pulse;
@@ -332,6 +427,7 @@ module voxel_gpu (
         (state == ST_COPY) &&
         (copy_pixels_issued < FB_PIXELS) &&
         !copy_fetch_inflight &&
+        !copy_palette_inflight &&
         (!copy_word_pending_valid || sdram_wr_push);
     wire [8:0]  sdram_wr_length_cfg = (state == ST_COPY) ? COPY_BURST_WORDS_9 : 9'd0;
     wire [8:0]  sdram_rd_length_cfg = scan_fill_armed ? LINE_WORDS_9 : 9'd0;
@@ -417,26 +513,24 @@ module voxel_gpu (
                                   (pipe0_iw_msb >= 6'd16) ?
                                   (pipe0_iw_q >> (pipe0_iw_msb - 6'd16)) :
                                   (pipe0_iw_q << (6'd16 - pipe0_iw_msb));
-    wire [15:0] pipe0_iw_phase = pipe0_iw_norm_q[15:0];
-    wire [10:0] pipe0_iw_lut_idx = {1'b0, pipe0_iw_phase[15:6]};
-    wire [5:0] pipe0_iw_lut_frac = pipe0_iw_phase[5:0];
-    wire [31:0] pipe0_w_norm_lo = recip_lut[pipe0_iw_lut_idx];
-    wire [31:0] pipe0_w_norm_hi = recip_lut[pipe0_iw_lut_idx + 11'd1];
-    wire [31:0] pipe0_w_norm_delta = pipe0_w_norm_lo - pipe0_w_norm_hi;
-    wire [37:0] pipe0_w_interp_prod = pipe0_w_norm_delta * pipe0_iw_lut_frac;
-    wire [37:0] pipe0_w_interp_step_ext = (pipe0_w_interp_prod + 38'd32) >> 6;
-    wire [31:0] pipe0_w_interp_step = pipe0_w_interp_step_ext[31:0];
-    wire [31:0] pipe0_w_norm_q = pipe0_w_norm_lo - pipe0_w_interp_step;
-    wire [31:0] pipe0_w_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
-                            (pipe0_iw_msb >= 6'd16) ?
-                            (pipe0_w_norm_q >> (pipe0_iw_msb - 6'd16)) :
-                            (pipe0_w_norm_q << (6'd16 - pipe0_iw_msb));
+    wire [15:0] recip0_iw_phase = recip0_iw_norm_q[15:0];
+    wire [10:0] recip0_iw_lut_idx = {1'b0, recip0_iw_phase[15:6]};
+    wire [5:0] recip0_iw_lut_frac = recip0_iw_phase[5:0];
+    wire [31:0] recip1_w_norm_delta = recip1_w_norm_lo - recip1_w_norm_hi;
+    wire [37:0] recip1_w_interp_prod = recip1_w_norm_delta * recip1_iw_lut_frac;
+    wire [37:0] recip1_w_interp_step_ext = (recip1_w_interp_prod + 38'd32) >> 6;
+    wire [31:0] recip1_w_interp_step = recip1_w_interp_step_ext[31:0];
+    wire [31:0] recip1_w_norm_q = recip1_w_norm_lo - recip1_w_interp_step;
+    wire [31:0] recip2_w_q = recip2_iw_zero ? 32'd0 :
+                             (recip2_iw_msb >= 6'd16) ?
+                             (recip2_w_norm_q >> (recip2_iw_msb - 6'd16)) :
+                             (recip2_w_norm_q << (6'd16 - recip2_iw_msb));
     wire signed [63:0] pipe1_u_prod = $signed(pipe1_uw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
-    wire [3:0] pipe1_tex_u = clamp_tex_coord(pipe1_u_prod);
-    wire [3:0] pipe1_tex_v = clamp_tex_coord(pipe1_v_prod);
-    wire [13:0] pipe1_tex_addr = pipe1_textured ?
-                                 {pipe1_tex_or_color[5:0], pipe1_tex_v, pipe1_tex_u} :
+    wire [3:0] tex0_tex_u = clamp_tex_coord(tex0_u_prod);
+    wire [3:0] tex0_tex_v = clamp_tex_coord(tex0_v_prod);
+    wire [13:0] tex0_tex_addr = tex0_textured ?
+                                 {tex0_tex_or_color[5:0], tex0_tex_v, tex0_tex_u} :
                                  14'd0;
     wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
     wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
@@ -463,35 +557,35 @@ module voxel_gpu (
     wire [31:0] draw_pipe_r2_q16 = draw_pipe_r2_prod[31:0];
     wire [33:0] draw_pipe_ray_scale_q16 =
         34'd65536 + (({2'b00, draw_pipe_r2_q16} * 3'd3) >> 3);
-    wire [65:0] draw_pipe_radial_prod = draw_pipe_w_q * draw_pipe_ray_scale_q16;
-    wire [31:0] draw_pipe_radial_q16 = draw_pipe_radial_prod[47:16];
-    wire [15:0] draw_pipe_radial_q8_8 = draw_pipe_radial_q16[23:8];
+    wire [65:0] fog0_radial_prod = fog0_w_q * fog0_ray_scale_q16;
+    wire [31:0] fog0_radial_q16 = fog0_radial_prod[47:16];
+    wire [15:0] fog0_radial_q8_8 = fog0_radial_q16[23:8];
 
     wire [15:0] fog_dist_span = fog_end_dist - fog_start_dist;
     wire [15:0] fog_dq1 = fog_start_dist + (fog_dist_span >> 2);
     wire [15:0] fog_dq2 = fog_start_dist + (fog_dist_span >> 1);
     wire [15:0] fog_dq3 = fog_end_dist - (fog_dist_span >> 2);
-    wire draw_pipe_fog_active = fog_enable &&
-                                draw_pipe_fog &&
-                                (fog_end_dist > fog_start_dist) &&
-                                (draw_pipe_radial_q8_8 > fog_start_dist);
-    wire draw_pipe_fog_full = draw_pipe_fog_active &&
-                              (draw_pipe_radial_q8_8 >= fog_end_dist);
-    wire  [3:0] draw_pipe_fog_threshold =
-        !draw_pipe_fog_active ? 4'd0 :
-        (draw_pipe_radial_q8_8 < fog_dq1) ? 4'd4 :
-        (draw_pipe_radial_q8_8 < fog_dq2) ? 4'd8 :
-        (draw_pipe_radial_q8_8 < fog_dq3) ? 4'd12 : 4'd15;
-    wire  [3:0] draw_pipe_fog_bayer = bayer4(draw_pipe_x[1:0], draw_pipe_y[1:0]);
-    wire draw_pipe_fog_replace = draw_pipe_fog_full ||
-                                 (draw_pipe_fog_threshold != 4'd0 &&
-                                  (draw_pipe_fog_bayer < draw_pipe_fog_threshold));
-    wire  [7:0] draw_pipe_out_color =
-        draw_pipe_fog_replace ? fog_color : draw_pipe_color;
+    wire fog1_fog_active = fog_enable &&
+                           fog1_fog &&
+                           (fog_end_dist > fog_start_dist) &&
+                           (fog1_radial_q8_8 > fog_start_dist);
+    wire fog1_fog_full = fog1_fog_active &&
+                         (fog1_radial_q8_8 >= fog_end_dist);
+    wire  [3:0] fog1_fog_threshold =
+        !fog1_fog_active ? 4'd0 :
+        (fog1_radial_q8_8 < fog_dq1) ? 4'd4 :
+        (fog1_radial_q8_8 < fog_dq2) ? 4'd8 :
+        (fog1_radial_q8_8 < fog_dq3) ? 4'd12 : 4'd15;
+    wire  [3:0] fog1_fog_bayer = bayer4(fog1_x[1:0], fog1_y[1:0]);
+    wire fog1_fog_replace = fog1_fog_full ||
+                            (fog1_fog_threshold != 4'd0 &&
+                             (fog1_fog_bayer < fog1_fog_threshold));
+    wire  [7:0] fog1_out_color =
+        fog1_fog_replace ? fog_color : fog1_color;
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
-    wire [15:0] copy_rgb565 = rgb888_to_rgb565(palette[fb_back_rd_data]);
+    wire [15:0] copy_rgb565 = rgb888_to_rgb565(copy_palette_rgb);
 
     wire [31:0] status_word = {
         12'h0,
@@ -756,7 +850,7 @@ module voxel_gpu (
         fifo_rd_ptr      = 11'd0;
         fifo_count       = 12'd0;
         fetch_count      = 6'd0;
-        draw_flush_count = 3'd0;
+        draw_flush_count = 4'd0;
         clear_addr       = 17'd0;
         draw_row_base    = 17'd0;
         draw_x_min       = 10'd0;
@@ -794,6 +888,61 @@ module voxel_gpu (
         pipe0_uw_q       = 32'sd0;
         pipe0_vw_q       = 32'sd0;
         pipe0_iw_q       = 32'd0;
+        recip0_valid     = 1'b0;
+        recip0_inside    = 1'b0;
+        recip0_ztest     = 1'b0;
+        recip0_textured  = 1'b0;
+        recip0_alpha_key = 1'b0;
+        recip0_fog       = 1'b0;
+        recip0_light_bank = 2'd0;
+        recip0_tex_or_color = 8'd0;
+        recip0_addr      = 17'd0;
+        recip0_z         = 16'd0;
+        recip0_x         = 10'd0;
+        recip0_y         = 9'd0;
+        recip0_uw_q      = 32'sd0;
+        recip0_vw_q      = 32'sd0;
+        recip0_iw_zero   = 1'b1;
+        recip0_iw_msb    = 6'd0;
+        recip0_iw_norm_q = 32'd0;
+        recip1_valid     = 1'b0;
+        recip1_inside    = 1'b0;
+        recip1_ztest     = 1'b0;
+        recip1_textured  = 1'b0;
+        recip1_alpha_key = 1'b0;
+        recip1_fog       = 1'b0;
+        recip1_light_bank = 2'd0;
+        recip1_tex_or_color = 8'd0;
+        recip1_addr      = 17'd0;
+        recip1_z         = 16'd0;
+        recip1_z_ref     = 16'd0;
+        recip1_x         = 10'd0;
+        recip1_y         = 9'd0;
+        recip1_uw_q      = 32'sd0;
+        recip1_vw_q      = 32'sd0;
+        recip1_iw_zero   = 1'b1;
+        recip1_iw_msb    = 6'd0;
+        recip1_iw_lut_frac = 6'd0;
+        recip1_w_norm_lo = 32'd0;
+        recip1_w_norm_hi = 32'd0;
+        recip2_valid     = 1'b0;
+        recip2_inside    = 1'b0;
+        recip2_ztest     = 1'b0;
+        recip2_textured  = 1'b0;
+        recip2_alpha_key = 1'b0;
+        recip2_fog       = 1'b0;
+        recip2_light_bank = 2'd0;
+        recip2_tex_or_color = 8'd0;
+        recip2_addr      = 17'd0;
+        recip2_z         = 16'd0;
+        recip2_z_ref     = 16'd0;
+        recip2_x         = 10'd0;
+        recip2_y         = 9'd0;
+        recip2_uw_q      = 32'sd0;
+        recip2_vw_q      = 32'sd0;
+        recip2_iw_zero   = 1'b1;
+        recip2_iw_msb    = 6'd0;
+        recip2_w_norm_q  = 32'd0;
         pipe1_valid      = 1'b0;
         pipe1_inside     = 1'b0;
         pipe1_ztest      = 1'b0;
@@ -804,11 +953,28 @@ module voxel_gpu (
         pipe1_tex_or_color = 8'd0;
         pipe1_addr       = 17'd0;
         pipe1_z          = 16'd0;
+        pipe1_z_ref      = 16'd0;
         pipe1_x          = 10'd0;
         pipe1_y          = 9'd0;
         pipe1_uw_q       = 32'sd0;
         pipe1_vw_q       = 32'sd0;
         pipe1_w_q        = 32'd0;
+        tex0_valid       = 1'b0;
+        tex0_inside      = 1'b0;
+        tex0_ztest       = 1'b0;
+        tex0_textured    = 1'b0;
+        tex0_alpha_key   = 1'b0;
+        tex0_fog         = 1'b0;
+        tex0_light_bank  = 2'd0;
+        tex0_tex_or_color = 8'd0;
+        tex0_addr        = 17'd0;
+        tex0_z           = 16'd0;
+        tex0_z_ref       = 16'd0;
+        tex0_x           = 10'd0;
+        tex0_y           = 9'd0;
+        tex0_w_q         = 32'd0;
+        tex0_u_prod      = 64'sd0;
+        tex0_v_prod      = 64'sd0;
         pipe2_valid      = 1'b0;
         pipe2_inside     = 1'b0;
         pipe2_ztest      = 1'b0;
@@ -838,6 +1004,27 @@ module voxel_gpu (
         draw_pipe_x      = 10'd0;
         draw_pipe_y      = 9'd0;
         draw_pipe_w_q    = 32'd0;
+        fog0_valid       = 1'b0;
+        fog0_pass        = 1'b0;
+        fog0_ztest       = 1'b0;
+        fog0_fog         = 1'b0;
+        fog0_addr        = 17'd0;
+        fog0_z           = 16'd0;
+        fog0_color       = 8'd0;
+        fog0_x           = 10'd0;
+        fog0_y           = 9'd0;
+        fog0_w_q         = 32'd0;
+        fog0_ray_scale_q16 = 34'd0;
+        fog1_valid       = 1'b0;
+        fog1_pass        = 1'b0;
+        fog1_ztest       = 1'b0;
+        fog1_fog         = 1'b0;
+        fog1_addr        = 17'd0;
+        fog1_z           = 16'd0;
+        fog1_color       = 8'd0;
+        fog1_x           = 10'd0;
+        fog1_y           = 9'd0;
+        fog1_radial_q8_8 = 16'd0;
         commit_valid     = 1'b0;
         commit_pass      = 1'b0;
         commit_ztest     = 1'b0;
@@ -872,8 +1059,10 @@ module voxel_gpu (
         copy_pixels_issued = 17'd0;
         copy_words_written = 17'd0;
         copy_fetch_inflight = 1'b0;
+        copy_palette_inflight = 1'b0;
         copy_word_pending_valid = 1'b0;
         copy_word_pending = 16'd0;
+        copy_palette_rgb = 24'd0;
         sdram_wr_addr_cfg = 25'd0;
         sdram_wr_max_addr_cfg = 25'd0;
         sdram_wr_load_pulse = 1'b0;
@@ -951,7 +1140,7 @@ module voxel_gpu (
 
         draw_addr = draw_row_base + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
-        fb_wr_data = draw_pipe_out_color;
+        fb_wr_data = 8'd0;
         fb_back_wr_en = 1'b0;
         z_rd_addr = pipe0_addr;
         z_wr_addr = draw_pipe_addr;
@@ -1016,7 +1205,7 @@ module voxel_gpu (
             fifo_rd_ptr      <= 11'd0;
             fifo_count       <= 12'd0;
             fetch_count      <= 6'd0;
-            draw_flush_count <= 3'd0;
+            draw_flush_count <= 4'd0;
             clear_addr       <= 17'd0;
             draw_row_base    <= 17'd0;
             draw_x_min       <= 10'd0;
@@ -1054,6 +1243,61 @@ module voxel_gpu (
             pipe0_uw_q       <= 32'sd0;
             pipe0_vw_q       <= 32'sd0;
             pipe0_iw_q       <= 32'd0;
+            recip0_valid     <= 1'b0;
+            recip0_inside    <= 1'b0;
+            recip0_ztest     <= 1'b0;
+            recip0_textured  <= 1'b0;
+            recip0_alpha_key <= 1'b0;
+            recip0_fog       <= 1'b0;
+            recip0_light_bank <= 2'd0;
+            recip0_tex_or_color <= 8'd0;
+            recip0_addr      <= 17'd0;
+            recip0_z         <= 16'd0;
+            recip0_x         <= 10'd0;
+            recip0_y         <= 9'd0;
+            recip0_uw_q      <= 32'sd0;
+            recip0_vw_q      <= 32'sd0;
+            recip0_iw_zero   <= 1'b1;
+            recip0_iw_msb    <= 6'd0;
+            recip0_iw_norm_q <= 32'd0;
+            recip1_valid     <= 1'b0;
+            recip1_inside    <= 1'b0;
+            recip1_ztest     <= 1'b0;
+            recip1_textured  <= 1'b0;
+            recip1_alpha_key <= 1'b0;
+            recip1_fog       <= 1'b0;
+            recip1_light_bank <= 2'd0;
+            recip1_tex_or_color <= 8'd0;
+            recip1_addr      <= 17'd0;
+            recip1_z         <= 16'd0;
+            recip1_z_ref     <= 16'd0;
+            recip1_x         <= 10'd0;
+            recip1_y         <= 9'd0;
+            recip1_uw_q      <= 32'sd0;
+            recip1_vw_q      <= 32'sd0;
+            recip1_iw_zero   <= 1'b1;
+            recip1_iw_msb    <= 6'd0;
+            recip1_iw_lut_frac <= 6'd0;
+            recip1_w_norm_lo <= 32'd0;
+            recip1_w_norm_hi <= 32'd0;
+            recip2_valid     <= 1'b0;
+            recip2_inside    <= 1'b0;
+            recip2_ztest     <= 1'b0;
+            recip2_textured  <= 1'b0;
+            recip2_alpha_key <= 1'b0;
+            recip2_fog       <= 1'b0;
+            recip2_light_bank <= 2'd0;
+            recip2_tex_or_color <= 8'd0;
+            recip2_addr      <= 17'd0;
+            recip2_z         <= 16'd0;
+            recip2_z_ref     <= 16'd0;
+            recip2_x         <= 10'd0;
+            recip2_y         <= 9'd0;
+            recip2_uw_q      <= 32'sd0;
+            recip2_vw_q      <= 32'sd0;
+            recip2_iw_zero   <= 1'b1;
+            recip2_iw_msb    <= 6'd0;
+            recip2_w_norm_q  <= 32'd0;
             pipe1_valid      <= 1'b0;
             pipe1_inside     <= 1'b0;
             pipe1_ztest      <= 1'b0;
@@ -1064,11 +1308,28 @@ module voxel_gpu (
             pipe1_tex_or_color <= 8'd0;
             pipe1_addr       <= 17'd0;
             pipe1_z          <= 16'd0;
+            pipe1_z_ref      <= 16'd0;
             pipe1_x          <= 10'd0;
             pipe1_y          <= 9'd0;
             pipe1_uw_q       <= 32'sd0;
             pipe1_vw_q       <= 32'sd0;
             pipe1_w_q        <= 32'd0;
+            tex0_valid       <= 1'b0;
+            tex0_inside      <= 1'b0;
+            tex0_ztest       <= 1'b0;
+            tex0_textured    <= 1'b0;
+            tex0_alpha_key   <= 1'b0;
+            tex0_fog         <= 1'b0;
+            tex0_light_bank  <= 2'd0;
+            tex0_tex_or_color <= 8'd0;
+            tex0_addr        <= 17'd0;
+            tex0_z           <= 16'd0;
+            tex0_z_ref       <= 16'd0;
+            tex0_x           <= 10'd0;
+            tex0_y           <= 9'd0;
+            tex0_w_q         <= 32'd0;
+            tex0_u_prod      <= 64'sd0;
+            tex0_v_prod      <= 64'sd0;
             pipe2_valid      <= 1'b0;
             pipe2_inside     <= 1'b0;
             pipe2_ztest      <= 1'b0;
@@ -1098,6 +1359,27 @@ module voxel_gpu (
             draw_pipe_x      <= 10'd0;
             draw_pipe_y      <= 9'd0;
             draw_pipe_w_q    <= 32'd0;
+            fog0_valid       <= 1'b0;
+            fog0_pass        <= 1'b0;
+            fog0_ztest       <= 1'b0;
+            fog0_fog         <= 1'b0;
+            fog0_addr        <= 17'd0;
+            fog0_z           <= 16'd0;
+            fog0_color       <= 8'd0;
+            fog0_x           <= 10'd0;
+            fog0_y           <= 9'd0;
+            fog0_w_q         <= 32'd0;
+            fog0_ray_scale_q16 <= 34'd0;
+            fog1_valid       <= 1'b0;
+            fog1_pass        <= 1'b0;
+            fog1_ztest       <= 1'b0;
+            fog1_fog         <= 1'b0;
+            fog1_addr        <= 17'd0;
+            fog1_z           <= 16'd0;
+            fog1_color       <= 8'd0;
+            fog1_x           <= 10'd0;
+            fog1_y           <= 9'd0;
+            fog1_radial_q8_8 <= 16'd0;
             commit_valid     <= 1'b0;
             commit_pass      <= 1'b0;
             commit_ztest     <= 1'b0;
@@ -1131,8 +1413,10 @@ module voxel_gpu (
             copy_pixels_issued <= 17'd0;
             copy_words_written <= 17'd0;
             copy_fetch_inflight <= 1'b0;
+            copy_palette_inflight <= 1'b0;
             copy_word_pending_valid <= 1'b0;
             copy_word_pending <= 16'd0;
+            copy_palette_rgb <= 24'd0;
             sdram_wr_addr_cfg <= 25'd0;
             sdram_wr_max_addr_cfg <= 25'd0;
             sdram_wr_load_pulse <= 1'b0;
@@ -1361,17 +1645,49 @@ module voxel_gpu (
                 copy_words_written <= copy_words_written + 17'd1;
             end
 
-            commit_valid <= draw_pipe_valid;
-            commit_pass <= draw_commit_pass;
-            commit_ztest <= draw_pipe_ztest;
-            commit_addr <= draw_pipe_addr;
-            commit_z <= draw_pipe_z;
-            commit_color <= draw_pipe_out_color;
+            fog0_valid <= draw_pipe_valid;
+            fog0_pass <= draw_commit_pass;
+            fog0_ztest <= draw_pipe_ztest;
+            fog0_fog <= draw_pipe_fog;
+            fog0_addr <= draw_pipe_addr;
+            fog0_z <= draw_pipe_z;
+            fog0_color <= draw_pipe_color;
+            fog0_x <= draw_pipe_x;
+            fog0_y <= draw_pipe_y;
+            fog0_w_q <= draw_pipe_w_q;
+            fog0_ray_scale_q16 <= draw_pipe_ray_scale_q16;
+
+            fog1_valid <= fog0_valid;
+            fog1_pass <= fog0_pass;
+            fog1_ztest <= fog0_ztest;
+            fog1_fog <= fog0_fog;
+            fog1_addr <= fog0_addr;
+            fog1_z <= fog0_z;
+            fog1_color <= fog0_color;
+            fog1_x <= fog0_x;
+            fog1_y <= fog0_y;
+            fog1_radial_q8_8 <= fog0_radial_q8_8;
+
+            commit_valid <= fog1_valid;
+            commit_pass <= fog1_pass;
+            commit_ztest <= fog1_ztest;
+            commit_addr <= fog1_addr;
+            commit_z <= fog1_z;
+            commit_color <= fog1_out_color;
 
             if (state == ST_COPY) begin
-                if (copy_fetch_inflight && !copy_word_pending_valid) begin
+                if (copy_palette_inflight &&
+                    (!copy_word_pending_valid || sdram_wr_push)) begin
                     copy_word_pending <= copy_rgb565;
                     copy_word_pending_valid <= 1'b1;
+                    copy_palette_inflight <= 1'b0;
+                end
+
+                if (copy_fetch_inflight &&
+                    !copy_palette_inflight &&
+                    (!copy_word_pending_valid || sdram_wr_push)) begin
+                    copy_palette_rgb <= palette[fb_back_rd_data];
+                    copy_palette_inflight <= 1'b1;
                     copy_fetch_inflight <= 1'b0;
                 end
 
@@ -1386,11 +1702,18 @@ module voxel_gpu (
             case (state)
                 ST_IDLE: begin
                     fetch_count <= 6'd0;
-                    draw_flush_count <= 3'd0;
+                    draw_flush_count <= 4'd0;
                     pipe0_valid <= 1'b0;
+                    recip0_valid <= 1'b0;
+                    recip1_valid <= 1'b0;
+                    recip2_valid <= 1'b0;
                     pipe1_valid <= 1'b0;
+                    tex0_valid <= 1'b0;
                     pipe2_valid <= 1'b0;
                     draw_pipe_valid <= 1'b0;
+                    fog0_valid <= 1'b0;
+                    fog1_valid <= 1'b0;
+                    commit_valid <= 1'b0;
                     if (ctrl_flp_pending && sdram_ready && !copy_complete_pending) begin
                         state <= ST_COPY;
                         copy_target_sel <= ~display_sel;
@@ -1398,7 +1721,9 @@ module voxel_gpu (
                         copy_pixels_issued <= 17'd1;
                         copy_words_written <= 17'd0;
                         copy_fetch_inflight <= 1'b1;
+                        copy_palette_inflight <= 1'b0;
                         copy_word_pending_valid <= 1'b0;
+                        copy_palette_rgb <= 24'd0;
                         fb_back_rd_addr <= 17'd0;
                         sdram_wr_addr_cfg <= (~display_sel) ? extmem_back_base_words : extmem_front_base_words;
                         sdram_wr_max_addr_cfg <= ((~display_sel) ? extmem_back_base_words : extmem_front_base_words) + FB_WORDS_25;
@@ -1457,9 +1782,16 @@ module voxel_gpu (
                             draw_iw_dy <= 32'sd0;
                         end
                         pipe0_valid <= 1'b0;
+                        recip0_valid <= 1'b0;
+                        recip1_valid <= 1'b0;
+                        recip2_valid <= 1'b0;
                         pipe1_valid <= 1'b0;
+                        tex0_valid <= 1'b0;
                         pipe2_valid <= 1'b0;
                         draw_pipe_valid <= 1'b0;
+                        fog0_valid <= 1'b0;
+                        fog1_valid <= 1'b0;
+                        commit_valid <= 1'b0;
                         for (ei = 0; ei < 4; ei = ei + 1) begin
                             edge_A[ei] <= $signed(desc_words[2 + ei * 3]);
                             edge_B[ei] <= $signed(desc_words[3 + ei * 3]);
@@ -1479,41 +1811,119 @@ module voxel_gpu (
                 ST_DRAW_FLUSH: begin
                     /*
                      * Stage 0: raster eval at the current pixel.
-                     * Stage 1: reciprocal lookup / rescale.
-                     * Stage 2: texel address formation + delayed z reference.
-                     * Stage 3: commit metadata aligned with the texture ROM read.
+                     * Recip 0/1/2: normalize, lookup/interpolate, then rescale 1/w.
+                     * Stage 1: perspective divide metadata aligned with final 1/w.
+                     * Tex 0: register perspective texture-coordinate products.
+                     * Stage 2: texel address formation.
+                     * Stage 3/fog: commit metadata aligned with texture and fog latency.
                      */
-                    pipe1_valid <= pipe0_valid;
-                    pipe1_inside <= pipe0_inside;
-                    pipe1_ztest <= pipe0_ztest;
-                    pipe1_textured <= pipe0_textured;
-                    pipe1_alpha_key <= pipe0_alpha_key;
-                    pipe1_fog <= pipe0_fog;
-                    pipe1_light_bank <= pipe0_light_bank;
-                    pipe1_tex_or_color <= pipe0_tex_or_color;
-                    pipe1_addr <= pipe0_addr;
-                    pipe1_z <= pipe0_z;
-                    pipe1_x <= pipe0_x;
-                    pipe1_y <= pipe0_y;
-                    pipe1_uw_q <= pipe0_uw_q;
-                    pipe1_vw_q <= pipe0_vw_q;
-                    pipe1_w_q <= pipe0_w_q;
+                    recip0_valid <= pipe0_valid;
+                    recip0_inside <= pipe0_inside;
+                    recip0_ztest <= pipe0_ztest;
+                    recip0_textured <= pipe0_textured;
+                    recip0_alpha_key <= pipe0_alpha_key;
+                    recip0_fog <= pipe0_fog;
+                    recip0_light_bank <= pipe0_light_bank;
+                    recip0_tex_or_color <= pipe0_tex_or_color;
+                    recip0_addr <= pipe0_addr;
+                    recip0_z <= pipe0_z;
+                    recip0_x <= pipe0_x;
+                    recip0_y <= pipe0_y;
+                    recip0_uw_q <= pipe0_uw_q;
+                    recip0_vw_q <= pipe0_vw_q;
+                    recip0_iw_zero <= (pipe0_iw_q == 32'd0);
+                    recip0_iw_msb <= pipe0_iw_msb;
+                    recip0_iw_norm_q <= pipe0_iw_norm_q;
 
-                    pipe2_valid <= pipe1_valid;
-                    pipe2_inside <= pipe1_inside;
-                    pipe2_ztest <= pipe1_ztest;
-                    pipe2_textured <= pipe1_textured;
-                    pipe2_alpha_key <= pipe1_alpha_key;
-                    pipe2_fog <= pipe1_fog;
-                    pipe2_light_bank <= pipe1_light_bank;
-                    pipe2_tex_or_color <= pipe1_tex_or_color;
-                    pipe2_addr <= pipe1_addr;
-                    pipe2_z <= pipe1_z;
-                    pipe2_z_ref <= z_rd_data;
-                    pipe2_x <= pipe1_x;
-                    pipe2_y <= pipe1_y;
-                    pipe2_w_q <= pipe1_w_q;
-                    pipe2_tex_addr <= pipe1_tex_addr;
+                    recip1_valid <= recip0_valid;
+                    recip1_inside <= recip0_inside;
+                    recip1_ztest <= recip0_ztest;
+                    recip1_textured <= recip0_textured;
+                    recip1_alpha_key <= recip0_alpha_key;
+                    recip1_fog <= recip0_fog;
+                    recip1_light_bank <= recip0_light_bank;
+                    recip1_tex_or_color <= recip0_tex_or_color;
+                    recip1_addr <= recip0_addr;
+                    recip1_z <= recip0_z;
+                    recip1_z_ref <= z_rd_data;
+                    recip1_x <= recip0_x;
+                    recip1_y <= recip0_y;
+                    recip1_uw_q <= recip0_uw_q;
+                    recip1_vw_q <= recip0_vw_q;
+                    recip1_iw_zero <= recip0_iw_zero;
+                    recip1_iw_msb <= recip0_iw_msb;
+                    recip1_iw_lut_frac <= recip0_iw_lut_frac;
+                    recip1_w_norm_lo <= recip_lut[recip0_iw_lut_idx];
+                    recip1_w_norm_hi <= recip_lut[recip0_iw_lut_idx + 11'd1];
+
+                    recip2_valid <= recip1_valid;
+                    recip2_inside <= recip1_inside;
+                    recip2_ztest <= recip1_ztest;
+                    recip2_textured <= recip1_textured;
+                    recip2_alpha_key <= recip1_alpha_key;
+                    recip2_fog <= recip1_fog;
+                    recip2_light_bank <= recip1_light_bank;
+                    recip2_tex_or_color <= recip1_tex_or_color;
+                    recip2_addr <= recip1_addr;
+                    recip2_z <= recip1_z;
+                    recip2_z_ref <= recip1_z_ref;
+                    recip2_x <= recip1_x;
+                    recip2_y <= recip1_y;
+                    recip2_uw_q <= recip1_uw_q;
+                    recip2_vw_q <= recip1_vw_q;
+                    recip2_iw_zero <= recip1_iw_zero;
+                    recip2_iw_msb <= recip1_iw_msb;
+                    recip2_w_norm_q <= recip1_w_norm_q;
+
+                    pipe1_valid <= recip2_valid;
+                    pipe1_inside <= recip2_inside;
+                    pipe1_ztest <= recip2_ztest;
+                    pipe1_textured <= recip2_textured;
+                    pipe1_alpha_key <= recip2_alpha_key;
+                    pipe1_fog <= recip2_fog;
+                    pipe1_light_bank <= recip2_light_bank;
+                    pipe1_tex_or_color <= recip2_tex_or_color;
+                    pipe1_addr <= recip2_addr;
+                    pipe1_z <= recip2_z;
+                    pipe1_z_ref <= recip2_z_ref;
+                    pipe1_x <= recip2_x;
+                    pipe1_y <= recip2_y;
+                    pipe1_uw_q <= recip2_uw_q;
+                    pipe1_vw_q <= recip2_vw_q;
+                    pipe1_w_q <= recip2_w_q;
+
+                    tex0_valid <= pipe1_valid;
+                    tex0_inside <= pipe1_inside;
+                    tex0_ztest <= pipe1_ztest;
+                    tex0_textured <= pipe1_textured;
+                    tex0_alpha_key <= pipe1_alpha_key;
+                    tex0_fog <= pipe1_fog;
+                    tex0_light_bank <= pipe1_light_bank;
+                    tex0_tex_or_color <= pipe1_tex_or_color;
+                    tex0_addr <= pipe1_addr;
+                    tex0_z <= pipe1_z;
+                    tex0_z_ref <= pipe1_z_ref;
+                    tex0_x <= pipe1_x;
+                    tex0_y <= pipe1_y;
+                    tex0_w_q <= pipe1_w_q;
+                    tex0_u_prod <= pipe1_u_prod;
+                    tex0_v_prod <= pipe1_v_prod;
+
+                    pipe2_valid <= tex0_valid;
+                    pipe2_inside <= tex0_inside;
+                    pipe2_ztest <= tex0_ztest;
+                    pipe2_textured <= tex0_textured;
+                    pipe2_alpha_key <= tex0_alpha_key;
+                    pipe2_fog <= tex0_fog;
+                    pipe2_light_bank <= tex0_light_bank;
+                    pipe2_tex_or_color <= tex0_tex_or_color;
+                    pipe2_addr <= tex0_addr;
+                    pipe2_z <= tex0_z;
+                    pipe2_z_ref <= tex0_z_ref;
+                    pipe2_x <= tex0_x;
+                    pipe2_y <= tex0_y;
+                    pipe2_w_q <= tex0_w_q;
+                    pipe2_tex_addr <= tex0_tex_addr;
 
                     draw_pipe_valid <= pipe2_valid;
                     draw_pipe_inside <= pipe2_inside;
@@ -1576,11 +1986,11 @@ module voxel_gpu (
                         pipe0_vw_q <= 32'sd0;
                         pipe0_iw_q <= 32'd0;
 
-                        if (draw_flush_count == 3'd1) begin
-                            draw_flush_count <= 3'd0;
+                        if (draw_flush_count == 4'd1) begin
+                            draw_flush_count <= 4'd0;
                             state <= ST_IDLE;
                         end else begin
-                            draw_flush_count <= draw_flush_count - 3'd1;
+                            draw_flush_count <= draw_flush_count - 4'd1;
                         end
                     end
                 end
@@ -1588,7 +1998,8 @@ module voxel_gpu (
                 ST_COPY: begin
                     if ((copy_words_written == FB_WORDS) &&
                         !copy_word_pending_valid &&
-                        !copy_fetch_inflight) begin
+                        !copy_fetch_inflight &&
+                        !copy_palette_inflight) begin
                         state <= ST_IDLE;
                         copy_complete_pending <= 1'b1;
                     end

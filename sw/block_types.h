@@ -1,6 +1,7 @@
 #ifndef BLOCK_TYPES_H
 #define BLOCK_TYPES_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -19,6 +20,7 @@ typedef enum {
     BLOCK_WOOD,
     BLOCK_DIRT,
     BLOCK_STONE,
+    BLOCK_GLASS,
     NUM_BLOCK_TYPES
 } BlockID;
 
@@ -29,18 +31,21 @@ typedef enum {
     TEX_TILE_STONE,
     TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP,
+    TEX_TILE_GLASS = 6,
     TEX_TILE_GRASS_TOP_MIP1 = 16,
     TEX_TILE_GRASS_SIDE_MIP1,
     TEX_TILE_DIRT_MIP1,
     TEX_TILE_STONE_MIP1,
     TEX_TILE_WOOD_SIDE_MIP1,
     TEX_TILE_WOOD_TOP_MIP1,
+    TEX_TILE_GLASS_MIP1 = 22,
     TEX_TILE_GRASS_TOP_MIP2 = 24,
     TEX_TILE_GRASS_SIDE_MIP2,
     TEX_TILE_DIRT_MIP2,
     TEX_TILE_STONE_MIP2,
     TEX_TILE_WOOD_SIDE_MIP2,
     TEX_TILE_WOOD_TOP_MIP2,
+    TEX_TILE_GLASS_MIP2 = 30,
     TEX_TILE_SKY = 48,
     TEX_TILE_CLOUD = 49,
     TEX_TILE_SUN = 50,
@@ -61,5 +66,10 @@ extern BlockDescriptor BlockRegistry[NUM_BLOCK_TYPES];
 void init_block_types(void);
 uint8_t block_face_texture_id(BlockID id, BlockFace face);
 uint8_t texture_lod_tile_id(uint8_t tile_id, int lod);
+
+/* True for blocks that don't fully occlude their neighbors (air, glass). */
+bool block_is_transparent(BlockID id);
+/* True for alpha-blended blocks that need special draw treatment (glass). */
+bool block_is_translucent(BlockID id);
 
 #endif

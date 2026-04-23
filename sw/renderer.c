@@ -35,6 +35,9 @@ enum {
     PAL_MOON = 32,
     PAL_MOON_SHADOW = 33,
     PAL_STAR = 34,
+    PAL_GLASS = 35,
+    PAL_GLASS_EDGE = 36,
+    PAL_GLASS_HIGHLIGHT = 37,
     PAL_SKY_GRADIENT_BASE = 40,
 };
 
@@ -111,6 +114,9 @@ static void upload_default_palette(GPUTransport *transport)
         { 32, 0xe7, 0xeb, 0xf8 }, /* moon */
         { 33, 0x9c, 0xa4, 0xc0 }, /* moon shadow */
         { 34, 0xff, 0xff, 0xff }, /* stars */
+        { 35, 0xb8, 0xe4, 0xff }, /* glass body */
+        { 36, 0x5e, 0x7c, 0x98 }, /* glass edge / frame */
+        { 37, 0xff, 0xff, 0xff }, /* glass highlight */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -118,6 +124,12 @@ static void upload_default_palette(GPUTransport *transport)
             break;
     }
 }
+
+typedef struct {
+    const Chunk *chunk;
+    const ChunkFace *face;
+    float view_z;
+} TranslucentFaceRef;
 
 struct RenderContext {
     GPUTransport *transport;
@@ -135,6 +147,12 @@ struct RenderContext {
     uint32_t palette_cache[256];
     uint8_t palette_valid[256];
     int n_quads;
+
+    /* Scratch buffer reused across frames to back-to-front sort translucent
+     * faces. Grown on demand; memory only leaves if the scene peaks higher
+     * than it has before. */
+    TranslucentFaceRef *translucent_scratch;
+    int translucent_scratch_capacity;
 };
 
 typedef struct {
@@ -186,6 +204,9 @@ static RGB24 default_palette_color(uint8_t index)
     case 32: return rgb24(0xe7, 0xeb, 0xf8);
     case 33: return rgb24(0x9c, 0xa4, 0xc0);
     case 34: return rgb24(0xff, 0xff, 0xff);
+    case 35: return rgb24(0xb8, 0xe4, 0xff);
+    case 36: return rgb24(0x5e, 0x7c, 0x98);
+    case 37: return rgb24(0xff, 0xff, 0xff);
     default: return rgb24(0x00, 0x00, 0x00);
     }
 }
@@ -1016,6 +1037,16 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
     texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
                                          face_cam);
     light_flags = choose_face_light_flags(ctx, face) | QUAD_FLAG_FOG;
+    /*
+     * Translucent blocks (glass) ride the hardware alpha-blend path. 50% src
+     * / 50% dst gives an obviously see-through look while still leaving the
+     * glass texture itself clearly readable. We keep ZTEST on so the glass
+     * occludes things behind it at the correct depth; because chunks are
+     * drawn nearest-first the destination pixel will usually already hold an
+     * opaque fragment that the blend can mix against.
+     */
+    if (block_is_translucent(type))
+        light_flags |= QUAD_ALPHA_50;
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
@@ -1067,6 +1098,38 @@ static void chunk_camera_bounds(RenderContext *ctx, const Chunk *chunk,
 }
 
 static float chunk_distance_sq_to_camera(RenderContext *ctx, const Chunk *chunk);
+
+static bool ensure_translucent_scratch(RenderContext *ctx, int needed)
+{
+    int cap;
+    TranslucentFaceRef *buf;
+
+    if (needed <= ctx->translucent_scratch_capacity)
+        return true;
+
+    cap = ctx->translucent_scratch_capacity ? ctx->translucent_scratch_capacity : 64;
+    while (cap < needed)
+        cap *= 2;
+
+    buf = realloc(ctx->translucent_scratch, (size_t)cap * sizeof(*buf));
+    if (!buf)
+        return false;
+
+    ctx->translucent_scratch = buf;
+    ctx->translucent_scratch_capacity = cap;
+    return true;
+}
+
+static int compare_translucent_back_to_front(const void *a, const void *b)
+{
+    const TranslucentFaceRef *ra = a;
+    const TranslucentFaceRef *rb = b;
+
+    /* Larger view_z (farther) comes first. */
+    if (ra->view_z > rb->view_z) return -1;
+    if (ra->view_z < rb->view_z) return 1;
+    return 0;
+}
 
 static bool chunk_within_render_distance(RenderContext *ctx,
                                          const VoxelWorld *world,
@@ -1177,6 +1240,8 @@ RenderContext *renderer_init(void)
     ctx->submit_buffer = malloc(ctx->submit_capacity);
     ctx->lookup_entries = NULL;
     ctx->lookup_capacity = 0;
+    ctx->translucent_scratch = NULL;
+    ctx->translucent_scratch_capacity = 0;
     if (!ctx->staging || !ctx->submit_buffer) {
         free(ctx->submit_buffer);
         free(ctx->staging);
@@ -1195,6 +1260,7 @@ RenderContext *renderer_init(void)
 void renderer_shutdown(RenderContext *ctx)
 {
     if (!ctx) return;
+    free(ctx->translucent_scratch);
     free(ctx->lookup_entries);
     free(ctx->submit_buffer);
     free(ctx->staging);
@@ -1437,19 +1503,96 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
         candidates[j + 1] = key;
     }
 
+    /*
+     * Opaque pass: emit all non-translucent faces first, chunks nearest
+     * first. Glass/translucent faces also write Z through QUAD_FLAG_ZTEST,
+     * so emitting them first would cause opaque geometry behind the glass
+     * to be Z-rejected and we'd blend glass against sky instead of against
+     * the stone behind it.
+     */
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
 
         for (int face_index = 0; face_index < chunk->face_count; face_index++) {
             const ChunkFace *face = &chunk->faces[face_index];
+            BlockID id = (BlockID)face->type;
+
+            if (block_is_translucent(id))
+                continue;
+
             Vec3 block_pos = {
                 (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x),
                 (float)face->y,
                 (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
             };
 
-            emit_block_face(ctx, (BlockID)face->type,
-                            block_pos, (BlockFace)face->face);
+            emit_block_face(ctx, id, block_pos, (BlockFace)face->face);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                return ctx->n_quads - before;
+        }
+    }
+
+    /*
+     * Translucent pass: collect every glass face, sort back-to-front by
+     * view-space depth of its block center, then emit. Two alpha-blended
+     * quads at the same pixel must be drawn farthest-first so each blend
+     * mixes against the correctly-composited destination. Block-center as
+     * the sort key is fine because we back-face cull: the three (or fewer)
+     * faces of a single glass block visible at once never overlap in
+     * screen space, so their within-block order doesn't matter.
+     */
+    int n_translucent_candidates = 0;
+    for (int i = 0; i < candidate_count; i++) {
+        const Chunk *chunk = candidates[i].chunk;
+
+        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
+            if (block_is_translucent((BlockID)chunk->faces[face_index].type))
+                n_translucent_candidates++;
+        }
+    }
+
+    if (n_translucent_candidates > 0 &&
+        ensure_translucent_scratch(ctx, n_translucent_candidates)) {
+        int w = 0;
+
+        for (int i = 0; i < candidate_count; i++) {
+            const Chunk *chunk = candidates[i].chunk;
+
+            for (int face_index = 0; face_index < chunk->face_count; face_index++) {
+                const ChunkFace *face = &chunk->faces[face_index];
+                if (!block_is_translucent((BlockID)face->type))
+                    continue;
+
+                Vec3 block_center = {
+                    (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x) + 0.5f,
+                    (float)face->y + 0.5f,
+                    (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z) + 0.5f,
+                };
+                CameraVertex cv;
+                world_to_camera(ctx, block_center, &cv);
+
+                ctx->translucent_scratch[w++] = (TranslucentFaceRef){
+                    .chunk = chunk,
+                    .face = face,
+                    .view_z = cv.z,
+                };
+            }
+        }
+
+        qsort(ctx->translucent_scratch, (size_t)w,
+              sizeof(*ctx->translucent_scratch),
+              compare_translucent_back_to_front);
+
+        for (int i = 0; i < w; i++) {
+            const TranslucentFaceRef *ref = &ctx->translucent_scratch[i];
+            Vec3 block_pos = {
+                (float)(ref->chunk->chunk_x * WORLD_CHUNK_SIZE + ref->face->x),
+                (float)ref->face->y,
+                (float)(ref->chunk->chunk_z * WORLD_CHUNK_SIZE + ref->face->z),
+            };
+
+            emit_block_face(ctx, (BlockID)ref->face->type,
+                            block_pos, (BlockFace)ref->face->face);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }

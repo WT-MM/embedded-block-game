@@ -13,18 +13,21 @@ TEX_TILE_DIRT = 2
 TEX_TILE_STONE = 3
 TEX_TILE_WOOD_SIDE = 4
 TEX_TILE_WOOD_TOP = 5
+TEX_TILE_GLASS = 6
 TEX_TILE_GRASS_TOP_MIP1 = 16
 TEX_TILE_GRASS_SIDE_MIP1 = 17
 TEX_TILE_DIRT_MIP1 = 18
 TEX_TILE_STONE_MIP1 = 19
 TEX_TILE_WOOD_SIDE_MIP1 = 20
 TEX_TILE_WOOD_TOP_MIP1 = 21
+TEX_TILE_GLASS_MIP1 = 22
 TEX_TILE_GRASS_TOP_MIP2 = 24
 TEX_TILE_GRASS_SIDE_MIP2 = 25
 TEX_TILE_DIRT_MIP2 = 26
 TEX_TILE_STONE_MIP2 = 27
 TEX_TILE_WOOD_SIDE_MIP2 = 28
 TEX_TILE_WOOD_TOP_MIP2 = 29
+TEX_TILE_GLASS_MIP2 = 30
 TEX_TILE_SKY = 48
 TEX_TILE_CLOUD = 49
 TEX_TILE_SUN = 50
@@ -58,6 +61,9 @@ PAL_SUN_GLOW = 31
 PAL_MOON = 32
 PAL_MOON_SHADOW = 33
 PAL_STAR = 34
+PAL_GLASS = 35
+PAL_GLASS_EDGE = 36
+PAL_GLASS_HIGHLIGHT = 37
 
 
 MIP1_TILES = {
@@ -67,6 +73,7 @@ MIP1_TILES = {
     TEX_TILE_STONE_MIP1: TEX_TILE_STONE,
     TEX_TILE_WOOD_SIDE_MIP1: TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP_MIP1: TEX_TILE_WOOD_TOP,
+    TEX_TILE_GLASS_MIP1: TEX_TILE_GLASS,
 }
 
 MIP2_TILES = {
@@ -76,6 +83,7 @@ MIP2_TILES = {
     TEX_TILE_STONE_MIP2: TEX_TILE_STONE,
     TEX_TILE_WOOD_SIDE_MIP2: TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP_MIP2: TEX_TILE_WOOD_TOP,
+    TEX_TILE_GLASS_MIP2: TEX_TILE_GLASS,
 }
 
 GRASS_TOP_ROWS = [
@@ -234,6 +242,20 @@ def wood_side(x: int, y: int) -> int:
     )
 
 
+def glass(x: int, y: int) -> int:
+    # Darker frame on the outside of the pane so adjacent glass blocks still
+    # have a visible seam. Single-pixel highlight in the upper-left gives the
+    # face a recognizable orientation so we can see that perspective-correct
+    # UV mapping is still working through the alpha blend.
+    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
+        return PAL_GLASS_EDGE
+    if (x == 2 and 2 <= y <= 5) or (y == 2 and 2 <= x <= 5):
+        return PAL_GLASS_HIGHLIGHT
+    if (x == 3 and y == 3):
+        return PAL_GLASS_HIGHLIGHT
+    return PAL_GLASS
+
+
 def wood_top(x: int, y: int) -> int:
     # Square-ish rings read better at 16x16 than smooth circular math.
     dx = abs(x - 7.5)
@@ -340,6 +362,8 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return wood_side(x, y)
     if tile == TEX_TILE_WOOD_TOP:
         return wood_top(x, y)
+    if tile == TEX_TILE_GLASS:
+        return glass(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:

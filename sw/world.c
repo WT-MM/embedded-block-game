@@ -162,6 +162,11 @@ static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
         int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + lx;
         int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + lz;
         int height = 1 + (int)(rng_next(&seed) % 3u);
+        /* Sprinkle glass columns at roughly 1-in-4 odds so we get a mix of
+         * stone and glass formations, some stacked, some standalone. Glass
+         * exercises the alpha-blend path at face edges and through-block
+         * visibility. */
+        BlockID kind = ((rng_next(&seed) & 3u) == 0u) ? BLOCK_GLASS : BLOCK_STONE;
 
         if (fabsf((float)wx) <= 1.0f && wz <= 5)
             continue;
@@ -169,8 +174,28 @@ static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
             continue;
 
         for (int y = 1; y <= height; y++)
-            chunk->blocks[y][lz][lx] = BLOCK_STONE;
+            chunk->blocks[y][lz][lx] = kind;
     }
+}
+
+/*
+ * A face between `current` and `neighbor` should be emitted when the
+ * neighbor doesn't fully occlude it:
+ *   - Any face next to air is visible.
+ *   - An opaque block's face next to glass (or any other translucent
+ *     neighbor) is visible: you see the opaque surface through the glass.
+ *   - A glass block's face next to another glass block is hidden, which
+ *     collapses interior walls of solid glass volumes into a single hull.
+ *   - A glass face next to a solid block is hidden: the solid occludes
+ *     the back of the glass.
+ */
+static bool face_should_render(BlockID current, BlockID neighbor)
+{
+    if (neighbor == BLOCK_AIR)
+        return true;
+    if (current == BLOCK_GLASS)
+        return false;
+    return block_is_transparent(neighbor);
 }
 
 static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *chunk)
@@ -192,7 +217,11 @@ static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *c
                 int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
 
                 for (int f = 0; f < NUM_FACES; f++) {
-                    if (world_get_block(world, wx + nx[f], y + ny[f], wz + nz[f]) == BLOCK_AIR)
+                    BlockID neighbor = world_get_block(world,
+                                                       wx + nx[f],
+                                                       y + ny[f],
+                                                       wz + nz[f]);
+                    if (face_should_render(id, neighbor))
                         count++;
                 }
             }
@@ -234,7 +263,11 @@ static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
                 int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
 
                 for (int f = 0; f < NUM_FACES; f++) {
-                    if (world_get_block(world, wx + nx[f], y + ny[f], wz + nz[f]) != BLOCK_AIR)
+                    BlockID neighbor = world_get_block(world,
+                                                       wx + nx[f],
+                                                       y + ny[f],
+                                                       wz + nz[f]);
+                    if (!face_should_render(id, neighbor))
                         continue;
 
                     faces[out++] = (ChunkFace){

@@ -58,6 +58,7 @@ sw/tests/renderer_quad_test
 sw/tests/renderer_edge_test
 sw/tests/fpga_sdram_test
 sw/tests/world_chunk_test
+sw/tests/renderer_fog_test
 sw/game
 
 # --- Virtual GPU local artifacts ---

@@ -988,13 +988,6 @@ module voxel_gpu (
     end
 
     always_ff @(posedge clk) begin
-        tex_rd_data <= texture_mem[pipe2_tex_addr];
-        vga_vs_d <= VGA_VS;
-        scan_rgb565_r <= scan_rgb565_now;
-        scan_visible_r  <= scan_visible_now;
-    end
-
-    always_ff @(posedge clk) begin
         if (reset) begin
             ctrl_en          <= 1'b0;
             ctrl_ien         <= 1'b0;
@@ -1111,6 +1104,7 @@ module voxel_gpu (
             commit_addr      <= 17'd0;
             commit_z         <= 16'd0;
             commit_color     <= 8'd0;
+            tex_rd_data      <= 8'd0;
             scan_rgb565_r    <= 16'h0000;
             fb_back_rd_addr  <= 17'd0;
             scan_line0_ready <= 1'b0;
@@ -1146,12 +1140,18 @@ module voxel_gpu (
             sdram_init_wait_counter <= 16'd0;
             sdram_ctrl_reset_n <= 1'b0;
             sdram_ready <= 1'b0;
+            vga_vs_d <= 1'b1;
+            scan_visible_r <= 1'b0;
             for (ei = 0; ei < 4; ei = ei + 1) begin
                 edge_A[ei] <= 32'sd0;
                 edge_B[ei] <= 32'sd0;
                 edge_C[ei] <= 32'sd0;
             end
         end else begin
+            tex_rd_data <= texture_mem[pipe2_tex_addr];
+            vga_vs_d <= VGA_VS;
+            scan_rgb565_r <= scan_rgb565_now;
+            scan_visible_r <= scan_visible_now;
             sdram_wr_load_pulse <= 1'b0;
             sdram_rd_load_pulse <= 1'b0;
 

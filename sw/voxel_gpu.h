@@ -149,6 +149,11 @@ struct voxel_extmem_state {
 #define QUAD_ALPHA_50        QUAD_ALPHA_LEVEL(2)
 #define QUAD_ALPHA_25        QUAD_ALPHA_LEVEL(3)
 
+/* Textured descriptors use tex_or_color[5:0] as the tile id. Bit 6 asks
+ * the texture unit to wrap U/V every 16 texels, which lets software merge
+ * same-tile block faces without stretching their textures. */
+#define QUAD_TEX_REPEAT_UV   (1u << 6)
+
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */
 };

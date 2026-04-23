@@ -39,10 +39,10 @@
 
 /*
  * Bounce buffer for write(): we copy from user in chunks, then push the
- * chunk word-by-word into the FIFO. Keep it well under the 8 KB FIFO so
- * we always have room to drain back-pressure between chunks.
+ * chunk into the FIFO in bursts sized by STATUS.FIFO_COUNT. Keep it under
+ * the 8 KB FIFO so each copied chunk can drain without unbounded buffering.
  */
-#define VOXEL_BOUNCE_WORDS  256                       /* 1 KB per chunk */
+#define VOXEL_BOUNCE_WORDS  512                       /* 2 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
 /*
@@ -58,6 +58,7 @@ struct voxel_gpu_dev {
 	struct resource res;
 	void __iomem   *base;
 	struct mutex    lock;       /* serializes register access */
+	u32            *bounce;     /* reusable write() staging buffer */
 };
 
 static struct voxel_gpu_dev voxdev;
@@ -104,23 +105,22 @@ static int voxel_poll_status(u32 mask, u32 expect, unsigned int timeout_ms)
 
 /* ---------- FIFO streaming ---------- */
 
-/*
- * Push a single 32-bit word, honoring back-pressure by polling FFL.
- * The Avalon slave will also stall the bus via waitrequest if we ignore
- * this, but explicit polling lets us bail out cleanly on a wedged GPU.
- */
-static int voxel_fifo_push(u32 word)
+static int voxel_fifo_wait_space(size_t *space_words)
 {
 	unsigned long deadline = jiffies + msecs_to_jiffies(VOXEL_POLL_TIMEOUT_MS);
 
-	while (voxel_status() & VOXEL_STAT_FFL) {
+	for (;;) {
+		u32 used = voxel_fifo_count();
+
+		if (used < VOXEL_FIFO_WORDS) {
+			*space_words = VOXEL_FIFO_WORDS - used;
+			return 0;
+		}
 		if (time_after(jiffies, deadline))
 			return -ETIMEDOUT;
 		udelay(VOXEL_POLL_DELAY_US);
 		cond_resched();
 	}
-	voxel_wr(VOXEL_FIFO_BASE, word);
-	return 0;
 }
 
 /* ---------- file ops ---------- */
@@ -154,35 +154,45 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 	if (count & 0x3)
 		return -EINVAL;        /* must be 32-bit aligned */
 
-	bounce = kmalloc(VOXEL_BOUNCE_BYTES, GFP_KERNEL);
+	bounce = voxdev.bounce;
 	if (!bounce)
-		return -ENOMEM;
+		return -ENODEV;
 
 	if (mutex_lock_interruptible(&voxdev.lock)) {
-		kfree(bounce);
 		return -ERESTARTSYS;
 	}
 
 	while (total < count) {
 		size_t chunk = min_t(size_t, count - total, VOXEL_BOUNCE_BYTES);
-		size_t i;
+		size_t words;
+		size_t written_words = 0;
 
 		if (copy_from_user(bounce, buf + total, chunk)) {
 			ret = -EFAULT;
 			break;
 		}
 
-		for (i = 0; i < chunk / 4; i++) {
-			ret = voxel_fifo_push(bounce[i]);
+		words = chunk / 4;
+		while (written_words < words) {
+			size_t space_words;
+			size_t burst_words;
+
+			ret = voxel_fifo_wait_space(&space_words);
 			if (ret)
 				goto out;
+
+			burst_words = min(space_words, words - written_words);
+			iowrite32_rep(voxdev.base + VOXEL_FIFO_BASE,
+				      &bounce[written_words],
+				      burst_words);
+
+			written_words += burst_words;
 		}
 		total += chunk;
 	}
 
 out:
 	mutex_unlock(&voxdev.lock);
-	kfree(bounce);
 
 	if (total > 0)
 		return total;
@@ -394,11 +404,14 @@ static int voxel_probe(struct platform_device *pdev)
 	int ret;
 
 	mutex_init(&voxdev.lock);
+	voxdev.bounce = kmalloc(VOXEL_BOUNCE_BYTES, GFP_KERNEL);
+	if (!voxdev.bounce)
+		return -ENOMEM;
 
 	ret = misc_register(&voxel_miscdev);
 	if (ret) {
 		dev_err(&pdev->dev, "misc_register failed: %d\n", ret);
-		return ret;
+		goto err_bounce;
 	}
 
 	ret = of_address_to_resource(pdev->dev.of_node, 0, &voxdev.res);
@@ -436,6 +449,9 @@ err_release:
 	release_mem_region(voxdev.res.start, resource_size(&voxdev.res));
 err_misc:
 	misc_deregister(&voxel_miscdev);
+err_bounce:
+	kfree(voxdev.bounce);
+	voxdev.bounce = NULL;
 	return ret;
 }
 
@@ -453,6 +469,8 @@ static int voxel_remove(struct platform_device *pdev)
 	iounmap(voxdev.base);
 	release_mem_region(voxdev.res.start, resource_size(&voxdev.res));
 	misc_deregister(&voxel_miscdev);
+	kfree(voxdev.bounce);
+	voxdev.bounce = NULL;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 	return 0;

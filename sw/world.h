@@ -15,6 +15,8 @@ typedef struct {
     uint8_t z;
     uint8_t face;
     uint8_t type;
+    uint8_t u_size;
+    uint8_t v_size;
 } ChunkFace;
 
 typedef struct {

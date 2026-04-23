@@ -13,6 +13,7 @@ from .protocol import (
     QUAD_ALPHA_SHIFT,
     QUAD_LIGHT_MASK,
     QUAD_LIGHT_SHIFT,
+    TEX_REPEAT_UV,
     QuadDesc,
 )
 
@@ -179,9 +180,11 @@ def _reciprocal_q16_16(iw_q: int) -> int:
     return (w_norm_q << (16 - iw_msb)) & U32_MASK
 
 
-def _texture_coord_from_product(value: int) -> int:
+def _texture_coord_from_product(value: int, repeat: bool = False) -> int:
     if value <= 0:
         return 0
+    if repeat:
+        return (value >> 32) & 0xF
     if value >= TEXTURE_COORD_MAX_Q32:
         return TEXTURE_TILE_SIZE - 1
     return (value >> 32) & 0xF
@@ -455,6 +458,7 @@ class VirtualGPU:
                 one_over_w_dy,
             ) = quad.uv
             tile_offset = (quad.tex_or_color & 0x3F) << 8
+            repeat_uv = (quad.tex_or_color & TEX_REPEAT_UV) != 0
         else:
             color_index = apply_light_bank(quad.tex_or_color, quad.flags)
 
@@ -502,10 +506,12 @@ class VirtualGPU:
                     )
                     w_q16_16 = _reciprocal_q16_16(iw)
                     tex_u = _texture_coord_from_product(
-                        _to_signed32(uw) * _to_signed32(w_q16_16)
+                        _to_signed32(uw) * _to_signed32(w_q16_16),
+                        repeat_uv,
                     )
                     tex_v = _texture_coord_from_product(
-                        _to_signed32(vw) * _to_signed32(w_q16_16)
+                        _to_signed32(vw) * _to_signed32(w_q16_16),
+                        repeat_uv,
                     )
                     raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
                     if alpha_key and raw_color == 0:

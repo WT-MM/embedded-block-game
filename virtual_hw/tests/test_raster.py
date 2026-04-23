@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from virtualhw.protocol import QUAD_FLAG_FOG, QUAD_FLAG_TEX, QuadDesc
+from virtualhw.protocol import QUAD_FLAG_FOG, QUAD_FLAG_TEX, TEX_REPEAT_UV, QuadDesc
 from virtualhw.raster import (
     TEXTURE_BYTES,
     blend_rgb565,
@@ -87,6 +87,39 @@ class RasterBehaviorTest(unittest.TestCase):
         )
 
         self.assertEqual(gpu.back_buffer[0], rgb888_to_rgb565((0x00, 0x00, 0xFF)))
+
+    def test_repeat_uv_wraps_texture_coordinates(self) -> None:
+        textures = bytearray(TEXTURE_BYTES)
+        textures[0] = 1
+        textures[15] = 2
+        gpu = VirtualGPU(textures=bytes(textures))
+        gpu.set_palette_entry(1, 0xFF, 0x00, 0x00)
+        gpu.set_palette_entry(2, 0x00, 0x00, 0xFF)
+
+        uv = (
+            16 << 16,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1 << 16,
+            0,
+            0,
+        )
+        gpu.submit_quads(
+            [
+                one_pixel_quad(
+                    0,
+                    0,
+                    tex_or_color=TEX_REPEAT_UV,
+                    flags=QUAD_FLAG_TEX,
+                    uv=uv,
+                )
+            ]
+        )
+
+        self.assertEqual(gpu.back_buffer[0], rgb888_to_rgb565((0xFF, 0x00, 0x00)))
 
     def test_fog_blends_source_toward_fog_color(self) -> None:
         textures = bytearray(TEXTURE_BYTES)

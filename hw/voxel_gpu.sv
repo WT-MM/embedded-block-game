@@ -642,8 +642,9 @@ module voxel_gpu (
                              (recip2_w_norm_q << (6'd16 - recip2_iw_msb));
     wire signed [63:0] pipe1_u_prod = $signed(pipe1_uw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
-    wire [3:0] tex0_tex_u = clamp_tex_coord(tex0_u_prod);
-    wire [3:0] tex0_tex_v = clamp_tex_coord(tex0_v_prod);
+    wire tex0_repeat_uv = tex0_tex_or_color[6];
+    wire [3:0] tex0_tex_u = texture_coord(tex0_u_prod, tex0_repeat_uv);
+    wire [3:0] tex0_tex_v = texture_coord(tex0_v_prod, tex0_repeat_uv);
     wire [13:0] tex0_tex_addr = tex0_textured ?
                                  {tex0_tex_or_color[5:0], tex0_tex_v, tex0_tex_u} :
                                  14'd0;
@@ -813,14 +814,17 @@ module voxel_gpu (
         end
     endfunction
 
-    function automatic [3:0] clamp_tex_coord(input logic signed [63:0] value);
+    function automatic [3:0] texture_coord(input logic signed [63:0] value,
+                                           input logic repeat_uv);
         begin
             if (value <= 64'sd0)
-                clamp_tex_coord = 4'd0;
+                texture_coord = 4'd0;
+            else if (repeat_uv)
+                texture_coord = value[35:32];
             else if (value >= 64'sh0000_0010_0000_0000)
-                clamp_tex_coord = 4'd15;
+                texture_coord = 4'd15;
             else
-                clamp_tex_coord = value[35:32];
+                texture_coord = value[35:32];
         end
     endfunction
 

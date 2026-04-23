@@ -41,12 +41,6 @@ enum {
     PAL_SKY_GRADIENT_BASE = 40,
 };
 
-struct StagedQuad {
-    struct quad_desc desc;
-    struct quad_desc_uv uv;
-    size_t descriptor_bytes;
-};
-
 typedef struct {
     int x, y, z;
     int occupied;
@@ -139,13 +133,16 @@ struct RenderContext {
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
 
-    struct StagedQuad *staging;
     uint8_t *submit_buffer;
     size_t submit_capacity;
+    size_t submit_bytes;
     LookupEntry *lookup_entries;
     int lookup_capacity;
     uint32_t palette_cache[256];
     uint8_t palette_valid[256];
+    struct voxel_fog_state fog_cache;
+    uint8_t fog_valid;
+    uint8_t face_light_flags[NUM_FACES];
     int n_quads;
 
     /* Scratch buffer reused across frames to back-to-front sort translucent
@@ -154,6 +151,8 @@ struct RenderContext {
     TranslucentFaceRef *translucent_scratch;
     int translucent_scratch_capacity;
 };
+
+static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad);
 
 typedef struct {
     float x, y, z;
@@ -276,6 +275,30 @@ static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 co
     return true;
 }
 
+static bool same_fog_state(const struct voxel_fog_state *a,
+                           const struct voxel_fog_state *b)
+{
+    return a->start_dist == b->start_dist &&
+           a->end_dist == b->end_dist &&
+           a->color_index == b->color_index &&
+           a->enabled == b->enabled &&
+           a->inv_proj_sq == b->inv_proj_sq;
+}
+
+static bool renderer_set_fog_state(RenderContext *ctx,
+                                   const struct voxel_fog_state *fog)
+{
+    if (ctx->fog_valid && same_fog_state(&ctx->fog_cache, fog))
+        return true;
+
+    if (gpu_transport_set_fog(ctx->transport, fog) < 0)
+        return false;
+
+    ctx->fog_cache = *fog;
+    ctx->fog_valid = 1;
+    return true;
+}
+
 static void upload_light_palette_banks(GPUTransport *transport)
 {
     static const float bank_scale[4] = { 1.00f, 0.82f, 0.64f, 0.50f };
@@ -328,14 +351,31 @@ static const Vec3 face_normals[NUM_FACES] = {
     { 0, 0, 1 },
 };
 
-static const Vec3 face_verts[NUM_FACES][4] = {
-    { { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 }, { 0, 1, 0 } },
-    { { 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 } },
-    { { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } },
-    { { 1, 0, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 } },
-    { { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } },
-    { { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 }, { 0, 0, 1 } },
-};
+static uint8_t light_flags_for_normal(Vec3 light_dir, Vec3 normal)
+{
+    float ndotl = normal.x * light_dir.x +
+                  normal.y * light_dir.y +
+                  normal.z * light_dir.z;
+    unsigned bank;
+
+    if (ndotl >= 0.65f)
+        bank = 0;
+    else if (ndotl >= 0.15f)
+        bank = 1;
+    else if (ndotl >= -0.25f)
+        bank = 2;
+    else
+        bank = 3;
+
+    return QUAD_LIGHT_LEVEL(bank);
+}
+
+static void update_face_light_flags(RenderContext *ctx)
+{
+    for (int face = 0; face < NUM_FACES; face++)
+        ctx->face_light_flags[face] =
+            light_flags_for_normal(ctx->light_dir, face_normals[face]);
+}
 
 static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
 {
@@ -914,20 +954,41 @@ static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
     uv->one_over_w_dy = to_q16_16(diw_dy);
 }
 
+static bool projected_quad_fully_inside_viewport(const Vertex2D v[4])
+{
+    for (int i = 0; i < 4; i++) {
+        if (v[i].x < VIEW_X_MIN || v[i].x > VIEW_X_MAX ||
+            v[i].y < VIEW_Y_MIN || v[i].y > VIEW_Y_MAX)
+            return false;
+    }
+    return true;
+}
+
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
                              uint8_t texture_id, uint8_t extra_flags)
 {
     Vertex2D verts[4];
-    RenderQuad q = {0};
+    uint8_t flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX | extra_flags;
 
     for (int i = 0; i < 4; i++) {
         if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
             return false;
     }
 
+    /* Most world quads are already on-screen; avoid the general clipper. */
+    if (projected_quad_fully_inside_viewport(verts)) {
+        RenderQuad q = {0};
+
+        memcpy(q.vertices, verts, sizeof(verts));
+        q.texture_id = texture_id;
+        q.flags = flags;
+        return renderer_push_quad(ctx, &q);
+    }
+
+    RenderQuad q = {0};
     memcpy(q.vertices, verts, sizeof(verts));
     q.texture_id = texture_id;
-    q.flags = QUAD_FLAG_ZTEST | QUAD_FLAG_TEX | extra_flags;
+    q.flags = flags;
     return renderer_push_quad(ctx, &q);
 }
 
@@ -985,31 +1046,72 @@ static uint8_t choose_face_texture_lod(const RenderContext *ctx,
 
 static uint8_t choose_face_light_flags(const RenderContext *ctx, BlockFace face)
 {
-    const Vec3 normal = face_normals[face];
-    float ndotl = normal.x * ctx->light_dir.x +
-                  normal.y * ctx->light_dir.y +
-                  normal.z * ctx->light_dir.z;
-    unsigned bank;
-
-    if (ndotl >= 0.65f)
-        bank = 0;
-    else if (ndotl >= 0.15f)
-        bank = 1;
-    else if (ndotl >= -0.25f)
-        bank = 2;
-    else
-        bank = 3;
-
-    return QUAD_LIGHT_LEVEL(bank);
+    return ctx->face_light_flags[face];
 }
 
-static void emit_block_face(RenderContext *ctx, BlockID type,
-                            Vec3 block_pos, BlockFace face)
+static void merged_face_vertices(Vec3 block_pos, BlockFace face,
+                                 int u_size, int v_size, Vec3 out[4])
+{
+    float u = (float)u_size;
+    float v = (float)v_size;
+    float x = block_pos.x;
+    float y = block_pos.y;
+    float z = block_pos.z;
+
+    switch (face) {
+    case FACE_TOP:
+        out[0] = (Vec3){ x,     y + 1, z + v };
+        out[1] = (Vec3){ x + u, y + 1, z + v };
+        out[2] = (Vec3){ x + u, y + 1, z     };
+        out[3] = (Vec3){ x,     y + 1, z     };
+        break;
+    case FACE_BOTTOM:
+        out[0] = (Vec3){ x,     y, z     };
+        out[1] = (Vec3){ x + u, y, z     };
+        out[2] = (Vec3){ x + u, y, z + v };
+        out[3] = (Vec3){ x,     y, z + v };
+        break;
+    case FACE_LEFT:
+        out[0] = (Vec3){ x, y,     z     };
+        out[1] = (Vec3){ x, y,     z + u };
+        out[2] = (Vec3){ x, y + v, z + u };
+        out[3] = (Vec3){ x, y + v, z     };
+        break;
+    case FACE_RIGHT:
+        out[0] = (Vec3){ x + 1, y,     z + u };
+        out[1] = (Vec3){ x + 1, y,     z     };
+        out[2] = (Vec3){ x + 1, y + v, z     };
+        out[3] = (Vec3){ x + 1, y + v, z + u };
+        break;
+    case FACE_FRONT:
+        out[0] = (Vec3){ x,     y,     z };
+        out[1] = (Vec3){ x,     y + u, z };
+        out[2] = (Vec3){ x + v, y + u, z };
+        out[3] = (Vec3){ x + v, y,     z };
+        break;
+    case FACE_BACK:
+        out[0] = (Vec3){ x + v, y,     z + 1 };
+        out[1] = (Vec3){ x + v, y + u, z + 1 };
+        out[2] = (Vec3){ x,     y + u, z + 1 };
+        out[3] = (Vec3){ x,     y,     z + 1 };
+        break;
+    default:
+        for (int i = 0; i < 4; i++)
+            out[i] = block_pos;
+        break;
+    }
+}
+
+static void emit_merged_block_face(RenderContext *ctx, BlockID type,
+                                   Vec3 block_pos, BlockFace face,
+                                   int u_size, int v_size)
 {
     static const float tile_span = 16.0f;
+    Vec3 face_world[4];
     CameraVertex face_cam[4];
     uint8_t light_flags;
     uint8_t texture_id;
+    uint8_t base_tile;
 
     if (type == BLOCK_AIR)
         return;
@@ -1019,23 +1121,21 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
                          ctx->current_camera.position))
         return;
 
+    merged_face_vertices(block_pos, face, u_size, v_size, face_world);
     for (int i = 0; i < 4; i++) {
-        Vec3 wp = {
-            block_pos.x + face_verts[face][i].x,
-            block_pos.y + face_verts[face][i].y,
-            block_pos.z + face_verts[face][i].z,
-        };
-        world_to_camera(ctx, wp, &face_cam[i]);
-        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
+        world_to_camera(ctx, face_world[i], &face_cam[i]);
+        face_cam[i].u = (i == 1 || i == 2) ? tile_span * (float)u_size : 0.0f;
         /*
          * Atlas row 0 sits at the top of each tile image, and the side faces'
          * vertex 0 is world-bottom. Invert V so world-top maps to texture-top.
          */
-        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
+        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span * (float)v_size;
     }
 
-    texture_id = choose_face_texture_lod(ctx, block_face_texture_id(type, face),
-                                         face_cam);
+    base_tile = block_face_texture_id(type, face);
+    texture_id = choose_face_texture_lod(ctx, base_tile, face_cam);
+    if (u_size > 1 || v_size > 1)
+        texture_id |= QUAD_TEX_REPEAT_UV;
     light_flags = choose_face_light_flags(ctx, face) | QUAD_FLAG_FOG;
     /*
      * Translucent blocks (glass) ride the hardware alpha-blend path. 50% src
@@ -1051,6 +1151,12 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count, texture_id, light_flags);
+}
+
+static void emit_block_face(RenderContext *ctx, BlockID type,
+                            Vec3 block_pos, BlockFace face)
+{
+    emit_merged_block_face(ctx, type, block_pos, face, 1, 1);
 }
 
 static float distance_to_interval(float value, float min, float max)
@@ -1152,7 +1258,7 @@ static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
 
     if (!ctx || !world || world->render_distance_chunks <= 0) {
         if (ctx)
-            gpu_transport_set_fog(ctx->transport, &fog);
+            renderer_set_fog_state(ctx, &fog);
         return;
     }
 
@@ -1172,7 +1278,7 @@ static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
     fog.color_index = PAL_SKY_HORIZON;
     fog.enabled = fog.end_dist > fog.start_dist;
     fog.inv_proj_sq = to_q0_16u(inv_proj_sq);
-    gpu_transport_set_fog(ctx->transport, &fog);
+    renderer_set_fog_state(ctx, &fog);
 }
 
 static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
@@ -1234,26 +1340,25 @@ RenderContext *renderer_init(void)
         return NULL;
     }
 
-    ctx->staging = malloc(MAX_QUADS_IN_FLIGHT * sizeof(*ctx->staging));
     ctx->submit_capacity = MAX_QUADS_IN_FLIGHT *
-                           (sizeof(struct quad_desc) + sizeof(struct quad_desc_uv));
+                            (sizeof(struct quad_desc) + sizeof(struct quad_desc_uv));
     ctx->submit_buffer = malloc(ctx->submit_capacity);
     ctx->lookup_entries = NULL;
     ctx->lookup_capacity = 0;
     ctx->translucent_scratch = NULL;
     ctx->translucent_scratch_capacity = 0;
-    if (!ctx->staging || !ctx->submit_buffer) {
+    if (!ctx->submit_buffer) {
         free(ctx->submit_buffer);
-        free(ctx->staging);
         gpu_transport_close(ctx->transport);
         free(ctx);
         return NULL;
     }
 
     ctx->light_dir = normalize_vec3((Vec3){ 0.35f, 0.92f, 0.20f });
+    update_face_light_flags(ctx);
     upload_default_palette(ctx->transport);
     upload_light_palette_banks(ctx->transport);
-    gpu_transport_set_fog(ctx->transport, &(struct voxel_fog_state){0});
+    renderer_set_fog_state(ctx, &(struct voxel_fog_state){0});
     return ctx;
 }
 
@@ -1263,7 +1368,6 @@ void renderer_shutdown(RenderContext *ctx)
     free(ctx->translucent_scratch);
     free(ctx->lookup_entries);
     free(ctx->submit_buffer);
-    free(ctx->staging);
     gpu_transport_close(ctx->transport);
     free(ctx);
 }
@@ -1271,31 +1375,20 @@ void renderer_shutdown(RenderContext *ctx)
 void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
+    ctx->submit_bytes = 0;
     gpu_transport_clear(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
 {
-    if (ctx->n_quads == 0) {
+    if (ctx->submit_bytes == 0) {
         gpu_transport_flip(ctx->transport);
         return;
     }
 
-    size_t submit_bytes = 0;
-    for (int i = 0; i < ctx->n_quads; i++) {
-        memcpy(ctx->submit_buffer + submit_bytes,
-               &ctx->staging[i].desc, sizeof(ctx->staging[i].desc));
-        submit_bytes += sizeof(ctx->staging[i].desc);
-        if (ctx->staging[i].descriptor_bytes > sizeof(ctx->staging[i].desc)) {
-            memcpy(ctx->submit_buffer + submit_bytes,
-                   &ctx->staging[i].uv, sizeof(ctx->staging[i].uv));
-            submit_bytes += sizeof(ctx->staging[i].uv);
-        }
-    }
-
     if (gpu_transport_submit_descriptors(ctx->transport,
                                          ctx->submit_buffer,
-                                         submit_bytes) < 0)
+                                         ctx->submit_bytes) < 0)
         return;
 
     gpu_transport_flip(ctx->transport);
@@ -1312,7 +1405,13 @@ void renderer_set_camera(RenderContext *ctx, const Camera *camera)
 
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 {
+    const bool input_textured = (quad.flags & QUAD_FLAG_TEX) != 0;
+    const size_t max_descriptor_bytes = sizeof(struct quad_desc) +
+        (input_textured ? sizeof(struct quad_desc_uv) : 0);
+
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+        return false;
+    if (ctx->submit_bytes + max_descriptor_bytes > ctx->submit_capacity)
         return false;
 
     /*
@@ -1346,11 +1445,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
 
-    struct StagedQuad *staged = &ctx->staging[ctx->n_quads];
-    struct quad_desc *d = &staged->desc;
-    memset(staged, 0, sizeof(*staged));
-    ctx->n_quads++;
-
+    struct quad_desc *d = (struct quad_desc *)(ctx->submit_buffer + ctx->submit_bytes);
     memset(d, 0, sizeof(*d));
 
     d->x_min = (int16_t)x_min;
@@ -1402,12 +1497,17 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 #endif
 
     if (d->flags & QUAD_FLAG_TEX) {
-        fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, &staged->uv);
-        staged->descriptor_bytes = sizeof(staged->desc) + sizeof(staged->uv);
+        struct quad_desc_uv *uv = (struct quad_desc_uv *)
+            (ctx->submit_buffer + ctx->submit_bytes + sizeof(*d));
+
+        memset(uv, 0, sizeof(*uv));
+        fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
+        ctx->submit_bytes += sizeof(*d) + sizeof(*uv);
     } else {
-        staged->descriptor_bytes = sizeof(staged->desc);
+        ctx->submit_bytes += sizeof(*d);
     }
 
+    ctx->n_quads++;
     return true;
 }
 
@@ -1550,7 +1650,9 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
                 (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
             };
 
-            emit_block_face(ctx, id, block_pos, (BlockFace)face->face);
+            emit_merged_block_face(ctx, id, block_pos, (BlockFace)face->face,
+                                   face->u_size ? face->u_size : 1,
+                                   face->v_size ? face->v_size : 1);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }
@@ -1615,8 +1717,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
                 (float)(ref->chunk->chunk_z * WORLD_CHUNK_SIZE + ref->face->z),
             };
 
-            emit_block_face(ctx, (BlockID)ref->face->type,
-                            block_pos, (BlockFace)ref->face->face);
+            emit_merged_block_face(ctx, (BlockID)ref->face->type,
+                                   block_pos, (BlockFace)ref->face->face,
+                                   ref->face->u_size ? ref->face->u_size : 1,
+                                   ref->face->v_size ? ref->face->v_size : 1);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }

@@ -231,52 +231,175 @@ static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *c
     return count;
 }
 
+static void face_cell_to_block(BlockFace face, int layer, int u, int v,
+                               int *x, int *y, int *z)
+{
+    switch (face) {
+    case FACE_TOP:
+    case FACE_BOTTOM:
+        *x = u;
+        *y = layer;
+        *z = v;
+        break;
+    case FACE_LEFT:
+    case FACE_RIGHT:
+        *x = layer;
+        *y = v;
+        *z = u;
+        break;
+    case FACE_FRONT:
+    case FACE_BACK:
+        *x = v;
+        *y = u;
+        *z = layer;
+        break;
+    default:
+        *x = 0;
+        *y = 0;
+        *z = 0;
+        break;
+    }
+}
+
+static void face_grid_dims(BlockFace face, int *layers, int *width, int *height)
+{
+    switch (face) {
+    case FACE_TOP:
+    case FACE_BOTTOM:
+        *layers = WORLD_CHUNK_HEIGHT;
+        *width = WORLD_CHUNK_SIZE;   /* u axis: x */
+        *height = WORLD_CHUNK_SIZE;  /* v axis: z */
+        break;
+    case FACE_LEFT:
+    case FACE_RIGHT:
+        *layers = WORLD_CHUNK_SIZE;
+        *width = WORLD_CHUNK_SIZE;   /* u axis: z */
+        *height = WORLD_CHUNK_HEIGHT;/* v axis: y */
+        break;
+    case FACE_FRONT:
+    case FACE_BACK:
+        *layers = WORLD_CHUNK_SIZE;
+        *width = WORLD_CHUNK_HEIGHT; /* u axis: y */
+        *height = WORLD_CHUNK_SIZE;  /* v axis: x */
+        break;
+    default:
+        *layers = 0;
+        *width = 0;
+        *height = 0;
+        break;
+    }
+}
+
+static void append_chunk_face(ChunkFace *faces, int *out,
+                              int x, int y, int z,
+                              BlockFace face, BlockID type,
+                              int u_size, int v_size)
+{
+    faces[(*out)++] = (ChunkFace){
+        .x = (uint8_t)x,
+        .y = (uint8_t)y,
+        .z = (uint8_t)z,
+        .face = (uint8_t)face,
+        .type = (uint8_t)type,
+        .u_size = (uint8_t)u_size,
+        .v_size = (uint8_t)v_size,
+    };
+}
+
 static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
 {
     static const int nx[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
     static const int ny[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
     static const int nz[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
-    int face_count = count_exposed_faces_for_chunk(world, chunk);
+    int max_face_count = count_exposed_faces_for_chunk(world, chunk);
     ChunkFace *faces = NULL;
     int out = 0;
 
-    if (face_count == 0) {
+    if (max_face_count == 0) {
         free(chunk->faces);
         chunk->faces = NULL;
         chunk->face_count = 0;
         return;
     }
 
-    faces = malloc((size_t)face_count * sizeof(*faces));
+    faces = malloc((size_t)max_face_count * sizeof(*faces));
     if (!faces)
         return;
 
-    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
-        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
-                BlockID id = chunk->blocks[y][z][x];
+    for (int f = 0; f < NUM_FACES; f++) {
+        int layers;
+        int width;
+        int height;
 
-                if (id == BLOCK_AIR)
-                    continue;
+        face_grid_dims((BlockFace)f, &layers, &width, &height);
+        for (int layer = 0; layer < layers; layer++) {
+            BlockID mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
+            bool used[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
 
-                int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
-                int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
+            for (int v = 0; v < height; v++) {
+                for (int u = 0; u < width; u++) {
+                    int x, y, z;
+                    face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
 
-                for (int f = 0; f < NUM_FACES; f++) {
+                    BlockID id = chunk->blocks[y][z][x];
+                    if (id == BLOCK_AIR)
+                        continue;
+
+                    int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
+                    int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
                     BlockID neighbor = world_get_block(world,
                                                        wx + nx[f],
                                                        y + ny[f],
                                                        wz + nz[f]);
-                    if (!face_should_render(id, neighbor))
+                    if (face_should_render(id, neighbor))
+                        mask[v][u] = id;
+                }
+            }
+
+            for (int v = 0; v < height; v++) {
+                for (int u = 0; u < width; u++) {
+                    BlockID id = mask[v][u];
+                    int merge_w = 1;
+                    int merge_h = 1;
+                    int x, y, z;
+
+                    if (id == BLOCK_AIR || used[v][u])
                         continue;
 
-                    faces[out++] = (ChunkFace){
-                        .x = (uint8_t)x,
-                        .y = (uint8_t)y,
-                        .z = (uint8_t)z,
-                        .face = (uint8_t)f,
-                        .type = (uint8_t)id,
-                    };
+                    face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
+                    if (block_is_translucent(id)) {
+                        used[v][u] = true;
+                        append_chunk_face(faces, &out, x, y, z,
+                                          (BlockFace)f, id, 1, 1);
+                        continue;
+                    }
+
+                    while (u + merge_w < width &&
+                           !used[v][u + merge_w] &&
+                           mask[v][u + merge_w] == id) {
+                        merge_w++;
+                    }
+
+                    bool can_extend = true;
+                    while (v + merge_h < height && can_extend) {
+                        for (int du = 0; du < merge_w; du++) {
+                            if (used[v + merge_h][u + du] ||
+                                mask[v + merge_h][u + du] != id) {
+                                can_extend = false;
+                                break;
+                            }
+                        }
+                        if (can_extend)
+                            merge_h++;
+                    }
+
+                    for (int dv = 0; dv < merge_h; dv++) {
+                        for (int du = 0; du < merge_w; du++)
+                            used[v + dv][u + du] = true;
+                    }
+
+                    append_chunk_face(faces, &out, x, y, z,
+                                      (BlockFace)f, id, merge_w, merge_h);
                 }
             }
         }

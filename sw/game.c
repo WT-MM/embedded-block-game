@@ -21,7 +21,8 @@
 #define PHYSICS_DT   (1.0f / (float)PHYSICS_HZ)
 #define MAX_FRAME_DT 0.25f
 #define PERF_LOG_NS  1000000000L
-#define WORLD_RENDER_DISTANCE_CHUNKS 3
+#define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
+#define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 
@@ -66,6 +67,23 @@ static int read_status_log_enabled(void)
     return 1;
 }
 
+static int read_render_distance_chunks(void)
+{
+    const char *value = getenv("VOXEL_RENDER_DISTANCE");
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+
+    if (end == value || (end && *end != '\0') ||
+        parsed < 1 || parsed > MAX_WORLD_RENDER_DISTANCE_CHUNKS)
+        return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
+
+    return (int)parsed;
+}
+
 int main(void)
 {
     RenderContext *ctx = renderer_init();
@@ -81,6 +99,7 @@ int main(void)
     init_block_types();
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
+    int render_distance_chunks = read_render_distance_chunks();
 
     /* Initialize Player */
     Player player;
@@ -97,7 +116,7 @@ int main(void)
     if (!world_init_infinite_procedural(&world,
                                         STONE_SEED,
                                         STONE_TRIES_PER_CHUNK,
-                                        WORLD_RENDER_DISTANCE_CHUNKS,
+                                        render_distance_chunks,
                                         player.x,
                                         player.z)) {
         fprintf(stderr, "world generation failed\n");

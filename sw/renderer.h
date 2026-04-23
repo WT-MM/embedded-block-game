@@ -72,5 +72,8 @@ int renderer_draw_sky(RenderContext* ctx, float time_seconds);
 int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
 bool renderer_draw_crosshair(RenderContext* ctx);
 bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
+bool renderer_fill_rect(RenderContext* ctx,
+                        float x0, float y0, float x1, float y1,
+                        uint8_t palette_index, uint8_t extra_flags);
 
 #endif // RENDERER_H

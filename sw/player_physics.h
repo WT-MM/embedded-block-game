@@ -16,8 +16,17 @@
 #define MAX_SPEED          4.0f  /* blocks per second */
 #define ACCELERATION       15.0f /* rate of slewing/acceleration */
 #define FRICTION           10.0f /* deceleration when no input is applied */
+#define FLY_SPEED          6.0f  /* vertical speed in creative/spectator */
+
+typedef enum {
+    PLAYER_MODE_SURVIVAL  = 0, /* gravity + collision */
+    PLAYER_MODE_CREATIVE  = 1, /* fly, no gravity, collision */
+    PLAYER_MODE_SPECTATOR = 2, /* fly, no gravity, no collision */
+    PLAYER_MODE_COUNT     = 3,
+} PlayerMode;
 
 typedef struct {
+    PlayerMode mode;
     float x, y, z;        /* position of the player's feet */
     float vx, vy, vz;     /* current velocity */
     bool is_grounded;
@@ -28,5 +37,7 @@ typedef struct {
 void player_init(Player *p, float start_x, float start_y, float start_z);
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z, bool jump, bool shift, float dt);
 float player_get_eye_height(const Player *p);
+void player_cycle_mode(Player *p);
+const char *player_mode_name(PlayerMode mode);
 
 #endif

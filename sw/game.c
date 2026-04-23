@@ -11,6 +11,7 @@
 #include "block_types.h"
 #include "world.h"
 #include "player_physics.h" /* Added physics integration */
+#include "chat.h"
 
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
 #define LOOK_SPEED   1.8f         /* radians per second (arrow keys) */
@@ -96,6 +97,9 @@ int main(void)
     InputState inp;
     input_init(&inp);
 
+    Chat chat;
+    chat_init(&chat);
+
     init_block_types();
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
@@ -125,7 +129,9 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  Space=jump  Shift=crouch  Arrows=look  Mouse=look  Esc=quit\n");
+    printf("Controls: WASD=move  Space=jump/fly-up  Shift=crouch/fly-down  G=cycle mode  T=chat  Arrows=look  Mouse=look  Esc=quit\n");
+    printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
+           player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
            WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
     printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
@@ -169,6 +175,29 @@ int main(void)
         physics_accumulator += frame_dt;
 
         input_update(&inp);
+
+        if (input_consume_chat_toggle(&inp)) {
+            chat_toggle(&chat);
+            input_set_text_mode(&inp, chat_is_open(&chat));
+        }
+
+        if (chat_is_open(&chat)) {
+            for (int i = 0; i < inp.text_queue_len; i++) {
+                char ch = inp.text_queue[i];
+                if (ch == INPUT_TEXT_BACKSPACE)
+                    chat_handle_backspace(&chat);
+                else if (ch == INPUT_TEXT_ENTER)
+                    chat_handle_enter(&chat);
+                else
+                    chat_handle_char(&chat, ch);
+            }
+        }
+        input_clear_text_queue(&inp);
+
+        if (input_consume_mode_toggle(&inp)) {
+            player_cycle_mode(&player);
+            chat_log(&chat, "mode: %s", player_mode_name(player.mode));
+        }
 
         /* Look — mouse or arrow keys */
         cam.yaw   += inp.mouse_dx * mouse_sens;
@@ -231,6 +260,7 @@ int main(void)
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world);
         renderer_draw_crosshair(ctx);
+        chat_draw(&chat, ctx);
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);
@@ -242,7 +272,8 @@ int main(void)
         double work_ns = (double)ns_diff(&end_end, &loop_start);
 
         if (status_log_enabled) {
-            printf("\rpos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) gnd=%d yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
+            printf("\rmode=%-9s pos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) gnd=%d yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
+                   player_mode_name(player.mode),
                    player.x, player.y, player.z,
                    player.vx, player.vy, player.vz, player.is_grounded,
                    cam.yaw, cam.pitch, quads, sky_quads);

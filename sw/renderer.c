@@ -1816,10 +1816,17 @@ static bool push_screen_flat_quad(RenderContext *ctx,
                                   float x1, float y1,
                                   uint8_t palette_index)
 {
+    return renderer_fill_rect(ctx, x0, y0, x1, y1, palette_index, 0);
+}
+
+bool renderer_fill_rect(RenderContext *ctx,
+                        float x0, float y0, float x1, float y1,
+                        uint8_t palette_index, uint8_t extra_flags)
+{
     RenderQuad quad = {0};
 
     quad.color_tint = palette_index;
-    quad.flags = 0;
+    quad.flags = extra_flags;
     quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f, 0.0f, 1.0f };
     quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, 0.0f, 0.0f, 1.0f };
     quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, 0.0f, 0.0f, 1.0f };

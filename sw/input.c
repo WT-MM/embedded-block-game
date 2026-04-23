@@ -184,6 +184,22 @@ static float scale_abs_delta(int delta, int min, int max, float span)
     return ((float)delta * span) / (float)range;
 }
 
+static const char SCANCODE_TO_CHAR[KEY_MAX];  /* forward decl; defined below */
+static const char SCANCODE_TO_CHAR_SHIFT[KEY_MAX];
+
+static char scancode_to_ascii(int code, bool shift)
+{
+    if (code < 0 || code >= KEY_MAX) return 0;
+    char c = shift ? SCANCODE_TO_CHAR_SHIFT[code] : SCANCODE_TO_CHAR[code];
+    return c;
+}
+
+static void text_queue_push(InputState *inp, char ch)
+{
+    if (inp->text_queue_len >= INPUT_TEXT_QUEUE_MAX) return;
+    inp->text_queue[inp->text_queue_len++] = ch;
+}
+
 int input_init(InputState *inp)
 {
     memset(inp, 0, sizeof(*inp));
@@ -218,22 +234,66 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
     while (read(fd, &ev, sizeof(ev)) == sizeof(ev)) {
         if (ev.type == EV_KEY) {
             bool down = (ev.value != 0); /* 0=up, 1=down, 2=repeat */
+            bool press_edge  = (ev.value == 1);
+            bool press_or_repeat = (ev.value == 1 || ev.value == 2);
+
+            /* Shift tracking happens regardless of text mode so both game
+             * actions and text entry see the correct modifier state. */
+            if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
+                inp->_shift_down = down;
+
+            /* Chat toggle and look keys are always live. ESC closes the
+             * chat when open (below) or quits the game (in the game
+             * branch farther down). */
+            switch (ev.code) {
+            case KEY_T:
+                if (press_edge) inp->chat_toggle_pressed = true;
+                break;
+            case KEY_LEFT:   inp->look_left  = down; break;
+            case KEY_RIGHT:  inp->look_right = down; break;
+            case KEY_UP:     inp->look_up    = down; break;
+            case KEY_DOWN:   inp->look_down  = down; break;
+            default: break;
+            }
+
+            if (inp->_text_mode && ev.code == KEY_ESC && press_edge) {
+                /* Treat ESC as "close chat" — signal the toggle. */
+                inp->chat_toggle_pressed = true;
+                continue;
+            }
+
+            if (inp->_text_mode) {
+                /* Suppress movement/game actions; capture printable text
+                 * and editing keys into the queue. T is reserved for the
+                 * chat toggle above and must not also type a letter. */
+                if (ev.code == KEY_BACKSPACE && press_or_repeat) {
+                    text_queue_push(inp, INPUT_TEXT_BACKSPACE);
+                } else if (ev.code == KEY_ENTER && press_edge) {
+                    text_queue_push(inp, INPUT_TEXT_ENTER);
+                } else if (ev.code != KEY_T && press_or_repeat) {
+                    char ch = scancode_to_ascii(ev.code, inp->_shift_down);
+                    if (ch)
+                        text_queue_push(inp, ch);
+                }
+                continue;
+            }
+
             switch (ev.code) {
             case KEY_W:                      inp->forward = down; break;
             case KEY_S:                      inp->back    = down; break;
             case KEY_A:                      inp->left    = down; break;
             case KEY_D:                      inp->right   = down; break;
             case KEY_SPACE:
-                if (ev.value == 1)
+                if (press_edge)
                     inp->jump_pressed = true;
                 inp->up = down;
                 break;
             case KEY_LEFTSHIFT:
             case KEY_RIGHTSHIFT:             inp->down    = down; break;
-            case KEY_LEFT:                       inp->look_left  = down; break;
-            case KEY_RIGHT:                      inp->look_right = down; break;
-            case KEY_UP:                         inp->look_up    = down; break;
-            case KEY_DOWN:                       inp->look_down  = down; break;
+            case KEY_G:
+                if (press_edge)
+                    inp->mode_toggle_pressed = true;
+                break;
             case KEY_ESC:   if (down) inp->quit = true;   break;
             case KEY_Q:     if (down) inp->quit = true;   break;
             default: break;
@@ -294,6 +354,40 @@ bool input_consume_jump(InputState *inp)
     return pressed;
 }
 
+bool input_consume_mode_toggle(InputState *inp)
+{
+    bool pressed = inp->mode_toggle_pressed;
+    inp->mode_toggle_pressed = false;
+    return pressed;
+}
+
+bool input_consume_chat_toggle(InputState *inp)
+{
+    bool pressed = inp->chat_toggle_pressed;
+    inp->chat_toggle_pressed = false;
+    return pressed;
+}
+
+void input_set_text_mode(InputState *inp, bool on)
+{
+    if (on && !inp->_text_mode) {
+        /* Freeze all movement inputs so a held WASD doesn't keep walking
+         * while the user is typing. */
+        inp->forward = inp->back = inp->left = inp->right = false;
+        inp->up = inp->down = false;
+        inp->jump_pressed = false;
+        inp->mode_toggle_pressed = false;
+    }
+    inp->_text_mode = on;
+    if (!on)
+        inp->text_queue_len = 0;
+}
+
+void input_clear_text_queue(InputState *inp)
+{
+    inp->text_queue_len = 0;
+}
+
 void input_shutdown(InputState *inp)
 {
     if (inp->_kbd_fd >= 0) {
@@ -309,3 +403,56 @@ void input_shutdown(InputState *inp)
     }
     inp->_pointer_count = 0;
 }
+
+/* US-layout scancode → ASCII. Entries left zero are ignored. The tables are
+ * KEY_MAX-sized so the lookup is a simple bounded index — any unmapped key
+ * just yields 0. */
+static const char SCANCODE_TO_CHAR[KEY_MAX] = {
+    [KEY_A] = 'a', [KEY_B] = 'b', [KEY_C] = 'c', [KEY_D] = 'd',
+    [KEY_E] = 'e', [KEY_F] = 'f', [KEY_G] = 'g', [KEY_H] = 'h',
+    [KEY_I] = 'i', [KEY_J] = 'j', [KEY_K] = 'k', [KEY_L] = 'l',
+    [KEY_M] = 'm', [KEY_N] = 'n', [KEY_O] = 'o', [KEY_P] = 'p',
+    [KEY_Q] = 'q', [KEY_R] = 'r', [KEY_S] = 's', [KEY_T] = 't',
+    [KEY_U] = 'u', [KEY_V] = 'v', [KEY_W] = 'w', [KEY_X] = 'x',
+    [KEY_Y] = 'y', [KEY_Z] = 'z',
+    [KEY_1] = '1', [KEY_2] = '2', [KEY_3] = '3', [KEY_4] = '4',
+    [KEY_5] = '5', [KEY_6] = '6', [KEY_7] = '7', [KEY_8] = '8',
+    [KEY_9] = '9', [KEY_0] = '0',
+    [KEY_SPACE]      = ' ',
+    [KEY_MINUS]      = '-',
+    [KEY_EQUAL]      = '=',
+    [KEY_LEFTBRACE]  = '[',
+    [KEY_RIGHTBRACE] = ']',
+    [KEY_SEMICOLON]  = ';',
+    [KEY_APOSTROPHE] = '\'',
+    [KEY_COMMA]      = ',',
+    [KEY_DOT]        = '.',
+    [KEY_SLASH]      = '/',
+    [KEY_BACKSLASH]  = '\\',
+    [KEY_GRAVE]      = '`',
+};
+
+static const char SCANCODE_TO_CHAR_SHIFT[KEY_MAX] = {
+    [KEY_A] = 'A', [KEY_B] = 'B', [KEY_C] = 'C', [KEY_D] = 'D',
+    [KEY_E] = 'E', [KEY_F] = 'F', [KEY_G] = 'G', [KEY_H] = 'H',
+    [KEY_I] = 'I', [KEY_J] = 'J', [KEY_K] = 'K', [KEY_L] = 'L',
+    [KEY_M] = 'M', [KEY_N] = 'N', [KEY_O] = 'O', [KEY_P] = 'P',
+    [KEY_Q] = 'Q', [KEY_R] = 'R', [KEY_S] = 'S', [KEY_T] = 'T',
+    [KEY_U] = 'U', [KEY_V] = 'V', [KEY_W] = 'W', [KEY_X] = 'X',
+    [KEY_Y] = 'Y', [KEY_Z] = 'Z',
+    [KEY_1] = '!', [KEY_2] = '@', [KEY_3] = '#', [KEY_4] = '$',
+    [KEY_5] = '%', [KEY_6] = '^', [KEY_7] = '&', [KEY_8] = '*',
+    [KEY_9] = '(', [KEY_0] = ')',
+    [KEY_SPACE]      = ' ',
+    [KEY_MINUS]      = '_',
+    [KEY_EQUAL]      = '+',
+    [KEY_LEFTBRACE]  = '{',
+    [KEY_RIGHTBRACE] = '}',
+    [KEY_SEMICOLON]  = ':',
+    [KEY_APOSTROPHE] = '"',
+    [KEY_COMMA]      = '<',
+    [KEY_DOT]        = '>',
+    [KEY_SLASH]      = '?',
+    [KEY_BACKSLASH]  = '|',
+    [KEY_GRAVE]      = '~',
+};

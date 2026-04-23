@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Pillow is imported lazily inside write_preview() so the .mif emission
+# path (which has no extra dependencies) still works on hosts that don't
+# have PIL installed.
+
 TILE_SIZE = 16
 TILE_COUNT = 64
 TEXELS_PER_TILE = TILE_SIZE * TILE_SIZE
@@ -64,6 +68,68 @@ PAL_STAR = 34
 PAL_GLASS = 35
 PAL_GLASS_EDGE = 36
 PAL_GLASS_HIGHLIGHT = 37
+
+
+# RGB values for each palette index. Mirrors the table in
+# `sw/renderer.c::upload_default_palette()` and is used only by
+# write_preview() to rasterise the atlas into a PNG. Any palette index
+# not listed here renders as solid magenta in the preview so missed
+# updates are impossible to miss visually.
+PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
+    0:  (0x10, 0x10, 0x18),  # background / transparent
+    1:  (0x6b, 0xa4, 0x3a),  # grass top
+    2:  (0x8b, 0x63, 0x41),  # dirt side
+    3:  (0x6f, 0x57, 0x37),  # wood side
+    4:  (0x7c, 0x7c, 0x7c),  # stone side
+    5:  (0xff, 0xff, 0xff),  # debug white
+    6:  (0xff, 0x40, 0x40),  # debug red
+    7:  (0x40, 0xa0, 0xff),  # debug blue
+    8:  (0xff, 0xd0, 0x40),  # debug yellow
+    9:  (0x5c, 0x86, 0x34),  # grass side
+    10: (0x6a, 0x4a, 0x2c),  # grass bottom / dark dirt
+    11: (0x9d, 0x7b, 0x4d),  # wood top
+    12: (0x53, 0x38, 0x23),  # wood bottom
+    13: (0x98, 0x98, 0x98),  # stone top
+    14: (0x5c, 0x5c, 0x5c),  # stone bottom
+    15: (0xa7, 0x79, 0x52),  # dirt top
+    16: (0x59, 0x41, 0x2a),  # dirt bottom
+    17: (0x4f, 0x78, 0x2d),  # grass dark
+    18: (0x84, 0xba, 0x57),  # grass highlight
+    19: (0x6f, 0x4f, 0x32),  # dirt dark
+    20: (0xaa, 0x81, 0x5a),  # dirt light
+    21: (0x88, 0x6a, 0x44),  # wood grain
+    22: (0x50, 0x3b, 0x24),  # wood bark dark
+    23: (0x63, 0x63, 0x63),  # stone dark
+    24: (0x9a, 0x9a, 0x9a),  # stone light
+    25: (0x78, 0xb4, 0xf0),  # sky high
+    26: (0xb0, 0xd8, 0xff),  # sky mid
+    27: (0xe2, 0xef, 0xff),  # sky horizon
+    28: (0xf5, 0xfa, 0xff),  # cloud
+    29: (0xcb, 0xd8, 0xec),  # cloud shadow
+    30: (0xff, 0xee, 0xaa),  # sun core
+    31: (0xff, 0xbb, 0x55),  # sun glow
+    32: (0xe7, 0xeb, 0xf8),  # moon
+    33: (0x9c, 0xa4, 0xc0),  # moon shadow
+    34: (0xff, 0xff, 0xff),  # stars
+    35: (0xb8, 0xe4, 0xff),  # glass body
+    36: (0x5e, 0x7c, 0x98),  # glass edge / frame
+    37: (0xff, 0xff, 0xff),  # glass highlight
+}
+
+# Tiles shown in the preview, one column per block type, one row per LOD.
+# Columns are chosen so the preview matches what a player actually sees on
+# a real block face; add/remove entries as the atlas grows.
+PREVIEW_COLUMNS: list[tuple[str, int, int, int]] = [
+    # (label, base_tile, mip1_tile, mip2_tile)
+    ("grass_top",  TEX_TILE_GRASS_TOP,  TEX_TILE_GRASS_TOP_MIP1,  TEX_TILE_GRASS_TOP_MIP2),
+    ("grass_side", TEX_TILE_GRASS_SIDE, TEX_TILE_GRASS_SIDE_MIP1, TEX_TILE_GRASS_SIDE_MIP2),
+    ("dirt",       TEX_TILE_DIRT,       TEX_TILE_DIRT_MIP1,       TEX_TILE_DIRT_MIP2),
+    ("stone",      TEX_TILE_STONE,      TEX_TILE_STONE_MIP1,      TEX_TILE_STONE_MIP2),
+    ("wood_side",  TEX_TILE_WOOD_SIDE,  TEX_TILE_WOOD_SIDE_MIP1,  TEX_TILE_WOOD_SIDE_MIP2),
+    ("wood_top",   TEX_TILE_WOOD_TOP,   TEX_TILE_WOOD_TOP_MIP1,   TEX_TILE_WOOD_TOP_MIP2),
+    ("glass",      TEX_TILE_GLASS,      TEX_TILE_GLASS_MIP1,      TEX_TILE_GLASS_MIP2),
+]
+
 
 
 MIP1_TILES = {
@@ -426,27 +492,17 @@ def build_atlas() -> bytearray:
     return atlas
 
 
-def write_hex(path: Path) -> None:
-    """Verilog `$readmemh`-style atlas.
-
-    One byte per line in lowercase hex. Consumed by the Verilator model,
-    the Python virtual hardware, and (historically) by `$readmemh` inside
-    voxel_gpu.sv. Quartus's `altsyncram` `init_file` parameter does NOT
-    accept this format -- see write_mif below for the Quartus path.
-    """
-    atlas = build_atlas()
-    with path.open("w", encoding="ascii", newline="\n") as handle:
-        for value in atlas:
-            handle.write(f"{value:02x}\n")
-
-
 def write_mif(path: Path) -> None:
     """Altera Memory Initialization File for the texture ROM.
 
-    Quartus's `altsyncram` `init_file` argument accepts either a `.mif`
-    or an Intel-format `.hex` file, but NOT a Verilog `$readmemh` dump.
-    We ship both formats so the same atlas drives simulation (`.hex` via
-    `$readmemh`) and synthesis (`.mif` via altsyncram).
+    `.mif` is the single source of truth for the texture atlas. Quartus
+    consumes it via altsyncram `init_file` during synthesis, and the
+    Python virtual hardware parses the same file at runtime (see
+    `virtualhw.raster.load_texture_mif`).
+
+    We picked `.mif` over Intel-HEX because the grammar is trivial
+    (WIDTH/DEPTH/CONTENT BEGIN ... END;) so the Python parser stays in
+    a handful of lines and has no checksum handling to get wrong.
 
     Layout matches ATLAS_BYTES = TILE_COUNT * TILE_SIZE * TILE_SIZE with
     WIDTH=8 and the same linear address ordering used by voxel_gpu.sv
@@ -456,7 +512,7 @@ def write_mif(path: Path) -> None:
     width = 8
     depth = len(atlas)
     with path.open("w", encoding="ascii", newline="\n") as handle:
-        handle.write(f"-- Auto-generated by generate_textures.py. Do not edit by hand.\n")
+        handle.write("-- Auto-generated by generate_textures.py. Do not edit by hand.\n")
         handle.write(f"WIDTH = {width};\n")
         handle.write(f"DEPTH = {depth};\n\n")
         handle.write("ADDRESS_RADIX = HEX;\n")
@@ -467,14 +523,80 @@ def write_mif(path: Path) -> None:
         handle.write("END;\n")
 
 
+def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
+    """Render a PNG snapshot of the main atlas tiles at base + MIP1 + MIP2.
+
+    The preview is a debug aid for humans, not a build input, so Pillow
+    is a soft dependency: if PIL is not importable we just skip the PNG
+    and let the .mif generation stand on its own. Returns True when a
+    file was written, False otherwise.
+
+    Layout:
+      * one column per block type (see PREVIEW_COLUMNS),
+      * rows top-to-bottom are base LOD, MIP1, MIP2,
+      * each 16x16 tile is upscaled by `scale` with nearest-neighbour,
+      * `gap` pixels of background colour separate the cells.
+
+    Palette entries missing from PREVIEW_PALETTE render as bright
+    magenta so drift between this table and the real renderer palette
+    is impossible to miss.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print(
+            "skip preview: Pillow not installed (pip install Pillow) -- "
+            "the .mif was still written"
+        )
+        return False
+
+    atlas = build_atlas()
+    cols = len(PREVIEW_COLUMNS)
+    rows = 3
+    cell = TILE_SIZE * scale
+    width = gap + cols * (cell + gap)
+    height = gap + rows * (cell + gap)
+    bg = PREVIEW_PALETTE.get(PAL_TRANSPARENT, (0x10, 0x10, 0x18))
+    missing = (0xff, 0x00, 0xff)
+
+    image = Image.new("RGB", (width, height), bg)
+    pixels = image.load()
+
+    def paint(tile: int, cell_x: int, cell_y: int) -> None:
+        base_addr = tile * TILE_SIZE * TILE_SIZE
+        for ty in range(TILE_SIZE):
+            for tx in range(TILE_SIZE):
+                idx = atlas[base_addr + ty * TILE_SIZE + tx]
+                rgb = PREVIEW_PALETTE.get(idx, missing)
+                px0 = cell_x + tx * scale
+                py0 = cell_y + ty * scale
+                for oy in range(scale):
+                    for ox in range(scale):
+                        pixels[px0 + ox, py0 + oy] = rgb
+
+    for col_index, (_label, base_tile, mip1_tile, mip2_tile) in enumerate(
+        PREVIEW_COLUMNS
+    ):
+        cell_x = gap + col_index * (cell + gap)
+        for row_index, tile in enumerate((base_tile, mip1_tile, mip2_tile)):
+            cell_y = gap + row_index * (cell + gap)
+            paint(tile, cell_x, cell_y)
+
+    image.save(path, format="PNG", optimize=True)
+    return True
+
+
 def main() -> int:
     here = Path(__file__).parent
-    hex_path = here / "textures.hex"
     mif_path = here / "textures.mif"
-    write_hex(hex_path)
+    preview_path = here / "textures_preview.png"
+
     write_mif(mif_path)
-    print(f"wrote {hex_path}")
     print(f"wrote {mif_path}")
+
+    if write_preview(preview_path):
+        print(f"wrote {preview_path}")
+
     return 0
 
 

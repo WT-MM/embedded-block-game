@@ -84,7 +84,6 @@ TARFILES = Makefile \
 	generate_recip_lut.py \
 	generate_textures.py \
 	recip_lut.hex \
-	textures.hex \
 	textures.mif \
 	ip/intr_capturer/intr_capturer.v \
 	ip/intr_capturer/intr_capturer_hw.tcl \
@@ -126,7 +125,7 @@ project19 : project
 .PHONY : qsys
 qsys : $(QSYS_STAMP)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.hex textures.mif recip_lut.hex \
+QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.mif recip_lut.hex \
 	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
 	$(wildcard sdram_local_test/*.v) \
 	$(wildcard sdram_local_test/*.h) \

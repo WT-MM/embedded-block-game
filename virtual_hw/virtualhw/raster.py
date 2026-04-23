@@ -20,15 +20,18 @@ CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 64
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
+RECIP_LUT_SIZE = 1025
+RECIP_LUT_STEP = 64
+Q16 = 1 << 16
+Q32 = 1 << 32
+I32_MIN = -(1 << 31)
+I32_MAX = (1 << 31) - 1
+U32_MASK = 0xFFFF_FFFF
+TEXTURE_COORD_MAX_Q32 = TEXTURE_TILE_SIZE << 32
 
-# Standard 4x4 ordered-dither Bayer matrix, values 0..15. Matches the
-# bayer4() function in hw/voxel_gpu.sv exactly so the virtual output is
-# visually interchangeable with the real GPU.
-BAYER4 = (
-    ( 0,  8,  2, 10),
-    (12,  4, 14,  6),
-    ( 3, 11,  1,  9),
-    (15,  7, 13,  5),
+RECIP_LUT = tuple(
+    round(Q32 / (Q16 + index * RECIP_LUT_STEP))
+    for index in range(RECIP_LUT_SIZE)
 )
 
 
@@ -81,84 +84,245 @@ def blend_rgb565(src: int, dst: int, alpha: int) -> int:
     return ((out_r & 0x1F) << 11) | ((out_g & 0x3F) << 5) | (out_b & 0x1F)
 
 
-def _fog_replace(
+def _clamp_x(value: int) -> int:
+    if value < 0:
+        return 0
+    if value > 319:
+        return 319
+    return value
+
+
+def _clamp_y(value: int) -> int:
+    if value < 0:
+        return 0
+    if value > 239:
+        return 239
+    return value
+
+
+def _clamp_z(value: int) -> int:
+    if value < 0:
+        return 0
+    if value > CLEAR_DEPTH:
+        return CLEAR_DEPTH
+    return value
+
+
+def _clamp_s32(value: int) -> int:
+    if value > I32_MAX:
+        return I32_MAX
+    if value < I32_MIN:
+        return I32_MIN
+    return value
+
+
+def _clamp_pos_u32(value: int) -> int:
+    if value <= 0:
+        return 0
+    if value > I32_MAX:
+        return I32_MAX
+    return value
+
+
+def _to_signed32(value: int) -> int:
+    value &= U32_MASK
+    if value & (1 << 31):
+        return value - (1 << 32)
+    return value
+
+
+def _msb_index32(value: int) -> int:
+    if value == 0:
+        return 0
+    return value.bit_length() - 1
+
+
+def _reciprocal_q16_16(iw_q: int) -> int:
+    """Return the FPGA reciprocal-unit result for Q16.16 1/w."""
+
+    iw_q &= U32_MASK
+    if iw_q == 0:
+        return 0
+
+    iw_msb = _msb_index32(iw_q)
+    if iw_msb >= 16:
+        iw_norm_q = iw_q >> (iw_msb - 16)
+    else:
+        iw_norm_q = (iw_q << (16 - iw_msb)) & U32_MASK
+
+    phase = iw_norm_q & 0xFFFF
+    lut_idx = phase >> 6
+    lut_frac = phase & 0x3F
+    w_norm_lo = RECIP_LUT[lut_idx]
+    w_norm_hi = RECIP_LUT[lut_idx + 1]
+    interp_step = ((w_norm_lo - w_norm_hi) * lut_frac + 32) >> 6
+    w_norm_q = (w_norm_lo - interp_step) & U32_MASK
+
+    if iw_msb >= 16:
+        return (w_norm_q >> (iw_msb - 16)) & U32_MASK
+    return (w_norm_q << (16 - iw_msb)) & U32_MASK
+
+
+def _texture_coord_from_product(value: int) -> int:
+    if value <= 0:
+        return 0
+    if value >= TEXTURE_COORD_MAX_Q32:
+        return TEXTURE_TILE_SIZE - 1
+    return (value >> 32) & 0xF
+
+
+def _apply_fog_rgb565(
+    src_rgb565: int,
+    fog_rgb565: int,
     flags: int,
     fog_enabled: bool,
     fog_start: int,
     fog_end: int,
     fog_inv_proj_sq: int,
-    forward_z_q16_16: int,
+    w_q16_16: int,
     x: int,
     y: int,
-    width: int,
-    height: int,
-) -> bool:
-    """Return True if the pixel should be replaced by the fog color.
-
-    Mirrors the hardware path in hw/voxel_gpu.sv: we estimate radial
-    distance from per-pixel w by scaling with sqrt(1 + r^2/f^2) (linearly
-    approximated as 1 + 3/8 * r^2/f^2), bucket it against the quartile
-    thresholds derived from fog_start/fog_end, then gate that threshold
-    with an ordered 4x4 Bayer dither.
-    """
-
+) -> int:
     if (
         not fog_enabled
         or not (flags & QUAD_FLAG_FOG)
         or fog_end <= fog_start
-        or forward_z_q16_16 <= 0
+        or w_q16_16 <= 0
     ):
-        return False
+        return src_rgb565
 
-    dx = x - (width // 2)
-    dy = (height // 2) - y
+    dx = x - 160
+    dy = 120 - y
     radial_sq = dx * dx + dy * dy
-    radial_sq_q16 = radial_sq * fog_inv_proj_sq
+    radial_sq_q16 = (radial_sq * fog_inv_proj_sq) & U32_MASK
     ray_scale_q16 = 65536 + ((radial_sq_q16 * 3) >> 3)
-    radial_q8_8 = ((forward_z_q16_16 * ray_scale_q16) >> 16) >> 8
-    radial_q8_8 &= 0xFFFF
+    radial_q8_8 = ((w_q16_16 * ray_scale_q16) >> 24) & 0xFFFF
 
     if radial_q8_8 <= fog_start:
-        return False
+        return src_rgb565
     if radial_q8_8 >= fog_end:
-        return True
+        return fog_rgb565
 
     span = fog_end - fog_start
     q1 = fog_start + (span >> 2)
     q2 = fog_start + (span >> 1)
-    q3 = fog_end - (span >> 2)
 
     if radial_q8_8 < q1:
-        threshold = 4
+        fog_alpha = 1
     elif radial_q8_8 < q2:
-        threshold = 8
-    elif radial_q8_8 < q3:
-        threshold = 12
+        fog_alpha = 2
     else:
-        threshold = 15
+        fog_alpha = 3
 
-    return BAYER4[y & 3][x & 3] < threshold
+    return blend_rgb565(src_rgb565, fog_rgb565, fog_alpha)
 
 
-def load_texture_hex(path: str | Path) -> bytes:
-    data = bytearray()
+def load_texture_mif(path: str | Path) -> bytes:
+    """Parse an Altera Memory Initialization File.
+
+    This is the same file Quartus feeds to altsyncram's `init_file` for
+    the texture ROM in `voxel_gpu.sv`. Keeping one source of truth for
+    synthesis and simulation avoids drift -- see `hw/generate_textures.py`
+    for how it is produced.
+
+    The MIF grammar we need to support is tiny:
+
+        WIDTH  = 8;
+        DEPTH  = 16384;
+        ADDRESS_RADIX = HEX;
+        DATA_RADIX    = HEX;
+        CONTENT BEGIN
+            0000 : 01;
+            0001 : 02;
+            [A:B]  : FF;          -- range fill (A..B inclusive)
+            [A..B] : FF;          -- alt. range syntax
+            END;
+
+    Anything from `--` to end-of-line is a comment. We treat unspecified
+    addresses as 0, matching Quartus's behaviour.
+    """
     texture_path = Path(path)
+    data = [0] * TEXTURE_BYTES
+
+    width = None
+    depth = None
+    addr_radix = 16
+    data_radix = 16
+    in_content = False
+
+    def _strip_comment(s: str) -> str:
+        idx = s.find("--")
+        return s[:idx] if idx >= 0 else s
+
+    def _parse_int(tok: str, radix: int, line_no: int) -> int:
+        try:
+            return int(tok, radix)
+        except ValueError as exc:
+            raise ValueError(
+                f"{texture_path}:{line_no}: bad {radix}-radix integer {tok!r}"
+            ) from exc
 
     with texture_path.open("r", encoding="ascii") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
-            line = raw_line.strip()
+        for line_no, raw_line in enumerate(handle, start=1):
+            line = _strip_comment(raw_line).strip()
             if not line:
                 continue
-            try:
-                data.append(int(line, 16))
-            except ValueError as exc:
-                raise ValueError(
-                    f"{texture_path}:{line_number}: invalid hex texel {line!r}"
-                ) from exc
 
-    if len(data) != TEXTURE_BYTES:
+            upper = line.upper()
+            if upper.startswith("WIDTH"):
+                width = int(line.split("=", 1)[1].rstrip(";").strip(), 10)
+                continue
+            if upper.startswith("DEPTH"):
+                depth = int(line.split("=", 1)[1].rstrip(";").strip(), 10)
+                continue
+            if upper.startswith("ADDRESS_RADIX"):
+                rv = line.split("=", 1)[1].rstrip(";").strip().upper()
+                addr_radix = {"HEX": 16, "DEC": 10, "BIN": 2, "OCT": 8}[rv]
+                continue
+            if upper.startswith("DATA_RADIX"):
+                rv = line.split("=", 1)[1].rstrip(";").strip().upper()
+                data_radix = {"HEX": 16, "DEC": 10, "BIN": 2, "OCT": 8}[rv]
+                continue
+            if upper.startswith("CONTENT"):
+                in_content = True
+                continue
+            if upper.startswith("BEGIN"):
+                in_content = True
+                continue
+            if upper.startswith("END"):
+                in_content = False
+                continue
+
+            if not in_content:
+                continue
+
+            stmt = line.rstrip(";").strip()
+            if ":" not in stmt:
+                raise ValueError(f"{texture_path}:{line_no}: expected ':' in {line!r}")
+            lhs, rhs = stmt.split(":", 1)
+            lhs = lhs.strip()
+            rhs = rhs.strip()
+            value = _parse_int(rhs, data_radix, line_no)
+
+            if lhs.startswith("[") and lhs.endswith("]"):
+                inner = lhs[1:-1]
+                sep = ".." if ".." in inner else ":"
+                lo_tok, hi_tok = inner.split(sep, 1)
+                lo = _parse_int(lo_tok.strip(), addr_radix, line_no)
+                hi = _parse_int(hi_tok.strip(), addr_radix, line_no)
+                for addr in range(lo, hi + 1):
+                    if 0 <= addr < TEXTURE_BYTES:
+                        data[addr] = value & 0xFF
+            else:
+                addr = _parse_int(lhs, addr_radix, line_no)
+                if 0 <= addr < TEXTURE_BYTES:
+                    data[addr] = value & 0xFF
+
+    if width is not None and width != 8:
+        raise ValueError(f"{texture_path}: expected WIDTH=8, got {width}")
+    if depth is not None and depth != TEXTURE_BYTES:
         raise ValueError(
-            f"{texture_path} contains {len(data)} texels; expected {TEXTURE_BYTES}"
+            f"{texture_path}: expected DEPTH={TEXTURE_BYTES}, got {depth}"
         )
 
     return bytes(data)
@@ -235,17 +399,19 @@ class VirtualGPU:
         return raw, 0, busy, fifo_full, fifo_empty, self.vsync_latch
 
     def _rasterize_quad(self, quad: QuadDesc) -> None:
-        x_min = max(0, quad.x_min)
-        y_min = max(0, quad.y_min)
-        x_max = min(self.width - 1, quad.x_max)
-        y_max = min(self.height - 1, quad.y_max)
+        fb_x_limit = min(self.width - 1, 319)
+        fb_y_limit = min(self.height - 1, 239)
+        x_min = min(_clamp_x(quad.x_min), fb_x_limit)
+        y_min = min(_clamp_y(quad.y_min), fb_y_limit)
+        x_max = min(_clamp_x(quad.x_max), fb_x_limit)
+        y_max = min(_clamp_y(quad.y_max), fb_y_limit)
 
         if x_min > x_max or y_min > y_max:
             return
 
         width = self.width
-        qx_min = quad.x_min
-        qy_min = quad.y_min
+        qx_min = x_min
+        qy_min = y_min
         z0 = quad.z0
         dz_dx = quad.dz_dx
         dz_dy = quad.dz_dy
@@ -286,25 +452,27 @@ class VirtualGPU:
                 if not inside:
                     continue
 
-                z_value = z0 + dz_dx * (x - qx_min) + dz_dy * dy
-                if z_value < 0:
-                    z_value = 0
-                elif z_value > CLEAR_DEPTH:
-                    z_value = CLEAR_DEPTH
+                dx = x - qx_min
+                z_value = _clamp_z(z0 + dz_dx * dx + dz_dy * dy)
 
-                forward_z_q16_16 = 0
+                w_q16_16 = 0
                 if textured:
-                    dx = x - qx_min
-                    uw = u_over_w_0 + u_over_w_dx * dx + u_over_w_dy * dy
-                    vw = v_over_w_0 + v_over_w_dx * dx + v_over_w_dy * dy
-                    iw = one_over_w_0 + one_over_w_dx * dx + one_over_w_dy * dy
-                    if iw <= 0:
-                        continue
-                    forward_z_q16_16 = (1 << 32) // iw
-                    u_value = (uw * forward_z_q16_16) >> 32
-                    v_value = (vw * forward_z_q16_16) >> 32
-                    tex_u = u_value & 0xF
-                    tex_v = v_value & 0xF
+                    uw = _clamp_s32(
+                        u_over_w_0 + u_over_w_dx * dx + u_over_w_dy * dy
+                    )
+                    vw = _clamp_s32(
+                        v_over_w_0 + v_over_w_dx * dx + v_over_w_dy * dy
+                    )
+                    iw = _clamp_pos_u32(
+                        one_over_w_0 + one_over_w_dx * dx + one_over_w_dy * dy
+                    )
+                    w_q16_16 = _reciprocal_q16_16(iw)
+                    tex_u = _texture_coord_from_product(
+                        _to_signed32(uw) * _to_signed32(w_q16_16)
+                    )
+                    tex_v = _texture_coord_from_product(
+                        _to_signed32(vw) * _to_signed32(w_q16_16)
+                    )
                     raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
                     if alpha_key and raw_color == 0:
                         continue
@@ -316,22 +484,19 @@ class VirtualGPU:
                         continue
                     self.z_buffer[pixel_index] = z_value
 
-                if _fog_replace(
+                src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
+                src_rgb565 = _apply_fog_rgb565(
+                    src_rgb565,
+                    rgb888_to_rgb565(self.palette[self.fog_color]),
                     quad.flags,
                     self.fog_enabled,
                     self.fog_start,
                     self.fog_end,
                     self.fog_inv_proj_sq,
-                    forward_z_q16_16,
+                    w_q16_16,
                     x,
                     y,
-                    self.width,
-                    self.height,
-                ):
-                    src_rgb565 = rgb888_to_rgb565(self.palette[self.fog_color])
-                else:
-                    src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
-
+                )
                 dst_rgb565 = self.back_buffer[pixel_index]
                 self.back_buffer[pixel_index] = blend_rgb565(
                     src_rgb565, dst_rgb565, alpha

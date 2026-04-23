@@ -66,7 +66,7 @@ class QuadDesc:
     dz_dy: int
     tex_or_color: int
     flags: int
-    uv: tuple[int, int, int, int, int, int] | None = None
+    uv: tuple[int, int, int, int, int, int, int, int, int] | None = None
 
 
 def recv_exact(sock, size: int) -> bytes:

@@ -333,7 +333,8 @@ Fix: instantiate `texture_mem` as an explicit `altsyncram` ROM via a new
   * `operation_mode = "ROM"`
   * `address_reg_a = CLOCK0` (implicit for port A on M10K)
   * `outdata_reg_a = "UNREGISTERED"`
-  * `init_file = "textures.hex"`
+  * `init_file = "textures.mif"` (see the `altsyncram init_file`
+    footnote below for why we moved off the Verilog `$readmemh` format)
   * `ram_block_type = "M10K"`
 
 That gives a guaranteed 1-cycle latency: `pipe2_tex_addr` drives the
@@ -341,8 +342,8 @@ combinational address, the address is flopped once inside the M10K at the
 clock edge, and the data appears combinationally on `rd_data` (= `tex_rd_data`)
 on the following cycle. `tex_rd_data` is now a `wire`, not a reg, and the
 `always_ff tex_rd_data <= texture_mem[...]` line has been removed along
-with `$readmemh("textures.hex", texture_mem)` (the altsyncram loads the
-atlas via `init_file`).
+with `$readmemh("textures.hex", texture_mem)` -- the altsyncram loads the
+atlas directly from `textures.mif` via `init_file`.
 
 This change does *not* introduce a new pipeline stage, so
 `DRAW_FLUSH_CYCLES` and the `pal_rd` / `plr` counts are unchanged. It only
@@ -379,19 +380,26 @@ Quartus's `altsyncram` `init_file` parameter only accepts an Altera
 Memory Initialization File (`.mif`) or an **Intel-format** `.hex` file
 (record-based with checksums). It does NOT accept Verilog
 `$readmemh`-style files (plain bytes, one per line), which is what our
-existing `textures.hex` is.
+old `textures.hex` was.
 
-To support both simulation (Verilator / the Python virtual hardware,
-which use `$readmemh`) and synthesis (Quartus altsyncram), we now
-generate BOTH formats from `generate_textures.py`:
+We picked `.mif` as the **single source of truth** for the texture
+atlas (no more sidecar files, no more drift risk):
 
-  * `textures.hex` -- Verilog `$readmemh` format (unchanged contents).
-  * `textures.mif` -- Altera MIF, `WIDTH=8`, `DEPTH=16384`,
-    address ordering `tile << 8 | (v << 4) | u`.
+  * `hw/generate_textures.py` emits only `textures.mif`
+    (`WIDTH=8`, `DEPTH=16384`, address ordering `tile << 8 | (v << 4) | u`).
+  * `voxel_texture_rom`'s `init_file` points at `textures.mif`, and
+    `textures.mif` is added as a MIF-type file in `voxel_gpu_hw.tcl`
+    so Qsys copies it into `soc_system/synthesis/submodules/`.
+  * The Python virtual hardware parses the same file at runtime via
+    `virtualhw.raster.load_texture_mif`. The MIF parser understands
+    `WIDTH`/`DEPTH`/`ADDRESS_RADIX`/`DATA_RADIX`, `addr : val;`
+    entries, `[lo:hi] : val;` / `[lo..hi] : val;` range fills, and
+    `--` comments. Unspecified addresses default to zero, matching
+    Quartus's behaviour.
 
-`voxel_texture_rom`'s `init_file` points at `textures.mif`, and
-`textures.mif` is added as a MIF-type file in `voxel_gpu_hw.tcl` so the
-Qsys generator copies it into `soc_system/synthesis/submodules/`
-alongside the other sources. If you ever change the atlas generator,
-re-run `python3 generate_textures.py` to refresh both files, and make
-sure any simulator still reads the `.hex` (not the `.mif`).
+If you change the atlas generator, re-run `python3 generate_textures.py`
+and both synthesis and simulation pick up the new bytes automatically.
+`$readmemh` is no longer used for the texture atlas anywhere in the
+tree; the only remaining `$readmemh` is for `recip_lut.hex`, which
+continues to use the plain-byte Verilog format because the reciprocal
+LUT is still an inferred MLAB array, not an altsyncram instance.

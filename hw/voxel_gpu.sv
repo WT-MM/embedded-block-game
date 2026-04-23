@@ -976,17 +976,13 @@ module voxel_gpu (
         .ADDR_W(14),
         .DEPTH(TEXTURE_BYTES),
         /*
-         * Quartus's altsyncram init_file must be a .mif or an
-         * Intel-format .hex (record-based, with checksums). Our
-         * textures.hex is Verilog $readmemh-style (plain bytes, one
-         * per line) so Quartus rejects it with
-         *     Error (127000): Can't read Memory Initialization File
-         *     or Hexadecimal (Intel-Format) File textures.hex ...
-         * generate_textures.py now emits a sidecar textures.mif with
-         * the same atlas contents for the synthesis path. The
-         * $readmemh textures.hex path is still used by the Verilator
-         * model and the Python virtual hardware, so the hex file
-         * stays in the tree.
+         * The texture atlas lives as a single `.mif` file, produced by
+         * hw/generate_textures.py. Quartus consumes it here via the
+         * altsyncram init_file, and the Python virtual hardware parses
+         * the exact same file at runtime (see
+         * virtualhw.raster.load_texture_mif) -- one source of truth.
+         * Note: altsyncram does NOT accept Verilog $readmemh-style hex
+         * files, only .mif or Intel-format .hex.
          */
         .INIT_FILE("textures.mif")
     ) texture_rom (
@@ -1317,8 +1313,9 @@ module voxel_gpu (
             fifo_mem[i] = 32'h0;
 
         /*
-         * textures.hex is loaded by the altsyncram init_file in
-         * voxel_texture_rom; no $readmemh needed here anymore.
+         * The texture atlas is loaded by voxel_texture_rom via
+         * altsyncram init_file (textures.mif); no $readmemh needed
+         * for it here anymore.
          */
         $readmemh("recip_lut.hex", recip_lut);
 
@@ -2485,13 +2482,18 @@ endmodule
 // Instantiating altsyncram directly with address_reg_a = CLOCK0 and
 // outdata_reg_a = UNREGISTERED pins the latency to a known 1 cycle, so
 // pipe2_tex_addr at cycle T drives rd_data at cycle T+1, in lockstep
-// with pipe2 -> draw_pipe. The init_file stays textures.hex.
+// with pipe2 -> draw_pipe.
+//
+// The atlas is initialised from a `.mif` file (see hw/generate_textures.py)
+// because altsyncram's init_file does not accept Verilog $readmemh-style
+// plain-byte dumps. We share that same `.mif` with the Python virtual
+// hardware, so simulation and synthesis read from a single source.
 // ====================================================================
 module voxel_texture_rom #(
     parameter int DATA_W = 8,
     parameter int ADDR_W = 14,
     parameter int DEPTH  = 16384,
-    parameter      INIT_FILE = "textures.hex"
+    parameter      INIT_FILE = "textures.mif"
 ) (
     input  logic                clk,
     input  logic [ADDR_W-1:0]   rd_addr,

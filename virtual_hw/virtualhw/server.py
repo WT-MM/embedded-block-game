@@ -26,12 +26,12 @@ from .protocol import (
     recv_request,
     send_reply,
 )
-from .raster import VirtualGPU, load_texture_hex, rgb565_to_rgb888
+from .raster import VirtualGPU, load_texture_mif, rgb565_to_rgb888
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
 POLL_TIMEOUT = 1.0 / 60.0
-DEFAULT_TEXTURE_PATH = Path(__file__).resolve().parents[2] / "hw" / "textures.hex"
+DEFAULT_TEXTURE_PATH = Path(__file__).resolve().parents[2] / "hw" / "textures.mif"
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--textures",
         default=str(DEFAULT_TEXTURE_PATH),
-        help=f"texture atlas hex path (default: {DEFAULT_TEXTURE_PATH})",
+        help=f"texture atlas MIF path (default: {DEFAULT_TEXTURE_PATH})",
     )
     return parser.parse_args()
 
@@ -224,7 +224,7 @@ def main() -> int:
 
     monitor = Monitor(SCREEN_WIDTH, SCREEN_HEIGHT, args.scale, args.headless)
     try:
-        textures = load_texture_hex(texture_path)
+        textures = load_texture_mif(texture_path)
     except (OSError, ValueError) as exc:
         print(f"virtualhw: failed to load textures: {exc}", file=sys.stderr)
         monitor.close()

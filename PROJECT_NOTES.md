@@ -213,3 +213,30 @@ to logic) produces behavior that does not match either a clean async read or
 a clean sync read. The rule: if you want combinational reads, declare the
 memory as MLAB (or leave it unconstrained so Quartus picks LCs); if you want
 M10K, the read must happen inside a clocked `always_ff` block.
+
+Follow-up: Pipelined Palette Read Applied
+-----------------------------------------
+After flashing the MLAB version of the palette, residual edge fringing was
+still visible in practice, so the "Backup Fix (Pipelined Read)" described
+above has been applied as well. The palette is now:
+
+  * stored as MLAB (async-read capable), AND
+  * read into a new intermediate pipeline stage `plr_*` that lives between
+    `draw_pipe` and `fog0`. `plr_src_rgb` and `plr_fog_rgb` are the
+    explicitly-registered palette outputs; every other `draw_pipe_*` field
+    that `fog0` consumes is forwarded through a matching `plr_*` flop so
+    they all arrive at `fog0` on the same cycle.
+
+`DRAW_FLUSH_CYCLES` was bumped from 12 to 13 to account for the extra
+pipeline stage, and `pal_valid` is invalidated alongside the other
+`*_valid` registers in ST_IDLE / ST_FETCH.
+
+The prefix `plr_` ("palette-lookup register stage") was chosen to avoid
+colliding with the existing CSR-side `pal_addr` register used to
+auto-increment palette writes from software. The `ST_CLEAR` fast path
+still does a direct combinational read of `palette[0]` via a small
+`clear_rgb565` wire; the pipelined stage is only in the path for live
+rasterization.
+
+Cost: +1 cycle of end-to-end latency per pixel (harmless at our throughput),
+a handful of flops, and no change to the software-visible interface.

@@ -80,7 +80,11 @@ module voxel_gpu (
     localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd64;
     localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
     localparam int SDRAM_ADDR_W    = 25;
-    localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd12;
+    /* Flush cycles required to drain the rasterizer pipeline before
+     * leaving ST_DRAW. Must match (number of *_valid flops between
+     * ST_FETCH and commit_color). Raising to 13 covers the pal stage
+     * that lives between draw_pipe and fog0. */
+    localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd13;
     localparam logic [24:0] FB_WORDS_25 = 25'd76800;
     localparam logic [24:0] LINE_WORDS_25 = 25'd320;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
@@ -136,15 +140,17 @@ module voxel_gpu (
     logic        copy_target_sel;
     logic        copy_complete_pending;
 
-    // Palette is read combinationally in the draw pipeline
-    // (draw_pipe_color -> palette[] -> rgb888_to_rgb565 -> fog0_src_rgb565).
-    // M10K blocks on Cyclone V require a synchronous read port, so asking
-    // Quartus to use M10K for a combinational read forces it to either absorb
-    // the downstream fog0_src_rgb565 register (adding 1 hidden cycle of
-    // latency that skews the palette output from the rest of the fog0_*
-    // fields, producing multi-colored fringes at face edges) or fall back to
-    // logic with awkward timing. MLAB (distributed) RAM supports
-    // combinational reads natively and easily holds 256 x 24 bits.
+    // Palette lookup path: draw_pipe_color -> apply_light_bank ->
+    // palette[] -> plr_src_rgb (registered) -> rgb888_to_rgb565 ->
+    // fog0_src_rgb565 (registered).
+    //
+    // MLAB storage lets the combinational read work cleanly, and the
+    // dedicated plr stage (between draw_pipe and fog0) registers the
+    // palette output in its own flop so it cannot skew against the
+    // other fog0 inputs even if Quartus tries to absorb a register
+    // into the memory block. The MLAB attribute + explicit pipelining
+    // is the belt-and-suspenders version of the "backup fix" described
+    // in PROJECT_NOTES.md.
     (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
@@ -328,6 +334,29 @@ module voxel_gpu (
     logic  [9:0] draw_pipe_x;
     logic  [8:0] draw_pipe_y;
     logic [31:0] draw_pipe_w_q;
+
+    /* Palette-lookup register (plr) stage: one pipeline cycle between
+     * draw_pipe and fog0 that explicitly registers the palette lookup.
+     * Even with palette in MLAB, isolating the read behind a dedicated
+     * flop removes any possibility of Quartus skewing the palette
+     * output relative to the rest of the fog0 inputs. See
+     * PROJECT_NOTES.md, "Backup Fix (Pipelined Read)". All fog0 inputs
+     * go through plr_* so every field arrives at fog0 on the same
+     * cycle. (Prefix avoids colliding with the existing CSR-side
+     * pal_addr register used to auto-increment palette writes.) */
+    logic        plr_valid;
+    logic        plr_pass;
+    logic        plr_ztest;
+    logic  [1:0] plr_alpha;
+    logic        plr_fog;
+    logic [16:0] plr_addr;
+    logic [15:0] plr_z;
+    logic [23:0] plr_src_rgb;
+    logic [15:0] plr_dst_rgb565;
+    logic [23:0] plr_fog_rgb;
+    logic [31:0] plr_w_q;
+    logic [33:0] plr_ray_scale_q16;
+
     logic        fog0_valid;
     logic        fog0_pass;
     logic        fog0_ztest;
@@ -583,8 +612,20 @@ module voxel_gpu (
     wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
     wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
     wire  [7:0] palette_src_addr = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color;
-    wire [15:0] palette_src_rgb565 = rgb888_to_rgb565(palette[palette_src_addr]);
-    wire [15:0] fog_rgb565 = rgb888_to_rgb565(palette[fog_color]);
+    /* Palette reads for the draw pipeline are sampled into plr_* one
+     * cycle before fog0 (see the plr_* register block). The
+     * rgb888_to_rgb565 conversion is cheap bit slicing, so we leave it
+     * as a combinational derivation on the registered palette output
+     * and let fog0_src_rgb565 / fog0_fog_rgb565 pick it up on the next
+     * cycle. */
+    wire [15:0] plr_src_rgb565 = rgb888_to_rgb565(plr_src_rgb);
+    wire [15:0] plr_fog_rgb565 = rgb888_to_rgb565(plr_fog_rgb);
+
+    /* Separate combinational read used only during ST_CLEAR, which
+     * writes the background color straight to the back buffer and does
+     * not go through the draw pipeline. Address is always palette[0]
+     * (background) while clearing. */
+    wire [15:0] clear_rgb565 = rgb888_to_rgb565(palette[8'd0]);
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
                                  (draw_pipe_raw_color == 8'd0);
@@ -1082,6 +1123,18 @@ module voxel_gpu (
         draw_pipe_x      = 10'd0;
         draw_pipe_y      = 9'd0;
         draw_pipe_w_q    = 32'd0;
+        plr_valid        = 1'b0;
+        plr_pass         = 1'b0;
+        plr_ztest        = 1'b0;
+        plr_alpha        = 2'd0;
+        plr_fog          = 1'b0;
+        plr_addr         = 17'd0;
+        plr_z            = 16'd0;
+        plr_src_rgb      = 24'h000000;
+        plr_dst_rgb565   = 16'h0000;
+        plr_fog_rgb      = 24'h000000;
+        plr_w_q          = 32'd0;
+        plr_ray_scale_q16 = 34'd0;
         fog0_valid       = 1'b0;
         fog0_pass        = 1'b0;
         fog0_ztest       = 1'b0;
@@ -1232,7 +1285,7 @@ module voxel_gpu (
         case (state)
             ST_CLEAR: begin
                 fb_wr_addr = clear_addr;
-                fb_wr_data = palette_src_rgb565;
+                fb_wr_data = clear_rgb565;
                 z_wr_addr = clear_addr;
                 z_wr_data = 16'hFFFF;
                 z_wr_en   = 1'b1;
@@ -1455,6 +1508,18 @@ module voxel_gpu (
             draw_pipe_x      <= 10'd0;
             draw_pipe_y      <= 9'd0;
             draw_pipe_w_q    <= 32'd0;
+            plr_valid        <= 1'b0;
+            plr_pass         <= 1'b0;
+            plr_ztest        <= 1'b0;
+            plr_alpha        <= 2'd0;
+            plr_fog          <= 1'b0;
+            plr_addr         <= 17'd0;
+            plr_z            <= 16'd0;
+            plr_src_rgb      <= 24'h000000;
+            plr_dst_rgb565   <= 16'h0000;
+            plr_fog_rgb      <= 24'h000000;
+            plr_w_q          <= 32'd0;
+            plr_ray_scale_q16 <= 34'd0;
             fog0_valid       <= 1'b0;
             fog0_pass        <= 1'b0;
             fog0_ztest       <= 1'b0;
@@ -1749,18 +1814,38 @@ module voxel_gpu (
                 copy_words_written <= copy_words_written + 17'd1;
             end
 
-            fog0_valid <= draw_pipe_valid;
-            fog0_pass <= draw_commit_pass;
-            fog0_ztest <= draw_pipe_ztest;
-            fog0_alpha <= draw_pipe_alpha;
-            fog0_fog <= draw_pipe_fog;
-            fog0_addr <= draw_pipe_addr;
-            fog0_z <= draw_pipe_z;
-            fog0_src_rgb565 <= palette_src_rgb565;
-            fog0_dst_rgb565 <= draw_pipe_dst_rgb565;
-            fog0_fog_rgb565 <= fog_rgb565;
-            fog0_w_q <= draw_pipe_w_q;
-            fog0_ray_scale_q16 <= draw_pipe_ray_scale_q16;
+            /* plr stage: register the combinational palette lookup and
+             * forward every other draw_pipe_* field that fog0 needs. The
+             * palette read is the long combinational path (tex_rd_data
+             * -> apply_light_bank -> palette[] -> ...); isolating it
+             * behind its own flop removes any timing skew against the
+             * other fog0 inputs and guarantees they all arrive together.
+             */
+            plr_valid          <= draw_pipe_valid;
+            plr_pass           <= draw_commit_pass;
+            plr_ztest          <= draw_pipe_ztest;
+            plr_alpha          <= draw_pipe_alpha;
+            plr_fog            <= draw_pipe_fog;
+            plr_addr           <= draw_pipe_addr;
+            plr_z              <= draw_pipe_z;
+            plr_src_rgb        <= palette[palette_src_addr];
+            plr_dst_rgb565     <= draw_pipe_dst_rgb565;
+            plr_fog_rgb        <= palette[fog_color];
+            plr_w_q            <= draw_pipe_w_q;
+            plr_ray_scale_q16  <= draw_pipe_ray_scale_q16;
+
+            fog0_valid <= plr_valid;
+            fog0_pass <= plr_pass;
+            fog0_ztest <= plr_ztest;
+            fog0_alpha <= plr_alpha;
+            fog0_fog <= plr_fog;
+            fog0_addr <= plr_addr;
+            fog0_z <= plr_z;
+            fog0_src_rgb565 <= plr_src_rgb565;
+            fog0_dst_rgb565 <= plr_dst_rgb565;
+            fog0_fog_rgb565 <= plr_fog_rgb565;
+            fog0_w_q <= plr_w_q;
+            fog0_ray_scale_q16 <= plr_ray_scale_q16;
 
             fog1_valid <= fog0_valid;
             fog1_pass <= fog0_pass;
@@ -1809,6 +1894,7 @@ module voxel_gpu (
                     tex0_valid <= 1'b0;
                     pipe2_valid <= 1'b0;
                     draw_pipe_valid <= 1'b0;
+                    plr_valid <= 1'b0;
                     fog0_valid <= 1'b0;
                     fog1_valid <= 1'b0;
                     commit_valid <= 1'b0;
@@ -1886,6 +1972,7 @@ module voxel_gpu (
                         tex0_valid <= 1'b0;
                         pipe2_valid <= 1'b0;
                         draw_pipe_valid <= 1'b0;
+                        plr_valid <= 1'b0;
                         fog0_valid <= 1'b0;
                         fog1_valid <= 1'b0;
                         commit_valid <= 1'b0;

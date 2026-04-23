@@ -6,7 +6,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from virtualhw.protocol import QUAD_FLAG_FOG, QUAD_FLAG_TEX, TEX_REPEAT_UV, QuadDesc
+from virtualhw.protocol import (
+    QUAD_FLAG_ALPHA_KEY,
+    QUAD_FLAG_FOG,
+    QUAD_FLAG_TEX,
+    QUAD_FLAG_ZTEST,
+    TEX_REPEAT_UV,
+    QuadDesc,
+)
 from virtualhw.raster import (
     TEXTURE_BYTES,
     blend_rgb565,
@@ -203,6 +210,36 @@ class RasterBehaviorTest(unittest.TestCase):
         )
 
         self.assertEqual(fast.back_buffer, generic.back_buffer)
+
+    def test_alpha_keyed_transparent_texel_does_not_write_z(self) -> None:
+        gpu = VirtualGPU(textures=bytes(TEXTURE_BYTES))
+        gpu.set_palette_entry(2, 0x00, 0x00, 0xFF)
+        uv = (0, 0, 0, 0, 0, 0, 1 << 16, 0, 0)
+
+        transparent = one_pixel_quad(
+            0,
+            0,
+            tex_or_color=0,
+            flags=QUAD_FLAG_TEX | QUAD_FLAG_ZTEST | QUAD_FLAG_ALPHA_KEY,
+            uv=uv,
+        )
+        behind = QuadDesc(
+            x_min=0,
+            y_min=0,
+            x_max=0,
+            y_max=0,
+            edges=((0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)),
+            z0=100,
+            dz_dx=0,
+            dz_dy=0,
+            tex_or_color=2,
+            flags=QUAD_FLAG_ZTEST,
+            uv=None,
+        )
+
+        gpu.submit_quads([transparent, behind])
+
+        self.assertEqual(gpu.back_buffer[0], rgb888_to_rgb565((0x00, 0x00, 0xFF)))
 
 
 if __name__ == "__main__":

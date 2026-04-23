@@ -361,6 +361,7 @@ class VirtualGPU:
         self._cleared_depth = array("H", [CLEAR_DEPTH]) * self.pixel_count
         self.z_buffer = self._cleared_depth[:]
         self.palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
+        self.palette_rgb565: list[int] = [0] * 256
         self.frame_count = 0
         self.vsync_latch = 0
         self.fog_start = 0
@@ -379,13 +380,14 @@ class VirtualGPU:
     def clear(self) -> None:
         # The real HW's ST_CLEAR sweep resolves palette index 0 into the
         # RGB565 framebuffer.
-        clear_rgb = rgb888_to_rgb565(self.palette[0])
+        clear_rgb = self.palette_rgb565[0]
         self.back_buffer[:] = array("H", [clear_rgb]) * self.pixel_count
         self.z_buffer[:] = self._cleared_depth
         self.vsync_latch = 0
 
     def set_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
         self.palette[index] = (r, g, b)
+        self.palette_rgb565[index] = rgb888_to_rgb565((r, g, b))
 
     def set_fog(
         self,
@@ -432,8 +434,6 @@ class VirtualGPU:
             return
 
         width = self.width
-        qx_min = x_min
-        qy_min = y_min
         z0 = quad.z0
         dz_dx = quad.dz_dx
         dz_dy = quad.dz_dy
@@ -469,7 +469,7 @@ class VirtualGPU:
             and not (quad.flags & QUAD_FLAG_FOG)
             and _edges_cover_bbox(edges, x_min, y_min, x_max, y_max)
         ):
-            src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
+            src_rgb565 = self.palette_rgb565[color_index]
             span = x_max - x_min + 1
             fill_row = array("H", [src_rgb565]) * span
             for y in range(y_min, y_max + 1):
@@ -477,67 +477,94 @@ class VirtualGPU:
                 self.back_buffer[row_start : row_start + span] = fill_row
             return
 
+        (a0, b0, c0), (a1, b1, c1), (a2, b2, c2), (a3, b3, c3) = edges
+        e0_row = a0 * x_min + b0 * y_min + c0
+        e1_row = a1 * x_min + b1 * y_min + c1
+        e2_row = a2 * x_min + b2 * y_min + c2
+        e3_row = a3 * x_min + b3 * y_min + c3
+        z_row = z0
+        if textured:
+            uw_row = u_over_w_0
+            vw_row = v_over_w_0
+            iw_row = one_over_w_0
+
         for y in range(y_min, y_max + 1):
             row_base = y * width
-            dy = y - qy_min
+            e0 = e0_row
+            e1 = e1_row
+            e2 = e2_row
+            e3 = e3_row
+            z_raw = z_row
+            if textured:
+                uw_raw = uw_row
+                vw_raw = vw_row
+                iw_raw = iw_row
+
             for x in range(x_min, x_max + 1):
-                inside = True
-                for a_coef, b_coef, c_coef in edges:
-                    if a_coef * x + b_coef * y + c_coef < 0:
-                        inside = False
-                        break
+                if e0 >= 0 and e1 >= 0 and e2 >= 0 and e3 >= 0:
+                    pixel_index = row_base + x
+                    z_value = _clamp_z(z_raw)
 
-                if not inside:
-                    continue
+                    if not ztest or z_value < self.z_buffer[pixel_index]:
+                        w_q16_16 = 0
+                        transparent = False
+                        if textured:
+                            uw = _clamp_s32(uw_raw)
+                            vw = _clamp_s32(vw_raw)
+                            iw = _clamp_pos_u32(iw_raw)
+                            w_q16_16 = _reciprocal_q16_16(iw)
+                            tex_u = _texture_coord_from_product(
+                                _to_signed32(uw) * _to_signed32(w_q16_16),
+                                repeat_uv,
+                            )
+                            tex_v = _texture_coord_from_product(
+                                _to_signed32(vw) * _to_signed32(w_q16_16),
+                                repeat_uv,
+                            )
+                            raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
+                            if alpha_key and raw_color == 0:
+                                transparent = True
+                            else:
+                                color_index = apply_light_bank(raw_color, quad.flags)
 
-                dx = x - qx_min
-                z_value = _clamp_z(z0 + dz_dx * dx + dz_dy * dy)
+                        if not transparent:
+                            if ztest:
+                                self.z_buffer[pixel_index] = z_value
 
-                w_q16_16 = 0
+                            src_rgb565 = self.palette_rgb565[color_index]
+                            src_rgb565 = _apply_fog_rgb565(
+                                src_rgb565,
+                                self.palette_rgb565[self.fog_color],
+                                quad.flags,
+                                self.fog_enabled,
+                                self.fog_start,
+                                self.fog_end,
+                                self.fog_inv_proj_sq,
+                                w_q16_16,
+                                x,
+                                y,
+                            )
+                            dst_rgb565 = self.back_buffer[pixel_index]
+                            self.back_buffer[pixel_index] = blend_rgb565(
+                                src_rgb565, dst_rgb565, alpha
+                            )
+
+                e0 += a0
+                e1 += a1
+                e2 += a2
+                e3 += a3
+                z_raw += dz_dx
                 if textured:
-                    uw = _clamp_s32(
-                        u_over_w_0 + u_over_w_dx * dx + u_over_w_dy * dy
-                    )
-                    vw = _clamp_s32(
-                        v_over_w_0 + v_over_w_dx * dx + v_over_w_dy * dy
-                    )
-                    iw = _clamp_pos_u32(
-                        one_over_w_0 + one_over_w_dx * dx + one_over_w_dy * dy
-                    )
-                    w_q16_16 = _reciprocal_q16_16(iw)
-                    tex_u = _texture_coord_from_product(
-                        _to_signed32(uw) * _to_signed32(w_q16_16),
-                        repeat_uv,
-                    )
-                    tex_v = _texture_coord_from_product(
-                        _to_signed32(vw) * _to_signed32(w_q16_16),
-                        repeat_uv,
-                    )
-                    raw_color = self.textures[tile_offset | (tex_v << 4) | tex_u]
-                    if alpha_key and raw_color == 0:
-                        continue
-                    color_index = apply_light_bank(raw_color, quad.flags)
+                    uw_raw += u_over_w_dx
+                    vw_raw += v_over_w_dx
+                    iw_raw += one_over_w_dx
 
-                pixel_index = row_base + x
-                if ztest:
-                    if z_value >= self.z_buffer[pixel_index]:
-                        continue
-                    self.z_buffer[pixel_index] = z_value
-
-                src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
-                src_rgb565 = _apply_fog_rgb565(
-                    src_rgb565,
-                    rgb888_to_rgb565(self.palette[self.fog_color]),
-                    quad.flags,
-                    self.fog_enabled,
-                    self.fog_start,
-                    self.fog_end,
-                    self.fog_inv_proj_sq,
-                    w_q16_16,
-                    x,
-                    y,
-                )
-                dst_rgb565 = self.back_buffer[pixel_index]
-                self.back_buffer[pixel_index] = blend_rgb565(
-                    src_rgb565, dst_rgb565, alpha
-                )
+            e0_row += b0
+            e1_row += b1
+            e2_row += b2
+            e3_row += b3
+            z_row += dz_dy
+            if textured:
+                uw_row += u_over_w_dy
+                vw_row += v_over_w_dy
+                iw_row += one_over_w_dy

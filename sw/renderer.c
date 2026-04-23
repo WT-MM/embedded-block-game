@@ -138,7 +138,7 @@ struct RenderContext {
     size_t submit_bytes;
     LookupEntry *lookup_entries;
     int lookup_capacity;
-    uint32_t palette_cache[256];
+    uint16_t palette_cache[256];
     uint8_t palette_valid[256];
     struct voxel_fog_state fog_cache;
     uint8_t fog_valid;
@@ -153,6 +153,8 @@ struct RenderContext {
 };
 
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad);
+static bool stage_projected_quad_no_clip(RenderContext *ctx,
+                                         const RenderQuad *quad);
 
 typedef struct {
     float x, y, z;
@@ -251,11 +253,16 @@ static RGB24 scale_rgb24(RGB24 color, float factor)
                  (uint8_t)lroundf(color.b * factor));
 }
 
+static uint16_t rgb24_to_rgb565(RGB24 color)
+{
+    return (uint16_t)(((uint16_t)(color.r & 0xF8) << 8) |
+                      ((uint16_t)(color.g & 0xFC) << 3) |
+                      ((uint16_t)color.b >> 3));
+}
+
 static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 color)
 {
-    uint32_t packed = ((uint32_t)color.r << 16) |
-                      ((uint32_t)color.g << 8) |
-                      (uint32_t)color.b;
+    uint16_t packed = rgb24_to_rgb565(color);
 
     if (ctx->palette_valid[index] && ctx->palette_cache[index] == packed)
         return true;
@@ -835,23 +842,6 @@ static void ensure_clockwise_winding(Vertex2D v[4])
     v[3] = tmp;
 }
 
-static bool solve_attr_plane(const Vertex2D *a, const Vertex2D *b,
-                             const Vertex2D *c,
-                             float attr_a, float attr_b, float attr_c,
-                             float *ddx, float *ddy)
-{
-    float ax = b->x - a->x, ay = b->y - a->y, av = attr_b - attr_a;
-    float bx = c->x - a->x, by = c->y - a->y, bv = attr_c - attr_a;
-
-    float det = ax * by - ay * bx;
-    if (fabsf(det) <= 1e-6f)
-        return false;
-
-    *ddx = ( by * av - ay * bv) / det;
-    *ddy = (-bx * av + ax * bv) / det;
-    return true;
-}
-
 /*
  * Deterministic triple selection.
  *
@@ -870,28 +860,68 @@ static const int kAttrTriples[4][3] = {
     { 1, 2, 3 },
 };
 
-/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
- * Stores the plane at the requested raster sample point. */
-static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
-                            uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
-{
-    float ddx = 0.0f;
-    float ddy = 0.0f;
-    int basis = 0;
+typedef struct {
+    int a;
+    int b;
+    int c;
+    float ax;
+    float ay;
+    float bx;
+    float by;
+    float det;
+    bool valid;
+} PlaneBasis;
 
+static PlaneBasis choose_plane_basis(const Vertex2D v[4])
+{
     for (int i = 0; i < 4; i++) {
         int a = kAttrTriples[i][0];
         int b = kAttrTriples[i][1];
         int c = kAttrTriples[i][2];
-        if (solve_attr_plane(&v[a], &v[b], &v[c],
-                             v[a].z, v[b].z, v[c].z,
-                             &ddx, &ddy)) {
-            basis = a;
-            break;
-        }
+        float ax = v[b].x - v[a].x;
+        float ay = v[b].y - v[a].y;
+        float bx = v[c].x - v[a].x;
+        float by = v[c].y - v[a].y;
+        float det = ax * by - ay * bx;
+
+        if (fabsf(det) > 1e-6f)
+            return (PlaneBasis){ a, b, c, ax, ay, bx, by, det, true };
     }
 
-    float z_at_origin = v[basis].z - ddx * v[basis].x - ddy * v[basis].y;
+    return (PlaneBasis){ 0 };
+}
+
+static void solve_attr_with_basis(const PlaneBasis *basis,
+                                  float attr_a, float attr_b, float attr_c,
+                                  float *ddx, float *ddy)
+{
+    if (!basis->valid) {
+        *ddx = 0.0f;
+        *ddy = 0.0f;
+        return;
+    }
+
+    float av = attr_b - attr_a;
+    float bv = attr_c - attr_a;
+
+    *ddx = ( basis->by * av - basis->ay * bv) / basis->det;
+    *ddy = (-basis->bx * av + basis->ax * bv) / basis->det;
+}
+
+/* Fit a depth plane z(x,y) = z0 + dz_dx*x + dz_dy*y from 3 screen vertices.
+ * Stores the plane at the requested raster sample point. */
+static void fit_depth_plane(const Vertex2D v[4], const PlaneBasis *basis,
+                            float sample_x, float sample_y,
+                            uint16_t *z0, int16_t *dz_dx, int16_t *dz_dy)
+{
+    float ddx = 0.0f;
+    float ddy = 0.0f;
+    int a = basis->a;
+
+    solve_attr_with_basis(basis, v[basis->a].z, v[basis->b].z, v[basis->c].z,
+                          &ddx, &ddy);
+
+    float z_at_origin = v[a].z - ddx * v[a].x - ddy * v[a].y;
     float z_at_sample = z_at_origin + ddx * sample_x + ddy * sample_y;
 
     *z0    = to_q1_15u(z_at_sample);
@@ -908,37 +938,34 @@ static void fit_depth_plane(const Vertex2D v[4], float sample_x, float sample_y,
  * space for a planar world-space quad, so a single deterministic 3-vertex fit
  * captures the full plane (modulo FP noise).
  */
-static void fit_uv_plane(const Vertex2D v[4], float sample_x, float sample_y,
+static void fit_uv_plane(const Vertex2D v[4], const PlaneBasis *basis,
+                         float sample_x, float sample_y,
                          struct quad_desc_uv *uv)
 {
     float duw_dx = 0.0f, duw_dy = 0.0f;
     float dvw_dx = 0.0f, dvw_dy = 0.0f;
     float diw_dx = 0.0f, diw_dy = 0.0f;
-    int basis = 0;
+    int a = basis->a;
 
-    for (int i = 0; i < 4; i++) {
-        int a = kAttrTriples[i][0];
-        int b = kAttrTriples[i][1];
-        int c = kAttrTriples[i][2];
-        if (!solve_attr_plane(&v[a], &v[b], &v[c],
-                              v[a].u_over_w, v[b].u_over_w, v[c].u_over_w,
-                              &duw_dx, &duw_dy))
-            continue;
-        if (!solve_attr_plane(&v[a], &v[b], &v[c],
-                              v[a].v_over_w, v[b].v_over_w, v[c].v_over_w,
-                              &dvw_dx, &dvw_dy))
-            continue;
-        if (!solve_attr_plane(&v[a], &v[b], &v[c],
-                              v[a].one_over_w, v[b].one_over_w, v[c].one_over_w,
-                              &diw_dx, &diw_dy))
-            continue;
-        basis = a;
-        break;
-    }
+    solve_attr_with_basis(basis,
+                          v[basis->a].u_over_w,
+                          v[basis->b].u_over_w,
+                          v[basis->c].u_over_w,
+                          &duw_dx, &duw_dy);
+    solve_attr_with_basis(basis,
+                          v[basis->a].v_over_w,
+                          v[basis->b].v_over_w,
+                          v[basis->c].v_over_w,
+                          &dvw_dx, &dvw_dy);
+    solve_attr_with_basis(basis,
+                          v[basis->a].one_over_w,
+                          v[basis->b].one_over_w,
+                          v[basis->c].one_over_w,
+                          &diw_dx, &diw_dy);
 
-    float uw_origin = v[basis].u_over_w   - duw_dx * v[basis].x - duw_dy * v[basis].y;
-    float vw_origin = v[basis].v_over_w   - dvw_dx * v[basis].x - dvw_dy * v[basis].y;
-    float iw_origin = v[basis].one_over_w - diw_dx * v[basis].x - diw_dy * v[basis].y;
+    float uw_origin = v[a].u_over_w   - duw_dx * v[a].x - duw_dy * v[a].y;
+    float vw_origin = v[a].v_over_w   - dvw_dx * v[a].x - dvw_dy * v[a].y;
+    float iw_origin = v[a].one_over_w - diw_dx * v[a].x - diw_dy * v[a].y;
     float uw_sample = uw_origin + duw_dx * sample_x + duw_dy * sample_y;
     float vw_sample = vw_origin + dvw_dx * sample_x + dvw_dy * sample_y;
     float iw_sample = iw_origin + diw_dx * sample_x + diw_dy * sample_y;
@@ -964,6 +991,36 @@ static bool projected_quad_fully_inside_viewport(const Vertex2D v[4])
     return true;
 }
 
+static bool stage_projected_quad_no_clip(RenderContext *ctx,
+                                         const RenderQuad *quad)
+{
+    Vertex2D verts[4];
+    int count;
+
+    memcpy(verts, quad->vertices, sizeof(verts));
+    count = snap_and_compact_polygon(verts, 4);
+    if (count < 3)
+        return false;
+
+    if (count == 3) {
+        RenderQuad tri = {
+            .vertices = { verts[0], verts[1], verts[2], verts[2] },
+            .texture_id = quad->texture_id,
+            .color_tint = quad->color_tint,
+            .flags = quad->flags,
+        };
+        return stage_prepared_quad(ctx, tri);
+    }
+
+    RenderQuad unclipped = {
+        .vertices = { verts[0], verts[1], verts[2], verts[3] },
+        .texture_id = quad->texture_id,
+        .color_tint = quad->color_tint,
+        .flags = quad->flags,
+    };
+    return stage_prepared_quad(ctx, unclipped);
+}
+
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
                              uint8_t texture_id, uint8_t extra_flags)
 {
@@ -982,7 +1039,7 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
         memcpy(q.vertices, verts, sizeof(verts));
         q.texture_id = texture_id;
         q.flags = flags;
-        return renderer_push_quad(ctx, &q);
+        return stage_projected_quad_no_clip(ctx, &q);
     }
 
     RenderQuad q = {0};
@@ -1427,6 +1484,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     ensure_clockwise_winding(quad.vertices);
 
     const Vertex2D *v = quad.vertices;
+    PlaneBasis basis = choose_plane_basis(v);
 
     /* Inclusive integer bbox over pixel-center samples. */
     float fxmin = v[0].x, fxmax = v[0].x;
@@ -1463,7 +1521,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     uint16_t z0;
     int16_t dz_dx;
     int16_t dz_dy;
-    fit_depth_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f,
+    fit_depth_plane(v, &basis, (float)x_min + 0.5f, (float)y_min + 0.5f,
                     &z0, &dz_dx, &dz_dy);
     d->z0 = z0;
     d->dz_dx = dz_dx;
@@ -1501,7 +1559,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
             (ctx->submit_buffer + ctx->submit_bytes + sizeof(*d));
 
         memset(uv, 0, sizeof(*uv));
-        fit_uv_plane(v, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
+        fit_uv_plane(v, &basis, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
         ctx->submit_bytes += sizeof(*d) + sizeof(*uv);
     } else {
         ctx->submit_bytes += sizeof(*d);
@@ -1601,6 +1659,9 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
 
+        if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
+            !(chunk->flags & CHUNK_FLAG_MESH_READY))
+            continue;
         if (!chunk->faces || chunk->face_count <= 0)
             continue;
         if (!chunk_within_render_distance(ctx, world, chunk))
@@ -1745,6 +1806,8 @@ static bool push_screen_textured_quad(RenderContext *ctx,
     quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, u1, v0, 1.0f };
     quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, u1, v1, 1.0f };
     quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, u0, v1, 1.0f };
+    if (projected_quad_fully_inside_viewport(quad.vertices))
+        return stage_projected_quad_no_clip(ctx, &quad);
     return renderer_push_quad(ctx, &quad);
 }
 
@@ -1761,6 +1824,8 @@ static bool push_screen_flat_quad(RenderContext *ctx,
     quad.vertices[1] = (Vertex2D){ x1, y0, 0.0f, 0.0f, 0.0f, 1.0f };
     quad.vertices[2] = (Vertex2D){ x1, y1, 0.0f, 0.0f, 0.0f, 1.0f };
     quad.vertices[3] = (Vertex2D){ x0, y1, 0.0f, 0.0f, 0.0f, 1.0f };
+    if (projected_quad_fully_inside_viewport(quad.vertices))
+        return stage_projected_quad_no_clip(ctx, &quad);
     return renderer_push_quad(ctx, &quad);
 }
 

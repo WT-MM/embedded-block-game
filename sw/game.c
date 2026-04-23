@@ -128,10 +128,14 @@ int main(void)
     printf("Controls: WASD=move  Space=jump  Shift=crouch  Arrows=look  Mouse=look  Esc=quit\n");
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
            WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
-    printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border)\n",
-           world.chunks_x, world.chunks_z, world.render_distance_chunks);
-    printf("Cached loaded world: blocks=%d exposed_faces=%d\n",
-           world_total_blocks(&world), world_total_faces(&world));
+    printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
+           world.chunks_x, world.chunks_z, world.render_distance_chunks,
+           world_chunk_capacity(&world));
+    printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
+           world_loaded_chunk_count(&world),
+           world_total_blocks(&world), world_total_faces(&world),
+           world.chunks_generated_last_stream,
+           world.meshes_rebuilt_last_stream);
     printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
            mouse_sens);
 

@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define CHUNK_LOOKUP_EMPTY (-1)
+
 static uint32_t rng_next(uint32_t *state)
 {
     *state = (*state * 1664525u) + 1013904223u;
@@ -24,36 +26,17 @@ static uint32_t chunk_seed(uint32_t base_seed, int chunk_x, int chunk_z)
     return seed;
 }
 
-static void free_chunk_storage(VoxelWorld *world)
+static uint32_t hash_chunk_coord(int chunk_x, int chunk_z)
 {
-    if (!world || !world->chunks)
-        return;
+    uint32_t h = ((uint32_t)chunk_x * 0x8da6b343u) ^
+                 ((uint32_t)chunk_z * 0xd8163841u);
 
-    for (int i = 0; i < world->chunk_count; i++)
-        free(world->chunks[i].faces);
-
-    free(world->chunks);
-    world->chunks = NULL;
-    world->chunk_count = 0;
-    world->chunks_x = 0;
-    world->chunks_z = 0;
-    world->origin_chunk_x = 0;
-    world->origin_chunk_z = 0;
-    world->center_chunk_x = 0;
-    world->center_chunk_z = 0;
-}
-
-static int chunk_index_for_coord(const VoxelWorld *world, int chunk_x, int chunk_z)
-{
-    int local_x = chunk_x - world->origin_chunk_x;
-    int local_z = chunk_z - world->origin_chunk_z;
-
-    if (local_x < 0 || local_x >= world->chunks_x)
-        return -1;
-    if (local_z < 0 || local_z >= world->chunks_z)
-        return -1;
-
-    return local_z * world->chunks_x + local_x;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return h;
 }
 
 static int floor_div(int value, int divisor)
@@ -75,73 +58,231 @@ static int positive_mod(int value, int divisor)
     return r;
 }
 
-static void clear_chunk(Chunk *chunk)
+static int chunk_coord_from_world(float world_pos)
 {
-    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
-        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-            for (int x = 0; x < WORLD_CHUNK_SIZE; x++)
-                chunk->blocks[y][z][x] = BLOCK_AIR;
+    return (int)floorf(world_pos / (float)WORLD_CHUNK_SIZE);
+}
+
+static void clear_chunk_lookup(VoxelWorld *world)
+{
+    if (!world || !world->chunk_lookup)
+        return;
+
+    for (int i = 0; i < world->chunk_lookup_capacity; i++)
+        world->chunk_lookup[i] = CHUNK_LOOKUP_EMPTY;
+}
+
+static bool ensure_chunk_lookup_capacity(VoxelWorld *world, int chunk_capacity)
+{
+    int needed = 16;
+
+    while (needed < chunk_capacity * 4)
+        needed <<= 1;
+
+    if (world->chunk_lookup && world->chunk_lookup_capacity >= needed)
+        return true;
+
+    int *lookup = realloc(world->chunk_lookup, (size_t)needed * sizeof(*lookup));
+    if (!lookup)
+        return false;
+
+    world->chunk_lookup = lookup;
+    world->chunk_lookup_capacity = needed;
+    clear_chunk_lookup(world);
+    return true;
+}
+
+static int chunk_lookup_find_index(const VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    if (!world || !world->chunks)
+        return -1;
+
+    if (!world->chunk_lookup || world->chunk_lookup_capacity <= 0) {
+        for (int i = 0; i < world->chunk_count; i++) {
+            const Chunk *chunk = &world->chunks[i];
+            if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+                chunk->chunk_x == chunk_x &&
+                chunk->chunk_z == chunk_z)
+                return i;
         }
+        return -1;
     }
+
+    uint32_t slot = hash_chunk_coord(chunk_x, chunk_z) &
+                    (uint32_t)(world->chunk_lookup_capacity - 1);
+    for (int probe = 0; probe < world->chunk_lookup_capacity; probe++) {
+        int index = world->chunk_lookup[slot];
+
+        if (index == CHUNK_LOOKUP_EMPTY)
+            return -1;
+        if (index >= 0 && index < world->chunk_count) {
+            const Chunk *chunk = &world->chunks[index];
+            if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+                chunk->chunk_x == chunk_x &&
+                chunk->chunk_z == chunk_z)
+                return index;
+        }
+
+        slot = (slot + 1u) & (uint32_t)(world->chunk_lookup_capacity - 1);
+    }
+
+    return -1;
 }
 
-void world_init(VoxelWorld *world)
+static bool chunk_lookup_insert(VoxelWorld *world, int index)
 {
-    memset(world, 0, sizeof(*world));
+    if (!world || !world->chunk_lookup ||
+        index < 0 || index >= world->chunk_count)
+        return false;
+
+    const Chunk *chunk = &world->chunks[index];
+    uint32_t slot = hash_chunk_coord(chunk->chunk_x, chunk->chunk_z) &
+                    (uint32_t)(world->chunk_lookup_capacity - 1);
+
+    for (int probe = 0; probe < world->chunk_lookup_capacity; probe++) {
+        int existing = world->chunk_lookup[slot];
+
+        if (existing == CHUNK_LOOKUP_EMPTY) {
+            world->chunk_lookup[slot] = index;
+            return true;
+        }
+        if (existing >= 0 && existing < world->chunk_count) {
+            const Chunk *other = &world->chunks[existing];
+            if (other->chunk_x == chunk->chunk_x &&
+                other->chunk_z == chunk->chunk_z) {
+                world->chunk_lookup[slot] = index;
+                return true;
+            }
+        }
+
+        slot = (slot + 1u) & (uint32_t)(world->chunk_lookup_capacity - 1);
+    }
+
+    return false;
 }
 
-void world_free(VoxelWorld *world)
+static bool rebuild_chunk_lookup(VoxelWorld *world)
+{
+    if (!ensure_chunk_lookup_capacity(world, world->chunk_capacity))
+        return false;
+
+    clear_chunk_lookup(world);
+    for (int i = 0; i < world->chunk_count; i++) {
+        if ((world->chunks[i].flags & CHUNK_FLAG_LOADED) &&
+            !chunk_lookup_insert(world, i))
+            return false;
+    }
+
+    return true;
+}
+
+static void release_chunk(Chunk *chunk)
+{
+    if (!chunk)
+        return;
+
+    free(chunk->faces);
+    memset(chunk, 0, sizeof(*chunk));
+}
+
+static void free_chunk_storage(VoxelWorld *world)
 {
     if (!world)
         return;
 
-    free_chunk_storage(world);
-    memset(world, 0, sizeof(*world));
+    if (world->chunks) {
+        for (int i = 0; i < world->chunk_capacity; i++)
+            release_chunk(&world->chunks[i]);
+    }
+
+    free(world->chunks);
+    free(world->chunk_lookup);
+    world->chunks = NULL;
+    world->chunk_lookup = NULL;
+    world->chunk_count = 0;
+    world->chunk_capacity = 0;
+    world->chunks_x = 0;
+    world->chunks_z = 0;
+    world->origin_chunk_x = 0;
+    world->origin_chunk_z = 0;
+    world->center_chunk_x = 0;
+    world->center_chunk_z = 0;
+    world->chunk_lookup_capacity = 0;
 }
 
-const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z)
+static bool chunk_in_window(int chunk_x, int chunk_z,
+                            int origin_chunk_x, int origin_chunk_z,
+                            int diameter)
 {
-    int index;
-
-    if (!world || !world->chunks)
-        return NULL;
-
-    index = chunk_index_for_coord(world, chunk_x, chunk_z);
-    if (index < 0)
-        return NULL;
-
-    return &world->chunks[index];
+    return chunk_x >= origin_chunk_x &&
+           chunk_x < origin_chunk_x + diameter &&
+           chunk_z >= origin_chunk_z &&
+           chunk_z < origin_chunk_z + diameter;
 }
 
-static Chunk *world_get_chunk_mut(VoxelWorld *world, int chunk_x, int chunk_z)
+static void clear_chunk_blocks(Chunk *chunk)
 {
-    int index;
-
-    if (!world || !world->chunks)
-        return NULL;
-
-    index = chunk_index_for_coord(world, chunk_x, chunk_z);
-    if (index < 0)
-        return NULL;
-
-    return &world->chunks[index];
+    memset(chunk->blocks, 0, sizeof(chunk->blocks));
 }
 
-BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz)
+static void initialize_chunk_slot(Chunk *chunk, int chunk_x, int chunk_z,
+                                  uint32_t stream_epoch)
 {
-    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
-        return BLOCK_AIR;
+    uint32_t generation = chunk->generation + 1u;
 
-    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
-    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
-    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
-    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
-    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
+    clear_chunk_blocks(chunk);
+    chunk->chunk_x = chunk_x;
+    chunk->chunk_z = chunk_z;
+    chunk->flags = CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
+    chunk->generation = generation ? generation : 1u;
+    chunk->last_used_epoch = stream_epoch;
+    chunk->face_count = 0;
+}
 
-    if (!chunk)
-        return BLOCK_AIR;
+static void mark_chunk_mesh_dirty(Chunk *chunk)
+{
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return;
 
-    return chunk->blocks[wy][lz][lx];
+    chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+}
+
+static void mark_chunk_coord_dirty(VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    int index = chunk_lookup_find_index(world, chunk_x, chunk_z);
+
+    if (index >= 0)
+        mark_chunk_mesh_dirty(&world->chunks[index]);
+}
+
+static void mark_chunk_and_neighbors_dirty(VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    mark_chunk_coord_dirty(world, chunk_x, chunk_z);
+    mark_chunk_coord_dirty(world, chunk_x - 1, chunk_z);
+    mark_chunk_coord_dirty(world, chunk_x + 1, chunk_z);
+    mark_chunk_coord_dirty(world, chunk_x, chunk_z - 1);
+    mark_chunk_coord_dirty(world, chunk_x, chunk_z + 1);
+}
+
+static void mark_window_perimeter_dirty(VoxelWorld *world,
+                                        int origin_chunk_x,
+                                        int origin_chunk_z,
+                                        int diameter)
+{
+    int max_chunk_x = origin_chunk_x + diameter - 1;
+    int max_chunk_z = origin_chunk_z + diameter - 1;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        if (chunk->chunk_x == origin_chunk_x ||
+            chunk->chunk_x == max_chunk_x ||
+            chunk->chunk_z == origin_chunk_z ||
+            chunk->chunk_z == max_chunk_z)
+            mark_chunk_mesh_dirty(chunk);
+    }
 }
 
 static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
@@ -149,7 +290,7 @@ static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
 {
     uint32_t seed = chunk_seed(base_seed, chunk->chunk_x, chunk->chunk_z);
 
-    clear_chunk(chunk);
+    clear_chunk_blocks(chunk);
 
     for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
         for (int x = 0; x < WORLD_CHUNK_SIZE; x++)
@@ -196,6 +337,57 @@ static bool face_should_render(BlockID current, BlockID neighbor)
     if (current == BLOCK_GLASS)
         return false;
     return block_is_transparent(neighbor);
+}
+
+void world_init(VoxelWorld *world)
+{
+    memset(world, 0, sizeof(*world));
+}
+
+void world_free(VoxelWorld *world)
+{
+    if (!world)
+        return;
+
+    free_chunk_storage(world);
+    memset(world, 0, sizeof(*world));
+}
+
+const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    int index = chunk_lookup_find_index(world, chunk_x, chunk_z);
+
+    if (index < 0)
+        return NULL;
+
+    return &world->chunks[index];
+}
+
+static Chunk *world_get_chunk_mut(VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    int index = chunk_lookup_find_index(world, chunk_x, chunk_z);
+
+    if (index < 0)
+        return NULL;
+
+    return &world->chunks[index];
+}
+
+BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return BLOCK_AIR;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
+
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return BLOCK_AIR;
+
+    return chunk->blocks[wy][lz][lx];
 }
 
 static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *chunk)
@@ -306,25 +498,41 @@ static void append_chunk_face(ChunkFace *faces, int *out,
     };
 }
 
-static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
+static bool ensure_chunk_face_capacity(Chunk *chunk, int needed)
+{
+    if (needed <= chunk->face_capacity)
+        return true;
+
+    ChunkFace *faces = realloc(chunk->faces, (size_t)needed * sizeof(*faces));
+    if (!faces)
+        return false;
+
+    chunk->faces = faces;
+    chunk->face_capacity = needed;
+    return true;
+}
+
+static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
 {
     static const int nx[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
     static const int ny[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
     static const int nz[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
-    int max_face_count = count_exposed_faces_for_chunk(world, chunk);
-    ChunkFace *faces = NULL;
+    int max_face_count;
     int out = 0;
 
+    if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return false;
+
+    max_face_count = count_exposed_faces_for_chunk(world, chunk);
     if (max_face_count == 0) {
-        free(chunk->faces);
-        chunk->faces = NULL;
         chunk->face_count = 0;
-        return;
+        chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
+        chunk->flags |= CHUNK_FLAG_MESH_READY;
+        return true;
     }
 
-    faces = malloc((size_t)max_face_count * sizeof(*faces));
-    if (!faces)
-        return;
+    if (!ensure_chunk_face_capacity(chunk, max_face_count))
+        return false;
 
     for (int f = 0; f < NUM_FACES; f++) {
         int layers;
@@ -369,7 +577,7 @@ static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
                     if (block_is_translucent(id)) {
                         used[v][u] = true;
-                        append_chunk_face(faces, &out, x, y, z,
+                        append_chunk_face(chunk->faces, &out, x, y, z,
                                           (BlockFace)f, id, 1, 1);
                         continue;
                     }
@@ -398,92 +606,110 @@ static void rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
                             used[v + dv][u + du] = true;
                     }
 
-                    append_chunk_face(faces, &out, x, y, z,
+                    append_chunk_face(chunk->faces, &out, x, y, z,
                                       (BlockFace)f, id, merge_w, merge_h);
                 }
             }
         }
     }
 
-    free(chunk->faces);
-    chunk->faces = faces;
     chunk->face_count = out;
-}
-
-static void rebuild_chunk_if_present(VoxelWorld *world, int chunk_x, int chunk_z)
-{
-    Chunk *chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
-
-    if (chunk)
-        rebuild_chunk_faces(world, chunk);
-}
-
-static int chunk_coord_from_world(float world_pos)
-{
-    return (int)floorf(world_pos / (float)WORLD_CHUNK_SIZE);
-}
-
-static bool ensure_chunk_storage(VoxelWorld *world, int chunks_x, int chunks_z)
-{
-    int chunk_count = chunks_x * chunks_z;
-
-    if (chunks_x <= 0 || chunks_z <= 0)
-        return false;
-
-    if (world->chunks &&
-        world->chunks_x == chunks_x &&
-        world->chunks_z == chunks_z &&
-        world->chunk_count == chunk_count)
-        return true;
-
-    free_chunk_storage(world);
-
-    world->chunks = calloc((size_t)chunk_count, sizeof(*world->chunks));
-    if (!world->chunks)
-        return false;
-
-    world->chunk_count = chunk_count;
-    world->chunks_x = chunks_x;
-    world->chunks_z = chunks_z;
+    chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
+    chunk->flags |= CHUNK_FLAG_MESH_READY;
     return true;
 }
 
-static bool populate_chunk_window(VoxelWorld *world, int origin_chunk_x, int origin_chunk_z)
+static bool rebuild_dirty_chunk_meshes(VoxelWorld *world)
 {
-    int ci = 0;
+    bool ok = true;
 
-    if (!world || !world->chunks)
+    if (!world)
         return false;
 
-    world->origin_chunk_x = origin_chunk_x;
-    world->origin_chunk_z = origin_chunk_z;
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
 
-    for (int cz = 0; cz < world->chunks_z; cz++) {
-        for (int cx = 0; cx < world->chunks_x; cx++) {
-            Chunk *chunk = &world->chunks[ci++];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
+            !(chunk->flags & CHUNK_FLAG_MESH_DIRTY))
+            continue;
 
-            chunk->chunk_x = origin_chunk_x + cx;
-            chunk->chunk_z = origin_chunk_z + cz;
-
-            generate_chunk_terrain(chunk,
-                                   world->procedural_seed,
-                                   world->stone_tries_per_chunk);
+        if (rebuild_chunk_faces(world, chunk)) {
+            world->meshes_rebuilt_last_stream++;
+        } else {
+            ok = false;
         }
     }
 
-    for (int i = 0; i < world->chunk_count; i++)
-        rebuild_chunk_faces(world, &world->chunks[i]);
+    return ok;
+}
 
-    return true;
+static bool ensure_chunk_storage(VoxelWorld *world, int diameter)
+{
+    int chunk_capacity = diameter * diameter;
+
+    if (diameter <= 0)
+        return false;
+
+    if (world->chunks && world->chunk_capacity == chunk_capacity) {
+        world->chunks_x = diameter;
+        world->chunks_z = diameter;
+        return ensure_chunk_lookup_capacity(world, chunk_capacity);
+    }
+
+    free_chunk_storage(world);
+
+    world->chunks = calloc((size_t)chunk_capacity, sizeof(*world->chunks));
+    if (!world->chunks)
+        return false;
+
+    world->chunk_capacity = chunk_capacity;
+    world->chunks_x = diameter;
+    world->chunks_z = diameter;
+    return ensure_chunk_lookup_capacity(world, chunk_capacity);
+}
+
+static void retain_chunks_in_window(VoxelWorld *world,
+                                    int origin_chunk_x,
+                                    int origin_chunk_z,
+                                    int diameter)
+{
+    int out = 0;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk chunk = world->chunks[i];
+        bool keep = (chunk.flags & CHUNK_FLAG_LOADED) &&
+                    chunk_in_window(chunk.chunk_x, chunk.chunk_z,
+                                    origin_chunk_x, origin_chunk_z,
+                                    diameter);
+
+        if (keep) {
+            if (out != i) {
+                world->chunks[out] = chunk;
+                memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
+            }
+            world->chunks[out].last_used_epoch = world->stream_epoch;
+            world->chunks_reused_last_stream++;
+            out++;
+        } else {
+            release_chunk(&world->chunks[i]);
+        }
+    }
+
+    for (int i = out; i < world->chunk_capacity; i++) {
+        if (i >= world->chunk_count)
+            memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
+    }
+
+    world->chunk_count = out;
 }
 
 static bool stream_world_to_chunk_center(VoxelWorld *world,
                                          int center_chunk_x,
                                          int center_chunk_z)
 {
+    int diameter;
     int origin_chunk_x;
     int origin_chunk_z;
-    int diameter;
 
     if (!world)
         return false;
@@ -492,21 +718,67 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     origin_chunk_x = center_chunk_x - world->load_radius_chunks;
     origin_chunk_z = center_chunk_z - world->load_radius_chunks;
 
-    if (world->chunks &&
+    world->chunks_generated_last_stream = 0;
+    world->chunks_reused_last_stream = 0;
+    world->meshes_rebuilt_last_stream = 0;
+
+    if (!ensure_chunk_storage(world, diameter))
+        return false;
+
+    if (world->chunk_count == world->chunk_capacity &&
         world->center_chunk_x == center_chunk_x &&
         world->center_chunk_z == center_chunk_z &&
         world->origin_chunk_x == origin_chunk_x &&
         world->origin_chunk_z == origin_chunk_z &&
         world->chunks_x == diameter &&
-        world->chunks_z == diameter)
-        return true;
+        world->chunks_z == diameter) {
+        if (world->chunk_count > 0 &&
+            chunk_lookup_find_index(world,
+                                    world->chunks[0].chunk_x,
+                                    world->chunks[0].chunk_z) < 0 &&
+            !rebuild_chunk_lookup(world))
+            return false;
+        world->chunks_reused_last_stream = world->chunk_count;
+        return rebuild_dirty_chunk_meshes(world);
+    }
 
-    if (!ensure_chunk_storage(world, diameter, diameter))
+    world->stream_epoch++;
+    if (world->stream_epoch == 0)
+        world->stream_epoch = 1;
+
+    retain_chunks_in_window(world, origin_chunk_x, origin_chunk_z, diameter);
+    if (!rebuild_chunk_lookup(world))
         return false;
 
+    world->origin_chunk_x = origin_chunk_x;
+    world->origin_chunk_z = origin_chunk_z;
     world->center_chunk_x = center_chunk_x;
     world->center_chunk_z = center_chunk_z;
-    return populate_chunk_window(world, origin_chunk_x, origin_chunk_z);
+
+    for (int cz = origin_chunk_z; cz < origin_chunk_z + diameter; cz++) {
+        for (int cx = origin_chunk_x; cx < origin_chunk_x + diameter; cx++) {
+            if (chunk_lookup_find_index(world, cx, cz) >= 0)
+                continue;
+            if (world->chunk_count >= world->chunk_capacity)
+                return false;
+
+            Chunk *chunk = &world->chunks[world->chunk_count];
+            initialize_chunk_slot(chunk, cx, cz, world->stream_epoch);
+            generate_chunk_terrain(chunk,
+                                   world->procedural_seed,
+                                   world->stone_tries_per_chunk);
+
+            world->chunk_count++;
+            if (!chunk_lookup_insert(world, world->chunk_count - 1))
+                return false;
+
+            world->chunks_generated_last_stream++;
+            mark_chunk_and_neighbors_dirty(world, cx, cz);
+        }
+    }
+
+    mark_window_perimeter_dirty(world, origin_chunk_x, origin_chunk_z, diameter);
+    return rebuild_dirty_chunk_meshes(world);
 }
 
 bool world_init_infinite_procedural(VoxelWorld *world,
@@ -518,6 +790,8 @@ bool world_init_infinite_procedural(VoxelWorld *world,
 {
     if (!world || render_distance_chunks < 0)
         return false;
+
+    free_chunk_storage(world);
 
     world->procedural_seed = seed;
     world->stone_tries_per_chunk = stone_tries_per_chunk;
@@ -549,7 +823,8 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
     int lz;
     Chunk *chunk;
 
-    if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+    if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT ||
+        type < BLOCK_AIR || type >= NUM_BLOCK_TYPES)
         return false;
 
     chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
@@ -564,26 +839,36 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
         return true;
 
     chunk->blocks[wy][lz][lx] = type;
-    rebuild_chunk_faces(world, chunk);
+    chunk->flags |= CHUNK_FLAG_MODIFIED;
+    chunk->generation++;
 
+    mark_chunk_mesh_dirty(chunk);
     if (lx == 0)
-        rebuild_chunk_if_present(world, chunk_x - 1, chunk_z);
+        mark_chunk_coord_dirty(world, chunk_x - 1, chunk_z);
     if (lx == WORLD_CHUNK_SIZE - 1)
-        rebuild_chunk_if_present(world, chunk_x + 1, chunk_z);
+        mark_chunk_coord_dirty(world, chunk_x + 1, chunk_z);
     if (lz == 0)
-        rebuild_chunk_if_present(world, chunk_x, chunk_z - 1);
+        mark_chunk_coord_dirty(world, chunk_x, chunk_z - 1);
     if (lz == WORLD_CHUNK_SIZE - 1)
-        rebuild_chunk_if_present(world, chunk_x, chunk_z + 1);
+        mark_chunk_coord_dirty(world, chunk_x, chunk_z + 1);
 
-    return true;
+    world->meshes_rebuilt_last_stream = 0;
+    return rebuild_dirty_chunk_meshes(world);
 }
 
 int world_total_faces(const VoxelWorld *world)
 {
     int total = 0;
 
-    for (int i = 0; i < world->chunk_count; i++)
-        total += world->chunks[i].face_count;
+    if (!world)
+        return 0;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+        if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            (chunk->flags & CHUNK_FLAG_MESH_READY))
+            total += chunk->face_count;
+    }
 
     return total;
 }
@@ -592,8 +877,14 @@ int world_total_blocks(const VoxelWorld *world)
 {
     int total = 0;
 
+    if (!world)
+        return 0;
+
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
 
         for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
             for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
@@ -606,4 +897,24 @@ int world_total_blocks(const VoxelWorld *world)
     }
 
     return total;
+}
+
+int world_loaded_chunk_count(const VoxelWorld *world)
+{
+    int total = 0;
+
+    if (!world)
+        return 0;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        if (world->chunks[i].flags & CHUNK_FLAG_LOADED)
+            total++;
+    }
+
+    return total;
+}
+
+int world_chunk_capacity(const VoxelWorld *world)
+{
+    return world ? world->chunk_capacity : 0;
 }

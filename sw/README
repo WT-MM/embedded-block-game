@@ -140,6 +140,10 @@ a z-tested different-depth overlap whose submission order swaps by phase,
 a z-disabled overlap control, an equal-depth tie case, and a sloped-depth
 gradient case. This covers descriptor/FIFO behavior and the hardware z path.
 
+`world_chunk_test` verifies the reusable chunk window: same-center streams
+generate nothing, one-chunk movement reuses the overlap, and boundary block
+edits rebuild both affected chunk meshes.
+
 `renderer_scene_test` uses the real software renderer against a tiny fixed
 scene of blocks. It now relies on the FPGA z-buffer path by emitting
 `QUAD_FLAG_ZTEST` on renderer-generated quads.

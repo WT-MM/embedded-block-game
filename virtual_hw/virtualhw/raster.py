@@ -9,6 +9,8 @@ from .protocol import (
     QUAD_FLAG_FOG,
     QUAD_FLAG_TEX,
     QUAD_FLAG_ZTEST,
+    QUAD_ALPHA_MASK,
+    QUAD_ALPHA_SHIFT,
     QUAD_LIGHT_MASK,
     QUAD_LIGHT_SHIFT,
     QuadDesc,
@@ -39,6 +41,44 @@ def apply_light_bank(color: int, flags: int) -> int:
         return color
 
     return (bank << 6) | color
+
+
+def rgb888_to_rgb565(rgb: tuple[int, int, int]) -> int:
+    r, g, b = rgb
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+
+
+def rgb565_to_rgb888(value: int) -> tuple[int, int, int]:
+    r5 = (value >> 11) & 0x1F
+    g6 = (value >> 5) & 0x3F
+    b5 = value & 0x1F
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+
+def blend_rgb565(src: int, dst: int, alpha: int) -> int:
+    src_r = (src >> 11) & 0x1F
+    src_g = (src >> 5) & 0x3F
+    src_b = src & 0x1F
+    dst_r = (dst >> 11) & 0x1F
+    dst_g = (dst >> 5) & 0x3F
+    dst_b = dst & 0x1F
+
+    if alpha == 1:
+        out_r = ((src_r * 3) + dst_r + 2) >> 2
+        out_g = ((src_g * 3) + dst_g + 2) >> 2
+        out_b = ((src_b * 3) + dst_b + 2) >> 2
+    elif alpha == 2:
+        out_r = (src_r + dst_r + 1) >> 1
+        out_g = (src_g + dst_g + 1) >> 1
+        out_b = (src_b + dst_b + 1) >> 1
+    elif alpha == 3:
+        out_r = (src_r + (dst_r * 3) + 2) >> 2
+        out_g = (src_g + (dst_g * 3) + 2) >> 2
+        out_b = (src_b + (dst_b * 3) + 2) >> 2
+    else:
+        return src & 0xFFFF
+
+    return ((out_r & 0x1F) << 11) | ((out_g & 0x3F) << 5) | (out_b & 0x1F)
 
 
 def _fog_replace(
@@ -131,11 +171,10 @@ class VirtualGPU:
         self.width = width
         self.height = height
         self.pixel_count = width * height
-        # Framebuffers hold 8-bit palette indices to match the real HW's
-        # per-pixel storage; the monitor converts to RGB at scanout time by
-        # looking up the palette.
-        self.front_buffer = array("B", [0]) * self.pixel_count
-        self.back_buffer = array("B", [0]) * self.pixel_count
+        # Framebuffers hold resolved RGB565 pixels to match the real HW's
+        # translucent draw path.
+        self.front_buffer = array("H", [0]) * self.pixel_count
+        self.back_buffer = array("H", [0]) * self.pixel_count
         self._cleared_depth = array("H", [CLEAR_DEPTH]) * self.pixel_count
         self.z_buffer = self._cleared_depth[:]
         self.palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
@@ -155,9 +194,10 @@ class VirtualGPU:
         self.textures = textures
 
     def clear(self) -> None:
-        # The real HW's ST_CLEAR sweep writes palette index 0 directly
-        # into the 8-bit framebuffer; we mirror that here.
-        self.back_buffer[:] = array("B", [0]) * self.pixel_count
+        # The real HW's ST_CLEAR sweep resolves palette index 0 into the
+        # RGB565 framebuffer.
+        clear_rgb = rgb888_to_rgb565(self.palette[0])
+        self.back_buffer[:] = array("H", [clear_rgb]) * self.pixel_count
         self.z_buffer[:] = self._cleared_depth
         self.vsync_latch = 0
 
@@ -213,7 +253,7 @@ class VirtualGPU:
         textured = (quad.flags & QUAD_FLAG_TEX) != 0
         ztest = (quad.flags & QUAD_FLAG_ZTEST) != 0
         alpha_key = (quad.flags & QUAD_FLAG_ALPHA_KEY) != 0
-        # Real HW ignores the QUAD_ALPHA_* bits; there is no blend path.
+        alpha = (quad.flags & QUAD_ALPHA_MASK) >> QUAD_ALPHA_SHIFT
 
         if textured:
             if quad.uv is None:
@@ -288,8 +328,11 @@ class VirtualGPU:
                     self.width,
                     self.height,
                 ):
-                    out_index = self.fog_color
+                    src_rgb565 = rgb888_to_rgb565(self.palette[self.fog_color])
                 else:
-                    out_index = color_index
+                    src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
 
-                self.back_buffer[pixel_index] = out_index & 0xFF
+                dst_rgb565 = self.back_buffer[pixel_index]
+                self.back_buffer[pixel_index] = blend_rgb565(
+                    src_rgb565, dst_rgb565, alpha
+                )

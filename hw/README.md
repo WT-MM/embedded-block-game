@@ -283,9 +283,8 @@ again so the actual game path owns SDRAM scanout.
 
 The intended behavior is now:
 
-  * rasterization still happens into one 320x240 8-bit BRAM backbuffer,
-  * `FLIP` palette-expands that BRAM image into RGB565 and copies it into the
-    inactive SDRAM frame,
+  * rasterization happens into one 320x240 RGB565 BRAM backbuffer,
+  * `FLIP` copies that RGB565 BRAM image into the inactive SDRAM frame,
   * VGA scanout reads the active SDRAM frame through line buffers, and
   * the visible frame only switches on vsync after the copy completes.
 
@@ -317,8 +316,8 @@ The hardware now defaults to two SDRAM-resident display frames:
   * `EXTMEM_STRIDE     = 640`
 
 Those base addresses are byte addresses for 320x240 RGB565 framebuffers in
-SDRAM. The on-chip BRAM render target remains 8-bit indexed specifically to
-avoid a large M10K increase.
+SDRAM. The on-chip BRAM render target is also RGB565 so alpha-blended pixels
+can preserve their resolved destination color before the SDRAM copy.
 
 Reference self-test
 -------------------

@@ -26,7 +26,7 @@ from .protocol import (
     recv_request,
     send_reply,
 )
-from .raster import VirtualGPU, load_texture_hex
+from .raster import VirtualGPU, load_texture_hex, rgb565_to_rgb888
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
@@ -100,11 +100,11 @@ class Monitor:
             if event.type == self._pygame.QUIT:
                 raise KeyboardInterrupt
 
-    def _frame_to_rgb(self, frame, palette) -> bytearray:
+    def _frame_to_rgb(self, frame) -> bytearray:
         out = self._rgb_buffer
 
-        for i, color_index in enumerate(frame):
-            r, g, b = palette[color_index]
+        for i, rgb565 in enumerate(frame):
+            r, g, b = rgb565_to_rgb888(rgb565)
             base = i * 3
             out[base] = r
             out[base + 1] = g
@@ -120,7 +120,7 @@ class Monitor:
 
         assert self._window is not None
 
-        rgb = self._frame_to_rgb(gpu.front_buffer, gpu.palette)
+        rgb = self._frame_to_rgb(gpu.front_buffer)
         surface = self._pygame.image.frombuffer(rgb, (self.width, self.height), "RGB")
         if self.scale != 1:
             surface = self._pygame.transform.scale(
@@ -131,7 +131,7 @@ class Monitor:
         self._pygame.display.flip()
 
     def rgb_frame(self, gpu: VirtualGPU) -> bytearray:
-        return self._frame_to_rgb(gpu.front_buffer, gpu.palette)
+        return self._frame_to_rgb(gpu.front_buffer)
 
 
 def write_ppm(path: Path, width: int, height: int, rgb: bytes) -> None:

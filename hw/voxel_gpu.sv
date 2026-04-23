@@ -329,8 +329,6 @@ module voxel_gpu (
     logic [15:0] fog0_src_rgb565;
     logic [15:0] fog0_dst_rgb565;
     logic [15:0] fog0_fog_rgb565;
-    logic  [9:0] fog0_x;
-    logic  [8:0] fog0_y;
     logic [31:0] fog0_w_q;
     logic [33:0] fog0_ray_scale_q16;
     logic        fog1_valid;
@@ -343,8 +341,6 @@ module voxel_gpu (
     logic [15:0] fog1_src_rgb565;
     logic [15:0] fog1_dst_rgb565;
     logic [15:0] fog1_fog_rgb565;
-    logic  [9:0] fog1_x;
-    logic  [8:0] fog1_y;
     logic [15:0] fog1_radial_q8_8;
     logic        commit_valid;
     logic        commit_pass;
@@ -617,17 +613,18 @@ module voxel_gpu (
                            (fog1_radial_q8_8 > fog_start_dist);
     wire fog1_fog_full = fog1_fog_active &&
                          (fog1_radial_q8_8 >= fog_end_dist);
-    wire  [3:0] fog1_fog_threshold =
-        !fog1_fog_active ? 4'd0 :
-        (fog1_radial_q8_8 < fog_dq1) ? 4'd4 :
-        (fog1_radial_q8_8 < fog_dq2) ? 4'd8 :
-        (fog1_radial_q8_8 < fog_dq3) ? 4'd12 : 4'd15;
-    wire  [3:0] fog1_fog_bayer = bayer4(fog1_x[1:0], fog1_y[1:0]);
-    wire fog1_fog_replace = fog1_fog_full ||
-                            (fog1_fog_threshold != 4'd0 &&
-                             (fog1_fog_bayer < fog1_fog_threshold));
+    // Map active fog depth into the 4-level blend_rgb565 alpha scale
+    // (0=no fog, 1=25%, 2=50%, 3=75%). Pixels past fog_end_dist bypass the
+    // blend entirely and take the fog color directly.
+    wire [1:0] fog1_fog_alpha =
+        !fog1_fog_active ? 2'd0 :
+        fog1_fog_full    ? 2'd0 :
+        (fog1_radial_q8_8 < fog_dq1) ? 2'd1 :
+        (fog1_radial_q8_8 < fog_dq2) ? 2'd2 : 2'd3;
+    wire [15:0] fog1_fog_blended =
+        blend_rgb565(fog1_src_rgb565, fog1_fog_rgb565, fog1_fog_alpha);
     wire [15:0] fog1_fogged_rgb565 =
-        fog1_fog_replace ? fog1_fog_rgb565 : fog1_src_rgb565;
+        fog1_fog_full ? fog1_fog_rgb565 : fog1_fog_blended;
     wire [15:0] fog1_out_rgb565 =
         blend_rgb565(fog1_fogged_rgb565, fog1_dst_rgb565, fog1_alpha);
     wire draw_commit_pass = draw_pipe_inside &&
@@ -801,29 +798,6 @@ module voxel_gpu (
                 apply_light_bank = color;
             else
                 apply_light_bank = {light_bank, color[5:0]};
-        end
-    endfunction
-
-    function automatic [3:0] bayer4(input logic [1:0] x, input logic [1:0] y);
-        begin
-            case ({y, x})
-                4'b00_00: bayer4 = 4'd0;
-                4'b00_01: bayer4 = 4'd8;
-                4'b00_10: bayer4 = 4'd2;
-                4'b00_11: bayer4 = 4'd10;
-                4'b01_00: bayer4 = 4'd12;
-                4'b01_01: bayer4 = 4'd4;
-                4'b01_10: bayer4 = 4'd14;
-                4'b01_11: bayer4 = 4'd6;
-                4'b10_00: bayer4 = 4'd3;
-                4'b10_01: bayer4 = 4'd11;
-                4'b10_10: bayer4 = 4'd1;
-                4'b10_11: bayer4 = 4'd9;
-                4'b11_00: bayer4 = 4'd15;
-                4'b11_01: bayer4 = 4'd7;
-                4'b11_10: bayer4 = 4'd13;
-                default:  bayer4 = 4'd5;
-            endcase
         end
     endfunction
 
@@ -1109,8 +1083,6 @@ module voxel_gpu (
         fog0_src_rgb565  = 16'h0000;
         fog0_dst_rgb565  = 16'h0000;
         fog0_fog_rgb565  = 16'h0000;
-        fog0_x           = 10'd0;
-        fog0_y           = 9'd0;
         fog0_w_q         = 32'd0;
         fog0_ray_scale_q16 = 34'd0;
         fog1_valid       = 1'b0;
@@ -1123,8 +1095,6 @@ module voxel_gpu (
         fog1_src_rgb565  = 16'h0000;
         fog1_dst_rgb565  = 16'h0000;
         fog1_fog_rgb565  = 16'h0000;
-        fog1_x           = 10'd0;
-        fog1_y           = 9'd0;
         fog1_radial_q8_8 = 16'd0;
         commit_valid     = 1'b0;
         commit_pass      = 1'b0;
@@ -1486,8 +1456,6 @@ module voxel_gpu (
             fog0_src_rgb565  <= 16'h0000;
             fog0_dst_rgb565  <= 16'h0000;
             fog0_fog_rgb565  <= 16'h0000;
-            fog0_x           <= 10'd0;
-            fog0_y           <= 9'd0;
             fog0_w_q         <= 32'd0;
             fog0_ray_scale_q16 <= 34'd0;
             fog1_valid       <= 1'b0;
@@ -1500,8 +1468,6 @@ module voxel_gpu (
             fog1_src_rgb565  <= 16'h0000;
             fog1_dst_rgb565  <= 16'h0000;
             fog1_fog_rgb565  <= 16'h0000;
-            fog1_x           <= 10'd0;
-            fog1_y           <= 9'd0;
             fog1_radial_q8_8 <= 16'd0;
             commit_valid     <= 1'b0;
             commit_pass      <= 1'b0;
@@ -1784,8 +1750,6 @@ module voxel_gpu (
             fog0_src_rgb565 <= palette_src_rgb565;
             fog0_dst_rgb565 <= draw_pipe_dst_rgb565;
             fog0_fog_rgb565 <= fog_rgb565;
-            fog0_x <= draw_pipe_x;
-            fog0_y <= draw_pipe_y;
             fog0_w_q <= draw_pipe_w_q;
             fog0_ray_scale_q16 <= draw_pipe_ray_scale_q16;
 
@@ -1799,8 +1763,6 @@ module voxel_gpu (
             fog1_src_rgb565 <= fog0_src_rgb565;
             fog1_dst_rgb565 <= fog0_dst_rgb565;
             fog1_fog_rgb565 <= fog0_fog_rgb565;
-            fog1_x <= fog0_x;
-            fog1_y <= fog0_y;
             fog1_radial_q8_8 <= fog0_radial_q8_8;
 
             commit_valid <= fog1_valid;

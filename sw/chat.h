@@ -8,7 +8,7 @@
 
 #define CHAT_HISTORY_LINES 6
 #define CHAT_LINE_MAX      48
-#define CHAT_TEXT_SCALE    2 /* 5x7 glyph cells scaled up; 2 = 10x14 px */
+#define CHAT_TEXT_SCALE    1 /* 5x7 glyph pixels, 1 = native 5x7 on screen */
 
 typedef struct {
     bool open;

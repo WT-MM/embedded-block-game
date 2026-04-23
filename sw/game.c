@@ -234,9 +234,14 @@ int main(void)
         if (physics_accumulator >= PHYSICS_DT)
             jump_pressed = input_consume_jump(&inp);
 
+        /* In fly modes Space/Shift are held to ascend/descend, so pass the
+         * held state rather than the edge-triggered jump. */
+        bool flying = (player.mode != PLAYER_MODE_SURVIVAL);
+
         while (physics_accumulator >= PHYSICS_DT) {
+            bool jump_input = flying ? inp.up : jump_pressed;
             player_update(&player, &world, wish_x, wish_z,
-                          jump_pressed, inp.down, PHYSICS_DT);
+                          jump_input, inp.down, PHYSICS_DT);
             jump_pressed = false;
             physics_accumulator -= PHYSICS_DT;
             physics_steps++;

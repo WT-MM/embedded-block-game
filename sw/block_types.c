@@ -40,6 +40,13 @@ void init_block_types(void)
     BlockRegistry[BLOCK_GLASS].id = BLOCK_GLASS;
     BlockRegistry[BLOCK_GLASS].name = "Glass";
     set_all_faces(&BlockRegistry[BLOCK_GLASS], TEX_TILE_GLASS);
+    BlockRegistry[BLOCK_GLASS].self_lit = false;
+
+    BlockRegistry[BLOCK_LAMP].id = BLOCK_LAMP;
+    BlockRegistry[BLOCK_LAMP].name = "Lamp";
+    set_all_faces(&BlockRegistry[BLOCK_LAMP], TEX_TILE_LAMP);
+    BlockRegistry[BLOCK_LAMP].emission_level = 15;
+    BlockRegistry[BLOCK_LAMP].self_lit = true;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -72,9 +79,32 @@ uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
         return lod >= 2 ? TEX_TILE_WOOD_TOP_MIP2 : TEX_TILE_WOOD_TOP_MIP1;
     case TEX_TILE_GLASS:
         return lod >= 2 ? TEX_TILE_GLASS_MIP2 : TEX_TILE_GLASS_MIP1;
+    case TEX_TILE_LAMP:
+        return lod >= 2 ? TEX_TILE_LAMP_MIP2 : TEX_TILE_LAMP_MIP1;
     default:
         return tile_id;
     }
+}
+
+uint8_t block_emission_level(BlockID id)
+{
+    if (id < BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return 0;
+
+    return BlockRegistry[id].emission_level;
+}
+
+bool block_is_self_lit(BlockID id)
+{
+    if (id < BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return false;
+
+    return BlockRegistry[id].self_lit;
+}
+
+bool block_blocks_light(BlockID id)
+{
+    return id != BLOCK_AIR && !block_is_transparent(id);
 }
 
 bool block_is_transparent(BlockID id)

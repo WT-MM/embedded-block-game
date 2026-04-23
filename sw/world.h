@@ -18,6 +18,8 @@ typedef struct {
     uint8_t type;
     uint8_t u_size;
     uint8_t v_size;
+    uint8_t sky_light;
+    uint8_t block_light;
 } ChunkFace;
 
 typedef enum {
@@ -35,6 +37,8 @@ typedef struct {
     uint32_t generation;
     uint32_t last_used_epoch;
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    uint8_t block_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     ChunkFace *faces;
     int face_count;
     int face_capacity;

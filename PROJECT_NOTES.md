@@ -372,3 +372,26 @@ Verification (next reflash):
      M10K instance, not an inferred array.)
   3. Optional: rebuild game with `-DDEBUG_FLAT_COLOR` and verify the whole
      world renders as a uniform color with no fringing at block borders.
+
+Footnote: `altsyncram` init_file format
+---------------------------------------
+Quartus's `altsyncram` `init_file` parameter only accepts an Altera
+Memory Initialization File (`.mif`) or an **Intel-format** `.hex` file
+(record-based with checksums). It does NOT accept Verilog
+`$readmemh`-style files (plain bytes, one per line), which is what our
+existing `textures.hex` is.
+
+To support both simulation (Verilator / the Python virtual hardware,
+which use `$readmemh`) and synthesis (Quartus altsyncram), we now
+generate BOTH formats from `generate_textures.py`:
+
+  * `textures.hex` -- Verilog `$readmemh` format (unchanged contents).
+  * `textures.mif` -- Altera MIF, `WIDTH=8`, `DEPTH=16384`,
+    address ordering `tile << 8 | (v << 4) | u`.
+
+`voxel_texture_rom`'s `init_file` points at `textures.mif`, and
+`textures.mif` is added as a MIF-type file in `voxel_gpu_hw.tcl` so the
+Qsys generator copies it into `soc_system/synthesis/submodules/`
+alongside the other sources. If you ever change the atlas generator,
+re-run `python3 generate_textures.py` to refresh both files, and make
+sure any simulator still reads the `.hex` (not the `.mif`).

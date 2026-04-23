@@ -73,7 +73,7 @@ module voxel_gpu (
     localparam int LINE_WORDS      = FB_WIDTH / 2;
     localparam int COPY_BURST_WORDS = 64;
     localparam int SDRAM_ADDR_W    = 25;
-    localparam logic [2:0] DRAW_FLUSH_CYCLES = 3'd4;
+    localparam logic [2:0] DRAW_FLUSH_CYCLES = 3'd5;
     localparam logic [24:0] FB_WORDS_25 = 25'd38400;
     localparam logic [24:0] LINE_WORDS_25 = 25'd160;
     localparam logic [8:0]  LINE_WORDS_9 = 9'd160;
@@ -142,6 +142,7 @@ module voxel_gpu (
     logic  [2:0] draw_flush_count;
 
     logic [16:0] clear_addr;
+    logic [16:0] draw_row_base;
     logic  [9:0] draw_x_min, draw_x_max, draw_x_cur;
     logic  [8:0] draw_y_min;
     logic  [8:0] draw_y_max, draw_y_cur;
@@ -221,6 +222,12 @@ module voxel_gpu (
     logic  [9:0] draw_pipe_x;
     logic  [8:0] draw_pipe_y;
     logic [31:0] draw_pipe_w_q;
+    logic        commit_valid;
+    logic        commit_pass;
+    logic        commit_ztest;
+    logic [16:0] commit_addr;
+    logic [15:0] commit_z;
+    logic  [7:0] commit_color;
     logic  [7:0] tex_rd_data;
 
     logic [10:0] hcount;
@@ -402,7 +409,11 @@ module voxel_gpu (
     wire signed [31:0] draw_vw_q = clamp_s32(draw_vw_eval);
     wire [31:0] draw_iw_q = clamp_pos_u32(draw_iw_eval);
     wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
-    wire [15:0] pipe0_iw_phase = recip_lut_phase(pipe0_iw_q);
+    wire [31:0] pipe0_iw_norm_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
+                                  (pipe0_iw_msb >= 6'd16) ?
+                                  (pipe0_iw_q >> (pipe0_iw_msb - 6'd16)) :
+                                  (pipe0_iw_q << (6'd16 - pipe0_iw_msb));
+    wire [15:0] pipe0_iw_phase = pipe0_iw_norm_q[15:0];
     wire [10:0] pipe0_iw_lut_idx = {1'b0, pipe0_iw_phase[15:6]};
     wire [5:0] pipe0_iw_lut_frac = pipe0_iw_phase[5:0];
     wire [31:0] pipe0_w_norm_lo = recip_lut[pipe0_iw_lut_idx];
@@ -610,23 +621,6 @@ module voxel_gpu (
         end
     endfunction
 
-    function automatic [15:0] recip_lut_phase(input logic [31:0] value);
-        logic [5:0] msb;
-        logic [31:0] shifted_q;
-        begin
-            if (value == 32'd0) begin
-                recip_lut_phase = 16'd0;
-            end else begin
-                msb = msb_index32(value);
-                if (msb >= 6'd16)
-                    shifted_q = value >> (msb - 6'd16);
-                else
-                    shifted_q = value << (6'd16 - msb);
-                recip_lut_phase = shifted_q[15:0];
-            end
-        end
-    endfunction
-
     voxel_vga_counters counters (
         .clk50       (clk),
         .reset       (reset),
@@ -733,6 +727,7 @@ module voxel_gpu (
         fetch_count      = 6'd0;
         draw_flush_count = 3'd0;
         clear_addr       = 17'd0;
+        draw_row_base    = 17'd0;
         draw_x_min       = 10'd0;
         draw_x_max       = 10'd0;
         draw_x_cur       = 10'd0;
@@ -812,6 +807,12 @@ module voxel_gpu (
         draw_pipe_x      = 10'd0;
         draw_pipe_y      = 9'd0;
         draw_pipe_w_q    = 32'd0;
+        commit_valid     = 1'b0;
+        commit_pass      = 1'b0;
+        commit_ztest     = 1'b0;
+        commit_addr      = 17'd0;
+        commit_z         = 16'd0;
+        commit_color     = 8'd0;
         tex_rd_data      = 8'd0;
         scan_idx_r       = 8'd0;
         scan_visible_r   = 1'b0;
@@ -918,7 +919,7 @@ module voxel_gpu (
         if (!scan_visible_now)
             scan_idx_now = 8'd0;
 
-        draw_addr = ({8'd0, draw_y_cur} * 17'd320) + {7'd0, draw_x_cur};
+        draw_addr = draw_row_base + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
         fb_wr_data = draw_pipe_out_color;
         fb_back_wr_en = 1'b0;
@@ -939,16 +940,16 @@ module voxel_gpu (
 
             ST_DRAW,
             ST_DRAW_FLUSH: begin
-                if (draw_pipe_valid && draw_commit_pass) begin
-                    fb_wr_addr = draw_pipe_addr;
-                    fb_wr_data = draw_pipe_out_color;
+                if (commit_valid && commit_pass) begin
+                    fb_wr_addr = commit_addr;
+                    fb_wr_data = commit_color;
                     fb_back_wr_en = 1'b1;
                 end
 
-                if (draw_pipe_valid && draw_commit_pass && draw_pipe_ztest) begin
+                if (commit_valid && commit_pass && commit_ztest) begin
                     z_wr_en = 1'b1;
-                    z_wr_addr = draw_pipe_addr;
-                    z_wr_data = draw_pipe_z;
+                    z_wr_addr = commit_addr;
+                    z_wr_data = commit_z;
                 end
             end
 
@@ -994,6 +995,7 @@ module voxel_gpu (
             fetch_count      <= 6'd0;
             draw_flush_count <= 3'd0;
             clear_addr       <= 17'd0;
+            draw_row_base    <= 17'd0;
             draw_x_min       <= 10'd0;
             draw_x_max       <= 10'd0;
             draw_x_cur       <= 10'd0;
@@ -1073,6 +1075,12 @@ module voxel_gpu (
             draw_pipe_x      <= 10'd0;
             draw_pipe_y      <= 9'd0;
             draw_pipe_w_q    <= 32'd0;
+            commit_valid     <= 1'b0;
+            commit_pass      <= 1'b0;
+            commit_ztest     <= 1'b0;
+            commit_addr      <= 17'd0;
+            commit_z         <= 16'd0;
+            commit_color     <= 8'd0;
             fb_back_rd_addr  <= 17'd0;
             scan_line0_ready <= 1'b0;
             scan_line1_ready <= 1'b0;
@@ -1309,6 +1317,13 @@ module voxel_gpu (
                 copy_words_written <= copy_words_written + 16'd1;
             end
 
+            commit_valid <= draw_pipe_valid;
+            commit_pass <= draw_commit_pass;
+            commit_ztest <= draw_pipe_ztest;
+            commit_addr <= draw_pipe_addr;
+            commit_z <= draw_pipe_z;
+            commit_color <= draw_pipe_out_color;
+
             if (state == ST_COPY) begin
                 if (copy_fetch_inflight) begin
                     if (!copy_low_byte_valid) begin
@@ -1376,6 +1391,7 @@ module voxel_gpu (
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
+                        draw_row_base <= {8'd0, desc_y_min} * 17'd320;
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
                         draw_tex_or_color <= desc_tex_or_color;
@@ -1500,6 +1516,7 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
+                                draw_row_base <= draw_row_base + 17'd320;
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                             end

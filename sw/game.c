@@ -27,6 +27,36 @@
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
+#define HOTBAR_SLOT_COUNT 5
+#define BLOCK_REACH_DISTANCE 6.0f
+#define BLOCK_TRACE_STEP 0.05f
+
+typedef struct {
+    bool hit;
+    bool place_valid;
+    int hit_x;
+    int hit_y;
+    int hit_z;
+    int place_x;
+    int place_y;
+    int place_z;
+} BlockTarget;
+
+static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
+    BLOCK_GRASS,
+    BLOCK_DIRT,
+    BLOCK_STONE,
+    BLOCK_WOOD,
+    BLOCK_GLASS,
+};
+
+static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
+    { 0x2, 0x6, 0x2, 0x2, 0x7 }, /* 1 */
+    { 0x7, 0x1, 0x7, 0x4, 0x7 }, /* 2 */
+    { 0x7, 0x1, 0x7, 0x1, 0x7 }, /* 3 */
+    { 0x5, 0x5, 0x7, 0x1, 0x1 }, /* 4 */
+    { 0x7, 0x4, 0x7, 0x1, 0x7 }, /* 5 */
+};
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
 {
@@ -86,6 +116,200 @@ static int read_render_distance_chunks(void)
     return (int)parsed;
 }
 
+static Vec3 camera_forward(const Camera *cam)
+{
+    float cos_pitch = cosf(cam->pitch);
+
+    return (Vec3){
+        sinf(cam->yaw) * cos_pitch,
+        -sinf(cam->pitch),
+        cosf(cam->yaw) * cos_pitch,
+    };
+}
+
+static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
+                               float max_distance, BlockTarget *out)
+{
+    Vec3 dir = camera_forward(cam);
+    bool have_last_air = false;
+    bool have_prev_cell = false;
+    int last_air_x = 0;
+    int last_air_y = 0;
+    int last_air_z = 0;
+    int prev_x = 0;
+    int prev_y = 0;
+    int prev_z = 0;
+
+    if (out)
+        memset(out, 0, sizeof(*out));
+
+    for (float distance = 0.0f;
+         distance <= max_distance;
+         distance += BLOCK_TRACE_STEP) {
+        float sample_x = cam->position.x + dir.x * distance;
+        float sample_y = cam->position.y + dir.y * distance;
+        float sample_z = cam->position.z + dir.z * distance;
+        int block_x = (int)floorf(sample_x);
+        int block_y = (int)floorf(sample_y);
+        int block_z = (int)floorf(sample_z);
+        BlockID block;
+
+        if (have_prev_cell &&
+            block_x == prev_x &&
+            block_y == prev_y &&
+            block_z == prev_z)
+            continue;
+
+        prev_x = block_x;
+        prev_y = block_y;
+        prev_z = block_z;
+        have_prev_cell = true;
+
+        block = world_get_block(world, block_x, block_y, block_z);
+        if (block != BLOCK_AIR) {
+            if (!out)
+                return true;
+
+            out->hit = true;
+            out->place_valid = have_last_air;
+            out->hit_x = block_x;
+            out->hit_y = block_y;
+            out->hit_z = block_z;
+            out->place_x = last_air_x;
+            out->place_y = last_air_y;
+            out->place_z = last_air_z;
+            return true;
+        }
+
+        have_last_air = true;
+        last_air_x = block_x;
+        last_air_y = block_y;
+        last_air_z = block_z;
+    }
+
+    return false;
+}
+
+static bool player_intersects_block(const Player *player, int wx, int wy, int wz)
+{
+    float player_min_x = player->x - PLAYER_WIDTH * 0.5f;
+    float player_max_x = player->x + PLAYER_WIDTH * 0.5f;
+    float player_min_y = player->y;
+    float player_max_y = player->y + PLAYER_HEIGHT;
+    float player_min_z = player->z - PLAYER_DEPTH * 0.5f;
+    float player_max_z = player->z + PLAYER_DEPTH * 0.5f;
+    float block_min_x = (float)wx;
+    float block_max_x = block_min_x + 1.0f;
+    float block_min_y = (float)wy;
+    float block_max_y = block_min_y + 1.0f;
+    float block_min_z = (float)wz;
+    float block_max_z = block_min_z + 1.0f;
+
+    return player_max_x > block_min_x && player_min_x < block_max_x &&
+           player_max_y > block_min_y && player_min_y < block_max_y &&
+           player_max_z > block_min_z && player_min_z < block_max_z;
+}
+
+static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
+{
+    BlockTarget target = {0};
+
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+
+    return world_set_block(world,
+                           target.hit_x, target.hit_y, target.hit_z,
+                           BLOCK_AIR);
+}
+
+static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
+                                     const Player *player, BlockID type)
+{
+    BlockTarget target = {0};
+
+    if (type <= BLOCK_AIR || type >= NUM_BLOCK_TYPES)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target) ||
+        !target.place_valid)
+        return false;
+    if (world_get_block(world, target.place_x, target.place_y, target.place_z) != BLOCK_AIR)
+        return false;
+    if (player_intersects_block(player, target.place_x, target.place_y, target.place_z))
+        return false;
+
+    return world_set_block(world,
+                           target.place_x, target.place_y, target.place_z,
+                           type);
+}
+
+static void draw_hotbar_digit(RenderContext *ctx, int digit,
+                              float x, float y, uint8_t palette_index)
+{
+    if (digit < 1 || digit > HOTBAR_SLOT_COUNT)
+        return;
+
+    const uint8_t *rows = HOTBAR_DIGITS[digit - 1];
+
+    for (int row = 0; row < 5; row++) {
+        for (int col = 0; col < 3; col++) {
+            if (rows[row] & (1u << (2 - col))) {
+                renderer_fill_rect(ctx,
+                                   x + (float)col,
+                                   y + (float)row,
+                                   x + (float)col + 1.0f,
+                                   y + (float)row + 1.0f,
+                                   palette_index,
+                                   0);
+            }
+        }
+    }
+}
+
+static void draw_hotbar(RenderContext *ctx, int selected_slot)
+{
+    const float slot_size = 20.0f;
+    const float gap = 4.0f;
+    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f;
+    const float total_width =
+        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
+
+    renderer_fill_rect(ctx,
+                       slot_left - 4.0f, slot_top - 4.0f,
+                       slot_left + total_width + 4.0f, slot_top + slot_size + 4.0f,
+                       14, 0);
+    renderer_fill_rect(ctx,
+                       slot_left - 3.0f, slot_top - 3.0f,
+                       slot_left + total_width + 3.0f, slot_top + slot_size + 3.0f,
+                       0, 0);
+
+    for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
+        float x0 = slot_left + (slot_size + gap) * (float)i;
+        float x1 = x0 + slot_size;
+        float y0 = slot_top;
+        float y1 = y0 + slot_size;
+        uint8_t border = (i == selected_slot) ? 5 : 14;
+        uint8_t number = (i == selected_slot) ? 8 : 5;
+
+        renderer_fill_rect(ctx, x0, y0, x1, y1, border, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x1 - 1.0f, y1 - 1.0f, 0, 0);
+        renderer_draw_screen_tile(ctx,
+                                  x0 + 2.0f, y0 + 2.0f,
+                                  x1 - 2.0f, y1 - 2.0f,
+                                  block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
+                                  0);
+        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x0 + 5.0f, y0 + 7.0f, 0, 0);
+        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f, y0 + 2.0f, number);
+
+        if (i == selected_slot) {
+            renderer_fill_rect(ctx,
+                               x0 + 2.0f, y1 - 3.0f,
+                               x1 - 2.0f, y1 - 1.0f,
+                               8, 0);
+        }
+    }
+}
+
 int main(void)
 {
     RenderContext *ctx = renderer_init();
@@ -108,6 +332,7 @@ int main(void)
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
     int render_distance_chunks = read_render_distance_chunks();
+    int selected_hotbar_slot = 0;
 
     /* Initialize Player */
     Player player;
@@ -133,7 +358,7 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  Ctrl=sprint  Space=jump/fly-up  Shift=crouch/fly-down  G=cycle mode  T=chat  Esc=pause  Q=quit\n");
+    printf("Controls: WASD=move  Ctrl=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause  Q=quit\n");
     printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
            player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
@@ -288,6 +513,29 @@ int main(void)
             break;
         }
 
+        if (!paused && !chat_is_open(&chat)) {
+            int hotbar_slot = input_consume_hotbar_slot(&inp);
+
+            if (hotbar_slot >= 0 && hotbar_slot < HOTBAR_SLOT_COUNT &&
+                hotbar_slot != selected_hotbar_slot) {
+                selected_hotbar_slot = hotbar_slot;
+                chat_log(&chat, "selected: %d %s",
+                         selected_hotbar_slot + 1,
+                         BlockRegistry[HOTBAR_BLOCKS[selected_hotbar_slot]].name);
+            }
+
+            if (input_consume_break(&inp))
+                try_break_targeted_block(&world, &cam);
+            if (input_consume_place(&inp)) {
+                try_place_targeted_block(&world, &cam, &player,
+                                         HOTBAR_BLOCKS[selected_hotbar_slot]);
+            }
+        } else {
+            (void)input_consume_hotbar_slot(&inp);
+            (void)input_consume_break(&inp);
+            (void)input_consume_place(&inp);
+        }
+
         struct timespec render_start, begin_end, draw_end, end_end;
         clock_gettime(CLOCK_MONOTONIC, &render_start);
         renderer_set_camera(ctx, &cam);
@@ -295,8 +543,10 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world);
-        renderer_draw_crosshair(ctx);
         chat_draw(&chat, ctx);
+        if (!paused && !chat_is_open(&chat))
+            draw_hotbar(ctx, selected_hotbar_slot);
+        renderer_draw_crosshair(ctx);
         pause_menu_draw(&pause, ctx);
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);

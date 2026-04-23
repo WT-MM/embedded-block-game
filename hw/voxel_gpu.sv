@@ -1,13 +1,15 @@
-// voxel_gpu.sv — first game-visible SDRAM-backed color path.
+// voxel_gpu.sv — SDRAM-backed display path with RGB565 external frames.
 //
-// The rasterizer still renders into a single 320x240 8-bit BRAM backbuffer
-// plus a BRAM z-buffer. FLIP no longer swaps two BRAM framebuffers. Instead:
-//   * the finished BRAM backbuffer is copied into the inactive SDRAM frame,
+// The rasterizer still renders into a single 320x240 8-bit indexed BRAM
+// backbuffer plus a BRAM z-buffer so on-chip memory usage stays bounded.
+// FLIP no longer swaps two BRAM framebuffers. Instead:
+//   * the finished BRAM backbuffer is palette-expanded into RGB565 and copied
+//     into the inactive SDRAM frame,
 //   * scanout reads the active SDRAM frame through small line buffers, and
-//   * the visible SDRAM frame only changes on vsync once the copy is done.
+//   * the visible SDRAM frame only changes on vsync once the copy completes.
 //
-// That keeps the existing command ABI and rasterizer behavior mostly intact
-// while moving the displayed color buffer out of M10Ks.
+// This keeps BRAM usage close to the indexed design while making the external
+// framebuffer itself true color.
 
 module voxel_gpu (
     input  logic        clk,
@@ -69,19 +71,19 @@ module voxel_gpu (
     localparam int UV_QUAD_WORDS   = 16;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
     localparam int TEXTURE_BYTES   = 64 * 16 * 16;
-    localparam int FB_WORDS        = FB_PIXELS / 2;
-    localparam int LINE_WORDS      = FB_WIDTH / 2;
+    localparam int FB_WORDS        = FB_PIXELS;
+    localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int SDRAM_ADDR_W    = 25;
     localparam logic [2:0] DRAW_FLUSH_CYCLES = 3'd5;
-    localparam logic [24:0] FB_WORDS_25 = 25'd38400;
-    localparam logic [24:0] LINE_WORDS_25 = 25'd160;
-    localparam logic [8:0]  LINE_WORDS_9 = 9'd160;
+    localparam logic [24:0] FB_WORDS_25 = 25'd76800;
+    localparam logic [24:0] LINE_WORDS_25 = 25'd320;
+    localparam logic [8:0]  LINE_WORDS_9 = 9'd320;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
-    localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_0003;
+    localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
-    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd76800;
-    localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd320;
+    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd153600;
+    localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd640;
     localparam int SDRAM_POWERUP_HOLD_CYCLES = 200000;
     localparam int SDRAM_INIT_WAIT_CYCLES = 32000;
     localparam int FLAG_TEX_BIT        = 0;
@@ -234,7 +236,7 @@ module voxel_gpu (
     logic  [9:0] vcount;
 
     logic        scan_visible_now;
-    logic  [7:0] scan_idx_r;
+    logic [15:0] scan_rgb565_r;
     logic        scan_visible_r;
     logic [16:0] draw_addr;
     logic [16:0] fb_back_rd_addr;
@@ -254,27 +256,28 @@ module voxel_gpu (
     logic        scan_line1_ready;
     logic  [8:0] scan_line0_row;
     logic  [8:0] scan_line1_row;
+    logic [24:0] scan_line0_base_words;
+    logic [24:0] scan_line1_base_words;
     logic        scan_active_bank;
     logic        scan_active_valid;
     logic  [8:0] scan_active_row;
+    logic [24:0] scan_active_base_words;
     logic        scan_fill_active;
     logic        scan_fill_armed;
     logic        scan_fill_bank;
     logic  [8:0] scan_fill_row;
+    logic [24:0] scan_fill_base_words;
     logic  [8:0] scan_fill_store_idx;
     logic        scan_fill_pop_d;
-    logic [15:0] scan_line_word_now;
-    logic  [7:0] scan_idx_now;
+    logic [15:0] scan_rgb565_now;
     logic [24:0] sdram_rd_addr_cfg;
     logic [24:0] sdram_rd_max_addr_cfg;
     logic        sdram_rd_load_pulse;
 
     logic [16:0] copy_fb_next_addr;
     logic [16:0] copy_pixels_issued;
-    logic [15:0] copy_words_written;
+    logic [16:0] copy_words_written;
     logic        copy_fetch_inflight;
-    logic        copy_low_byte_valid;
-    logic  [7:0] copy_low_byte;
     logic        copy_word_pending_valid;
     logic [15:0] copy_word_pending;
     logic [24:0] sdram_wr_addr_cfg;
@@ -308,6 +311,7 @@ module voxel_gpu (
     wire [24:0] copy_target_base_words  = copy_target_sel ? extmem_back_base_words : extmem_front_base_words;
     wire [8:0]  scan_current_row        = {1'b0, vcount[8:1]};
     wire [8:0]  scan_current_x          = hcount[10:2];
+    wire        scan_current_x_valid    = (scan_current_x < FB_WIDTH);
     wire        scan_active_row_matches = scan_active_valid && (scan_active_row == scan_current_row);
     wire        scan_active_bank_ready  = scan_active_bank ? scan_line1_ready : scan_line0_ready;
     wire [8:0]  scan_active_bank_row    = scan_active_bank ? scan_line1_row : scan_line0_row;
@@ -327,8 +331,8 @@ module voxel_gpu (
     wire        copy_can_issue_read =
         (state == ST_COPY) &&
         (copy_pixels_issued < FB_PIXELS) &&
-        !(copy_word_pending_valid && !sdram_wr_push) &&
-        !(copy_fetch_inflight && copy_low_byte_valid);
+        !copy_fetch_inflight &&
+        (!copy_word_pending_valid || sdram_wr_push);
     wire [8:0]  sdram_wr_length_cfg = (state == ST_COPY) ? COPY_BURST_WORDS_9 : 9'd0;
     wire [8:0]  sdram_rd_length_cfg = scan_fill_armed ? LINE_WORDS_9 : 9'd0;
 
@@ -487,6 +491,7 @@ module voxel_gpu (
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
+    wire [15:0] copy_rgb565 = rgb888_to_rgb565(palette[fb_back_rd_data]);
 
     wire [31:0] status_word = {
         12'h0,
@@ -505,7 +510,11 @@ module voxel_gpu (
         ctrl_en
     };
 
-    wire [23:0] pixel_rgb = palette[scan_idx_r];
+    wire [23:0] pixel_rgb = {
+        expand5_to_8(scan_rgb565_r[15:11]),
+        expand6_to_8(scan_rgb565_r[10:5]),
+        expand5_to_8(scan_rgb565_r[4:0])
+    };
 
     function automatic [9:0] clamp_x(input logic signed [15:0] value);
         begin
@@ -585,6 +594,28 @@ module voxel_gpu (
                 clamp_tex_coord = 4'd15;
             else
                 clamp_tex_coord = value[35:32];
+        end
+    endfunction
+
+    function automatic [15:0] rgb888_to_rgb565(input logic [23:0] rgb888);
+        begin
+            rgb888_to_rgb565 = {
+                rgb888[23:19],
+                rgb888[15:10],
+                rgb888[7:3]
+            };
+        end
+    endfunction
+
+    function automatic [7:0] expand5_to_8(input logic [4:0] value);
+        begin
+            expand5_to_8 = {value, value[4:2]};
+        end
+    endfunction
+
+    function automatic [7:0] expand6_to_8(input logic [5:0] value);
+        begin
+            expand6_to_8 = {value, value[5:4]};
         end
     endfunction
 
@@ -814,20 +845,24 @@ module voxel_gpu (
         commit_z         = 16'd0;
         commit_color     = 8'd0;
         tex_rd_data      = 8'd0;
-        scan_idx_r       = 8'd0;
+        scan_rgb565_r    = 16'h0000;
         scan_visible_r   = 1'b0;
         fb_back_rd_addr  = 17'd0;
         scan_line0_ready = 1'b0;
         scan_line1_ready = 1'b0;
         scan_line0_row   = 9'd0;
         scan_line1_row   = 9'd0;
+        scan_line0_base_words = 25'd0;
+        scan_line1_base_words = 25'd0;
         scan_active_bank = 1'b0;
         scan_active_valid = 1'b0;
         scan_active_row  = 9'd0;
+        scan_active_base_words = 25'd0;
         scan_fill_active = 1'b0;
         scan_fill_armed  = 1'b0;
         scan_fill_bank   = 1'b0;
         scan_fill_row    = 9'd0;
+        scan_fill_base_words = 25'd0;
         scan_fill_store_idx = 9'd0;
         scan_fill_pop_d  = 1'b0;
         sdram_rd_addr_cfg = 25'd0;
@@ -835,10 +870,8 @@ module voxel_gpu (
         sdram_rd_load_pulse = 1'b0;
         copy_fb_next_addr = 17'd0;
         copy_pixels_issued = 17'd0;
-        copy_words_written = 16'd0;
+        copy_words_written = 17'd0;
         copy_fetch_inflight = 1'b0;
-        copy_low_byte_valid = 1'b0;
-        copy_low_byte = 8'd0;
         copy_word_pending_valid = 1'b0;
         copy_word_pending = 16'd0;
         sdram_wr_addr_cfg = 25'd0;
@@ -905,19 +938,16 @@ module voxel_gpu (
     end
 
     always_comb begin
-        if (scan_active_bank)
-            scan_line_word_now = scan_linebuf1[scan_current_x[8:1]];
+        if (!scan_current_x_valid)
+            scan_rgb565_now = 16'h0000;
+        else if (scan_active_bank)
+            scan_rgb565_now = scan_linebuf1[scan_current_x];
         else
-            scan_line_word_now = scan_linebuf0[scan_current_x[8:1]];
-
-        if (scan_current_x[0])
-            scan_idx_now = scan_line_word_now[15:8];
-        else
-            scan_idx_now = scan_line_word_now[7:0];
+            scan_rgb565_now = scan_linebuf0[scan_current_x];
 
         scan_visible_now = VGA_BLANK_n && scan_visible_data_ready;
         if (!scan_visible_now)
-            scan_idx_now = 8'd0;
+            scan_rgb565_now = 16'h0000;
 
         draw_addr = draw_row_base + {7'd0, draw_x_cur};
         fb_wr_addr = draw_addr;
@@ -960,7 +990,7 @@ module voxel_gpu (
     always_ff @(posedge clk) begin
         tex_rd_data <= texture_mem[pipe2_tex_addr];
         vga_vs_d <= VGA_VS;
-        scan_idx_r <= scan_idx_now;
+        scan_rgb565_r <= scan_rgb565_now;
         scan_visible_r  <= scan_visible_now;
     end
 
@@ -1081,18 +1111,23 @@ module voxel_gpu (
             commit_addr      <= 17'd0;
             commit_z         <= 16'd0;
             commit_color     <= 8'd0;
+            scan_rgb565_r    <= 16'h0000;
             fb_back_rd_addr  <= 17'd0;
             scan_line0_ready <= 1'b0;
             scan_line1_ready <= 1'b0;
             scan_line0_row   <= 9'd0;
             scan_line1_row   <= 9'd0;
+            scan_line0_base_words <= 25'd0;
+            scan_line1_base_words <= 25'd0;
             scan_active_bank <= 1'b0;
             scan_active_valid <= 1'b0;
             scan_active_row  <= 9'd0;
+            scan_active_base_words <= 25'd0;
             scan_fill_active <= 1'b0;
             scan_fill_armed  <= 1'b0;
             scan_fill_bank   <= 1'b0;
             scan_fill_row    <= 9'd0;
+            scan_fill_base_words <= 25'd0;
             scan_fill_store_idx <= 9'd0;
             scan_fill_pop_d  <= 1'b0;
             sdram_rd_addr_cfg <= 25'd0;
@@ -1100,10 +1135,8 @@ module voxel_gpu (
             sdram_rd_load_pulse <= 1'b0;
             copy_fb_next_addr <= 17'd0;
             copy_pixels_issued <= 17'd0;
-            copy_words_written <= 16'd0;
+            copy_words_written <= 17'd0;
             copy_fetch_inflight <= 1'b0;
-            copy_low_byte_valid <= 1'b0;
-            copy_low_byte <= 8'd0;
             copy_word_pending_valid <= 1'b0;
             copy_word_pending <= 16'd0;
             sdram_wr_addr_cfg <= 25'd0;
@@ -1140,13 +1173,17 @@ module voxel_gpu (
                 frame_count <= frame_count + 32'd1;
                 scan_line0_ready <= 1'b0;
                 scan_line1_ready <= 1'b0;
+                scan_line0_base_words <= 25'd0;
+                scan_line1_base_words <= 25'd0;
                 scan_active_bank <= 1'b0;
                 scan_active_valid <= 1'b0;
                 scan_active_row <= 9'd0;
+                scan_active_base_words <= 25'd0;
                 scan_fill_active <= 1'b0;
                 scan_fill_armed <= 1'b0;
                 scan_fill_bank <= 1'b0;
                 scan_fill_row <= 9'd0;
+                scan_fill_base_words <= 25'd0;
                 scan_fill_store_idx <= 9'd0;
                 scan_fill_pop_d <= 1'b0;
 
@@ -1161,6 +1198,7 @@ module voxel_gpu (
                         scan_fill_armed <= 1'b1;
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= 9'd0;
+                        scan_fill_base_words <= copy_target_base_words;
                         scan_fill_store_idx <= 9'd0;
                         sdram_rd_addr_cfg <= copy_target_base_words;
                         sdram_rd_max_addr_cfg <= copy_target_base_words + LINE_WORDS_25;
@@ -1173,6 +1211,7 @@ module voxel_gpu (
                         scan_fill_armed <= 1'b1;
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= 9'd0;
+                        scan_fill_base_words <= display_base_words;
                         scan_fill_store_idx <= 9'd0;
                         sdram_rd_addr_cfg <= display_base_words;
                         sdram_rd_max_addr_cfg <= display_base_words + LINE_WORDS_25;
@@ -1254,15 +1293,18 @@ module voxel_gpu (
                         if (scan_fill_bank) begin
                             scan_line1_ready <= 1'b1;
                             scan_line1_row <= scan_fill_row;
+                            scan_line1_base_words <= scan_fill_base_words;
                         end else begin
                             scan_line0_ready <= 1'b1;
                             scan_line0_row <= scan_fill_row;
+                            scan_line0_base_words <= scan_fill_base_words;
                         end
 
                         if (!scan_active_valid) begin
                             scan_active_valid <= 1'b1;
                             scan_active_bank <= scan_fill_bank;
                             scan_active_row <= scan_fill_row;
+                            scan_active_base_words <= scan_fill_base_words;
                         end
                     end else begin
                         scan_fill_store_idx <= scan_fill_store_idx + 9'd1;
@@ -1276,9 +1318,11 @@ module voxel_gpu (
                     if (!scan_active_bank && scan_bank1_matches) begin
                         scan_active_bank <= 1'b1;
                         scan_active_row <= scan_current_row;
+                        scan_active_base_words <= scan_line1_base_words;
                     end else if (scan_active_bank && scan_bank0_matches) begin
                         scan_active_bank <= 1'b0;
                         scan_active_row <= scan_current_row;
+                        scan_active_base_words <= scan_line0_base_words;
                     end
                 end
 
@@ -1289,24 +1333,24 @@ module voxel_gpu (
                         scan_fill_armed <= 1'b1;
                         scan_fill_bank <= 1'b1;
                         scan_fill_row <= scan_active_row + 9'd1;
+                        scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
                         scan_fill_store_idx <= 9'd0;
                         scan_line1_ready <= 1'b0;
-                        sdram_rd_addr_cfg <= display_base_words +
-                                             ((scan_active_row + 9'd1) * LINE_WORDS_25);
-                        sdram_rd_max_addr_cfg <= display_base_words +
-                                                 ((scan_active_row + 9'd2) * LINE_WORDS_25);
+                        sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
+                        sdram_rd_max_addr_cfg <= scan_active_base_words +
+                                                 (LINE_WORDS_25 + LINE_WORDS_25);
                         sdram_rd_load_pulse <= 1'b1;
                     end else if (scan_active_bank && !scan_bank0_next_ready) begin
                         scan_fill_active <= 1'b1;
                         scan_fill_armed <= 1'b1;
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= scan_active_row + 9'd1;
+                        scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
                         scan_fill_store_idx <= 9'd0;
                         scan_line0_ready <= 1'b0;
-                        sdram_rd_addr_cfg <= display_base_words +
-                                             ((scan_active_row + 9'd1) * LINE_WORDS_25);
-                        sdram_rd_max_addr_cfg <= display_base_words +
-                                                 ((scan_active_row + 9'd2) * LINE_WORDS_25);
+                        sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
+                        sdram_rd_max_addr_cfg <= scan_active_base_words +
+                                                 (LINE_WORDS_25 + LINE_WORDS_25);
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end
@@ -1314,7 +1358,7 @@ module voxel_gpu (
 
             if (sdram_wr_push) begin
                 copy_word_pending_valid <= 1'b0;
-                copy_words_written <= copy_words_written + 16'd1;
+                copy_words_written <= copy_words_written + 17'd1;
             end
 
             commit_valid <= draw_pipe_valid;
@@ -1325,15 +1369,10 @@ module voxel_gpu (
             commit_color <= draw_pipe_out_color;
 
             if (state == ST_COPY) begin
-                if (copy_fetch_inflight) begin
-                    if (!copy_low_byte_valid) begin
-                        copy_low_byte <= fb_back_rd_data;
-                        copy_low_byte_valid <= 1'b1;
-                    end else begin
-                        copy_word_pending <= {fb_back_rd_data, copy_low_byte};
-                        copy_word_pending_valid <= 1'b1;
-                        copy_low_byte_valid <= 1'b0;
-                    end
+                if (copy_fetch_inflight && !copy_word_pending_valid) begin
+                    copy_word_pending <= copy_rgb565;
+                    copy_word_pending_valid <= 1'b1;
+                    copy_fetch_inflight <= 1'b0;
                 end
 
                 if (copy_can_issue_read) begin
@@ -1341,8 +1380,6 @@ module voxel_gpu (
                     copy_fb_next_addr <= copy_fb_next_addr + 17'd1;
                     copy_pixels_issued <= copy_pixels_issued + 17'd1;
                     copy_fetch_inflight <= 1'b1;
-                end else if (copy_fetch_inflight) begin
-                    copy_fetch_inflight <= 1'b0;
                 end
             end
 
@@ -1359,9 +1396,8 @@ module voxel_gpu (
                         copy_target_sel <= ~display_sel;
                         copy_fb_next_addr <= 17'd1;
                         copy_pixels_issued <= 17'd1;
-                        copy_words_written <= 16'd0;
+                        copy_words_written <= 17'd0;
                         copy_fetch_inflight <= 1'b1;
-                        copy_low_byte_valid <= 1'b0;
                         copy_word_pending_valid <= 1'b0;
                         fb_back_rd_addr <= 17'd0;
                         sdram_wr_addr_cfg <= (~display_sel) ? extmem_back_base_words : extmem_front_base_words;
@@ -1552,8 +1588,7 @@ module voxel_gpu (
                 ST_COPY: begin
                     if ((copy_words_written == FB_WORDS) &&
                         !copy_word_pending_valid &&
-                        !copy_fetch_inflight &&
-                        !copy_low_byte_valid) begin
+                        !copy_fetch_inflight) begin
                         state <= ST_IDLE;
                         copy_complete_pending <= 1'b1;
                     end
@@ -1564,7 +1599,7 @@ module voxel_gpu (
 
             extmem_dma_status <= {
                 copy_words_written,
-                4'h0,
+                3'h0,
                 display_sel,
                 copy_target_sel,
                 copy_complete_pending,

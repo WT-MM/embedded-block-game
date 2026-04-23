@@ -158,12 +158,6 @@ quartus : $(SOF)
 $(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
-.PHONY : quartus19
-quartus19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
-quartus19 : QUARTUS_SH=$(QUARTUS_SH_19)
-quartus19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
-quartus19 : QUARTUS_STA=$(QUARTUS_STA_19)
-quartus19 : quartus
 
 # rbf
 #
@@ -174,19 +168,6 @@ rbf : $(RBF)
 
 $(RBF) : $(SOF)
 	$(QUARTUS_CPF) -c $(SOF) $(RBF)
-
-.PHONY : rbf19
-rbf19 : QSYS_GENERATE=$(QSYS_GENERATE_19)
-rbf19 : QUARTUS_SH=$(QUARTUS_SH_19)
-rbf19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
-rbf19 : QUARTUS_STA=$(QUARTUS_STA_19)
-rbf19 : QUARTUS_CPF=$(QUARTUS_CPF_19)
-rbf19 : rbf
-
-# One-shot Quartus 19.1 flow. Prefer this or plain `make rbf19` over passing
-# multiple independent *19 goals on the same command line.
-.PHONY : bitstream19
-bitstream19 : rbf19
 
 .PHONY : print-quartus19-tools
 print-quartus19-tools :

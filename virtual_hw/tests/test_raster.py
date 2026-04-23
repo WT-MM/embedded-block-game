@@ -38,6 +38,30 @@ def one_pixel_quad(
     )
 
 
+def solid_bbox_quad(
+    x_min: int,
+    y_min: int,
+    x_max: int,
+    y_max: int,
+    *,
+    tex_or_color: int,
+    flags: int,
+) -> QuadDesc:
+    return QuadDesc(
+        x_min=x_min,
+        y_min=y_min,
+        x_max=x_max,
+        y_max=y_max,
+        edges=((0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)),
+        z0=0,
+        dz_dx=0,
+        dz_dy=0,
+        tex_or_color=tex_or_color,
+        flags=flags,
+        uv=None,
+    )
+
+
 class RasterBehaviorTest(unittest.TestCase):
     def test_texture_coordinates_clamp_to_tile_edge(self) -> None:
         textures = bytearray(TEXTURE_BYTES)
@@ -122,6 +146,30 @@ class RasterBehaviorTest(unittest.TestCase):
         gpu.submit_quads([quad])
 
         self.assertEqual(gpu.back_buffer[0], rgb888_to_rgb565((0x12, 0x34, 0x56)))
+
+    def test_opaque_flat_bbox_fast_path_matches_generic_path(self) -> None:
+        fast = VirtualGPU()
+        generic = VirtualGPU()
+        for gpu in (fast, generic):
+            gpu.set_palette_entry(7, 0x44, 0x88, 0xCC)
+
+        fast.submit_quads(
+            [solid_bbox_quad(3, 5, 19, 11, tex_or_color=7, flags=0)]
+        )
+        generic.submit_quads(
+            [
+                solid_bbox_quad(
+                    3,
+                    5,
+                    19,
+                    11,
+                    tex_or_color=7,
+                    flags=QUAD_FLAG_FOG,
+                )
+            ]
+        )
+
+        self.assertEqual(fast.back_buffer, generic.back_buffer)
 
 
 if __name__ == "__main__":

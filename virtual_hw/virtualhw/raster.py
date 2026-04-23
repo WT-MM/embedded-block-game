@@ -131,6 +131,22 @@ def _to_signed32(value: int) -> int:
     return value
 
 
+def _inside_edges(edges, x: int, y: int) -> bool:
+    for a_coef, b_coef, c_coef in edges:
+        if a_coef * x + b_coef * y + c_coef < 0:
+            return False
+    return True
+
+
+def _edges_cover_bbox(edges, x_min: int, y_min: int, x_max: int, y_max: int) -> bool:
+    return (
+        _inside_edges(edges, x_min, y_min)
+        and _inside_edges(edges, x_max, y_min)
+        and _inside_edges(edges, x_min, y_max)
+        and _inside_edges(edges, x_max, y_max)
+    )
+
+
 def _msb_index32(value: int) -> int:
     if value == 0:
         return 0
@@ -441,6 +457,21 @@ class VirtualGPU:
             tile_offset = (quad.tex_or_color & 0x3F) << 8
         else:
             color_index = apply_light_bank(quad.tex_or_color, quad.flags)
+
+        if (
+            not textured
+            and not ztest
+            and alpha == 0
+            and not (quad.flags & QUAD_FLAG_FOG)
+            and _edges_cover_bbox(edges, x_min, y_min, x_max, y_max)
+        ):
+            src_rgb565 = rgb888_to_rgb565(self.palette[color_index])
+            span = x_max - x_min + 1
+            fill_row = array("H", [src_rgb565]) * span
+            for y in range(y_min, y_max + 1):
+                row_start = y * width + x_min
+                self.back_buffer[row_start : row_start + span] = fill_row
+            return
 
         for y in range(y_min, y_max + 1):
             row_base = y * width

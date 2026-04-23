@@ -2,7 +2,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "renderer.h"
 #include "input.h"
@@ -44,6 +46,21 @@ static float read_mouse_sensitivity(void)
         return DEFAULT_MOUSE_SENS;
 
     return parsed;
+}
+
+static int read_status_log_enabled(void)
+{
+    const char *value = getenv("VOXEL_STATUS_LOG");
+
+    if (!value || value[0] == '\0' || strcmp(value, "auto") == 0)
+        return isatty(STDOUT_FILENO);
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "false") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "no") == 0)
+        return 0;
+
+    return 1;
 }
 
 int main(void)
@@ -109,6 +126,7 @@ int main(void)
     double perf_sleep_ns = 0.0;
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
+    int status_log_enabled = read_status_log_enabled();
     clock_gettime(CLOCK_MONOTONIC, &prev);
     perf_window_start = prev;
 
@@ -183,12 +201,13 @@ int main(void)
         double end_ns = (double)ns_diff(&end_end, &draw_end);
         double work_ns = (double)ns_diff(&end_end, &loop_start);
 
-        /* Added grounded status and velocity to debug readout */
-        printf("\rpos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) gnd=%d yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
-               player.x, player.y, player.z,
-               player.vx, player.vy, player.vz, player.is_grounded,
-               cam.yaw, cam.pitch, quads, sky_quads);
-        fflush(stdout);
+        if (status_log_enabled) {
+            printf("\rpos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) gnd=%d yaw=%.2f pitch=%.2f quads=%3d sky=%2d  ",
+                   player.x, player.y, player.z,
+                   player.vx, player.vy, player.vz, player.is_grounded,
+                   cam.yaw, cam.pitch, quads, sky_quads);
+            fflush(stdout);
+        }
 
         /* Sleep for the remainder of the frame budget */
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
@@ -222,8 +241,13 @@ int main(void)
             double elapsed_s = (double)perf_elapsed_ns / 1e9;
             double frame_div = (double)perf_frames;
 
+            if (status_log_enabled) {
+                printf("\n");
+                fflush(stdout);
+            }
+
             fprintf(stderr,
-                    "\nperf: fps=%5.1f frame=%6.2fms work=%6.2fms "
+                    "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
                     "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                     "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
                     "quads=%5.1f sky=%4.1f\n",
@@ -253,7 +277,8 @@ int main(void)
         }
     }
 
-    printf("\n");
+    if (status_log_enabled)
+        printf("\n");
     input_shutdown(&inp);
     world_free(&world);
     renderer_shutdown(ctx);

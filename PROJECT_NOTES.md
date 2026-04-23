@@ -292,3 +292,83 @@ Verification (next reflash):
      to know (grep for `palette`).
   3. Optional regression: temporarily force every face to light bank 0
      in `choose_face_light_flags` and verify the image stays clean.
+
+Follow-up: Explicit Texture ROM (pipe2_tex_addr path)
+-----------------------------------------------------
+After the two-stage palette read was flashed, chromatic fringing was *still*
+present on every block edge, and worse, an edge-flicker had appeared near
+the right side of the screen (pink tint sometimes leaking in). User also
+verified the palette was correctly inferred as MLAB cells from the fit
+report, so the remaining skew was not on the palette side.
+
+The next suspect was the texture atlas itself. `texture_mem` was previously
+inferred from:
+
+  (* ramstyle = "M10K" *) logic [7:0] texture_mem [0:TEXTURE_BYTES-1];
+  ...
+  always_ff @(posedge clk) tex_rd_data <= texture_mem[pipe2_tex_addr];
+
+Quartus is free to implement this two different ways on M10K:
+  (a) `tex_rd_data` is absorbed as the M10K's output register with
+      `address_reg_a = CLOCK0`, `outdata_reg_a = UNREGISTERED`.
+      Latency = 1 cycle. pipe2_tex_addr[T] -> tex_rd_data[T+1]. CORRECT.
+  (b) The M10K keeps both its internal address register *and* its
+      optional output register, with `tex_rd_data` layered on top as an
+      extra flop. Latency = 2 cycles. pipe2_tex_addr[T] -> tex_rd_data[T+2].
+      The first pixel of every new quad then samples whatever texel the
+      previous quad's final `pipe2_tex_addr` happened to point at.
+
+On silicon we had been hitting case (b). The visible effect was exactly the
+chromatic aberration symptom: every block boundary showed a 1-pixel fringe
+whose color depended on the immediately preceding quad's last texel. Stones
+next to sky quads picked up light-blue fringes (their first-pixel address
+landed inside the sky tile). Forcing every face to light bank 0 only
+changed *which* palette entries the stale texels mapped to, not the
+presence of the skew -- which matches the observed behavior (aberration
+changed color but did not go away).
+
+Fix: instantiate `texture_mem` as an explicit `altsyncram` ROM via a new
+`voxel_texture_rom` module, pinning the configuration to:
+
+  * `operation_mode = "ROM"`
+  * `address_reg_a = CLOCK0` (implicit for port A on M10K)
+  * `outdata_reg_a = "UNREGISTERED"`
+  * `init_file = "textures.hex"`
+  * `ram_block_type = "M10K"`
+
+That gives a guaranteed 1-cycle latency: `pipe2_tex_addr` drives the
+combinational address, the address is flopped once inside the M10K at the
+clock edge, and the data appears combinationally on `rd_data` (= `tex_rd_data`)
+on the following cycle. `tex_rd_data` is now a `wire`, not a reg, and the
+`always_ff tex_rd_data <= texture_mem[...]` line has been removed along
+with `$readmemh("textures.hex", texture_mem)` (the altsyncram loads the
+atlas via `init_file`).
+
+This change does *not* introduce a new pipeline stage, so
+`DRAW_FLUSH_CYCLES` and the `pal_rd` / `plr` counts are unchanged. It only
+removes Quartus's freedom to pick 2-cycle latency for the texture fetch.
+
+Debug handle (software-side)
+----------------------------
+A `DEBUG_FLAT_COLOR` compile-time switch was added to `sw/renderer.c`. Build
+with `-DDEBUG_FLAT_COLOR` (optionally `-DDEBUG_FLAT_COLOR_INDEX=<n>`, default
+24) to force every emitted quad to render flat with `QUAD_FLAG_TEX` cleared
+and `tex_or_color = <n>`. This bypasses the texture ROM + UV interpolation
++ light-bank path entirely, so:
+
+  * If edges look clean in `DEBUG_FLAT_COLOR` mode, any remaining
+    aberration is in the texture sampling path.
+  * If edges still fringe in `DEBUG_FLAT_COLOR` mode, the problem is
+    downstream (palette, fog, framebuffer RMW, or VGA scanout).
+
+Useful for narrowing future regressions without rebuilding the RBF.
+
+Verification (next reflash):
+  1. Colored edges on stone/dirt/grass should be gone with the texture ROM
+     fix. Primary success criterion.
+  2. Optional: `grep palette output_files/*.fit.rpt` and
+     `grep texture_rom output_files/*.fit.rpt` to confirm the memory
+     types Quartus picked. (texture_rom will now show as an altsyncram
+     M10K instance, not an inferred array.)
+  3. Optional: rebuild game with `-DDEBUG_FLAT_COLOR` and verify the whole
+     world renders as a uniform color with no fringing at block borders.

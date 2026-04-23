@@ -975,7 +975,20 @@ module voxel_gpu (
         .DATA_W(8),
         .ADDR_W(14),
         .DEPTH(TEXTURE_BYTES),
-        .INIT_FILE("textures.hex")
+        /*
+         * Quartus's altsyncram init_file must be a .mif or an
+         * Intel-format .hex (record-based, with checksums). Our
+         * textures.hex is Verilog $readmemh-style (plain bytes, one
+         * per line) so Quartus rejects it with
+         *     Error (127000): Can't read Memory Initialization File
+         *     or Hexadecimal (Intel-Format) File textures.hex ...
+         * generate_textures.py now emits a sidecar textures.mif with
+         * the same atlas contents for the synthesis path. The
+         * $readmemh textures.hex path is still used by the Verilator
+         * model and the Python virtual hardware, so the hex file
+         * stays in the tree.
+         */
+        .INIT_FILE("textures.mif")
     ) texture_rom (
         .clk     (clk),
         .rd_addr (pipe2_tex_addr),

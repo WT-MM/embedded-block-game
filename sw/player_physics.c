@@ -1,12 +1,6 @@
 #include "player_physics.h"
 #include <math.h>
 
-static float clamp(float val, float min, float max) {
-    if (val < min) return min;
-    if (val > max) return max;
-    return val;
-}
-
 static float approach(float current, float target, float delta) {
     if (current < target) {
         return (current + delta > target) ? target : current + delta;

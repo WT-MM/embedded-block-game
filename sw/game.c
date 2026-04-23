@@ -17,6 +17,9 @@
 #define PITCH_LIMIT  1.48f        /* ~85 degrees, avoids gimbal flip */
 #define TARGET_FPS   30
 #define FRAME_NS     (1000000000L / TARGET_FPS)
+#define PHYSICS_HZ   60
+#define PHYSICS_DT   (1.0f / (float)PHYSICS_HZ)
+#define MAX_FRAME_DT 0.25f
 #define PERF_LOG_NS  1000000000L
 #define WORLD_RENDER_DISTANCE_CHUNKS 3
 #define STONE_SEED   0x48403421u
@@ -116,9 +119,11 @@ int main(void)
     struct timespec prev, now, frame_end;
     struct timespec perf_window_start;
     float world_time = 0.0f;
+    float physics_accumulator = 0.0f;
     int perf_frames = 0;
     int perf_quads = 0;
     int perf_sky_quads = 0;
+    int perf_physics_steps = 0;
     double perf_update_ns = 0.0;
     double perf_begin_ns = 0.0;
     double perf_draw_ns = 0.0;
@@ -133,20 +138,22 @@ int main(void)
     while (!inp.quit) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         struct timespec loop_start = now;
-        float dt = (float)ns_diff(&now, &prev) / 1e9f;
-        if (dt > 0.1f) dt = 0.1f;
+        float frame_dt = (float)ns_diff(&now, &prev) / 1e9f;
+        if (frame_dt > MAX_FRAME_DT)
+            frame_dt = MAX_FRAME_DT;
         prev = now;
-        world_time += dt;
+        world_time += frame_dt;
+        physics_accumulator += frame_dt;
 
         input_update(&inp);
 
         /* Look — mouse or arrow keys */
         cam.yaw   += inp.mouse_dx * mouse_sens;
         cam.pitch -= inp.mouse_dy * mouse_sens;
-        if (inp.look_right) cam.yaw   += LOOK_SPEED * dt;
-        if (inp.look_left)  cam.yaw   -= LOOK_SPEED * dt;
-        if (inp.look_down)  cam.pitch += LOOK_SPEED * dt;
-        if (inp.look_up)    cam.pitch -= LOOK_SPEED * dt;
+        if (inp.look_right) cam.yaw   += LOOK_SPEED * frame_dt;
+        if (inp.look_left)  cam.yaw   -= LOOK_SPEED * frame_dt;
+        if (inp.look_down)  cam.pitch += LOOK_SPEED * frame_dt;
+        if (inp.look_up)    cam.pitch -= LOOK_SPEED * frame_dt;
         if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
         if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
         input_clear_mouse(&inp);
@@ -170,8 +177,18 @@ int main(void)
             wish_z /= wish_len;
         }
 
-        /* Update Physics (inp.up = Jump, inp.down = Shift/Crouch) */
-        player_update(&player, &world, wish_x, wish_z, inp.up, inp.down, dt);
+        int physics_steps = 0;
+        bool jump_pressed = false;
+        if (physics_accumulator >= PHYSICS_DT)
+            jump_pressed = input_consume_jump(&inp);
+
+        while (physics_accumulator >= PHYSICS_DT) {
+            player_update(&player, &world, wish_x, wish_z,
+                          jump_pressed, inp.down, PHYSICS_DT);
+            jump_pressed = false;
+            physics_accumulator -= PHYSICS_DT;
+            physics_steps++;
+        }
 
         /* Sync Camera to Player's updated physical position */
         cam.position.x = player.x;
@@ -225,6 +242,7 @@ int main(void)
         perf_frames++;
         perf_quads += quads;
         perf_sky_quads += sky_quads;
+        perf_physics_steps += physics_steps;
         perf_update_ns += update_ns;
         perf_begin_ns += begin_ns;
         perf_draw_ns += draw_ns;
@@ -250,7 +268,7 @@ int main(void)
                     "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
                     "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                     "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
-                    "quads=%5.1f sky=%4.1f\n",
+                    "quads=%5.1f sky=%4.1f phys=%4.1f\n",
                     frame_div / elapsed_s,
                     ns_to_ms((double)perf_elapsed_ns / frame_div),
                     ns_to_ms(perf_work_ns / frame_div),
@@ -261,12 +279,14 @@ int main(void)
                     ns_to_ms(perf_sleep_ns / frame_div),
                     ns_to_ms(perf_max_work_ns),
                     (double)perf_quads / frame_div,
-                    (double)perf_sky_quads / frame_div);
+                    (double)perf_sky_quads / frame_div,
+                    (double)perf_physics_steps / frame_div);
 
             perf_window_start = perf_now;
             perf_frames = 0;
             perf_quads = 0;
             perf_sky_quads = 0;
+            perf_physics_steps = 0;
             perf_update_ns = 0.0;
             perf_begin_ns = 0.0;
             perf_draw_ns = 0.0;

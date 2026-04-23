@@ -27,6 +27,7 @@ typedef struct {
 typedef struct {
     bool forward, back, left, right;
     bool up, down;
+    bool jump_pressed;
     bool look_left, look_right, look_up, look_down;
     bool quit;
 
@@ -43,6 +44,7 @@ typedef struct {
 int  input_init(InputState *inp);
 void input_update(InputState *inp);
 void input_clear_mouse(InputState *inp);
+bool input_consume_jump(InputState *inp);
 void input_shutdown(InputState *inp);
 
 #endif

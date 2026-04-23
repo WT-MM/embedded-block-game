@@ -223,7 +223,11 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             case KEY_S:                      inp->back    = down; break;
             case KEY_A:                      inp->left    = down; break;
             case KEY_D:                      inp->right   = down; break;
-            case KEY_SPACE:                  inp->up      = down; break;
+            case KEY_SPACE:
+                if (ev.value == 1)
+                    inp->jump_pressed = true;
+                inp->up = down;
+                break;
             case KEY_LEFTSHIFT:
             case KEY_RIGHTSHIFT:             inp->down    = down; break;
             case KEY_LEFT:                       inp->look_left  = down; break;
@@ -281,6 +285,13 @@ void input_clear_mouse(InputState *inp)
 {
     inp->mouse_dx = 0.0f;
     inp->mouse_dy = 0.0f;
+}
+
+bool input_consume_jump(InputState *inp)
+{
+    bool pressed = inp->jump_pressed;
+    inp->jump_pressed = false;
+    return pressed;
 }
 
 void input_shutdown(InputState *inp)

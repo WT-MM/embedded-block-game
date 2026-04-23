@@ -136,7 +136,16 @@ module voxel_gpu (
     logic        copy_target_sel;
     logic        copy_complete_pending;
 
-    (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
+    // Palette is read combinationally in the draw pipeline
+    // (draw_pipe_color -> palette[] -> rgb888_to_rgb565 -> fog0_src_rgb565).
+    // M10K blocks on Cyclone V require a synchronous read port, so asking
+    // Quartus to use M10K for a combinational read forces it to either absorb
+    // the downstream fog0_src_rgb565 register (adding 1 hidden cycle of
+    // latency that skews the palette output from the rest of the fog0_*
+    // fields, producing multi-colored fringes at face edges) or fall back to
+    // logic with awkward timing. MLAB (distributed) RAM supports
+    // combinational reads natively and easily holds 256 x 24 bits.
+    (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     (* ramstyle = "M10K" *) logic  [7:0] texture_mem [0:TEXTURE_BYTES-1];
     (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];

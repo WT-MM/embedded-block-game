@@ -1159,6 +1159,67 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
     }
 }
 
+/*
+ * Runtime toggle for merged quad emission with QUAD_TEX_REPEAT_UV. Default OFF
+ * (expand to unit quads) because the hardware repeat path reads value[35:32]
+ * mod-16 in texture_coord(), which stitches the atlas tile against itself at
+ * every 16-texel boundary and paints 1-pixel chromatic fringes on non-seamless
+ * textures. Set BLOCK_GAME_MERGE_FAR_QUADS=1 to re-enable the fused path for
+ * A/B testing (visual diff, perf compare). See PROJECT_NOTES.md.
+ */
+static bool merged_emit_repeat_uv_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("BLOCK_GAME_MERGE_FAR_QUADS");
+        cached = (env && env[0] == '1' && env[1] == '\0') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+static void emit_merged_block_face(RenderContext *ctx, BlockID type,
+                                   Vec3 block_pos, BlockFace face,
+                                   int u_size, int v_size);
+
+static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
+                                             Vec3 block_pos, BlockFace face,
+                                             int u_size, int v_size)
+{
+    /*
+     * u/v axis mapping mirrors face_cell_to_block() in world.c:
+     *   TOP/BOTTOM -> u:x, v:z
+     *   LEFT/RIGHT -> u:z, v:y
+     *   FRONT/BACK -> u:y, v:x
+     */
+    for (int dv = 0; dv < v_size; dv++) {
+        for (int du = 0; du < u_size; du++) {
+            Vec3 unit = block_pos;
+            switch (face) {
+            case FACE_TOP:
+            case FACE_BOTTOM:
+                unit.x += (float)du;
+                unit.z += (float)dv;
+                break;
+            case FACE_LEFT:
+            case FACE_RIGHT:
+                unit.z += (float)du;
+                unit.y += (float)dv;
+                break;
+            case FACE_FRONT:
+            case FACE_BACK:
+                unit.y += (float)du;
+                unit.x += (float)dv;
+                break;
+            default:
+                break;
+            }
+            emit_merged_block_face(ctx, type, unit, face, 1, 1);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                return;
+        }
+    }
+}
+
 static void emit_merged_block_face(RenderContext *ctx, BlockID type,
                                    Vec3 block_pos, BlockFace face,
                                    int u_size, int v_size)
@@ -1174,6 +1235,29 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
         return;
     if (face < 0 || face >= NUM_FACES)
         return;
+
+    /*
+     * Fringe fix: greedy-merged far-chunk quads used to ship one textured quad
+     * per run with QUAD_TEX_REPEAT_UV, which asked the hardware to wrap UVs via
+     * value[35:32] (u mod 16). Atlas tiles are not seamless (texel 0 != texel
+     * 15), so every block boundary inside the merged quad leaked a 1-pixel
+     * seam that re-introduced visible chromatic aberration. Decomposing the
+     * run into u_size * v_size unit faces keeps each quad inside a single
+     * texel range [0..15] where the clamp path in texture_coord() is safe.
+     */
+    if ((u_size > 1 || v_size > 1) && !merged_emit_repeat_uv_enabled()) {
+        /*
+         * Unit emits below re-run is_face_visible() with their own centers,
+         * so we don't pre-cull the anchor here: a merged run can straddle a
+         * face whose center is behind the camera while individual cells are
+         * not, and vice versa. The per-unit check is the same one used in
+         * the non-merged path.
+         */
+        expand_merged_face_to_unit_quads(ctx, type, block_pos, face,
+                                         u_size, v_size);
+        return;
+    }
+
     if (!is_face_visible(block_pos, face_normals[face],
                          ctx->current_camera.position))
         return;

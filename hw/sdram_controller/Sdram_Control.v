@@ -37,7 +37,7 @@ module Sdram_Control(
         );
 
 
-`include        "sdram_local_test/Sdram_Params.h"
+`include        "sdram_controller/Sdram_Params.h"
 //	HOST Side
 input                           REF_CLK;                //System Clock
 input                           RESET_N;                //System Reset
@@ -344,8 +344,8 @@ always@(posedge CLK or negedge RESET_N)
 begin
 	if(!RESET_N)
 	begin
-		rWR_ADDR		<=	WR_ADDR;
-		rRD_ADDR		<=	RD_ADDR;
+		rWR_ADDR		<=	0;
+		rRD_ADDR		<=	0;
 	end
 	else
 	begin

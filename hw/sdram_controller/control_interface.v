@@ -18,7 +18,7 @@ module control_interface(
         CMD_ACK
         );
 
-`include        "sdram_local_test/Sdram_Params.h" 
+`include        "sdram_controller/Sdram_Params.h" 
 
 input                           CLK;                    // System Clock
 input                           RESET_N;                // System Reset

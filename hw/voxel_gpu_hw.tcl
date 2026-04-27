@@ -44,14 +44,14 @@ set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
 add_fileset_file voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu.sv TOP_LEVEL_FILE
 add_fileset_file textures.mif MIF PATH textures.mif
 add_fileset_file recip_lut.hex HEX PATH recip_lut.hex
-add_fileset_file sdram_local_test/Sdram_Control.v VERILOG PATH sdram_local_test/Sdram_Control.v
-add_fileset_file sdram_local_test/control_interface.v VERILOG PATH sdram_local_test/control_interface.v
-add_fileset_file sdram_local_test/command.v VERILOG PATH sdram_local_test/command.v
-add_fileset_file sdram_local_test/sdr_data_path.v VERILOG PATH sdram_local_test/sdr_data_path.v
-add_fileset_file sdram_local_test/Sdram_RD_FIFO.v VERILOG PATH sdram_local_test/Sdram_RD_FIFO.v
-add_fileset_file sdram_local_test/Sdram_WR_FIFO.v VERILOG PATH sdram_local_test/Sdram_WR_FIFO.v
-add_fileset_file sdram_local_test/sdram_pll0.v VERILOG PATH sdram_local_test/sdram_pll0.v
-add_fileset_file sdram_local_test/sdram_pll0/sdram_pll0_0002.v VERILOG PATH sdram_local_test/sdram_pll0/sdram_pll0_0002.v
+add_fileset_file sdram_controller/Sdram_Control.v VERILOG PATH sdram_controller/Sdram_Control.v
+add_fileset_file sdram_controller/control_interface.v VERILOG PATH sdram_controller/control_interface.v
+add_fileset_file sdram_controller/command.v VERILOG PATH sdram_controller/command.v
+add_fileset_file sdram_controller/sdr_data_path.v VERILOG PATH sdram_controller/sdr_data_path.v
+add_fileset_file sdram_controller/Sdram_RD_FIFO.v VERILOG PATH sdram_controller/Sdram_RD_FIFO.v
+add_fileset_file sdram_controller/Sdram_WR_FIFO.v VERILOG PATH sdram_controller/Sdram_WR_FIFO.v
+add_fileset_file sdram_controller/sdram_pll0.v VERILOG PATH sdram_controller/sdram_pll0.v
+add_fileset_file sdram_controller/sdram_pll0/sdram_pll0_0002.v VERILOG PATH sdram_controller/sdram_pll0/sdram_pll0_0002.v
 
 
 # 

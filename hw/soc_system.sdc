@@ -153,16 +153,27 @@ set_output_delay -clock sdram_clk_ext -min -0.9 $_sdram_outputs
 #   * The sdram_ctrl_reset_n release, which is a static, multi-millisecond
 #     sample that does not need to be timed.
 #
-# Declaring them async lets Quartus route freely across the crossing without
-# fabricating false setup/hold failures on the gray pointer paths.
+# Declaring them async prevents Quartus from fabricating setup/hold failures
+# on the gray pointer paths.  Keep both the internal 100 MHz controller clock
+# and the generated external DRAM_CLK in this group; the FIFO crossings are
+# between clock_50_1 and the internal PLL output, while the I/O constraints
+# above are relative to sdram_clk_ext.
 #
 # clock_50_2/3/4 and clock_27_1 are not connected to the voxel_gpu SDRAM logic
 # in this build, but we include them so any future use remains async-safe by
 # default.
 #
-set_clock_groups -asynchronous \
-    -group [get_clocks { clock_50_1 clock_50_2 clock_50_3 clock_50_4 clock_27_1 }] \
-    -group [get_clocks -include_generated_clocks [get_clocks sdram_clk_ext]]
+set _fabric_clocks [get_clocks {clock_50_1 clock_50_2 clock_50_3 clock_50_4 clock_27_1}]
+set _sdram_clocks  [get_clocks -nowarn {sdram_clk_ext *sdram_pll0*}]
+
+if {[llength $_sdram_clocks] > 0} {
+    set_clock_groups -asynchronous \
+        -group $_fabric_clocks \
+        -group $_sdram_clocks
+} else {
+    post_message -type warning \
+        "soc_system.sdc: no SDRAM PLL clocks found for async CDC cut; check TimeQuest report_clocks output."
+}
 
 # Also cut any residual paths that might be inferred between the two SDRAM
 # PLL output domains (outclk_0 is source of outclk_1 at the IP boundary,

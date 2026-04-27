@@ -501,15 +501,13 @@ I/O timing constraints** for the external SDRAM pins:
   * no virtual clock on `DRAM_CLK` so source-synchronous timing could be
     analyzed at all.
 
-With no constraints, the Quartus fitter is free to place the register that
-drives any given SDRAM pin in whatever cell happens to produce the best
-overall Fmax / resource balance — *not* the cell that is closest to the IOB.
-Because the timing relationship between the Cyclone V fabric register and
-the SDRAM pin was never specified, re-synthesis could legitimately move the
-write-data register onto a route whose pad-to-pin delay consumed enough of
-the 10 ns SDRAM cycle that tIS/tIH (1.5 ns / 0.8 ns at CAS2) was violated.
-Similarly, the read path (pad → register) could land on a route whose
-tAC+routing pushed the DQ data arrival past the 100 MHz setup window.
+With no constraints, the Quartus fitter is free to route the SDRAM-facing
+registers according to its overall Fmax / resource balance instead of the
+external memory's setup/hold window. Because the timing relationship between
+the Cyclone V fabric register and the SDRAM pin was never specified,
+re-synthesis could legitimately choose a route whose pad-to-register or
+register-to-pad delay consumed enough of the 10 ns SDRAM cycle that tIS/tIH
+(1.5 ns / 0.8 ns at CAS2) or tAC setup margin was violated.
 
 The result: occasional bit errors on the SDRAM data bus. Because the SDRAM
 now holds the scanout framebuffer (back buffer → SDRAM copy → line-buffer
@@ -536,24 +534,18 @@ Fix
 2. **`hw/soc_system.sdc` — mark CDC paths asynchronous.** The 50 MHz ↔
    SDRAM PLL crossings go through `Sdram_WR_FIFO` / `Sdram_RD_FIFO`, which
    are Altera `dcfifo` macros with `wrsync_delaypipe = rdsync_delaypipe = 4`.
-   Those synchronizers must not be timed by STA. We add:
+   Those synchronizers must not be timed by STA. We add an asynchronous
+   clock group between the board clocks and both SDRAM clock domains:
 
        set_clock_groups -asynchronous \
            -group { clock_50_1 .. clock_27_1 } \
-           -group [get_clocks -include_generated_clocks [get_clocks sdram_clk_ext]]
+           -group { sdram_clk_ext *sdram_pll0* }
 
-3. **`hw/soc_system.qsf` — pack SDRAM I/O registers into IOBs.** Without
-   an explicit `FAST_*_REGISTER` directive, Quartus is free to leave the
-   last register in core fabric, which adds 1–2 ns of unpredictable
-   routing delay on top of the constraints above. We add:
-
-       set_instance_assignment -name FAST_OUTPUT_REGISTER ON         -to DRAM_ADDR[*] / DRAM_BA[*] / DRAM_[CAS|RAS|WE|CS|CKE]_N / DRAM_[LU]DQM / DRAM_DQ[*]
-       set_instance_assignment -name FAST_INPUT_REGISTER ON          -to DRAM_DQ[*]
-       set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON  -to DRAM_DQ[*]
-
-   This guarantees that every SDRAM-facing register is placed inside the
-   IOB of its corresponding pin, giving the fitter almost no freedom to
-   add unexpected routing delay.
+   An earlier attempt also forced `FAST_*_REGISTER` assignments onto every
+   `DRAM_*` pin. That made the fitter fail on this Cyclone V/HPS design, so
+   those QSF assignments were removed. The SDC constraints are the important
+   fix: they make Quartus optimize and report the SDRAM I/O paths directly
+   instead of silently ignoring them.
 
 RTL
 ---
@@ -567,16 +559,15 @@ audit of `voxel_gpu.sv` confirmed that:
     `ST_CLEAR`, so it cannot race a `palette[pal_addr] <= writedata` from
     the Avalon slave;
   * all SDRAM data/command outputs in `Sdram_Control.v` are already driven
-    from registers clocked by the 100 MHz SDRAM CLK, so `FAST_OUTPUT_REGISTER`
-    can legally pack them into the IOBs.
+    from registers clocked by the 100 MHz SDRAM CLK, so the fitter has clean
+    endpoints for the SDC paths.
 
 The only RTL-side cosmetic wart remaining is `assign DRAM_CS_N =
-dram_cs_n_bus[0]` in `voxel_gpu.sv`: the bit-select is a comb step between
-the `Sdram_Control` `CS_N[1:0]` register and the pin. Quartus usually
-resolves the unused `[1]` bit during synthesis and still packs `[0]` into
-the IOB with `FAST_OUTPUT_REGISTER ON`. If the timing report ever shows
-`DRAM_CS_N` missing its constraint, introduce a single-bit register inside
-the 100 MHz domain and drive the pin directly from that register.
+dram_cs_n_bus[0]` in `voxel_gpu.sv`: the bit-select is a tiny comb step
+between the `Sdram_Control` `CS_N[1:0]` register and the pin. Quartus usually
+resolves the unused `[1]` bit during synthesis. If the timing report ever
+shows `DRAM_CS_N` missing its constraint, introduce a single-bit register
+inside the 100 MHz domain and drive the pin directly from that register.
 
 Validation Plan (when FPGA access is restored)
 ----------------------------------------------
@@ -602,5 +593,5 @@ but actually silent — a path with no constraint is not considered during
 optimization, it just rides on whatever margin the fitter happens to leave.
 The artifact therefore manifests as a bitstream-dependent intermittent
 failure that *looks* like an RTL bug. For any new external-memory or
-source-synchronous interface, add the I/O delay pair and the IOB packing
-attributes at the same time the IP is merged.
+source-synchronous interface, add the I/O delay pair at the same time the IP
+is merged.

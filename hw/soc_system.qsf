@@ -155,30 +155,6 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_UDQM
 set_location_assignment PIN_AA13 -to DRAM_WE_N
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_WE_N
 
-# ---------------------------------------------------------------------------
-# SDRAM I/O register packing
-# ---------------------------------------------------------------------------
-# Force Quartus to place the last/first register of every SDRAM pin into the
-# IOB.  Without this, re-synthesis can leave the output flip-flop in core
-# fabric, adding ~1-2 ns of routing delay between the register and the pad
-# which blows the tight tIS/tIH and tAC/tOH windows at 100 MHz.  That is the
-# leading explanation for the "chromatic aberration + left-edge zipper"
-# artifacts that appeared in RBF 3b2b01d but not in RBF 258a42d despite
-# nearly identical RTL.
-# ---------------------------------------------------------------------------
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[*]
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_BA[*]
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CAS_N
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CKE
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CS_N
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_LDQM
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_RAS_N
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_UDQM
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_WE_N
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[*]
-set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[*]
-set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[*]
-
 set_location_assignment PIN_AA12 -to FAN_CTRL
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to FAN_CTRL
 set_location_assignment PIN_J12 -to FPGA_I2C_SCLK

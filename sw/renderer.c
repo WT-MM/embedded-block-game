@@ -2041,22 +2041,6 @@ static SkyPalette make_sky_palette(Vec3 sun_dir)
 
 static void upload_sky_palette(RenderContext *ctx, const SkyPalette *palette)
 {
-    /*
-     * Diagnostic: BLOCK_GAME_MAGENTA_CLEAR=1 pins the background (clear color
-     * + sky zenith) to hot magenta so rasterizer coverage holes become
-     * visually unmistakable vs. any downstream hardware glitches.
-     */
-    static int magenta_clear_cached = -1;
-    if (magenta_clear_cached < 0) {
-        const char *env = getenv("BLOCK_GAME_MAGENTA_CLEAR");
-        magenta_clear_cached = (env && env[0] && env[0] != '0') ? 1 : 0;
-    }
-    if (magenta_clear_cached) {
-        RGB24 magenta = { 0xFF, 0x00, 0xFF };
-        renderer_set_palette_rgb(ctx, 0, magenta);
-        return;
-    }
-
     renderer_set_palette_rgb(ctx, 0, palette->zenith);
     renderer_set_palette_rgb(ctx, PAL_SKY_HIGH, palette->high);
     renderer_set_palette_rgb(ctx, PAL_SKY_MID, palette->mid);

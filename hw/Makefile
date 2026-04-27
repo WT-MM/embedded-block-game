@@ -127,9 +127,9 @@ qsys : $(QSYS_STAMP)
 
 QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.mif recip_lut.hex \
 	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
-	$(wildcard sdram_controller/*.v) \
-	$(wildcard sdram_controller/*.h) \
-	$(wildcard sdram_controller/sdram_pll0/*.v)
+	$(wildcard sdram_local_test/*.v) \
+	$(wildcard sdram_local_test/*.h) \
+	$(wildcard sdram_local_test/sdram_pll0/*.v)
 TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv
 
 $(QSYS_STAMP) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
@@ -155,7 +155,7 @@ qsys19 : qsys
 .PHONY : quartus
 quartus : $(SOF)
 
-$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES) $(QSF) $(SDC)
+$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
 

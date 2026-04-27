@@ -17,6 +17,14 @@
          type = "int";
       }
    }
+   element fpga_sdram
+   {
+      datum _sortIndex
+      {
+         value = "3";
+         type = "int";
+      }
+   }
    element hps_0
    {
       datum _sortIndex
@@ -63,6 +71,11 @@
  <parameter name="useTestBenchNamingPattern" value="false" />
  <instanceScript></instanceScript>
  <interface name="clk" internal="clk_0.clk_in" type="clock" dir="end" />
+ <interface
+   name="fpga_sdram_wire"
+   internal="fpga_sdram.wire"
+   type="conduit"
+   dir="end" />
  <interface name="hps" internal="hps_0.hps_io" type="conduit" dir="end" />
  <interface name="hps_ddr3" internal="hps_0.memory" type="conduit" dir="end" />
  <interface name="reset" internal="clk_0.clk_in_reset" type="reset" dir="end" />
@@ -82,6 +95,35 @@
   <parameter name="clockFrequencyKnown" value="true" />
   <parameter name="inputClockFrequency" value="0" />
   <parameter name="resetSynchronousEdges" value="NONE" />
+ </module>
+ <module
+   name="fpga_sdram"
+   kind="altera_avalon_new_sdram_controller"
+   version="19.1"
+   enabled="1">
+  <parameter name="TAC" value="5.4" />
+  <parameter name="TMRD" value="3" />
+  <parameter name="TRCD" value="15.0" />
+  <parameter name="TRFC" value="70.0" />
+  <parameter name="TRP" value="15.0" />
+  <parameter name="TWR" value="14.0" />
+  <parameter name="casLatency" value="3" />
+  <parameter name="clockRate" value="50000000" />
+  <parameter name="columnWidth" value="10" />
+  <parameter name="componentName">$${FILENAME}_fpga_sdram</parameter>
+  <parameter name="dataWidth" value="16" />
+  <parameter name="generateSimulationModel" value="false" />
+  <parameter name="initNOPDelay" value="0.0" />
+  <parameter name="initRefreshCommands" value="2" />
+  <parameter name="masteredTristateBridgeSlave" value="0" />
+  <parameter name="model">single_Micron_MT48LC4M32B2_7_chip</parameter>
+  <parameter name="numberOfBanks" value="4" />
+  <parameter name="numberOfChipSelects" value="1" />
+  <parameter name="pinsSharedViaTriState" value="false" />
+  <parameter name="powerUpDelay" value="100.0" />
+  <parameter name="refreshPeriod" value="7.8125" />
+  <parameter name="registerDataIn" value="true" />
+  <parameter name="rowWidth" value="13" />
  </module>
  <module name="hps_0" kind="altera_hps" version="19.1" enabled="1">
   <parameter name="ABSTRACT_REAL_COMPARE_TEST" value="false" />
@@ -633,6 +675,15 @@
  <connection
    kind="avalon"
    version="19.1"
+   start="hps_0.h2f_axi_master"
+   end="fpga_sdram.s1">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0000" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="19.1"
    start="hps_0.h2f_lw_axi_master"
    end="voxel_gpu_0.avalon_slave_0">
   <parameter name="arbitrationPriority" value="1" />
@@ -644,6 +695,11 @@
    version="19.1"
    start="clk_0.clk"
    end="sdram_clocks.ref_clk" />
+ <connection
+   kind="clock"
+   version="19.1"
+   start="sdram_clocks.sys_clk"
+   end="fpga_sdram.clk" />
  <connection
    kind="clock"
    version="19.1"
@@ -669,6 +725,11 @@
    version="19.1"
    start="clk_0.clk_reset"
    end="sdram_clocks.ref_reset" />
+ <connection
+   kind="reset"
+   version="19.1"
+   start="sdram_clocks.reset_source"
+   end="fpga_sdram.reset" />
  <connection
    kind="reset"
    version="19.1"

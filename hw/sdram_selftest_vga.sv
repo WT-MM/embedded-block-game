@@ -621,12 +621,12 @@ module sdram_test_vga_timing (
 
 endmodule
 
-`include "sdram_controller/Sdram_Control.v"
-`include "sdram_controller/control_interface.v"
-`include "sdram_controller/command.v"
-`include "sdram_controller/sdr_data_path.v"
-`include "sdram_controller/Sdram_RD_FIFO.v"
-`include "sdram_controller/Sdram_WR_FIFO.v"
-`include "sdram_controller/sdram_pll0.v"
-`include "sdram_controller/sdram_pll0/sdram_pll0_0002.v"
+`include "sdram_local_test/Sdram_Control.v"
+`include "sdram_local_test/control_interface.v"
+`include "sdram_local_test/command.v"
+`include "sdram_local_test/sdr_data_path.v"
+`include "sdram_local_test/Sdram_RD_FIFO.v"
+`include "sdram_local_test/Sdram_WR_FIFO.v"
+`include "sdram_local_test/sdram_pll0.v"
+`include "sdram_local_test/sdram_pll0/sdram_pll0_0002.v"
 `include "sdram_local_test/RW_Test.v"

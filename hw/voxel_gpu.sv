@@ -817,10 +817,10 @@ module voxel_gpu (
     function automatic [3:0] texture_coord(input logic signed [63:0] value,
                                            input logic repeat_uv);
         begin
-            if (value <= 64'sd0)
-                texture_coord = 4'd0;
-            else if (repeat_uv)
+            if (repeat_uv)
                 texture_coord = value[35:32];
+            else if (value <= 64'sd0)
+                texture_coord = 4'd0;
             else if (value >= 64'sh0000_0010_0000_0000)
                 texture_coord = 4'd15;
             else

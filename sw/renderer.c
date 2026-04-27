@@ -1160,19 +1160,17 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
 }
 
 /*
- * Runtime toggle for merged quad emission with QUAD_TEX_REPEAT_UV. Default OFF
- * (expand to unit quads) because the hardware repeat path reads value[35:32]
- * mod-16 in texture_coord(), which stitches the atlas tile against itself at
- * every 16-texel boundary and paints 1-pixel chromatic fringes on non-seamless
- * textures. Set BLOCK_GAME_MERGE_FAR_QUADS=1 to re-enable the fused path for
- * A/B testing (visual diff, perf compare). See PROJECT_NOTES.md.
+ * Runtime toggle for merged quad emission with QUAD_TEX_REPEAT_UV. Default ON:
+ * far chunks were greedily meshed specifically to keep the descriptor stream
+ * small enough for steady input/frame pacing. Set BLOCK_GAME_MERGE_FAR_QUADS=0
+ * to fall back to unit-quad expansion for visual A/B testing.
  */
 static bool merged_emit_repeat_uv_enabled(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *env = getenv("BLOCK_GAME_MERGE_FAR_QUADS");
-        cached = (env && env[0] == '1' && env[1] == '\0') ? 1 : 0;
+        cached = !(env && env[0] == '0' && env[1] == '\0');
     }
     return cached != 0;
 }
@@ -1237,13 +1235,9 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
         return;
 
     /*
-     * Fringe fix: greedy-merged far-chunk quads used to ship one textured quad
-     * per run with QUAD_TEX_REPEAT_UV, which asked the hardware to wrap UVs via
-     * value[35:32] (u mod 16). Atlas tiles are not seamless (texel 0 != texel
-     * 15), so every block boundary inside the merged quad leaked a 1-pixel
-     * seam that re-introduced visible chromatic aberration. Decomposing the
-     * run into u_size * v_size unit faces keeps each quad inside a single
-     * texel range [0..15] where the clamp path in texture_coord() is safe.
+     * A/B fallback: decomposing a merged run avoids QUAD_TEX_REPEAT_UV entirely,
+     * but it is intentionally not the default because it can multiply the far
+     * terrain descriptor count and make input pacing noticeably worse.
      */
     if ((u_size > 1 || v_size > 1) && !merged_emit_repeat_uv_enabled()) {
         /*

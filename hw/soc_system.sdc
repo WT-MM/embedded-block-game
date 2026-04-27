@@ -73,53 +73,13 @@ derive_clock_uncertainty
 #     set_input_delay  -max 5.9  -min 3.0    (tAC+trace, tOH+trace)
 #     set_output_delay -max 1.6  -min -0.9   (tIS+trace, -(tIH+trace))
 #
-# The reference clock is the PLL's outclk_1 (the edge the SDRAM chip itself
-# sees after the -3 ns phase shift and board delay are accounted for).
-
-# Locate the PLL counter pin that drives DRAM_CLK.  The pin name in Quartus
-# 21.x for an Altera PLL output is of the form
-#
-#     <pll_hierarchy>|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk
-#
-# The square brackets are literal characters in the pin name, but Quartus's
-# collection filter interprets `[...]` as a TCL glob char class, so we escape
-# them with backslashes.  A short list of fallbacks covers the hierarchy
-# variations we have observed across Quartus/Qsys versions.
-set _sdram_pll_candidates [list \
-    {*|sdram_pll0_inst|sdram_pll0_inst|altera_pll_i|general\[1\].gpll~PLL_OUTPUT_COUNTER|divclk} \
-    {*|sdram_pll0|sdram_pll0_inst|altera_pll_i|general\[1\].gpll~PLL_OUTPUT_COUNTER|divclk} \
-    {*|sdram_pll0_inst|sdram_pll0_inst|*|general*gpll*1*divclk} \
-    {*|sdram_pll0_inst|*|altera_pll_i|*|divclk} \
-    {*|sdram_pll0*|*|altera_pll_i|*|divclk} \
-]
-
-set _sdram_outclk1_pin {}
-foreach _pat $_sdram_pll_candidates {
-    set _hits [get_pins -nowarn -compatibility_mode $_pat]
-    if {[llength $_hits] > 0} {
-        set _sdram_outclk1_pin $_hits
-        break
-    }
-}
-
-if {[llength $_sdram_outclk1_pin] > 0} {
-    # Mirror outclk_1 onto the DRAM_CLK pin so that I/O delays are
-    # source-synchronous to what the SDRAM physically sees.  -source accepts
-    # a single pin, so take the first hit.
-    create_generated_clock -name sdram_clk_ext \
-        -source [lindex $_sdram_outclk1_pin 0] \
-        [get_ports DRAM_CLK]
-} else {
-    # Fall back to a virtual free-running 100 MHz clock at the DRAM_CLK pin.
-    # This is less accurate (misses the PLL's -3 ns phase shift) but still
-    # closes the I/O loop.  If you hit this branch, run
-    #     report_clocks
-    # in TimeQuest and update the wildcard list above with the actual
-    # PLL hierarchy so the phase shift is preserved.
-    create_clock -name sdram_clk_ext -period 10.000 [get_ports DRAM_CLK]
-    post_message -type warning \
-        "soc_system.sdc: SDRAM PLL outclk_1 pin not found; using virtual 100 MHz clock on DRAM_CLK. Update _sdram_pll_candidates patterns."
-}
+# Use a virtual external clock for SDRAM I/O timing.  Binding a generated
+# clock directly to the DRAM_CLK output port via the internal PLL hierarchy
+# made Quartus 21.1's synthesis timing estimator crash during quartus_map on
+# the lab machines.  A virtual clock still constrains the SDRAM data/command
+# I/O windows without making Analysis & Synthesis depend on fragile generated
+# PLL pin names.
+create_clock -name sdram_clk_ext -period 10.000
 
 set _sdram_inputs  [get_ports {DRAM_DQ[*]}]
 set _sdram_outputs [get_ports { \
@@ -174,11 +134,3 @@ if {[llength $_sdram_clocks] > 0} {
     post_message -type warning \
         "soc_system.sdc: no SDRAM PLL clocks found for async CDC cut; check TimeQuest report_clocks output."
 }
-
-# Also cut any residual paths that might be inferred between the two SDRAM
-# PLL output domains (outclk_0 is source of outclk_1 at the IP boundary,
-# but DRAM I/O is the only coupling we care about and it is already covered
-# by the set_output_delay/set_input_delay constraints above).  This is
-# defensive; remove if it reports unused.
-set_false_path -from [get_clocks {clock_50_1 clock_50_2 clock_50_3 clock_50_4}] \
-               -to   [get_ports DRAM_CLK]

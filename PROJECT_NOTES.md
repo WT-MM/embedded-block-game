@@ -467,3 +467,140 @@ color with the same pattern means the issue is in the rasterizer or a later
 pipeline stage, not in the sampler. With `DEBUG_FLAT_COLOR` off, the presence
 or absence of the fringe while toggling `BLOCK_GAME_MERGE_FAR_QUADS` isolates
 whether merging is back in the critical path.
+
+
+April 2026: Chromatic Aberration + Left-Edge Zipper — SDRAM Timing Closure
+--------------------------------------------------------------------------
+
+Summary
+-------
+After the SDRAM merge, a new visual regression appeared on FPGA only:
+
+  * chromatic aberration / color fringing that was stable across frames, on
+    both textured and `DEBUG_FLAT_COLOR` runs, and unaffected by disabling
+    the sky palette updates (`VOXEL_DISABLE_SKY=1`);
+  * a 1–2 pixel wide "zippered" pattern along the left screen edge where
+    black pixels intermittently replaced scanline content by one pixel.
+
+Crucially, the artifact **did not appear in virtualhw** and the virtualhw
+rasterizer's edge math is bit-identical to the RTL, so a coverage-hole bug
+in the rasterizer was ruled out. The artifact came and went across builds of
+nearly identical RTL; blob-diffing the RBFs showed the "clean" build
+(`258a42d`) and the "dirty" build (`3b2b01d`) differed substantially even
+though only a handful of lines of RTL had changed between them.
+
+Root Cause
+----------
+The project's SDC file (`hw/soc_system.sdc`) only declared the base 50 MHz
+and 27 MHz board clocks and called `derive_pll_clocks`. It contained **zero
+I/O timing constraints** for the external SDRAM pins:
+
+  * no `set_input_delay` for `DRAM_DQ` reads,
+  * no `set_output_delay` for `DRAM_ADDR`/`DRAM_DQ`/command pins,
+  * no clock-group declaration for the 50 MHz ↔ 100 MHz dcfifo crossings,
+  * no virtual clock on `DRAM_CLK` so source-synchronous timing could be
+    analyzed at all.
+
+With no constraints, the Quartus fitter is free to place the register that
+drives any given SDRAM pin in whatever cell happens to produce the best
+overall Fmax / resource balance — *not* the cell that is closest to the IOB.
+Because the timing relationship between the Cyclone V fabric register and
+the SDRAM pin was never specified, re-synthesis could legitimately move the
+write-data register onto a route whose pad-to-pin delay consumed enough of
+the 10 ns SDRAM cycle that tIS/tIH (1.5 ns / 0.8 ns at CAS2) was violated.
+Similarly, the read path (pad → register) could land on a route whose
+tAC+routing pushed the DQ data arrival past the 100 MHz setup window.
+
+The result: occasional bit errors on the SDRAM data bus. Because the SDRAM
+now holds the scanout framebuffer (back buffer → SDRAM copy → line-buffer
+fill → VGA scanout), a single corrupted bit in a read-back 16-bit RGB565
+word shifts the color channel, producing the "chromatic aberration" look.
+The left-edge zipper is the same mechanism on the burst-start boundary of
+each scanline fill — the first words of a burst are statistically the most
+exposed because they coincide with the SDRAM controller switching modes.
+
+Fix
+---
+1. **`hw/soc_system.sdc` — add source-synchronous SDRAM I/O timing.** We
+   now locate the PLL counter that drives `DRAM_CLK` via a fallback ladder
+   of Altera-PLL hierarchy patterns, declare a generated clock
+   `sdram_clk_ext` on the `DRAM_CLK` pin, and set:
+
+       set_input_delay  -clock sdram_clk_ext -max 5.9 -min 3.0 DRAM_DQ[*]
+       set_output_delay -clock sdram_clk_ext -max 1.6 -min -0.9 <all cmd+data pins>
+
+   These values come from the ISSI IS42S16320D-7TL datasheet plus a 0.5 ns
+   board-trace allowance for the DE1-SoC SDRAM lanes. They are the numbers
+   the Terasic reference designs use and are known to close timing.
+
+2. **`hw/soc_system.sdc` — mark CDC paths asynchronous.** The 50 MHz ↔
+   SDRAM PLL crossings go through `Sdram_WR_FIFO` / `Sdram_RD_FIFO`, which
+   are Altera `dcfifo` macros with `wrsync_delaypipe = rdsync_delaypipe = 4`.
+   Those synchronizers must not be timed by STA. We add:
+
+       set_clock_groups -asynchronous \
+           -group { clock_50_1 .. clock_27_1 } \
+           -group [get_clocks -include_generated_clocks [get_clocks sdram_clk_ext]]
+
+3. **`hw/soc_system.qsf` — pack SDRAM I/O registers into IOBs.** Without
+   an explicit `FAST_*_REGISTER` directive, Quartus is free to leave the
+   last register in core fabric, which adds 1–2 ns of unpredictable
+   routing delay on top of the constraints above. We add:
+
+       set_instance_assignment -name FAST_OUTPUT_REGISTER ON         -to DRAM_ADDR[*] / DRAM_BA[*] / DRAM_[CAS|RAS|WE|CS|CKE]_N / DRAM_[LU]DQM / DRAM_DQ[*]
+       set_instance_assignment -name FAST_INPUT_REGISTER ON          -to DRAM_DQ[*]
+       set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON  -to DRAM_DQ[*]
+
+   This guarantees that every SDRAM-facing register is placed inside the
+   IOB of its corresponding pin, giving the fitter almost no freedom to
+   add unexpected routing delay.
+
+RTL
+---
+The SystemVerilog and the `Sdram_Control.v` IP were **not** modified. An
+audit of `voxel_gpu.sv` confirmed that:
+
+  * the scan line buffers (`scan_linebuf0/1`) are banked so that the fill
+    path and the scanout path never address the same physical MLAB in the
+    same cycle, so `ramstyle = "MLAB, no_rw_check"` is safe;
+  * the palette's combinational read (`clear_rgb565`) only fires during
+    `ST_CLEAR`, so it cannot race a `palette[pal_addr] <= writedata` from
+    the Avalon slave;
+  * all SDRAM data/command outputs in `Sdram_Control.v` are already driven
+    from registers clocked by the 100 MHz SDRAM CLK, so `FAST_OUTPUT_REGISTER`
+    can legally pack them into the IOBs.
+
+The only RTL-side cosmetic wart remaining is `assign DRAM_CS_N =
+dram_cs_n_bus[0]` in `voxel_gpu.sv`: the bit-select is a comb step between
+the `Sdram_Control` `CS_N[1:0]` register and the pin. Quartus usually
+resolves the unused `[1]` bit during synthesis and still packs `[0]` into
+the IOB with `FAST_OUTPUT_REGISTER ON`. If the timing report ever shows
+`DRAM_CS_N` missing its constraint, introduce a single-bit register inside
+the 100 MHz domain and drive the pin directly from that register.
+
+Validation Plan (when FPGA access is restored)
+----------------------------------------------
+1. Rebuild the RBF. The compile report should now show constrained paths
+   on every `DRAM_*` pin. Expect worst-case setup slack > 0.5 ns at 100 MHz.
+   If any `DRAM_*` path is still unconstrained, the PLL hierarchy pattern
+   in `soc_system.sdc` needs to be updated for this Quartus version —
+   inspect `report_clocks` in TimeQuest and adjust `_sdram_pll_candidates`.
+2. Flash and run the game. The chromatic aberration and left-edge zipper
+   should be gone. If only one of the two symptoms clears, treat the
+   remaining one as a separate bug and retrace.
+3. If artifacts return after a re-synthesis in the future, first check the
+   TimeQuest SDC summary for any regressed path on the SDRAM pins before
+   looking at RTL changes — repeating this class of fix is far cheaper
+   than debugging intermittent pixel glitches on hardware.
+
+Engineering Takeaway
+--------------------
+External synchronous memories need SDC constraints. `derive_pll_clocks`
+is not enough; Quartus's defaults in the absence of `set_input_delay` /
+`set_output_delay` are friendly-looking ("no timing failure reported")
+but actually silent — a path with no constraint is not considered during
+optimization, it just rides on whatever margin the fitter happens to leave.
+The artifact therefore manifests as a bitstream-dependent intermittent
+failure that *looks* like an RTL bug. For any new external-memory or
+source-synchronous interface, add the I/O delay pair and the IOB packing
+attributes at the same time the IP is merged.

@@ -155,7 +155,7 @@ qsys19 : qsys
 .PHONY : quartus
 quartus : $(SOF)
 
-$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
+$(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES) $(QSF) $(SDC)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
 

@@ -138,7 +138,7 @@ into `copy_palette_rgb` during the `ST_COPY` state). That matches Cyclone V
 M10K semantics cleanly: M10K blocks require a *synchronous* read port.
 
 The 16-bit back-buffer rework moved the palette lookup into a combinational
-expression that feeds the fog-stage input:
+expression that feeds the fog-stage input:  
 
     wire [7:0]  palette_src_addr = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color;
     wire [15:0] palette_src_rgb565 = rgb888_to_rgb565(palette[palette_src_addr]);
@@ -403,3 +403,86 @@ and both synthesis and simulation pick up the new bytes automatically.
 tree; the only remaining `$readmemh` is for `recip_lut.hex`, which
 continues to use the plain-byte Verilog format because the reciprocal
 LUT is still an inferred MLAB array, not an altsyncram instance.
+
+April 2026: Chromatic Fringes on Far-Chunk Greedy Merges
+--------------------------------------------------------
+
+Summary
+-------
+After the SDRAM component landed on `main`, visible 1-pixel colored fringes
+re-appeared on distant terrain. The pattern was distinctive: faint seams running
+along block boundaries inside large flat regions (big grass plateaus, long
+stone cliffs), only on chunks outside `NEAR_CHUNK_RADIUS`, and only on the
+textured faces. Near-camera geometry was clean. This looked like chromatic
+aberration but was actually a tiling seam.
+
+Root Cause
+----------
+Two recent commits on `main` collided:
+
+  * `1108cff` turned on greedy face merging for far chunks in
+    `sw/world.c::rebuild_chunk_faces` so a run of identical blocks along the
+    face's u/v axes ships as one `u_size * v_size` quad.
+
+  * `83b47b5` added `QUAD_TEX_REPEAT_UV` (bit 6 of `tex_or_color`) plus the
+    `texture_coord()` function in `hw/voxel_gpu.sv`. When the repeat flag is
+    set, `texture_coord()` selects the texel with `value[35:32]`, i.e. it
+    throws away the integer tile index and takes `u mod 16`.
+
+When a merged quad was emitted with `QUAD_TEX_REPEAT_UV`, the rasterizer
+interpolated the U axis from 0 to `16 * u_size`, wrapped via mod 16 every 16
+texels, and sampled the same atlas tile over and over. The atlas tiles were
+not authored to be seamless: texel column 15 on the grass tile does not equal
+texel column 0. At every block boundary inside the merged run the sampler
+jumped from column 15 straight back to column 0, producing the 1-pixel seam.
+`apply_light_bank` amplified the effect because the two adjacent texels often
+sat in different light banks.
+
+A smaller secondary bug was that `texture_coord()` returns `4'd0` when
+`value <= 0`, even in repeat mode, so negative interpolation rounding at the
+top/left edge of a merged face clamped to texel 0 instead of wrapping to 15.
+
+Fix
+---
+We stopped asking the hardware to wrap UVs and instead kept each textured
+quad inside a single atlas tile. `sw/renderer.c::emit_merged_block_face` now
+decomposes any `u_size > 1` or `v_size > 1` run into `u_size * v_size` unit
+quads before emitting. The recursion ends immediately at `u_size == v_size ==
+1`, reusing the existing emit path and its `is_face_visible` per-cell check.
+
+`QUAD_TEX_REPEAT_UV` and `texture_coord()` remain in the hardware; they are
+just never set by the current software. To A/B test the old fused path at
+runtime without a rebuild, set `BLOCK_GAME_MERGE_FAR_QUADS=1`. The variable is
+cached on first read so the branch picks one path for the whole session.
+
+The software expansion cost is bounded by `MAX_QUADS_IN_FLIGHT`; when that
+cap is hit mid-run the expander returns and the outer loop in
+`renderer_draw_world` bails out on the same check it already used.
+
+Contingency
+-----------
+If the fringe ever reappears after this fix, treat it as a different bug and
+retrace using `DEBUG_FLAT_COLOR` (see earlier section in this file). A flat
+color with the same pattern means the issue is in the rasterizer or a later
+pipeline stage, not in the sampler. With `DEBUG_FLAT_COLOR` off, the presence
+or absence of the fringe while toggling `BLOCK_GAME_MERGE_FAR_QUADS` isolates
+whether merging is back in the critical path.
+
+Follow-up: Keep Merging, Fix Repeat Coordinates
+-----------------------------------------------
+
+Expanding every far merged face into unit quads reduced the use of
+`QUAD_TEX_REPEAT_UV`, but it also removed most of the performance reason for
+far-chunk greedy meshing. On hardware this can show up as uneven frame pacing
+and delayed keyboard response because the descriptor stream grows back toward
+the unmerged worst case.
+
+The repeat path itself had a real RTL bug: `texture_coord()` checked
+`value <= 0` before `repeat_uv`, so a slightly negative fixed-point coordinate
+at the top/left edge of a repeated quad clamped to texel 0. Correct modulo
+repeat should take the low 4 integer bits for both positive and negative
+values; in two's-complement that is simply `value[35:32]`.
+
+The hardware now applies the repeat case first. The renderer once again uses
+merged far quads by default, and `BLOCK_GAME_MERGE_FAR_QUADS=0` remains as a
+runtime fallback to force unit-quad expansion for A/B testing.

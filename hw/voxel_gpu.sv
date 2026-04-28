@@ -817,10 +817,10 @@ module voxel_gpu (
     function automatic [3:0] texture_coord(input logic signed [63:0] value,
                                            input logic repeat_uv);
         begin
-            if (value <= 64'sd0)
-                texture_coord = 4'd0;
-            else if (repeat_uv)
+            if (repeat_uv)
                 texture_coord = value[35:32];
+            else if (value <= 64'sd0)
+                texture_coord = 4'd0;
             else if (value >= 64'sh0000_0010_0000_0000)
                 texture_coord = 4'd15;
             else
@@ -2606,6 +2606,7 @@ module voxel_vga_counters (
     assign VGA_SYNC_n  = 1'b0;
     assign VGA_BLANK_n = !(hcount[10] & (hcount[9] | hcount[8])) &
                          !(vcount[9] | (vcount[8:5] == 4'b1111));
-    assign VGA_CLK     = hcount[0];
+    // Invert vs hcount[0]: DAC rising edge mid-pixel eye for ADV7123 setup/hold.
+    assign VGA_CLK     = ~hcount[0];
 
 endmodule

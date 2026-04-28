@@ -870,6 +870,92 @@ static bool world_set_block_light(VoxelWorld *world, int wx, int wy, int wz,
     return true;
 }
 
+/* 3×3 around (ccx,ccz): nb[ix][iz] = chunk at (ccx+ix-1, ccz+iz-1), or NULL.
+ * Avoids repeated open-addressing probes in rebuild_chunk_faces / face counts. */
+static void fill_neighbor_chunk_cache(const VoxelWorld *world, int ccx, int ccz,
+                                      const Chunk *nb[3][3])
+{
+    for (int ix = 0; ix < 3; ix++) {
+        for (int iz = 0; iz < 3; iz++)
+            nb[ix][iz] = world_get_chunk(world, ccx + ix - 1, ccz + iz - 1);
+    }
+}
+
+static BlockID read_block_cached(const Chunk *nb[3][3], int ccx, int ccz,
+                                 int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return BLOCK_AIR;
+
+    int cx = floor_div(wx, WORLD_CHUNK_SIZE);
+    int cz = floor_div(wz, WORLD_CHUNK_SIZE);
+    int ix = cx - ccx + 1;
+    int iz = cz - ccz + 1;
+
+    if (ix < 0 || ix > 2 || iz < 0 || iz > 2)
+        return BLOCK_AIR;
+
+    const Chunk *c = nb[ix][iz];
+
+    if (!c || !(c->flags & CHUNK_FLAG_LOADED))
+        return BLOCK_AIR;
+
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    return c->blocks[wy][lz][lx];
+}
+
+static uint8_t read_sky_light_cached(const Chunk *nb[3][3], int ccx, int ccz,
+                                     int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int cx = floor_div(wx, WORLD_CHUNK_SIZE);
+    int cz = floor_div(wz, WORLD_CHUNK_SIZE);
+    int ix = cx - ccx + 1;
+    int iz = cz - ccz + 1;
+
+    if (ix < 0 || ix > 2 || iz < 0 || iz > 2)
+        return 0;
+
+    const Chunk *c = nb[ix][iz];
+
+    if (!c || !(c->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    return c->sky_light[wy][lz][lx];
+}
+
+static uint8_t read_block_light_cached(const Chunk *nb[3][3], int ccx, int ccz,
+                                       int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int cx = floor_div(wx, WORLD_CHUNK_SIZE);
+    int cz = floor_div(wz, WORLD_CHUNK_SIZE);
+    int ix = cx - ccx + 1;
+    int iz = cz - ccz + 1;
+
+    if (ix < 0 || ix > 2 || iz < 0 || iz > 2)
+        return 0;
+
+    const Chunk *c = nb[ix][iz];
+
+    if (!c || !(c->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    return c->block_light[wy][lz][lx];
+}
+
 static void mark_all_loaded_chunks_mesh_dirty(VoxelWorld *world)
 {
     if (!world)
@@ -890,20 +976,6 @@ static void clear_world_lighting(VoxelWorld *world)
         if (world->chunks[i].flags & CHUNK_FLAG_LOADED)
             clear_chunk_lighting(&world->chunks[i]);
     }
-}
-
-static bool world_loaded_block_bounds(const VoxelWorld *world,
-                                      int *min_wx, int *max_wx,
-                                      int *min_wz, int *max_wz)
-{
-    if (!world || world->chunk_count <= 0 || !min_wx || !max_wx || !min_wz || !max_wz)
-        return false;
-
-    *min_wx = world->origin_chunk_x * WORLD_CHUNK_SIZE;
-    *max_wx = *min_wx + world->chunks_x * WORLD_CHUNK_SIZE - 1;
-    *min_wz = world->origin_chunk_z * WORLD_CHUNK_SIZE;
-    *max_wz = *min_wz + world->chunks_z * WORLD_CHUNK_SIZE - 1;
-    return true;
 }
 
 static bool light_queue_push(LightNode **queue,
@@ -932,31 +1004,39 @@ static bool rebuild_world_lighting(VoxelWorld *world)
     size_t queue_head = 0;
     size_t queue_tail = 0;
     size_t queue_capacity = 0;
-    int min_wx;
-    int max_wx;
-    int min_wz;
-    int max_wz;
 
     if (!world)
         return false;
-    if (!world_loaded_block_bounds(world, &min_wx, &max_wx, &min_wz, &max_wz))
+    if (world->chunk_count <= 0)
         return true;
 
     clear_world_lighting(world);
 
-    for (int wz = min_wz; wz <= max_wz; wz++) {
-        for (int wx = min_wx; wx <= max_wx; wx++) {
-            uint8_t sky = 15;
+    /*
+     * Sky columns are fully contained in each chunk's (lx,lz) column — no
+     * cross-chunk vertical dependency. Walking chunk arrays avoids two
+     * hash-table lookups per cell (world_get_block + world_set_sky_light).
+     */
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
 
-            for (int y = WORLD_CHUNK_HEIGHT - 1; y >= 0; y--) {
-                BlockID id = world_get_block(world, wx, y, wz);
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
 
-                if (block_blocks_light(id)) {
-                    sky = 0;
-                    continue;
+        for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
+            for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
+                uint8_t sky = 15;
+
+                for (int y = WORLD_CHUNK_HEIGHT - 1; y >= 0; y--) {
+                    BlockID id = chunk->blocks[y][lz][lx];
+
+                    if (block_blocks_light(id)) {
+                        sky = 0;
+                        continue;
+                    }
+
+                    chunk->sky_light[y][lz][lx] = sky;
                 }
-
-                world_set_sky_light(world, wx, y, wz, sky);
             }
         }
     }
@@ -1025,8 +1105,11 @@ static bool rebuild_world_lighting(VoxelWorld *world)
     return true;
 }
 
-static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *chunk)
+static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk *chunk,
+                                              const Chunk *nb[3][3])
 {
+    int ccx = chunk->chunk_x;
+    int ccz = chunk->chunk_z;
     int count = 0;
 
     for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
@@ -1037,14 +1120,14 @@ static int count_exposed_faces_for_chunk(const VoxelWorld *world, const Chunk *c
                 if (id == BLOCK_AIR)
                     continue;
 
-                int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
-                int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
+                int wx = ccx * WORLD_CHUNK_SIZE + x;
+                int wz = ccz * WORLD_CHUNK_SIZE + z;
 
                 for (int f = 0; f < NUM_FACES; f++) {
-                    BlockID neighbor = world_get_block(world,
-                                                       wx + FACE_NX[f],
-                                                       y + FACE_NY[f],
-                                                       wz + FACE_NZ[f]);
+                    BlockID neighbor = read_block_cached(nb, ccx, ccz,
+                                                         wx + FACE_NX[f],
+                                                         y + FACE_NY[f],
+                                                         wz + FACE_NZ[f]);
                     if (face_should_render(id, neighbor))
                         count++;
                 }
@@ -1151,13 +1234,20 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
 {
     int max_face_count;
     int out = 0;
+    const Chunk *nb[3][3];
+    int ccx;
+    int ccz;
 
     if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
         return false;
 
+    ccx = chunk->chunk_x;
+    ccz = chunk->chunk_z;
+    fill_neighbor_chunk_cache(world, ccx, ccz, nb);
+
     bool is_near = chunk_is_near(world, chunk);
 
-    max_face_count = count_exposed_faces_for_chunk(world, chunk);
+    max_face_count = count_exposed_faces_for_chunk_nb(world, chunk, nb);
     if (max_face_count == 0) {
         chunk->face_count = 0;
         chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
@@ -1193,22 +1283,22 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
                     if (id == BLOCK_AIR)
                         continue;
 
-                    int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
-                    int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
-                    BlockID neighbor = world_get_block(world,
-                                                       wx + FACE_NX[f],
-                                                       y + FACE_NY[f],
-                                                       wz + FACE_NZ[f]);
+                    int wx = ccx * WORLD_CHUNK_SIZE + x;
+                    int wz = ccz * WORLD_CHUNK_SIZE + z;
+                    BlockID neighbor = read_block_cached(nb, ccx, ccz,
+                                                         wx + FACE_NX[f],
+                                                         y + FACE_NY[f],
+                                                         wz + FACE_NZ[f]);
                     if (face_should_render(id, neighbor)) {
                         int light_wx = wx + FACE_NX[f];
                         int light_wy = y + FACE_NY[f];
                         int light_wz = wz + FACE_NZ[f];
 
                         mask[v][u] = id;
-                        sky_mask[v][u] = world_get_sky_light(world,
-                                                             light_wx, light_wy, light_wz);
-                        block_mask[v][u] = world_get_block_light(world,
-                                                                 light_wx, light_wy, light_wz);
+                        sky_mask[v][u] = read_sky_light_cached(nb, ccx, ccz,
+                                                               light_wx, light_wy, light_wz);
+                        block_mask[v][u] = read_block_light_cached(nb, ccx, ccz,
+                                                                   light_wx, light_wy, light_wz);
                         if (block_emission_level(id) > block_mask[v][u])
                             block_mask[v][u] = block_emission_level(id);
                     }

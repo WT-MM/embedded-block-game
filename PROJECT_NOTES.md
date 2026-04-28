@@ -467,3 +467,22 @@ color with the same pattern means the issue is in the rasterizer or a later
 pipeline stage, not in the sampler. With `DEBUG_FLAT_COLOR` off, the presence
 or absence of the fringe while toggling `BLOCK_GAME_MERGE_FAR_QUADS` isolates
 whether merging is back in the critical path.
+
+Follow-up: Keep Merging, Fix Repeat Coordinates
+-----------------------------------------------
+
+Expanding every far merged face into unit quads reduced the use of
+`QUAD_TEX_REPEAT_UV`, but it also removed most of the performance reason for
+far-chunk greedy meshing. On hardware this can show up as uneven frame pacing
+and delayed keyboard response because the descriptor stream grows back toward
+the unmerged worst case.
+
+The repeat path itself had a real RTL bug: `texture_coord()` checked
+`value <= 0` before `repeat_uv`, so a slightly negative fixed-point coordinate
+at the top/left edge of a repeated quad clamped to texel 0. Correct modulo
+repeat should take the low 4 integer bits for both positive and negative
+values; in two's-complement that is simply `value[35:32]`.
+
+The hardware now applies the repeat case first. The renderer once again uses
+merged far quads by default, and `BLOCK_GAME_MERGE_FAR_QUADS=0` remains as a
+runtime fallback to force unit-quad expansion for A/B testing.

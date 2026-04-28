@@ -2606,6 +2606,7 @@ module voxel_vga_counters (
     assign VGA_SYNC_n  = 1'b0;
     assign VGA_BLANK_n = !(hcount[10] & (hcount[9] | hcount[8])) &
                          !(vcount[9] | (vcount[8:5] == 4'b1111));
-    assign VGA_CLK     = hcount[0];
+    // Invert vs hcount[0]: DAC rising edge mid-pixel eye for ADV7123 setup/hold.
+    assign VGA_CLK     = ~hcount[0];
 
 endmodule

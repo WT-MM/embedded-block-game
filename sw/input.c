@@ -385,7 +385,8 @@ int input_init(InputState *inp)
     inp->_grab_pointers = env_flag_enabled_default_true("VOXEL_MOUSE_GRAB");
     inp->_pointer_capture_wanted = inp->_grab_pointers;
     inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
-    inp->_mouse_scale_y = env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
+    inp->_mouse_scale_y =
+        env_flag_enabled_default_true("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
         inp->_pointers[i].fd = -1;
 

@@ -555,6 +555,15 @@ int main(void)
             (void)input_consume_place(&inp);
         }
 
+        if (world.lighting_dirty) {
+            world_rebuild_lighting(&world);
+            world.lighting_dirty = false;
+        }
+        if (world.meshes_dirty) {
+            world_rebuild_dirty_meshes(&world);
+            world.meshes_dirty = false;
+        }
+
         struct timespec render_start, begin_end, draw_end, end_end;
         clock_gettime(CLOCK_MONOTONIC, &render_start);
         renderer_set_camera(ctx, &cam);

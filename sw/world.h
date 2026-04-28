@@ -66,6 +66,8 @@ typedef struct VoxelWorld {
     int meshes_rebuilt_last_stream;
     bool persistence_enabled;
     char save_root[WORLD_SAVE_PATH_MAX];
+    bool lighting_dirty;
+    bool meshes_dirty;
 } VoxelWorld;
 
 void world_init(VoxelWorld *world);
@@ -80,6 +82,8 @@ bool world_init_infinite_procedural(VoxelWorld *world,
                                     const char *save_root);
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 bool world_flush(VoxelWorld *world);
+bool world_rebuild_dirty_meshes(VoxelWorld *world);
+bool world_rebuild_lighting(VoxelWorld *world);
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);

@@ -998,7 +998,153 @@ static bool light_queue_push(LightNode **queue,
     return true;
 }
 
-static bool rebuild_world_lighting(VoxelWorld *world)
+
+typedef struct {
+    int wx;
+    int wy;
+    int wz;
+    uint8_t val;
+} LightRemovalNode;
+
+static bool light_removal_queue_push(LightRemovalNode **queue,
+                                     size_t *queue_capacity,
+                                     size_t *queue_tail,
+                                     LightRemovalNode node)
+{
+    if (*queue_tail >= *queue_capacity) {
+        size_t new_capacity = (*queue_capacity == 0) ? 256 : (*queue_capacity * 2);
+        LightRemovalNode *grown = realloc(*queue, new_capacity * sizeof(*grown));
+
+        if (!grown)
+            return false;
+
+        *queue = grown;
+        *queue_capacity = new_capacity;
+    }
+
+    (*queue)[(*queue_tail)++] = node;
+    return true;
+}
+
+static bool propagate_block_light(VoxelWorld *world, LightNode **queue,
+                                  size_t *capacity, size_t head, size_t *tail)
+{
+    while (head < *tail) {
+        LightNode node = (*queue)[head++];
+        uint8_t current = world_get_block_light(world, node.wx, node.wy, node.wz);
+
+        if (current <= 1)
+            continue;
+
+        for (int face = 0; face < NUM_FACES; face++) {
+            int nwx = node.wx + FACE_NX[face];
+            int nwy = node.wy + FACE_NY[face];
+            int nwz = node.wz + FACE_NZ[face];
+            uint8_t next = (uint8_t)(current - 1);
+
+            if (nwy < 0 || nwy >= WORLD_CHUNK_HEIGHT)
+                continue;
+            if (block_blocks_light(world_get_block(world, nwx, nwy, nwz)))
+                continue;
+            if (world_get_block_light(world, nwx, nwy, nwz) >= next)
+                continue;
+            if (!world_set_block_light(world, nwx, nwy, nwz, next))
+                continue;
+
+            Chunk *c = world_get_chunk_mut(world, floor_div(nwx, WORLD_CHUNK_SIZE), floor_div(nwz, WORLD_CHUNK_SIZE));
+            if (c) c->flags |= CHUNK_FLAG_MESH_DIRTY;
+
+            if (!light_queue_push(queue, capacity, tail,
+                                  (LightNode){ .wx = nwx, .wy = nwy, .wz = nwz })) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool remove_block_light(VoxelWorld *world,
+                               LightRemovalNode **rem_queue, size_t *rem_cap, size_t rem_head, size_t *rem_tail,
+                               LightNode **add_queue, size_t *add_cap, size_t *add_tail)
+{
+    while (rem_head < *rem_tail) {
+        LightRemovalNode node = (*rem_queue)[rem_head++];
+
+        for (int face = 0; face < NUM_FACES; face++) {
+            int nwx = node.wx + FACE_NX[face];
+            int nwy = node.wy + FACE_NY[face];
+            int nwz = node.wz + FACE_NZ[face];
+
+            if (nwy < 0 || nwy >= WORLD_CHUNK_HEIGHT)
+                continue;
+
+            uint8_t neighbor_level = world_get_block_light(world, nwx, nwy, nwz);
+            if (neighbor_level != 0 && neighbor_level < node.val) {
+                world_set_block_light(world, nwx, nwy, nwz, 0);
+                Chunk *c = world_get_chunk_mut(world, floor_div(nwx, WORLD_CHUNK_SIZE), floor_div(nwz, WORLD_CHUNK_SIZE));
+                if (c) c->flags |= CHUNK_FLAG_MESH_DIRTY;
+
+                if (!light_removal_queue_push(rem_queue, rem_cap, rem_tail,
+                                              (LightRemovalNode){ .wx = nwx, .wy = nwy, .wz = nwz, .val = neighbor_level })) {
+                    return false;
+                }
+            } else if (neighbor_level >= node.val) {
+                if (!light_queue_push(add_queue, add_cap, add_tail,
+                                      (LightNode){ .wx = nwx, .wy = nwy, .wz = nwz })) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static void update_column_sky_light(VoxelWorld *world, int wx, int wz)
+{
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    Chunk *chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
+    int lx;
+    int lz;
+    uint8_t sky = 15;
+    bool changed = false;
+
+    if (!chunk)
+        return;
+
+    lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    for (int y = WORLD_CHUNK_HEIGHT - 1; y >= 0; y--) {
+        if (block_blocks_light(chunk->blocks[y][lz][lx])) {
+            sky = 0;
+        }
+        if (chunk->sky_light[y][lz][lx] != sky) {
+            chunk->sky_light[y][lz][lx] = sky;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+        if (lx == 0) {
+            Chunk *n = world_get_chunk_mut(world, chunk_x - 1, chunk_z);
+            if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        } else if (lx == WORLD_CHUNK_SIZE - 1) {
+            Chunk *n = world_get_chunk_mut(world, chunk_x + 1, chunk_z);
+            if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        }
+        if (lz == 0) {
+            Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z - 1);
+            if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        } else if (lz == WORLD_CHUNK_SIZE - 1) {
+            Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z + 1);
+            if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        }
+    }
+}
+
+bool world_rebuild_lighting(VoxelWorld *world)
 {
     LightNode *queue = NULL;
     size_t queue_head = 0;
@@ -1071,33 +1217,9 @@ static bool rebuild_world_lighting(VoxelWorld *world)
         }
     }
 
-    while (queue_head < queue_tail) {
-        LightNode node = queue[queue_head++];
-        uint8_t current = world_get_block_light(world, node.wx, node.wy, node.wz);
-
-        if (current <= 1)
-            continue;
-
-        for (int face = 0; face < NUM_FACES; face++) {
-            int nwx = node.wx + FACE_NX[face];
-            int nwy = node.wy + FACE_NY[face];
-            int nwz = node.wz + FACE_NZ[face];
-            uint8_t next = (uint8_t)(current - 1);
-
-            if (nwy < 0 || nwy >= WORLD_CHUNK_HEIGHT)
-                continue;
-            if (block_blocks_light(world_get_block(world, nwx, nwy, nwz)))
-                continue;
-            if (world_get_block_light(world, nwx, nwy, nwz) >= next)
-                continue;
-            if (!world_set_block_light(world, nwx, nwy, nwz, next))
-                continue;
-            if (!light_queue_push(&queue, &queue_capacity, &queue_tail,
-                                  (LightNode){ .wx = nwx, .wy = nwy, .wz = nwz })) {
-                free(queue);
-                return false;
-            }
-        }
+    if (!propagate_block_light(world, &queue, &queue_capacity, queue_head, &queue_tail)) {
+        free(queue);
+        return false;
     }
 
     free(queue);
@@ -1420,7 +1542,7 @@ static int mesh_rebuild_chunks_per_pass(void)
     return (int)parsed;
 }
 
-static bool rebuild_dirty_chunk_meshes(VoxelWorld *world)
+bool world_rebuild_dirty_meshes(VoxelWorld *world)
 {
     bool ok = true;
     int per_pass = mesh_rebuild_chunks_per_pass();
@@ -1547,7 +1669,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
             !rebuild_chunk_lookup(world))
             return false;
         world->chunks_reused_last_stream = world->chunk_count;
-        return rebuild_dirty_chunk_meshes(world);
+        return world_rebuild_dirty_meshes(world);
     }
 
     world->stream_epoch++;
@@ -1594,7 +1716,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
         }
     }
 
-    if (!rebuild_world_lighting(world))
+    if (!world_rebuild_lighting(world))
         return false;
 
     mark_trailing_perimeter_dirty(world,
@@ -1602,7 +1724,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
                                   origin_chunk_x, origin_chunk_z,
                                   diameter);
     mark_near_far_transitions_dirty(world);
-    return rebuild_dirty_chunk_meshes(world);
+    return world_rebuild_dirty_meshes(world);
 }
 
 bool world_init_infinite_procedural(VoxelWorld *world,
@@ -1665,6 +1787,15 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
     int lx;
     int lz;
     Chunk *chunk;
+    BlockID old_type;
+    uint8_t old_emission;
+    uint8_t new_emission;
+    uint8_t current_light;
+    LightNode *add_queue = NULL;
+    size_t add_cap = 0, add_head = 0, add_tail = 0;
+    LightRemovalNode *rem_queue = NULL;
+    size_t rem_cap = 0, rem_head = 0, rem_tail = 0;
+    bool success = true;
 
     if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT ||
         type < BLOCK_AIR || type >= NUM_BLOCK_TYPES)
@@ -1678,17 +1809,70 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
     if (!chunk)
         return false;
 
-    if (chunk->blocks[wy][lz][lx] == type)
+    old_type = chunk->blocks[wy][lz][lx];
+    if (old_type == type)
         return true;
 
     chunk->blocks[wy][lz][lx] = type;
     chunk->flags |= CHUNK_FLAG_MODIFIED;
+    chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
     chunk->generation++;
 
+    if (lx == 0) { Chunk *n = world_get_chunk_mut(world, chunk_x - 1, chunk_z); if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY; }
+    if (lx == WORLD_CHUNK_SIZE - 1) { Chunk *n = world_get_chunk_mut(world, chunk_x + 1, chunk_z); if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY; }
+    if (lz == 0) { Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z - 1); if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY; }
+    if (lz == WORLD_CHUNK_SIZE - 1) { Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z + 1); if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY; }
+
+    update_column_sky_light(world, wx, wz);
+
+    old_emission = block_emission_level(old_type);
+    new_emission = block_emission_level(type);
+    current_light = world_get_block_light(world, wx, wy, wz);
+
+    if (block_blocks_light(type)) {
+        if (current_light > 0) {
+            world_set_block_light(world, wx, wy, wz, 0);
+            success &= light_removal_queue_push(&rem_queue, &rem_cap, &rem_tail,
+                                                (LightRemovalNode){.wx = wx, .wy = wy, .wz = wz, .val = current_light});
+        }
+    } else {
+        if (old_emission > 0) {
+            world_set_block_light(world, wx, wy, wz, 0);
+            success &= light_removal_queue_push(&rem_queue, &rem_cap, &rem_tail,
+                                                (LightRemovalNode){.wx = wx, .wy = wy, .wz = wz, .val = current_light});
+        }
+        if (new_emission > 0) {
+            world_set_block_light(world, wx, wy, wz, new_emission);
+            success &= light_queue_push(&add_queue, &add_cap, &add_tail,
+                                        (LightNode){.wx = wx, .wy = wy, .wz = wz});
+        } else {
+            for (int f = 0; f < NUM_FACES; f++) {
+                int nx = wx + FACE_NX[f];
+                int ny = wy + FACE_NY[f];
+                int nz = wz + FACE_NZ[f];
+                if (ny >= 0 && ny < WORLD_CHUNK_HEIGHT) {
+                    uint8_t nl = world_get_block_light(world, nx, ny, nz);
+                    if (nl > 1) {
+                        success &= light_queue_push(&add_queue, &add_cap, &add_tail,
+                                                    (LightNode){.wx = nx, .wy = ny, .wz = nz});
+                    }
+                }
+            }
+        }
+    }
+
+    if (success) {
+        success &= remove_block_light(world, &rem_queue, &rem_cap, rem_head, &rem_tail,
+                                      &add_queue, &add_cap, &add_tail);
+        success &= propagate_block_light(world, &add_queue, &add_cap, add_head, &add_tail);
+    }
+
+    if (add_queue) free(add_queue);
+    if (rem_queue) free(rem_queue);
+
     world->meshes_rebuilt_last_stream = 0;
-    if (!rebuild_world_lighting(world))
-        return false;
-    return rebuild_dirty_chunk_meshes(world);
+    world->meshes_dirty = true;
+    return success;
 }
 
 int world_total_faces(const VoxelWorld *world)

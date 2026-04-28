@@ -1,6 +1,7 @@
 #include "world.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1308,9 +1309,33 @@ static void mark_near_far_transitions_dirty(VoxelWorld *world)
     }
 }
 
+/* 0 or unset: rebuild every dirty chunk in one pass (desktop default).
+ * Positive: cap per world_stream / world_set_block / idle-tick pass so
+ * chunk lighting + mesh work does not blow one frame on slow CPUs (FPGA). */
+static int mesh_rebuild_chunks_per_pass(void)
+{
+    const char *value = getenv("VOXEL_MESH_REBUILDS_PER_FRAME");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        return 0;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') || parsed < 1)
+        return 0;
+    if (parsed > 4096)
+        return 4096;
+
+    return (int)parsed;
+}
+
 static bool rebuild_dirty_chunk_meshes(VoxelWorld *world)
 {
     bool ok = true;
+    int per_pass = mesh_rebuild_chunks_per_pass();
+    int limit = (per_pass <= 0) ? INT_MAX : per_pass;
+    int rebuilt = 0;
 
     if (!world)
         return false;
@@ -1327,6 +1352,10 @@ static bool rebuild_dirty_chunk_meshes(VoxelWorld *world)
         } else {
             ok = false;
         }
+
+        rebuilt++;
+        if (rebuilt >= limit)
+            break;
     }
 
     return ok;

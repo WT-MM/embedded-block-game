@@ -27,7 +27,7 @@
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
-#define HOTBAR_SLOT_COUNT 5
+#define HOTBAR_SLOT_COUNT 6
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -49,6 +49,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_STONE,
     BLOCK_WOOD,
     BLOCK_GLASS,
+    BLOCK_LAMP,
 };
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
@@ -57,6 +58,7 @@ static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
     { 0x7, 0x1, 0x7, 0x1, 0x7 }, /* 3 */
     { 0x5, 0x5, 0x7, 0x1, 0x1 }, /* 4 */
     { 0x7, 0x4, 0x7, 0x1, 0x7 }, /* 5 */
+    { 0x7, 0x4, 0x7, 0x5, 0x7 }, /* 6 */
 };
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -371,7 +373,7 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-5=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
     printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
            player_mode_name(player.mode));
     printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
@@ -553,13 +555,32 @@ int main(void)
             (void)input_consume_place(&inp);
         }
 
+        if (world.lighting_dirty) {
+            world_rebuild_lighting(&world);
+            world.lighting_dirty = false;
+        }
+        if (world.meshes_dirty) {
+            world_rebuild_dirty_meshes(&world);
+            world.meshes_dirty = false;
+        }
+
+
+        if (world.lighting_dirty) {
+            world_rebuild_lighting(&world);
+            world.lighting_dirty = false;
+        }
+        if (world.meshes_dirty) {
+            world_rebuild_dirty_meshes(&world);
+            world.meshes_dirty = false;
+        }
+
         struct timespec render_start, begin_end, draw_end, end_end;
         clock_gettime(CLOCK_MONOTONIC, &render_start);
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
-        int quads = renderer_draw_world(ctx, &world);
+        int quads = renderer_draw_world(ctx, &world, world_time);
         chat_draw(&chat, ctx);
         if (!paused && !chat_is_open(&chat))
             draw_hotbar(ctx, selected_hotbar_slot);

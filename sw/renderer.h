@@ -69,7 +69,8 @@ void renderer_end_frame(RenderContext* ctx);
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);
 int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
 int renderer_draw_sky(RenderContext* ctx, float time_seconds);
-int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world);
+int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world,
+                        float time_seconds);
 bool renderer_draw_crosshair(RenderContext* ctx);
 bool renderer_draw_screen_tile(RenderContext* ctx,
                                float x0, float y0, float x1, float y1,

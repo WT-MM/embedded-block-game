@@ -51,7 +51,7 @@ game: game.c player_physics.c player_physics.h input.c input.h renderer.c render
 	${CC} ${CFLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c player_physics.c chat.c pause_menu.c -lm
 
 laptop_run:
-	VOXEL_MOUSE_INVERT_Y=1 VOXEL_GPU_BACKEND=socket ./game
+	VOXEL_GPU_BACKEND=socket ./game
 
 clean:
 	${MAKE} -C ${KERNEL_SOURCE} SUBDIRS=${PWD} clean

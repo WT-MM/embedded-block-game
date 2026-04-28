@@ -18,6 +18,7 @@ TEX_TILE_STONE = 3
 TEX_TILE_WOOD_SIDE = 4
 TEX_TILE_WOOD_TOP = 5
 TEX_TILE_GLASS = 6
+TEX_TILE_LAMP = 7
 TEX_TILE_GRASS_TOP_MIP1 = 16
 TEX_TILE_GRASS_SIDE_MIP1 = 17
 TEX_TILE_DIRT_MIP1 = 18
@@ -25,6 +26,7 @@ TEX_TILE_STONE_MIP1 = 19
 TEX_TILE_WOOD_SIDE_MIP1 = 20
 TEX_TILE_WOOD_TOP_MIP1 = 21
 TEX_TILE_GLASS_MIP1 = 22
+TEX_TILE_LAMP_MIP1 = 23
 TEX_TILE_GRASS_TOP_MIP2 = 24
 TEX_TILE_GRASS_SIDE_MIP2 = 25
 TEX_TILE_DIRT_MIP2 = 26
@@ -32,6 +34,7 @@ TEX_TILE_STONE_MIP2 = 27
 TEX_TILE_WOOD_SIDE_MIP2 = 28
 TEX_TILE_WOOD_TOP_MIP2 = 29
 TEX_TILE_GLASS_MIP2 = 30
+TEX_TILE_LAMP_MIP2 = 31
 TEX_TILE_SKY = 48
 TEX_TILE_CLOUD = 49
 TEX_TILE_SUN = 50
@@ -68,6 +71,8 @@ PAL_STAR = 34
 PAL_GLASS = 35
 PAL_GLASS_EDGE = 36
 PAL_GLASS_HIGHLIGHT = 37
+PAL_LAMP_GLOW = 38
+PAL_LAMP_FRAME = 39
 
 
 # RGB values for each palette index. Mirrors the table in
@@ -114,6 +119,8 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     35: (0xb8, 0xe4, 0xff),  # glass body
     36: (0x5e, 0x7c, 0x98),  # glass edge / frame
     37: (0xff, 0xff, 0xff),  # glass highlight
+    38: (0xff, 0xd7, 0x79),  # lamp glow
+    39: (0x6d, 0x53, 0x30),  # lamp frame
 }
 
 # Tiles shown in the preview, one column per block type, one row per LOD.
@@ -128,6 +135,7 @@ PREVIEW_COLUMNS: list[tuple[str, int, int, int]] = [
     ("wood_side",  TEX_TILE_WOOD_SIDE,  TEX_TILE_WOOD_SIDE_MIP1,  TEX_TILE_WOOD_SIDE_MIP2),
     ("wood_top",   TEX_TILE_WOOD_TOP,   TEX_TILE_WOOD_TOP_MIP1,   TEX_TILE_WOOD_TOP_MIP2),
     ("glass",      TEX_TILE_GLASS,      TEX_TILE_GLASS_MIP1,      TEX_TILE_GLASS_MIP2),
+    ("lamp",       TEX_TILE_LAMP,       TEX_TILE_LAMP_MIP1,       TEX_TILE_LAMP_MIP2),
 ]
 
 
@@ -140,6 +148,7 @@ MIP1_TILES = {
     TEX_TILE_WOOD_SIDE_MIP1: TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP_MIP1: TEX_TILE_WOOD_TOP,
     TEX_TILE_GLASS_MIP1: TEX_TILE_GLASS,
+    TEX_TILE_LAMP_MIP1: TEX_TILE_LAMP,
 }
 
 MIP2_TILES = {
@@ -150,6 +159,7 @@ MIP2_TILES = {
     TEX_TILE_WOOD_SIDE_MIP2: TEX_TILE_WOOD_SIDE,
     TEX_TILE_WOOD_TOP_MIP2: TEX_TILE_WOOD_TOP,
     TEX_TILE_GLASS_MIP2: TEX_TILE_GLASS,
+    TEX_TILE_LAMP_MIP2: TEX_TILE_LAMP,
 }
 
 GRASS_TOP_ROWS = [
@@ -322,6 +332,20 @@ def glass(x: int, y: int) -> int:
     return PAL_GLASS
 
 
+def lamp(x: int, y: int) -> int:
+    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
+        return PAL_LAMP_FRAME
+    if x in (2, TILE_SIZE - 3) or y in (2, TILE_SIZE - 3):
+        return PAL_WOOD_DARK
+    if 4 <= x <= 11 and 4 <= y <= 11:
+        if 6 <= x <= 9 and 6 <= y <= 9:
+            return PAL_WHITE
+        return PAL_LAMP_GLOW
+    if ((x + y) & 1) == 0:
+        return PAL_WOOD_TOP
+    return PAL_WOOD
+
+
 def wood_top(x: int, y: int) -> int:
     # Square-ish rings read better at 16x16 than smooth circular math.
     dx = abs(x - 7.5)
@@ -430,6 +454,8 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return wood_top(x, y)
     if tile == TEX_TILE_GLASS:
         return glass(x, y)
+    if tile == TEX_TILE_LAMP:
+        return lamp(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:

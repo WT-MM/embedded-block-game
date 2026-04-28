@@ -79,7 +79,7 @@ int main(void)
         renderer_set_camera(ctx, &camera);
         renderer_begin_frame(ctx);
         sky_quads = renderer_draw_sky(ctx, 18.0f);
-        world_quads = renderer_draw_world(ctx, &world);
+        world_quads = renderer_draw_world(ctx, &world, 18.0f);
         crosshair_ok = renderer_draw_crosshair(ctx);
         renderer_end_frame(ctx);
 

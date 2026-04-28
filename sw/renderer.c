@@ -38,11 +38,14 @@ enum {
     PAL_GLASS = 35,
     PAL_GLASS_EDGE = 36,
     PAL_GLASS_HIGHLIGHT = 37,
+    PAL_LAMP_GLOW = 38,
+    PAL_LAMP_FRAME = 39,
     PAL_SKY_GRADIENT_BASE = 40,
 };
 
 typedef struct {
     int x, y, z;
+    uint8_t type;
     int occupied;
 } LookupEntry;
 
@@ -69,6 +72,8 @@ typedef struct {
     RGB24 moon_shadow;
     RGB24 star;
 } SkyPalette;
+
+static Vec3 sun_direction_for_time(float time_seconds);
 
 static void upload_default_palette(GPUTransport *transport)
 {
@@ -111,6 +116,8 @@ static void upload_default_palette(GPUTransport *transport)
         { 35, 0xb8, 0xe4, 0xff }, /* glass body */
         { 36, 0x5e, 0x7c, 0x98 }, /* glass edge / frame */
         { 37, 0xff, 0xff, 0xff }, /* glass highlight */
+        { 38, 0xff, 0xd7, 0x79 }, /* lamp glow */
+        { 39, 0x6d, 0x53, 0x30 }, /* lamp frame */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -129,6 +136,7 @@ struct RenderContext {
     GPUTransport *transport;
     Camera current_camera;
     Vec3 light_dir;
+    float world_daylight;
 
     float cos_yaw, sin_yaw;
     float cos_pitch, sin_pitch;
@@ -142,6 +150,8 @@ struct RenderContext {
     uint8_t palette_valid[256];
     struct voxel_fog_state fog_cache;
     uint8_t fog_valid;
+    uint8_t light_palette_key;
+    uint8_t light_palette_key_valid;
     uint8_t face_light_flags[NUM_FACES];
     int n_quads;
 
@@ -208,6 +218,8 @@ static RGB24 default_palette_color(uint8_t index)
     case 35: return rgb24(0xb8, 0xe4, 0xff);
     case 36: return rgb24(0x5e, 0x7c, 0x98);
     case 37: return rgb24(0xff, 0xff, 0xff);
+    case 38: return rgb24(0xff, 0xd7, 0x79);
+    case 39: return rgb24(0x6d, 0x53, 0x30);
     default: return rgb24(0x00, 0x00, 0x00);
     }
 }
@@ -306,25 +318,41 @@ static bool renderer_set_fog_state(RenderContext *ctx,
     return true;
 }
 
-static void upload_light_palette_banks(GPUTransport *transport)
+static void upload_light_palette_banks(RenderContext *ctx, float daylight)
 {
-    static const float bank_scale[4] = { 1.00f, 0.82f, 0.64f, 0.50f };
+    static const float bank_scale_day[4] = { 1.00f, 0.82f, 0.64f, 0.50f };
+    static const float bank_scale_night[4] = { 1.00f, 0.34f, 0.20f, 0.10f };
+    int daylight_key;
+
+    if (!ctx)
+        return;
+
+    daylight = clamp01(daylight);
+    daylight_key = (int)lroundf(daylight * 31.0f);
+    if (ctx->light_palette_key_valid &&
+        ctx->light_palette_key == (uint8_t)daylight_key)
+        return;
+
+    daylight = (float)daylight_key / 31.0f;
 
     for (int bank = 1; bank < 4; bank++) {
+        float bank_scale = bank_scale_night[bank] +
+                           (bank_scale_day[bank] - bank_scale_night[bank]) *
+                           daylight;
+
         for (int index = 1; index < 64; index++) {
             RGB24 color = scale_rgb24(default_palette_color((uint8_t)index),
-                                      bank_scale[bank]);
-            struct voxel_palette_entry entry = {
-                .index = (uint8_t)(bank * 64 + index),
-                .r = color.r,
-                .g = color.g,
-                .b = color.b,
-            };
+                                      bank_scale);
 
-            if (gpu_transport_set_palette(transport, &entry) < 0)
+            if (!renderer_set_palette_rgb(ctx,
+                                          (uint8_t)(bank * 64 + index),
+                                          color))
                 return;
         }
     }
+
+    ctx->light_palette_key = (uint8_t)daylight_key;
+    ctx->light_palette_key_valid = 1;
 }
 
 static Vec3 normalize_vec3(Vec3 v)
@@ -382,6 +410,86 @@ static void update_face_light_flags(RenderContext *ctx)
     for (int face = 0; face < NUM_FACES; face++)
         ctx->face_light_flags[face] =
             light_flags_for_normal(ctx->light_dir, face_normals[face]);
+}
+
+static uint8_t light_bank_for_level(uint8_t light_level)
+{
+    if (light_level >= 12)
+        return 0;
+    if (light_level >= 8)
+        return 1;
+    if (light_level >= 4)
+        return 2;
+    return 3;
+}
+
+static uint8_t sky_light_level_for_face(const RenderContext *ctx,
+                                        BlockFace face,
+                                        uint8_t sky_light)
+{
+    float ndotl;
+    float facing;
+    float intensity;
+    int level;
+
+    if (!ctx || face < 0 || face >= NUM_FACES || sky_light == 0)
+        return 0;
+
+    ndotl = face_normals[face].x * ctx->light_dir.x +
+            face_normals[face].y * ctx->light_dir.y +
+            face_normals[face].z * ctx->light_dir.z;
+    facing = clamp01(0.5f + 0.5f * ndotl);
+    intensity = 0.12f + ctx->world_daylight * (0.25f + 0.63f * facing);
+    level = (int)lroundf((float)sky_light * clamp01(intensity));
+    if (level < 0)
+        level = 0;
+    if (level > 15)
+        level = 15;
+    return (uint8_t)level;
+}
+
+static uint8_t choose_chunk_face_light_flags(const RenderContext *ctx,
+                                             BlockID type, BlockFace face,
+                                             uint8_t sky_light,
+                                             uint8_t block_light)
+{
+    uint8_t effective_level = block_light;
+    uint8_t sky_level = sky_light_level_for_face(ctx, face, sky_light);
+
+    if (block_is_self_lit(type))
+        effective_level = 15;
+    if (sky_level > effective_level)
+        effective_level = sky_level;
+
+    return QUAD_LIGHT_LEVEL(light_bank_for_level(effective_level));
+}
+
+static float daylight_strength_for_sun_direction(Vec3 sun_dir)
+{
+    return smoothstepf(-0.18f, 0.08f, sun_dir.y);
+}
+
+static Vec3 terrain_light_direction_for_sun(Vec3 sun_dir)
+{
+    if (sun_dir.y < 0.18f)
+        sun_dir.y = 0.18f;
+    return normalize_vec3(sun_dir);
+}
+
+static void update_world_light_from_sun(RenderContext *ctx, Vec3 sun_dir)
+{
+    if (!ctx)
+        return;
+
+    ctx->world_daylight = daylight_strength_for_sun_direction(sun_dir);
+    ctx->light_dir = terrain_light_direction_for_sun(sun_dir);
+    update_face_light_flags(ctx);
+    upload_light_palette_banks(ctx, ctx->world_daylight);
+}
+
+static void update_world_light_state(RenderContext *ctx, float time_seconds)
+{
+    update_world_light_from_sun(ctx, sun_direction_for_time(time_seconds));
 }
 
 static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
@@ -609,11 +717,6 @@ static int clip_polygon_to_viewport(const Vertex2D in[4], Vertex2D out[MAX_VIEW_
     return count;
 }
 
-static bool is_solid_block(BlockID id)
-{
-    return id != BLOCK_AIR;
-}
-
 static uint32_t hash_grid_coord(int x, int y, int z)
 {
     return ((uint32_t)x * 73856093u) ^
@@ -655,7 +758,7 @@ static bool build_block_lookup(RenderContext *ctx, const Block *blocks, int num_
     lookup->mask = ctx->lookup_capacity - 1;
 
     for (int i = 0; i < num_blocks; i++) {
-        if (!is_solid_block(blocks[i].type))
+        if (blocks[i].type == BLOCK_AIR)
             continue;
 
         int x = (int)lroundf(blocks[i].position.x);
@@ -674,13 +777,14 @@ static bool build_block_lookup(RenderContext *ctx, const Block *blocks, int num_
         lookup->entries[idx].x = x;
         lookup->entries[idx].y = y;
         lookup->entries[idx].z = z;
+        lookup->entries[idx].type = (uint8_t)blocks[i].type;
         lookup->entries[idx].occupied = 1;
     }
 
     return true;
 }
 
-static bool lookup_has_solid_block_at(const BlockLookup *lookup, Vec3 pos)
+static BlockID lookup_block_at(const BlockLookup *lookup, Vec3 pos)
 {
     int x = (int)lroundf(pos.x);
     int y = (int)lroundf(pos.y);
@@ -691,23 +795,32 @@ static bool lookup_has_solid_block_at(const BlockLookup *lookup, Vec3 pos)
         if (lookup->entries[idx].x == x &&
             lookup->entries[idx].y == y &&
             lookup->entries[idx].z == z)
-            return true;
+            return (BlockID)lookup->entries[idx].type;
         idx = (idx + 1u) & (uint32_t)lookup->mask;
     }
 
-    return false;
+    return BLOCK_AIR;
 }
 
-static bool is_face_exposed(const Block *block, Vec3 normal,
+static bool face_should_render_simple(BlockID current, BlockID neighbor)
+{
+    if (neighbor == BLOCK_AIR)
+        return true;
+    if (current == BLOCK_GLASS)
+        return false;
+    return block_is_transparent(neighbor);
+}
+
+static bool is_face_exposed(const Block *block, BlockFace face,
                             const BlockLookup *lookup)
 {
     Vec3 neighbor = {
-        block->position.x + normal.x,
-        block->position.y + normal.y,
-        block->position.z + normal.z,
+        block->position.x + face_normals[face].x,
+        block->position.y + face_normals[face].y,
+        block->position.z + face_normals[face].z,
     };
 
-    return !lookup_has_solid_block_at(lookup, neighbor);
+    return face_should_render_simple(block->type, lookup_block_at(lookup, neighbor));
 }
 
 /* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */
@@ -1175,13 +1288,15 @@ static bool merged_emit_repeat_uv_enabled(void)
     return cached != 0;
 }
 
-static void emit_merged_block_face(RenderContext *ctx, BlockID type,
-                                   Vec3 block_pos, BlockFace face,
-                                   int u_size, int v_size);
+static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
+                                       Vec3 block_pos, BlockFace face,
+                                       int u_size, int v_size,
+                                       uint8_t light_flags);
 
 static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
                                              Vec3 block_pos, BlockFace face,
-                                             int u_size, int v_size)
+                                             int u_size, int v_size,
+                                             uint8_t light_flags)
 {
     /*
      * u/v axis mapping mirrors face_cell_to_block() in world.c:
@@ -1211,21 +1326,22 @@ static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
             default:
                 break;
             }
-            emit_merged_block_face(ctx, type, unit, face, 1, 1);
+            emit_merged_block_face_lit(ctx, type, unit, face, 1, 1, light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return;
         }
     }
 }
 
-static void emit_merged_block_face(RenderContext *ctx, BlockID type,
-                                   Vec3 block_pos, BlockFace face,
-                                   int u_size, int v_size)
+static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
+                                       Vec3 block_pos, BlockFace face,
+                                       int u_size, int v_size,
+                                       uint8_t light_flags)
 {
     static const float tile_span = 16.0f;
     Vec3 face_world[4];
     CameraVertex face_cam[4];
-    uint8_t light_flags;
+    uint8_t face_flags;
     uint8_t texture_id;
     uint8_t base_tile;
 
@@ -1248,7 +1364,7 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
          * the non-merged path.
          */
         expand_merged_face_to_unit_quads(ctx, type, block_pos, face,
-                                         u_size, v_size);
+                                         u_size, v_size, light_flags);
         return;
     }
 
@@ -1271,7 +1387,7 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
     texture_id = choose_face_texture_lod(ctx, base_tile, face_cam);
     if (u_size > 1 || v_size > 1)
         texture_id |= QUAD_TEX_REPEAT_UV;
-    light_flags = choose_face_light_flags(ctx, face) | QUAD_FLAG_FOG;
+    face_flags = light_flags | QUAD_FLAG_FOG;
     /*
      * Translucent blocks (glass) ride the hardware alpha-blend path. 50% src
      * / 50% dst gives an obviously see-through look while still leaving the
@@ -1281,11 +1397,23 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
      * opaque fragment that the blend can mix against.
      */
     if (block_is_translucent(type))
-        light_flags |= QUAD_ALPHA_50;
+        face_flags |= QUAD_ALPHA_50;
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
-    emit_clipped_face(ctx, clipped, clipped_count, texture_id, light_flags);
+    emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
+}
+
+static void emit_merged_block_face(RenderContext *ctx, BlockID type,
+                                   Vec3 block_pos, BlockFace face,
+                                   int u_size, int v_size)
+{
+    uint8_t light_flags = block_is_self_lit(type)
+                              ? QUAD_LIGHT_LEVEL(0)
+                              : choose_face_light_flags(ctx, face);
+
+    emit_merged_block_face_lit(ctx, type, block_pos, face, u_size, v_size,
+                               light_flags);
 }
 
 static void emit_block_face(RenderContext *ctx, BlockID type,
@@ -1490,9 +1618,10 @@ RenderContext *renderer_init(void)
     }
 
     ctx->light_dir = normalize_vec3((Vec3){ 0.35f, 0.92f, 0.20f });
+    ctx->world_daylight = 1.0f;
     update_face_light_flags(ctx);
     upload_default_palette(ctx->transport);
-    upload_light_palette_banks(ctx->transport);
+    upload_light_palette_banks(ctx, ctx->world_daylight);
     renderer_set_fog_state(ctx, &(struct voxel_fog_state){0});
     return ctx;
 }
@@ -1702,7 +1831,7 @@ static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
     if (block->type == BLOCK_AIR) return;
 
     for (int f = 0; f < NUM_FACES; f++) {
-        if (!is_face_exposed(block, face_normals[f], lookup))
+        if (!is_face_exposed(block, (BlockFace)f, lookup))
             continue;
         emit_block_face(ctx, block->type, block->position, (BlockFace)f);
     }
@@ -1722,7 +1851,8 @@ int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
     return ctx->n_quads - before;
 }
 
-int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
+int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
+                        float time_seconds)
 {
     int before = ctx->n_quads;
     int candidate_count = 0;
@@ -1730,6 +1860,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
     if (!world || world->chunk_count <= 0)
         return 0;
 
+    update_world_light_state(ctx, time_seconds);
     configure_world_fog(ctx, world);
 
     ChunkDrawCandidate candidates[world->chunk_count];
@@ -1788,10 +1919,16 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
                 (float)face->y,
                 (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
             };
+            uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
+                                                                (BlockFace)face->face,
+                                                                face->sky_light,
+                                                                face->block_light);
 
-            emit_merged_block_face(ctx, id, block_pos, (BlockFace)face->face,
-                                   face->u_size ? face->u_size : 1,
-                                   face->v_size ? face->v_size : 1);
+            emit_merged_block_face_lit(ctx, id, block_pos,
+                                       (BlockFace)face->face,
+                                       face->u_size ? face->u_size : 1,
+                                       face->v_size ? face->v_size : 1,
+                                       light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }
@@ -1855,11 +1992,18 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world)
                 (float)ref->face->y,
                 (float)(ref->chunk->chunk_z * WORLD_CHUNK_SIZE + ref->face->z),
             };
+            uint8_t light_flags = choose_chunk_face_light_flags(
+                ctx,
+                (BlockID)ref->face->type,
+                (BlockFace)ref->face->face,
+                ref->face->sky_light,
+                ref->face->block_light);
 
-            emit_merged_block_face(ctx, (BlockID)ref->face->type,
-                                   block_pos, (BlockFace)ref->face->face,
-                                   ref->face->u_size ? ref->face->u_size : 1,
-                                   ref->face->v_size ? ref->face->v_size : 1);
+            emit_merged_block_face_lit(ctx, (BlockID)ref->face->type,
+                                       block_pos, (BlockFace)ref->face->face,
+                                       ref->face->u_size ? ref->face->u_size : 1,
+                                       ref->face->v_size ? ref->face->v_size : 1,
+                                       light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }
@@ -2084,7 +2228,8 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
 
     sun_dir = sun_direction_for_time(time_seconds);
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
-    daylight = smoothstepf(-0.18f, 0.08f, sun_dir.y);
+    update_world_light_from_sun(ctx, sun_dir);
+    daylight = ctx->world_daylight;
     night = 1.0f - daylight;
     palette = make_sky_palette(sun_dir);
     upload_sky_palette(ctx, &palette);

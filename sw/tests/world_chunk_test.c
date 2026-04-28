@@ -55,6 +55,27 @@ static void cleanup_temp_world_dir(const char *world_dir)
     rmdir(world_dir);
 }
 
+static const ChunkFace *find_chunk_face(const Chunk *chunk,
+                                        int x, int y, int z,
+                                        BlockFace face, BlockID type)
+{
+    if (!chunk || !chunk->faces)
+        return NULL;
+
+    for (int i = 0; i < chunk->face_count; i++) {
+        const ChunkFace *candidate = &chunk->faces[i];
+
+        if ((int)candidate->x == x &&
+            (int)candidate->y == y &&
+            (int)candidate->z == z &&
+            (BlockFace)candidate->face == face &&
+            (BlockID)candidate->type == type)
+            return candidate;
+    }
+
+    return NULL;
+}
+
 int main(void)
 {
     VoxelWorld world;
@@ -91,6 +112,43 @@ int main(void)
         return check_failed("initial world has no cached blocks/faces");
     if (!world_get_chunk(&world, 0, 0))
         return check_failed("center chunk missing after initial load");
+    if (block_emission_level(BLOCK_LAMP) != 15 || !block_is_self_lit(BLOCK_LAMP))
+        return check_failed("lamp metadata missing");
+
+    const int lamp_x = 2;
+    const int lamp_y = 8;
+    const int lamp_z = 2;
+    const int gap_x = lamp_x + 1;
+    const int stone_x = lamp_x + 2;
+    if (!world_set_block(&world, gap_x, lamp_y, lamp_z, BLOCK_AIR))
+        return check_failed("lamp air gap clear failed");
+    if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_LAMP))
+        return check_failed("lamp placement failed");
+    if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_STONE))
+        return check_failed("stone placement near lamp failed");
+
+    const Chunk *lighting_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *lamp_top = find_chunk_face(lighting_chunk,
+                                                lamp_x, lamp_y, lamp_z,
+                                                FACE_TOP, BLOCK_LAMP);
+    const ChunkFace *stone_left = find_chunk_face(lighting_chunk,
+                                                  stone_x, lamp_y, lamp_z,
+                                                  FACE_LEFT, BLOCK_STONE);
+    if (!lamp_top || lamp_top->block_light != 15)
+        return check_failed("lamp face was not self-lit");
+    if (!stone_left || stone_left->block_light < 14)
+        return check_failed("nearby visible face did not receive lamp light");
+
+    if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_AIR))
+        return check_failed("lamp removal failed");
+    lighting_chunk = world_get_chunk(&world, 0, 0);
+    stone_left = find_chunk_face(lighting_chunk,
+                                 stone_x, lamp_y, lamp_z,
+                                 FACE_LEFT, BLOCK_STONE);
+    if (!stone_left || stone_left->block_light != 0)
+        return check_failed("lamp light did not clear after removal");
+    if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_AIR))
+        return check_failed("stone cleanup failed");
 
     if (!world_stream_around(&world, 1.0f, 1.0f))
         return check_failed("same-center stream failed");

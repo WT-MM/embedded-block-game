@@ -84,6 +84,8 @@ bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 bool world_flush(VoxelWorld *world);
 bool world_rebuild_dirty_meshes(VoxelWorld *world);
 bool world_rebuild_lighting(VoxelWorld *world);
+bool world_rebuild_dirty_meshes(VoxelWorld *world);
+bool world_rebuild_lighting(VoxelWorld *world);
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);

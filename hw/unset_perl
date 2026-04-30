@@ -1,0 +1,8 @@
+unset PERL5LIB PERLLIB PERL_LOCAL_LIB_ROOT PERL_MB_OPT PERL_MM_OPT PERL5OPT
+
+export PERL5LIB="$(
+  /usr/bin/perl -e 'print join(":", grep { -d($_) && $_ !~ /x86_64-linux/ } @INC), "\n"'
+)"
+
+echo "$PERL5LIB"
+

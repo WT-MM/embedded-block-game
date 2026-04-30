@@ -31,8 +31,8 @@ from .protocol import (
 )
 from .raster import VirtualGPU, load_texture_mif
 
-SCREEN_WIDTH = 320
-SCREEN_HEIGHT = 240
+SCREEN_WIDTH = 640
+SCREEN_HEIGHT = 480
 POLL_TIMEOUT = 1.0 / 60.0
 DEFAULT_TEXTURE_PATH = (
     Path(__file__).resolve().parents[2]

@@ -162,7 +162,7 @@ class RasterBehaviorTest(unittest.TestCase):
         src = rgb888_to_rgb565((0xFF, 0x00, 0x00))
         fog = rgb888_to_rgb565((0x00, 0x00, 0xFF))
         self.assertEqual(
-            gpu.back_buffer[120 * 320 + 160],
+            gpu.back_buffer[120 * gpu.width + 160],
             blend_rgb565(src, fog, 1),
         )
 

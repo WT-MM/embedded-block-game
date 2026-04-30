@@ -64,6 +64,20 @@ typedef int32_t  __s32;
 
 #define VOXEL_REG_SPAN          VOXEL_FIFO_END
 
+/* ----- render/display geometry ----- */
+/*
+ * Target geometry for the SDRAM-backed renderer. The first full-resolution
+ * hardware pass keeps software descriptor submission order unchanged and makes
+ * the RTL responsible for cache misses through an SDRAM-backed vertical band
+ * cache. See PROJECT_NOTES.md for the cache contract and bring-up plan.
+ */
+#define VOXEL_RENDER_WIDTH      640u
+#define VOXEL_RENDER_HEIGHT     480u
+#define VOXEL_RENDER_STRIDE     (VOXEL_RENDER_WIDTH * 2u) /* RGB565 bytes */
+#define VOXEL_BAND_CACHE_HEIGHT 64u
+#define VOXEL_BAND_COUNT        ((VOXEL_RENDER_HEIGHT + VOXEL_BAND_CACHE_HEIGHT - 1u) / \
+                                 VOXEL_BAND_CACHE_HEIGHT)
+
 /* ----- CONTROL bits ----- */
 #define VOXEL_CTRL_EN           (1u << 0)
 #define VOXEL_CTRL_FLP          (1u << 1)

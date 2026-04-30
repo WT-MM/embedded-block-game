@@ -514,3 +514,219 @@ A highly optimized architecture would use a **Scanline Cache**. Using the 400 KB
 - SDRAM can burst-read/write full horizontal lines with maximum efficiency.
 - The rasterizer stays within the 32-row vertical bounds for a long time, drawing quads at the full 50 MHz rate.
 - A cache miss only occurs when the rasterizer crosses the 32-row boundary, meaning the massive SDRAM latency penalty is amortized over thousands of rapid cache hits, preserving the framerate.
+
+April 2026: First-Pass Full-Resolution Migration Plan
+-----------------------------------------------------
+
+Goal
+----
+Unlock true 640x480 rendering without requiring a software-side banding or
+quad-sorting pass up front. Software should be allowed to emit ordinary quads in
+the same order it does today. Hardware owns correctness; later software work can
+make the access pattern friendlier.
+
+The shared software geometry has been moved to `sw/voxel_gpu.h`:
+
+  * `VOXEL_RENDER_WIDTH = 640`
+  * `VOXEL_RENDER_HEIGHT = 480`
+  * `VOXEL_RENDER_STRIDE = 1280` bytes
+  * `VOXEL_BAND_CACHE_HEIGHT = 64`
+  * `VOXEL_BAND_COUNT = 8`
+
+`sw/renderer.h` now derives `SCREEN_WIDTH` and `SCREEN_HEIGHT` from those
+constants, and the virtual hardware server's default framebuffer is 640x480.
+That is the software-facing target. The hardware still needs the coherent RTL
+cache migration below before this is safe on FPGA.
+
+Why not directly use SDRAM as `fb_back_ram` / `z_ram`?
+-----------------------------------------------------
+The current raster pipeline depends on one-cycle local reads for both depth and
+destination color:
+
+  * `z_rd_data` becomes `recip1_z_ref`
+  * `fb_back_rd_data` becomes `recip1_dst_rgb565`
+
+Every candidate pixel may perform:
+
+  1. read z
+  2. read destination RGB565 for alpha/fog blending
+  3. compare z
+  4. write color
+  5. write z
+
+The board SDRAM controller is FIFO/burst oriented, not a low-latency random
+read/write port. Treating it like BRAM would collapse the one-pixel-per-cycle
+pipeline. The first-pass design must therefore keep the hot read-modify-write
+path in BRAM and use SDRAM only at cache boundaries.
+
+Hardware contract
+-----------------
+The first full-resolution RTL pass should implement a hardware-managed vertical
+band cache:
+
+  * Cache shape: 640x64 pixels.
+  * Cache contents: RGB565 color cache + 16-bit z cache.
+  * Hot-path storage cost: 640 * 64 * 4 bytes = 160 KiB.
+  * The cache is the only place the raster pipeline reads/writes per-pixel
+    color and z.
+  * SDRAM is the backing store for the full inactive render frame and the full
+    z frame.
+
+For each rasterized pixel:
+
+  * If `pixel_y` is inside the resident band, issue the pixel into the existing
+    pipeline using the band-local BRAM address.
+  * If `pixel_y` misses the resident band, stop issuing new pixels, drain the
+    existing pipeline, flush the dirty resident band to SDRAM, load or initialize
+    the target band, then retry the same pixel.
+
+Correctness requirement: any descriptor that was legal in the old 320x240
+pipeline must render correctly in 640x480 space. Cache misses may stall, but
+they must never drop pixels or require software to split quads.
+
+Frame/band metadata
+-------------------
+Keep tiny per-frame metadata in RTL:
+
+  * `render_target_sel`: inactive color frame selected at frame begin.
+  * `band_valid_this_frame[7:0]`: whether a band has already been initialized or
+    flushed during this frame.
+  * `cache_valid`: whether the BRAM cache currently contains a resident band.
+  * `cache_dirty`: whether the resident band must be flushed before eviction.
+  * `cache_band_index`: resident vertical band, `pixel_y[8:6]`.
+
+At `CLEAR_FRAME` / frame begin:
+
+  * Select the inactive SDRAM color frame as the render target.
+  * Clear `band_valid_this_frame`.
+  * Invalidate the BRAM cache.
+  * Do not clear the whole SDRAM frame; bands are initialized lazily.
+
+On first touch of a band this frame:
+
+  * Initialize BRAM color to the clear/background color.
+  * Initialize BRAM z to `16'hffff`.
+  * Mark the band resident but not yet backed by meaningful SDRAM contents.
+
+On revisiting a band already touched this frame:
+
+  * Burst-read the band color from the inactive render frame.
+  * Burst-read the band z from the z backing region.
+  * Resume the stalled pixel after both caches are filled.
+
+On evicting a dirty band:
+
+  * Burst-write the band color to the inactive render frame.
+  * Burst-write the band z to the z backing region.
+  * Mark `band_valid_this_frame[cache_band_index] = 1`.
+
+The final band must be flushed before honoring `FLIP`; then the visible color
+frame can swap on vsync. The old full-frame `ST_COPY` becomes unnecessary once
+all rendering writes through the band cache.
+
+SDRAM layout
+------------
+Default byte layout for the first pass:
+
+  * front color frame: byte base `0`
+  * back color frame: byte base `640 * 480 * 2 = 614400`
+  * z backing frame: byte base `2 * 614400 = 1228800`
+
+Color scanout only reads whichever color frame is visible. Rendering writes the
+inactive color frame and the z backing frame.
+
+The last band is partial: band 7 covers rows 448..479. Flush/load logic must
+transfer only 32 rows for that band, not the full 64 rows, otherwise it will
+write past the color frame into the next SDRAM region.
+
+SDRAM read arbitration
+----------------------
+This is the main RTL hazard.
+
+The existing SDRAM read FIFO is already used by VGA scanout line-fill. Cache
+loads also need SDRAM reads. The first functional implementation may give cache
+loads priority during active rendering, which can temporarily starve scanout of
+the previous frame while the next frame is being rasterized. That is acceptable
+for bring-up if documented and visible output is stable after `FLIP`, but the
+arbitration must be explicit.
+
+Preferred first-pass policy:
+
+  1. Scanout owns reads when the engine is idle or only flushing writes.
+  2. Cache-load states own reads while the rasterizer is stalled on a miss.
+  3. Cache loads run in 64-word bursts aligned to scanlines.
+  4. After the frame is complete and `FLIP` is accepted, scanout regains the read
+     port exclusively.
+
+Later optimization can interleave cache-load bursts only when scanout has enough
+prefetched line data, but that is not required for first correctness.
+
+RTL implementation steps
+------------------------
+Implement as one coherent RTL change, not as a half-swapped framebuffer:
+
+  1. Change `FB_WIDTH`, `FB_HEIGHT`, `LINE_WORDS`, stride defaults, and VGA
+     scanout indexing to true 640x480.
+  2. Replace full-frame `fb_back_ram` and `z_ram` with 640x64 band RAMs.
+  3. Convert draw addresses from full-frame addresses to band-local cache
+     addresses: `(pixel_y - cache_band_y0) * 640 + pixel_x`.
+  4. Add miss detection before issuing `pipe0_valid`.
+  5. On miss, suppress new `pipe0_valid`, drain the current pipeline, and enter
+     cache flush/load/init states.
+  6. Add color-band flush, z-band flush, color-band load, z-band load, and
+     init-band states.
+  7. Replace `ST_COPY` with final dirty-band flush before vsync swap.
+  8. Preserve the existing descriptor ABI; software does not need to sort or
+     split quads for correctness.
+
+Software follow-ups after hardware is correct
+---------------------------------------------
+Once full-resolution hardware is running, software can improve frame pacing
+without changing correctness:
+
+  * Treat sky/background as band initialization instead of ordinary fullscreen
+    quads.
+  * Sort opaque descriptors by vertical band.
+  * Split very tall screen-space quads at band boundaries.
+  * Keep translucent/UI passes ordered more carefully.
+
+Those are optimizations only. The hardware-managed cache remains the fallback
+that makes arbitrary descriptor order valid.
+
+RTL status
+----------
+The first-pass RTL migration has now been implemented in
+`hw/voxel_gpu/rtl/voxel_gpu.sv`.
+
+What changed:
+
+  * The raster/display geometry is now 640x480.
+  * VGA scanout indexes true 640 columns and 480 rows instead of 2x upscaling a
+    320x240 internal surface.
+  * The full-frame BRAM color and z memories were replaced with 640x64 band
+    memories.
+  * Draw-pipeline addresses are now band-local cache addresses.
+  * A draw pixel only enters `pipe0` if its vertical band is resident.
+  * A miss drains the pipeline, flushes the dirty resident band if needed, then
+    either initializes or reloads the target band before retrying the same
+    pixel.
+  * `FLIP` now waits for the final dirty resident band to flush, then swaps the
+    visible SDRAM color frame on vsync.
+
+Verification performed locally:
+
+  * `verilator --lint-only` on the GPU RTL and SDRAM support files passes when
+    the expected Quartus vendor primitives (`altsyncram`, `dcfifo`,
+    `altera_pll`) and legacy SDRAM-controller width warnings are suppressed.
+  * Software renderer test binaries build on macOS.
+  * Virtual hardware tests pass at 640x480.
+
+Bring-up caveats:
+
+  * This has not yet been through Quartus fit/timing.
+  * The z backing base is currently fixed at byte address `1228800`
+    (`2 * 640 * 480 * 2`) in RTL rather than exposed as its own CSR.
+  * Cache-load reads temporarily take ownership of the SDRAM read side over VGA
+    scanout. That is acceptable for the first correctness pass, but visible
+    scanout starvation while rendering is possible until we add smarter read
+    arbitration or software-side cache-friendly ordering.

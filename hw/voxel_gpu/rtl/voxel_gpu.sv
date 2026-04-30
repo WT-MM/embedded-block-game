@@ -1,14 +1,15 @@
 // voxel_gpu.sv — SDRAM-backed display path with RGB565 external frames.
 //
-// The rasterizer renders into a single 320x240 RGB565 BRAM backbuffer plus a
-// BRAM z-buffer. Palette entries are still the source-color ABI, but resolved
-// pixels are stored as true color so translucent quads can alpha blend against
-// the existing destination pixel.
-// FLIP no longer swaps two BRAM framebuffers. Instead:
-//   * the finished RGB565 BRAM backbuffer is copied into the inactive SDRAM
-//     frame,
-//   * scanout reads the active SDRAM frame through small line buffers, and
-//   * the visible SDRAM frame only changes on vsync once the copy completes.
+// The rasterizer renders at true 640x480 through a hardware-managed 640x64
+// BRAM band cache. Palette entries are still the source-color ABI, but resolved
+// pixels are stored as RGB565 so translucent quads can alpha blend against the
+// existing destination pixel.
+// FLIP no longer copies a full BRAM framebuffer. Instead:
+//   * the rasterizer writes the inactive SDRAM color frame through the band
+//     cache, with a matching SDRAM-backed z frame,
+//   * cache misses stall, flush dirty bands, and load or lazily initialize the
+//     requested band, and
+//   * scanout reads the active SDRAM frame through small line buffers.
 //
 // This keeps BRAM usage close to the indexed design while making the external
 // framebuffer itself true color.
@@ -65,15 +66,17 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
-    localparam int FB_WIDTH       = 320;
-    localparam int FB_HEIGHT      = 240;
+    localparam int FB_WIDTH       = 640;
+    localparam int FB_HEIGHT      = 480;
     localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
+    localparam int BAND_HEIGHT    = 64;
+    localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
+    localparam int BAND_COUNT     = (FB_HEIGHT + BAND_HEIGHT - 1) / BAND_HEIGHT;
     localparam int FIFO_DEPTH     = 2048;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
     localparam int TEXTURE_BYTES   = 64 * 16 * 16;
-    localparam int FB_WORDS        = FB_PIXELS;
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int READ_BURST_WORDS = 64;
@@ -89,16 +92,18 @@ module voxel_gpu (
      * deterministic regardless of whether Quartus implements the
      * palette array as MLAB (async read) or M10K (sync read). */
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
-    localparam logic [24:0] FB_WORDS_25 = 25'd76800;
-    localparam logic [24:0] LINE_WORDS_25 = 25'd320;
+    localparam logic [24:0] FB_WORDS_25 = 25'd307200;
+    localparam logic [24:0] LINE_WORDS_25 = 25'd640;
+    localparam logic [24:0] BAND_WORDS_25 = 25'd40960;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
-    localparam logic [8:0]  LINE_WORDS_9 = 9'd320;
+    localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
     localparam logic [8:0]  READ_BURST_WORDS_9 = 9'd64;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
-    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd153600;
-    localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd640;
+    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd614400;
+    localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd1280;
+    localparam logic [31:0] DEFAULT_EXTMEM_Z_BASE = 32'd1228800;
     localparam int SDRAM_POWERUP_HOLD_CYCLES = 200000;
     localparam int SDRAM_INIT_WAIT_CYCLES = 32000;
     localparam int FLAG_TEX_BIT        = 0;
@@ -111,12 +116,18 @@ module voxel_gpu (
     localparam int FLAG_ALPHA_MSB      = 7;
 
     typedef enum logic [3:0] {
-        ST_IDLE       = 4'd0,
-        ST_CLEAR      = 4'd1,
-        ST_FETCH      = 4'd2,
-        ST_DRAW       = 4'd3,
-        ST_DRAW_FLUSH = 4'd4,
-        ST_COPY       = 4'd5
+        ST_IDLE              = 4'd0,
+        ST_CLEAR             = 4'd1,
+        ST_FETCH             = 4'd2,
+        ST_DRAW              = 4'd3,
+        ST_DRAW_FLUSH        = 4'd4,
+        ST_CACHE_EVICT       = 4'd5,
+        ST_CACHE_FLUSH_COLOR = 4'd6,
+        ST_CACHE_FLUSH_Z     = 4'd7,
+        ST_CACHE_SELECT_FILL = 4'd8,
+        ST_CACHE_INIT        = 4'd9,
+        ST_CACHE_LOAD_COLOR  = 4'd10,
+        ST_CACHE_LOAD_Z      = 4'd11
     } engine_state_t;
 
     engine_state_t state;
@@ -141,8 +152,8 @@ module voxel_gpu (
     logic        vsy_latch;
     logic        display_sel;             // 0 => extmem_front_base is visible
     logic        display_valid;
-    logic        copy_target_sel;
-    logic        copy_complete_pending;
+    logic        copy_target_sel;         // inactive SDRAM color frame rendered this frame
+    logic        copy_complete_pending;   // completed render frame waits for vsync display swap
 
     // Palette lookup path: draw_pipe_color -> apply_light_bank ->
     // pal_rd_src_addr (registered) -> palette[] -> plr_src_rgb
@@ -174,8 +185,8 @@ module voxel_gpu (
     logic  [5:0] fetch_count;
     logic  [3:0] draw_flush_count;
 
-    logic [16:0] clear_addr;
-    logic [16:0] draw_row_base;
+    logic [15:0] clear_addr;
+    logic [15:0] draw_row_base;
     logic  [9:0] draw_x_min, draw_x_max, draw_x_cur;
     logic  [8:0] draw_y_min;
     logic  [8:0] draw_y_max, draw_y_cur;
@@ -205,7 +216,7 @@ module voxel_gpu (
     logic        pipe0_fog;
     logic  [1:0] pipe0_light_bank;
     logic  [7:0] pipe0_tex_or_color;
-    logic [16:0] pipe0_addr;
+    logic [15:0] pipe0_addr;
     logic [15:0] pipe0_z;
     logic  [9:0] pipe0_x;
     logic  [8:0] pipe0_y;
@@ -221,7 +232,7 @@ module voxel_gpu (
     logic        recip0_fog;
     logic  [1:0] recip0_light_bank;
     logic  [7:0] recip0_tex_or_color;
-    logic [16:0] recip0_addr;
+    logic [15:0] recip0_addr;
     logic [15:0] recip0_z;
     logic  [9:0] recip0_x;
     logic  [8:0] recip0_y;
@@ -239,7 +250,7 @@ module voxel_gpu (
     logic        recip1_fog;
     logic  [1:0] recip1_light_bank;
     logic  [7:0] recip1_tex_or_color;
-    logic [16:0] recip1_addr;
+    logic [15:0] recip1_addr;
     logic [15:0] recip1_z;
     logic [15:0] recip1_z_ref;
     logic [15:0] recip1_dst_rgb565;
@@ -261,7 +272,7 @@ module voxel_gpu (
     logic        recip2_fog;
     logic  [1:0] recip2_light_bank;
     logic  [7:0] recip2_tex_or_color;
-    logic [16:0] recip2_addr;
+    logic [15:0] recip2_addr;
     logic [15:0] recip2_z;
     logic [15:0] recip2_z_ref;
     logic [15:0] recip2_dst_rgb565;
@@ -281,7 +292,7 @@ module voxel_gpu (
     logic        pipe1_fog;
     logic  [1:0] pipe1_light_bank;
     logic  [7:0] pipe1_tex_or_color;
-    logic [16:0] pipe1_addr;
+    logic [15:0] pipe1_addr;
     logic [15:0] pipe1_z;
     logic [15:0] pipe1_z_ref;
     logic [15:0] pipe1_dst_rgb565;
@@ -299,7 +310,7 @@ module voxel_gpu (
     logic        tex0_fog;
     logic  [1:0] tex0_light_bank;
     logic  [7:0] tex0_tex_or_color;
-    logic [16:0] tex0_addr;
+    logic [15:0] tex0_addr;
     logic [15:0] tex0_z;
     logic [15:0] tex0_z_ref;
     logic [15:0] tex0_dst_rgb565;
@@ -317,7 +328,7 @@ module voxel_gpu (
     logic        pipe2_fog;
     logic  [1:0] pipe2_light_bank;
     logic  [7:0] pipe2_tex_or_color;
-    logic [16:0] pipe2_addr;
+    logic [15:0] pipe2_addr;
     logic [15:0] pipe2_z;
     logic [15:0] pipe2_z_ref;
     logic [15:0] pipe2_dst_rgb565;
@@ -334,7 +345,7 @@ module voxel_gpu (
     logic        draw_pipe_fog;
     logic  [1:0] draw_pipe_light_bank;
     logic  [7:0] draw_pipe_tex_or_color;
-    logic [16:0] draw_pipe_addr;
+    logic [15:0] draw_pipe_addr;
     logic [15:0] draw_pipe_z;
     logic [15:0] draw_pipe_z_ref;
     logic [15:0] draw_pipe_dst_rgb565;
@@ -362,7 +373,7 @@ module voxel_gpu (
     logic        pal_rd_ztest;
     logic  [1:0] pal_rd_alpha;
     logic        pal_rd_fog;
-    logic [16:0] pal_rd_addr;
+    logic [15:0] pal_rd_addr;
     logic [15:0] pal_rd_z;
     logic  [7:0] pal_rd_src_addr;
     logic  [7:0] pal_rd_fog_addr;
@@ -382,7 +393,7 @@ module voxel_gpu (
     logic        plr_ztest;
     logic  [1:0] plr_alpha;
     logic        plr_fog;
-    logic [16:0] plr_addr;
+    logic [15:0] plr_addr;
     logic [15:0] plr_z;
     logic [23:0] plr_src_rgb;
     logic [15:0] plr_dst_rgb565;
@@ -395,7 +406,7 @@ module voxel_gpu (
     logic        fog0_ztest;
     logic  [1:0] fog0_alpha;
     logic        fog0_fog;
-    logic [16:0] fog0_addr;
+    logic [15:0] fog0_addr;
     logic [15:0] fog0_z;
     logic [15:0] fog0_src_rgb565;
     logic [15:0] fog0_dst_rgb565;
@@ -407,7 +418,7 @@ module voxel_gpu (
     logic        fog1_ztest;
     logic  [1:0] fog1_alpha;
     logic        fog1_fog;
-    logic [16:0] fog1_addr;
+    logic [15:0] fog1_addr;
     logic [15:0] fog1_z;
     logic [15:0] fog1_src_rgb565;
     logic [15:0] fog1_dst_rgb565;
@@ -416,7 +427,7 @@ module voxel_gpu (
     logic        commit_valid;
     logic        commit_pass;
     logic        commit_ztest;
-    logic [16:0] commit_addr;
+    logic [15:0] commit_addr;
     logic [15:0] commit_z;
     logic [15:0] commit_color;
     // tex_rd_data is driven combinationally by voxel_texture_rom's
@@ -432,16 +443,15 @@ module voxel_gpu (
     logic        scan_visible_now;
     logic [15:0] scan_rgb565_r;
     logic        scan_visible_r;
-    logic [16:0] draw_addr;
-    logic [16:0] fb_back_rd_addr;
-    logic [16:0] copy_fb_rd_addr;
+    logic [15:0] draw_addr;
+    logic [15:0] fb_back_rd_addr;
     logic [15:0] fb_back_rd_data;
-    logic [16:0] fb_wr_addr;
+    logic [15:0] fb_wr_addr;
     logic [15:0] fb_wr_data;
     logic        fb_back_wr_en;
-    logic [16:0] z_rd_addr;
+    logic [15:0] z_rd_addr;
     logic [15:0] z_rd_data;
-    logic [16:0] z_wr_addr;
+    logic [15:0] z_wr_addr;
     logic [15:0] z_wr_data;
     logic        z_wr_en;
 
@@ -462,20 +472,30 @@ module voxel_gpu (
     logic        scan_fill_bank;
     logic  [8:0] scan_fill_row;
     logic [24:0] scan_fill_base_words;
-    logic  [8:0] scan_fill_store_idx;
+    logic  [9:0] scan_fill_store_idx;
     logic        scan_fill_pop_d;
     logic [15:0] scan_rgb565_now;
     logic [24:0] sdram_rd_addr_cfg;
     logic [24:0] sdram_rd_max_addr_cfg;
     logic        sdram_rd_load_pulse;
 
-    logic [16:0] copy_fb_next_addr;
-    logic [16:0] copy_pixels_issued;
-    logic [16:0] copy_words_written;
-    logic        copy_fetch_inflight;
-    logic  [7:0] copy_drain_count;
-    logic        copy_word_pending_valid;
-    logic [15:0] copy_word_pending;
+    logic  [2:0] cache_band_index;
+    logic  [2:0] cache_target_band;
+    logic        cache_valid;
+    logic        cache_dirty;
+    logic  [7:0] cache_band_valid;
+    logic        cache_resume_draw;
+    logic        cache_final_flush;
+    logic [15:0] cache_maint_addr;
+    logic [15:0] cache_pixels_total;
+    logic [15:0] cache_words_issued;
+    logic [15:0] cache_words_done;
+    logic        cache_fetch_inflight;
+    logic  [7:0] cache_drain_count;
+    logic        cache_word_pending_valid;
+    logic [15:0] cache_word_pending;
+    logic        cache_load_pop_d;
+    logic        cache_load_is_z;
     logic [24:0] sdram_wr_addr_cfg;
     logic [24:0] sdram_wr_max_addr_cfg;
     logic        sdram_wr_load_pulse;
@@ -503,10 +523,11 @@ module voxel_gpu (
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
     wire [24:0] extmem_front_base_words = extmem_front_base[25:1];
     wire [24:0] extmem_back_base_words  = extmem_back_base[25:1];
+    wire [24:0] extmem_z_base_words     = DEFAULT_EXTMEM_Z_BASE[25:1];
     wire [24:0] display_base_words      = display_sel ? extmem_back_base_words : extmem_front_base_words;
     wire [24:0] copy_target_base_words  = copy_target_sel ? extmem_back_base_words : extmem_front_base_words;
-    wire [8:0]  scan_current_row        = {1'b0, vcount[8:1]};
-    wire [8:0]  scan_current_x          = hcount[10:2];
+    wire [8:0]  scan_current_row        = vcount[8:0];
+    wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < FB_WIDTH);
     wire        scan_active_row_matches = scan_active_valid && (scan_active_row == scan_current_row);
     wire        scan_active_bank_ready  = scan_active_bank ? scan_line1_ready : scan_line0_ready;
@@ -519,33 +540,44 @@ module voxel_gpu (
                                           scan_active_row_matches &&
                                           scan_active_bank_ready &&
                                           (scan_active_bank_row == scan_current_row);
-    wire [8:0]  scan_fill_words_complete =
-        scan_fill_store_idx + (scan_fill_pop_d ? 9'd1 : 9'd0);
+    wire [9:0]  scan_fill_words_complete =
+        scan_fill_store_idx + (scan_fill_pop_d ? 10'd1 : 10'd0);
     wire        scan_fill_line_done =
-        scan_fill_pop_d && (scan_fill_words_complete == LINE_WORDS_9);
+        scan_fill_pop_d && (scan_fill_words_complete == LINE_WORDS_10);
     wire        scan_fill_chunk_done =
         scan_fill_pop_d && (scan_fill_words_complete[5:0] == 6'd0);
     wire [24:0] scan_fill_next_chunk_base_words =
-        scan_fill_base_words + {16'd0, scan_fill_words_complete};
-    wire        sdram_wr_push = (state == ST_COPY) && copy_word_pending_valid && !sdram_wr_full;
-    wire        sdram_rd_pop = scan_fill_active && !sdram_rd_empty &&
-                               (scan_fill_words_complete < LINE_WORDS_9) &&
-                               !scan_fill_chunk_done;
-    // Leave scanout regular SDRAM read slots between copy write bursts.
-    wire        copy_can_issue_read =
-        (state == ST_COPY) &&
-        (copy_pixels_issued < FB_PIXELS) &&
-        !copy_fetch_inflight &&
+        scan_fill_base_words + {15'd0, scan_fill_words_complete};
+    wire        cache_flush_state =
+        (state == ST_CACHE_FLUSH_COLOR) || (state == ST_CACHE_FLUSH_Z);
+    wire        cache_load_state =
+        (state == ST_CACHE_LOAD_COLOR) || (state == ST_CACHE_LOAD_Z);
+    wire [15:0] cache_load_words_complete =
+        cache_words_done + (cache_load_pop_d ? 16'd1 : 16'd0);
+    wire        cache_init_state = (state == ST_CACHE_INIT);
+    wire        cache_maint_state = cache_flush_state || cache_load_state || cache_init_state;
+    wire        sdram_wr_push = cache_flush_state && cache_word_pending_valid && !sdram_wr_full;
+    wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
+                               (cache_load_words_complete < cache_pixels_total);
+    wire        scan_rd_pop = scan_fill_active && !sdram_rd_empty &&
+                              (scan_fill_words_complete < LINE_WORDS_10) &&
+                              !scan_fill_chunk_done;
+    wire        sdram_rd_pop = cache_load_state ? cache_rd_pop : scan_rd_pop;
+    wire        cache_can_issue_read =
+        cache_flush_state &&
+        (cache_words_issued < cache_pixels_total) &&
+        !cache_fetch_inflight &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
-        (!copy_word_pending_valid || sdram_wr_push);
-    wire        copy_issue_read = copy_can_issue_read;
-    wire [8:0]  sdram_wr_length_cfg = (state == ST_COPY) ? COPY_BURST_WORDS_9 : 9'd0;
+        (!cache_word_pending_valid || sdram_wr_push);
+    wire        cache_issue_read = cache_can_issue_read;
+    wire [8:0]  sdram_wr_length_cfg = cache_flush_state ? COPY_BURST_WORDS_9 : 9'd0;
     /*
-     * Keep SDRAM reads in 64-word chunks. A 320-word line burst can cross the
+     * Keep SDRAM reads in 64-word chunks. A full scanline burst can cross the
      * SDRAM row/column boundary; 64-word chunks stay aligned because both the
      * frame line width and SDRAM column size are multiples of 64.
      */
-    wire [8:0]  sdram_rd_length_cfg = scan_fill_armed ? READ_BURST_WORDS_9 : 9'd0;
+    wire [8:0]  sdram_rd_length_cfg = (scan_fill_armed || cache_load_state) ?
+                                      READ_BURST_WORDS_9 : 9'd0;
 
     wire signed [15:0] desc_x_min_raw = $signed(desc_words[0][15:0]);
     wire signed [15:0] desc_y_min_raw = $signed(desc_words[0][31:16]);
@@ -608,6 +640,9 @@ module voxel_gpu (
                                      ($signed(draw_dz_dx) * draw_dx_s) +
                                      ($signed(draw_dz_dy) * draw_dy_s);
     wire [15:0] draw_z_value = clamp_z(draw_z_eval);
+    wire [2:0]  draw_band_index = draw_y_cur[8:6];
+    wire        draw_cache_hit = cache_valid && (cache_band_index == draw_band_index);
+    wire [15:0] draw_cache_addr = band_local_addr(draw_x_cur, draw_y_cur, cache_band_index);
     wire signed [63:0] draw_uw_base = $signed({{32{draw_uw_0[31]}}, draw_uw_0});
     wire signed [63:0] draw_vw_base = $signed({{32{draw_vw_0[31]}}, draw_vw_0});
     wire signed [63:0] draw_iw_base = $signed({{32{draw_iw_0[31]}}, draw_iw_0});
@@ -719,8 +754,6 @@ module voxel_gpu (
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
-    wire [15:0] copy_rgb565 = fb_back_rd_data;
-
     wire [31:0] status_word = {
         12'h0,
         {4'h0, fifo_count},
@@ -748,8 +781,8 @@ module voxel_gpu (
         begin
             if (value < 0)
                 clamp_x = 10'd0;
-            else if (value > 16'sd319)
-                clamp_x = 10'd319;
+            else if (value > 16'sd639)
+                clamp_x = 10'd639;
             else
                 clamp_x = value[9:0];
         end
@@ -759,10 +792,38 @@ module voxel_gpu (
         begin
             if (value < 0)
                 clamp_y = 9'd0;
-            else if (value > 16'sd239)
-                clamp_y = 9'd239;
+            else if (value > 16'sd479)
+                clamp_y = 9'd479;
             else
                 clamp_y = value[8:0];
+        end
+    endfunction
+
+    function automatic [15:0] band_local_addr(input logic [9:0] x,
+                                              input logic [8:0] y,
+                                              input logic [2:0] band);
+        logic [5:0] local_y;
+        begin
+            local_y = y[5:0] - (band == 3'd7 ? 6'd0 : 6'd0);
+            band_local_addr = ({local_y, 9'd0} + {local_y, 7'd0}) + {6'd0, x};
+        end
+    endfunction
+
+    function automatic [15:0] band_pixel_count(input logic [2:0] band);
+        begin
+            band_pixel_count = (band == 3'd7) ? 16'd20480 : 16'd40960;
+        end
+    endfunction
+
+    function automatic [24:0] band_word_count(input logic [2:0] band);
+        begin
+            band_word_count = (band == 3'd7) ? 25'd20480 : 25'd40960;
+        end
+    endfunction
+
+    function automatic [24:0] band_word_offset(input logic [2:0] band);
+        begin
+            band_word_offset = {22'd0, band} * BAND_WORDS_25;
         end
     endfunction
 
@@ -909,7 +970,7 @@ module voxel_gpu (
         .REF_CLK     (clk),
         .RESET_N     (sdram_ctrl_reset_n),
         .CLK         (sdram_ctrl_clk),
-        .WR_DATA     (copy_word_pending),
+        .WR_DATA     (cache_word_pending),
         .WR          (sdram_wr_push),
         .WR_ADDR     (sdram_wr_addr_cfg),
         .WR_MAX_ADDR (sdram_wr_max_addr_cfg),
@@ -943,8 +1004,8 @@ module voxel_gpu (
 
     voxel_sdp_ram #(
         .DATA_W(16),
-        .ADDR_W(17),
-        .DEPTH(FB_PIXELS)
+        .ADDR_W(16),
+        .DEPTH(BAND_PIXELS)
     ) fb_back_ram (
         .clk     (clk),
         .rd_addr (fb_back_rd_addr),
@@ -956,8 +1017,8 @@ module voxel_gpu (
 
     voxel_sdp_ram #(
         .DATA_W(16),
-        .ADDR_W(17),
-        .DEPTH(FB_PIXELS)
+        .ADDR_W(16),
+        .DEPTH(BAND_PIXELS)
     ) z_ram (
         .clk     (clk),
         .rd_addr (z_rd_addr),
@@ -1026,8 +1087,8 @@ module voxel_gpu (
         fifo_count       = 12'd0;
         fetch_count      = 6'd0;
         draw_flush_count = 4'd0;
-        clear_addr       = 17'd0;
-        draw_row_base    = 17'd0;
+        clear_addr       = 16'd0;
+        draw_row_base    = 16'd0;
         draw_x_min       = 10'd0;
         draw_x_max       = 10'd0;
         draw_x_cur       = 10'd0;
@@ -1057,7 +1118,7 @@ module voxel_gpu (
         pipe0_fog        = 1'b0;
         pipe0_light_bank = 2'd0;
         pipe0_tex_or_color = 8'd0;
-        pipe0_addr       = 17'd0;
+        pipe0_addr       = 16'd0;
         pipe0_z          = 16'd0;
         pipe0_x          = 10'd0;
         pipe0_y          = 9'd0;
@@ -1073,7 +1134,7 @@ module voxel_gpu (
         recip0_fog       = 1'b0;
         recip0_light_bank = 2'd0;
         recip0_tex_or_color = 8'd0;
-        recip0_addr      = 17'd0;
+        recip0_addr      = 16'd0;
         recip0_z         = 16'd0;
         recip0_x         = 10'd0;
         recip0_y         = 9'd0;
@@ -1091,7 +1152,7 @@ module voxel_gpu (
         recip1_fog       = 1'b0;
         recip1_light_bank = 2'd0;
         recip1_tex_or_color = 8'd0;
-        recip1_addr      = 17'd0;
+        recip1_addr      = 16'd0;
         recip1_z         = 16'd0;
         recip1_z_ref     = 16'd0;
         recip1_dst_rgb565 = 16'h0000;
@@ -1113,7 +1174,7 @@ module voxel_gpu (
         recip2_fog       = 1'b0;
         recip2_light_bank = 2'd0;
         recip2_tex_or_color = 8'd0;
-        recip2_addr      = 17'd0;
+        recip2_addr      = 16'd0;
         recip2_z         = 16'd0;
         recip2_z_ref     = 16'd0;
         recip2_dst_rgb565 = 16'h0000;
@@ -1133,7 +1194,7 @@ module voxel_gpu (
         pipe1_fog        = 1'b0;
         pipe1_light_bank = 2'd0;
         pipe1_tex_or_color = 8'd0;
-        pipe1_addr       = 17'd0;
+        pipe1_addr       = 16'd0;
         pipe1_z          = 16'd0;
         pipe1_z_ref      = 16'd0;
         pipe1_dst_rgb565 = 16'h0000;
@@ -1151,7 +1212,7 @@ module voxel_gpu (
         tex0_fog         = 1'b0;
         tex0_light_bank  = 2'd0;
         tex0_tex_or_color = 8'd0;
-        tex0_addr        = 17'd0;
+        tex0_addr        = 16'd0;
         tex0_z           = 16'd0;
         tex0_z_ref       = 16'd0;
         tex0_dst_rgb565  = 16'h0000;
@@ -1169,7 +1230,7 @@ module voxel_gpu (
         pipe2_fog        = 1'b0;
         pipe2_light_bank = 2'd0;
         pipe2_tex_or_color = 8'd0;
-        pipe2_addr       = 17'd0;
+        pipe2_addr       = 16'd0;
         pipe2_z          = 16'd0;
         pipe2_z_ref      = 16'd0;
         pipe2_dst_rgb565 = 16'h0000;
@@ -1186,7 +1247,7 @@ module voxel_gpu (
         draw_pipe_fog    = 1'b0;
         draw_pipe_light_bank = 2'd0;
         draw_pipe_tex_or_color = 8'd0;
-        draw_pipe_addr   = 17'd0;
+        draw_pipe_addr   = 16'd0;
         draw_pipe_z      = 16'd0;
         draw_pipe_z_ref  = 16'd0;
         draw_pipe_dst_rgb565 = 16'h0000;
@@ -1198,7 +1259,7 @@ module voxel_gpu (
         pal_rd_ztest     = 1'b0;
         pal_rd_alpha     = 2'd0;
         pal_rd_fog       = 1'b0;
-        pal_rd_addr      = 17'd0;
+        pal_rd_addr      = 16'd0;
         pal_rd_z         = 16'd0;
         pal_rd_src_addr  = 8'd0;
         pal_rd_fog_addr  = 8'd0;
@@ -1210,7 +1271,7 @@ module voxel_gpu (
         plr_ztest        = 1'b0;
         plr_alpha        = 2'd0;
         plr_fog          = 1'b0;
-        plr_addr         = 17'd0;
+        plr_addr         = 16'd0;
         plr_z            = 16'd0;
         plr_src_rgb      = 24'h000000;
         plr_dst_rgb565   = 16'h0000;
@@ -1222,7 +1283,7 @@ module voxel_gpu (
         fog0_ztest       = 1'b0;
         fog0_alpha       = 2'd0;
         fog0_fog         = 1'b0;
-        fog0_addr        = 17'd0;
+        fog0_addr        = 16'd0;
         fog0_z           = 16'd0;
         fog0_src_rgb565  = 16'h0000;
         fog0_dst_rgb565  = 16'h0000;
@@ -1234,7 +1295,7 @@ module voxel_gpu (
         fog1_ztest       = 1'b0;
         fog1_alpha       = 2'd0;
         fog1_fog         = 1'b0;
-        fog1_addr        = 17'd0;
+        fog1_addr        = 16'd0;
         fog1_z           = 16'd0;
         fog1_src_rgb565  = 16'h0000;
         fog1_dst_rgb565  = 16'h0000;
@@ -1243,12 +1304,11 @@ module voxel_gpu (
         commit_valid     = 1'b0;
         commit_pass      = 1'b0;
         commit_ztest     = 1'b0;
-        commit_addr      = 17'd0;
+        commit_addr      = 16'd0;
         commit_z         = 16'd0;
         commit_color     = 16'h0000;
         scan_rgb565_r    = 16'h0000;
         scan_visible_r   = 1'b0;
-        copy_fb_rd_addr  = 17'd0;
         scan_line0_ready = 1'b0;
         scan_line1_ready = 1'b0;
         scan_line0_row   = 9'd0;
@@ -1264,18 +1324,28 @@ module voxel_gpu (
         scan_fill_bank   = 1'b0;
         scan_fill_row    = 9'd0;
         scan_fill_base_words = 25'd0;
-        scan_fill_store_idx = 9'd0;
+        scan_fill_store_idx = 10'd0;
         scan_fill_pop_d  = 1'b0;
         sdram_rd_addr_cfg = 25'd0;
         sdram_rd_max_addr_cfg = 25'd0;
         sdram_rd_load_pulse = 1'b0;
-        copy_fb_next_addr = 17'd0;
-        copy_pixels_issued = 17'd0;
-        copy_words_written = 17'd0;
-        copy_fetch_inflight = 1'b0;
-        copy_drain_count = 8'd0;
-        copy_word_pending_valid = 1'b0;
-        copy_word_pending = 16'd0;
+        cache_band_index = 3'd0;
+        cache_target_band = 3'd0;
+        cache_valid = 1'b0;
+        cache_dirty = 1'b0;
+        cache_band_valid = 8'h00;
+        cache_resume_draw = 1'b0;
+        cache_final_flush = 1'b0;
+        cache_maint_addr = 16'd0;
+        cache_pixels_total = 16'd0;
+        cache_words_issued = 16'd0;
+        cache_words_done = 16'd0;
+        cache_fetch_inflight = 1'b0;
+        cache_drain_count = 8'd0;
+        cache_word_pending_valid = 1'b0;
+        cache_word_pending = 16'd0;
+        cache_load_pop_d = 1'b0;
+        cache_load_is_z = 1'b0;
         sdram_wr_addr_cfg = 25'd0;
         sdram_wr_max_addr_cfg = 25'd0;
         sdram_wr_load_pulse = 1'b0;
@@ -1350,14 +1420,12 @@ module voxel_gpu (
         if (!scan_visible_now)
             scan_rgb565_now = 16'h0000;
 
-        fb_back_rd_addr = (state == ST_COPY) ?
-                          (copy_issue_read ? copy_fb_next_addr : copy_fb_rd_addr) :
-                          pipe0_addr;
-        draw_addr = draw_row_base + {7'd0, draw_x_cur};
+        fb_back_rd_addr = cache_flush_state ? cache_maint_addr : pipe0_addr;
+        draw_addr = draw_cache_addr;
         fb_wr_addr = draw_addr;
         fb_wr_data = 16'h0000;
         fb_back_wr_en = 1'b0;
-        z_rd_addr = pipe0_addr;
+        z_rd_addr = cache_flush_state ? cache_maint_addr : pipe0_addr;
         z_wr_addr = draw_pipe_addr;
         z_wr_data = draw_pipe_z;
         z_wr_en   = 1'b0;
@@ -1370,6 +1438,31 @@ module voxel_gpu (
                 z_wr_data = 16'hFFFF;
                 z_wr_en   = 1'b1;
                 fb_back_wr_en = 1'b1;
+            end
+
+            ST_CACHE_INIT: begin
+                fb_wr_addr = cache_maint_addr;
+                fb_wr_data = clear_rgb565;
+                z_wr_addr = cache_maint_addr;
+                z_wr_data = 16'hFFFF;
+                z_wr_en = 1'b1;
+                fb_back_wr_en = 1'b1;
+            end
+
+            ST_CACHE_LOAD_COLOR: begin
+                if (cache_load_pop_d) begin
+                    fb_wr_addr = cache_maint_addr;
+                    fb_wr_data = sdram_rd_data;
+                    fb_back_wr_en = 1'b1;
+                end
+            end
+
+            ST_CACHE_LOAD_Z: begin
+                if (cache_load_pop_d) begin
+                    z_wr_addr = cache_maint_addr;
+                    z_wr_data = sdram_rd_data;
+                    z_wr_en = 1'b1;
+                end
             end
 
             ST_DRAW,
@@ -1421,8 +1514,8 @@ module voxel_gpu (
             fifo_count       <= 12'd0;
             fetch_count      <= 6'd0;
             draw_flush_count <= 4'd0;
-            clear_addr       <= 17'd0;
-            draw_row_base    <= 17'd0;
+            clear_addr       <= 16'd0;
+            draw_row_base    <= 16'd0;
             draw_x_min       <= 10'd0;
             draw_x_max       <= 10'd0;
             draw_x_cur       <= 10'd0;
@@ -1452,7 +1545,7 @@ module voxel_gpu (
             pipe0_fog        <= 1'b0;
             pipe0_light_bank <= 2'd0;
             pipe0_tex_or_color <= 8'd0;
-            pipe0_addr       <= 17'd0;
+            pipe0_addr       <= 16'd0;
             pipe0_z          <= 16'd0;
             pipe0_x          <= 10'd0;
             pipe0_y          <= 9'd0;
@@ -1468,7 +1561,7 @@ module voxel_gpu (
             recip0_fog       <= 1'b0;
             recip0_light_bank <= 2'd0;
             recip0_tex_or_color <= 8'd0;
-            recip0_addr      <= 17'd0;
+            recip0_addr      <= 16'd0;
             recip0_z         <= 16'd0;
             recip0_x         <= 10'd0;
             recip0_y         <= 9'd0;
@@ -1486,7 +1579,7 @@ module voxel_gpu (
             recip1_fog       <= 1'b0;
             recip1_light_bank <= 2'd0;
             recip1_tex_or_color <= 8'd0;
-            recip1_addr      <= 17'd0;
+            recip1_addr      <= 16'd0;
             recip1_z         <= 16'd0;
             recip1_z_ref     <= 16'd0;
             recip1_dst_rgb565 <= 16'h0000;
@@ -1508,7 +1601,7 @@ module voxel_gpu (
             recip2_fog       <= 1'b0;
             recip2_light_bank <= 2'd0;
             recip2_tex_or_color <= 8'd0;
-            recip2_addr      <= 17'd0;
+            recip2_addr      <= 16'd0;
             recip2_z         <= 16'd0;
             recip2_z_ref     <= 16'd0;
             recip2_dst_rgb565 <= 16'h0000;
@@ -1528,7 +1621,7 @@ module voxel_gpu (
             pipe1_fog        <= 1'b0;
             pipe1_light_bank <= 2'd0;
             pipe1_tex_or_color <= 8'd0;
-            pipe1_addr       <= 17'd0;
+            pipe1_addr       <= 16'd0;
             pipe1_z          <= 16'd0;
             pipe1_z_ref      <= 16'd0;
             pipe1_dst_rgb565 <= 16'h0000;
@@ -1546,7 +1639,7 @@ module voxel_gpu (
             tex0_fog         <= 1'b0;
             tex0_light_bank  <= 2'd0;
             tex0_tex_or_color <= 8'd0;
-            tex0_addr        <= 17'd0;
+            tex0_addr        <= 16'd0;
             tex0_z           <= 16'd0;
             tex0_z_ref       <= 16'd0;
             tex0_dst_rgb565  <= 16'h0000;
@@ -1564,7 +1657,7 @@ module voxel_gpu (
             pipe2_fog        <= 1'b0;
             pipe2_light_bank <= 2'd0;
             pipe2_tex_or_color <= 8'd0;
-            pipe2_addr       <= 17'd0;
+            pipe2_addr       <= 16'd0;
             pipe2_z          <= 16'd0;
             pipe2_z_ref      <= 16'd0;
             pipe2_dst_rgb565 <= 16'h0000;
@@ -1581,7 +1674,7 @@ module voxel_gpu (
             draw_pipe_fog    <= 1'b0;
             draw_pipe_light_bank <= 2'd0;
             draw_pipe_tex_or_color <= 8'd0;
-            draw_pipe_addr   <= 17'd0;
+            draw_pipe_addr   <= 16'd0;
             draw_pipe_z      <= 16'd0;
             draw_pipe_z_ref  <= 16'd0;
             draw_pipe_dst_rgb565 <= 16'h0000;
@@ -1593,7 +1686,7 @@ module voxel_gpu (
             pal_rd_ztest     <= 1'b0;
             pal_rd_alpha     <= 2'd0;
             pal_rd_fog       <= 1'b0;
-            pal_rd_addr      <= 17'd0;
+            pal_rd_addr      <= 16'd0;
             pal_rd_z         <= 16'd0;
             pal_rd_src_addr  <= 8'd0;
             pal_rd_fog_addr  <= 8'd0;
@@ -1605,7 +1698,7 @@ module voxel_gpu (
             plr_ztest        <= 1'b0;
             plr_alpha        <= 2'd0;
             plr_fog          <= 1'b0;
-            plr_addr         <= 17'd0;
+            plr_addr         <= 16'd0;
             plr_z            <= 16'd0;
             plr_src_rgb      <= 24'h000000;
             plr_dst_rgb565   <= 16'h0000;
@@ -1617,7 +1710,7 @@ module voxel_gpu (
             fog0_ztest       <= 1'b0;
             fog0_alpha       <= 2'd0;
             fog0_fog         <= 1'b0;
-            fog0_addr        <= 17'd0;
+            fog0_addr        <= 16'd0;
             fog0_z           <= 16'd0;
             fog0_src_rgb565  <= 16'h0000;
             fog0_dst_rgb565  <= 16'h0000;
@@ -1629,7 +1722,7 @@ module voxel_gpu (
             fog1_ztest       <= 1'b0;
             fog1_alpha       <= 2'd0;
             fog1_fog         <= 1'b0;
-            fog1_addr        <= 17'd0;
+            fog1_addr        <= 16'd0;
             fog1_z           <= 16'd0;
             fog1_src_rgb565  <= 16'h0000;
             fog1_dst_rgb565  <= 16'h0000;
@@ -1638,11 +1731,10 @@ module voxel_gpu (
             commit_valid     <= 1'b0;
             commit_pass      <= 1'b0;
             commit_ztest     <= 1'b0;
-            commit_addr      <= 17'd0;
+            commit_addr      <= 16'd0;
             commit_z         <= 16'd0;
             commit_color     <= 16'h0000;
             scan_rgb565_r    <= 16'h0000;
-            copy_fb_rd_addr  <= 17'd0;
             scan_line0_ready <= 1'b0;
             scan_line1_ready <= 1'b0;
             scan_line0_row   <= 9'd0;
@@ -1658,18 +1750,28 @@ module voxel_gpu (
             scan_fill_bank   <= 1'b0;
             scan_fill_row    <= 9'd0;
             scan_fill_base_words <= 25'd0;
-            scan_fill_store_idx <= 9'd0;
+            scan_fill_store_idx <= 10'd0;
             scan_fill_pop_d  <= 1'b0;
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
             sdram_rd_load_pulse <= 1'b0;
-            copy_fb_next_addr <= 17'd0;
-            copy_pixels_issued <= 17'd0;
-            copy_words_written <= 17'd0;
-            copy_fetch_inflight <= 1'b0;
-            copy_drain_count <= 8'd0;
-            copy_word_pending_valid <= 1'b0;
-            copy_word_pending <= 16'd0;
+            cache_band_index <= 3'd0;
+            cache_target_band <= 3'd0;
+            cache_valid <= 1'b0;
+            cache_dirty <= 1'b0;
+            cache_band_valid <= 8'h00;
+            cache_resume_draw <= 1'b0;
+            cache_final_flush <= 1'b0;
+            cache_maint_addr <= 16'd0;
+            cache_pixels_total <= 16'd0;
+            cache_words_issued <= 16'd0;
+            cache_words_done <= 16'd0;
+            cache_fetch_inflight <= 1'b0;
+            cache_drain_count <= 8'd0;
+            cache_word_pending_valid <= 1'b0;
+            cache_word_pending <= 16'd0;
+            cache_load_pop_d <= 1'b0;
+            cache_load_is_z <= 1'b0;
             sdram_wr_addr_cfg <= 25'd0;
             sdram_wr_max_addr_cfg <= 25'd0;
             sdram_wr_load_pulse <= 1'b0;
@@ -1728,7 +1830,7 @@ module voxel_gpu (
                 scan_fill_bank <= 1'b0;
                 scan_fill_row <= 9'd0;
                 scan_fill_base_words <= 25'd0;
-                scan_fill_store_idx <= 9'd0;
+                scan_fill_store_idx <= 10'd0;
                 scan_fill_pop_d <= 1'b0;
 
                 if (copy_complete_pending) begin
@@ -1743,7 +1845,7 @@ module voxel_gpu (
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= copy_target_base_words;
-                        scan_fill_store_idx <= 9'd0;
+                        scan_fill_store_idx <= 10'd0;
                         sdram_rd_addr_cfg <= copy_target_base_words;
                         sdram_rd_max_addr_cfg <= copy_target_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
@@ -1756,7 +1858,7 @@ module voxel_gpu (
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= display_base_words;
-                        scan_fill_store_idx <= 9'd0;
+                        scan_fill_store_idx <= 10'd0;
                         sdram_rd_addr_cfg <= display_base_words;
                         sdram_rd_max_addr_cfg <= display_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
@@ -1821,7 +1923,7 @@ module voxel_gpu (
                 default: ;
             endcase
 
-            if (!vsync_pulse) begin
+            if (!vsync_pulse && !cache_load_state) begin
                 if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty)
                     scan_fill_armed <= 1'b0;
 
@@ -1851,7 +1953,7 @@ module voxel_gpu (
                             scan_active_base_words <= scan_fill_base_words;
                         end
                     end else begin
-                        scan_fill_store_idx <= scan_fill_store_idx + 9'd1;
+                        scan_fill_store_idx <= scan_fill_store_idx + 10'd1;
                         if (scan_fill_chunk_done) begin
                             scan_fill_armed <= 1'b1;
                             sdram_rd_addr_cfg <= scan_fill_next_chunk_base_words;
@@ -1862,7 +1964,7 @@ module voxel_gpu (
                     end
                 end
 
-                scan_fill_pop_d <= scan_fill_active ? sdram_rd_pop : 1'b0;
+                scan_fill_pop_d <= scan_fill_active ? scan_rd_pop : 1'b0;
 
                 if (display_valid && scan_active_valid && VGA_BLANK_n &&
                     (scan_current_row != scan_active_row)) begin
@@ -1885,7 +1987,7 @@ module voxel_gpu (
                         scan_fill_bank <= 1'b1;
                         scan_fill_row <= scan_active_row + 9'd1;
                         scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
-                        scan_fill_store_idx <= 9'd0;
+                        scan_fill_store_idx <= 10'd0;
                         scan_line1_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
                         sdram_rd_max_addr_cfg <= scan_active_base_words +
@@ -1897,7 +1999,7 @@ module voxel_gpu (
                         scan_fill_bank <= 1'b0;
                         scan_fill_row <= scan_active_row + 9'd1;
                         scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
-                        scan_fill_store_idx <= 9'd0;
+                        scan_fill_store_idx <= 10'd0;
                         scan_line0_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
                         sdram_rd_max_addr_cfg <= scan_active_base_words +
@@ -1905,11 +2007,39 @@ module voxel_gpu (
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end
+            end else if (cache_load_state) begin
+                scan_fill_pop_d <= 1'b0;
             end
 
             if (sdram_wr_push) begin
-                copy_word_pending_valid <= 1'b0;
-                copy_words_written <= copy_words_written + 17'd1;
+                cache_word_pending_valid <= 1'b0;
+                cache_words_done <= cache_words_done + 16'd1;
+            end
+
+            if (cache_flush_state) begin
+                if (cache_fetch_inflight &&
+                    (!cache_word_pending_valid || sdram_wr_push)) begin
+                    cache_word_pending <= (state == ST_CACHE_FLUSH_Z) ?
+                                          z_rd_data : fb_back_rd_data;
+                    cache_word_pending_valid <= 1'b1;
+                    cache_fetch_inflight <= 1'b0;
+                end
+
+                if (cache_issue_read) begin
+                    cache_maint_addr <= cache_words_issued;
+                    cache_words_issued <= cache_words_issued + 16'd1;
+                    cache_fetch_inflight <= 1'b1;
+                end
+            end
+
+            if (cache_load_state) begin
+                if (cache_load_pop_d) begin
+                    cache_maint_addr <= cache_maint_addr + 16'd1;
+                    cache_words_done <= cache_words_done + 16'd1;
+                end
+                cache_load_pop_d <= cache_rd_pop;
+            end else begin
+                cache_load_pop_d <= 1'b0;
             end
 
             /* pal_rd stage: register the palette source/fog addresses
@@ -1987,21 +2117,9 @@ module voxel_gpu (
             commit_addr <= fog1_addr;
             commit_z <= fog1_z;
             commit_color <= fog1_out_rgb565;
-
-            if (state == ST_COPY) begin
-                if (copy_fetch_inflight &&
-                    (!copy_word_pending_valid || sdram_wr_push)) begin
-                    copy_word_pending <= copy_rgb565;
-                    copy_word_pending_valid <= 1'b1;
-                    copy_fetch_inflight <= 1'b0;
-                end
-
-                if (copy_issue_read) begin
-                    copy_fb_rd_addr <= copy_fb_next_addr;
-                    copy_fb_next_addr <= copy_fb_next_addr + 17'd1;
-                    copy_pixels_issued <= copy_pixels_issued + 17'd1;
-                    copy_fetch_inflight <= 1'b1;
-                end
+            if ((state == ST_DRAW || state == ST_DRAW_FLUSH) &&
+                commit_valid && commit_pass) begin
+                cache_dirty <= 1'b1;
             end
 
             case (state)
@@ -2022,22 +2140,19 @@ module voxel_gpu (
                     fog1_valid <= 1'b0;
                     commit_valid <= 1'b0;
                     if (ctrl_flp_pending && sdram_ready && !copy_complete_pending) begin
-                        state <= ST_COPY;
-                        copy_target_sel <= ~display_sel;
-                        copy_fb_next_addr <= 17'd0;
-                        copy_pixels_issued <= 17'd0;
-                        copy_words_written <= 17'd0;
-                        copy_fetch_inflight <= 1'b0;
-                        copy_drain_count <= 8'd0;
-                        copy_word_pending_valid <= 1'b0;
-                        copy_fb_rd_addr <= 17'd0;
-                        sdram_wr_addr_cfg <= (~display_sel) ? extmem_back_base_words : extmem_front_base_words;
-                        sdram_wr_max_addr_cfg <= ((~display_sel) ? extmem_back_base_words : extmem_front_base_words) + FB_WORDS_25;
-                        sdram_wr_load_pulse <= 1'b1;
+                        if (cache_valid && cache_dirty) begin
+                            cache_final_flush <= 1'b1;
+                            cache_resume_draw <= 1'b0;
+                            cache_target_band <= cache_band_index;
+                            state <= ST_CACHE_EVICT;
+                        end else begin
+                            copy_complete_pending <= 1'b1;
+                            cache_final_flush <= 1'b0;
+                        end
                     end else if (clear_pending) begin
                         state         <= ST_CLEAR;
                         clear_pending <= 1'b0;
-                        clear_addr    <= 17'd0;
+                        clear_addr    <= 16'd0;
                     end else if (ctrl_en && (fifo_count >= 12'd16)) begin
                         state       <= ST_FETCH;
                         fetch_count <= 6'd0;
@@ -2045,11 +2160,14 @@ module voxel_gpu (
                 end
 
                 ST_CLEAR: begin
-                    if (clear_addr == 17'd76799) begin
-                        state <= ST_IDLE;
-                    end else begin
-                        clear_addr <= clear_addr + 17'd1;
-                    end
+                    copy_target_sel <= ~display_sel;
+                    cache_valid <= 1'b0;
+                    cache_dirty <= 1'b0;
+                    cache_band_valid <= 8'h00;
+                    cache_resume_draw <= 1'b0;
+                    cache_final_flush <= 1'b0;
+                    copy_complete_pending <= 1'b0;
+                    state <= ST_IDLE;
                 end
 
                 ST_FETCH: begin
@@ -2058,7 +2176,7 @@ module voxel_gpu (
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
-                        draw_row_base <= {8'd0, desc_y_min} * 17'd320;
+                        draw_row_base <= band_local_addr(desc_x_min, desc_y_min, desc_y_min[8:6]);
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
                         draw_tex_or_color <= desc_tex_or_color;
@@ -2261,7 +2379,7 @@ module voxel_gpu (
                     draw_pipe_y <= pipe2_y;
                     draw_pipe_w_q <= pipe2_w_q;
 
-                    if (state == ST_DRAW) begin
+                    if (state == ST_DRAW && draw_cache_hit) begin
                         pipe0_valid <= 1'b1;
                         pipe0_inside <= draw_inside;
                         pipe0_ztest <= draw_flags[FLAG_ZTEST_BIT];
@@ -2284,13 +2402,20 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
-                                draw_row_base <= draw_row_base + 17'd320;
+                                draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd1;
                         end
+                    end else if (state == ST_DRAW) begin
+                        pipe0_valid <= 1'b0;
+                        cache_target_band <= draw_band_index;
+                        cache_resume_draw <= 1'b1;
+                        cache_final_flush <= 1'b0;
+                        state <= ST_DRAW_FLUSH;
+                        draw_flush_count <= DRAW_FLUSH_CYCLES;
                     end else begin
                         pipe0_valid <= 1'b0;
                         pipe0_inside <= 1'b0;
@@ -2301,7 +2426,7 @@ module voxel_gpu (
                         pipe0_fog <= 1'b0;
                         pipe0_light_bank <= 2'd0;
                         pipe0_tex_or_color <= 8'd0;
-                        pipe0_addr <= 17'd0;
+                        pipe0_addr <= 16'd0;
                         pipe0_z <= 16'd0;
                         pipe0_x <= 10'd0;
                         pipe0_y <= 9'd0;
@@ -2311,27 +2436,134 @@ module voxel_gpu (
 
                         if (draw_flush_count == 4'd1) begin
                             draw_flush_count <= 4'd0;
-                            state <= ST_IDLE;
+                            if (cache_resume_draw)
+                                state <= ST_CACHE_EVICT;
+                            else
+                                state <= ST_IDLE;
                         end else begin
                             draw_flush_count <= draw_flush_count - 4'd1;
                         end
                     end
                 end
 
-                ST_COPY: begin
-                    if ((copy_words_written == FB_WORDS) &&
-                        !copy_word_pending_valid &&
-                        !copy_fetch_inflight &&
-                        (sdram_wr_use[8:0] == 9'd0)) begin
-                        if (copy_drain_count == COPY_DRAIN_CYCLES) begin
-                            state <= ST_IDLE;
-                            copy_complete_pending <= 1'b1;
-                            copy_drain_count <= 8'd0;
-                        end else begin
-                            copy_drain_count <= copy_drain_count + 8'd1;
-                        end
+                ST_CACHE_EVICT: begin
+                    cache_words_issued <= 16'd0;
+                    cache_words_done <= 16'd0;
+                    cache_maint_addr <= 16'd0;
+                    cache_fetch_inflight <= 1'b0;
+                    cache_word_pending_valid <= 1'b0;
+                    cache_drain_count <= 8'd0;
+                    cache_pixels_total <= band_pixel_count(cache_band_index);
+                    if (cache_valid && cache_dirty) begin
+                        sdram_wr_addr_cfg <= copy_target_base_words +
+                                             band_word_offset(cache_band_index);
+                        sdram_wr_max_addr_cfg <= copy_target_base_words +
+                                                 band_word_offset(cache_band_index) +
+                                                 band_word_count(cache_band_index);
+                        sdram_wr_load_pulse <= 1'b1;
+                        state <= ST_CACHE_FLUSH_COLOR;
                     end else begin
-                        copy_drain_count <= 8'd0;
+                        state <= ST_CACHE_SELECT_FILL;
+                    end
+                end
+
+                ST_CACHE_FLUSH_COLOR: begin
+                    if ((cache_words_done == cache_pixels_total) &&
+                        !cache_word_pending_valid &&
+                        !cache_fetch_inflight &&
+                        (sdram_wr_use[8:0] == 9'd0)) begin
+                        cache_words_issued <= 16'd0;
+                        cache_words_done <= 16'd0;
+                        cache_maint_addr <= 16'd0;
+                        cache_fetch_inflight <= 1'b0;
+                        cache_word_pending_valid <= 1'b0;
+                        sdram_wr_addr_cfg <= extmem_z_base_words +
+                                             band_word_offset(cache_band_index);
+                        sdram_wr_max_addr_cfg <= extmem_z_base_words +
+                                                 band_word_offset(cache_band_index) +
+                                                 band_word_count(cache_band_index);
+                        sdram_wr_load_pulse <= 1'b1;
+                        state <= ST_CACHE_FLUSH_Z;
+                    end
+                end
+
+                ST_CACHE_FLUSH_Z: begin
+                    if ((cache_words_done == cache_pixels_total) &&
+                        !cache_word_pending_valid &&
+                        !cache_fetch_inflight &&
+                        (sdram_wr_use[8:0] == 9'd0)) begin
+                        cache_band_valid[cache_band_index] <= 1'b1;
+                        cache_dirty <= 1'b0;
+                        cache_valid <= 1'b0;
+                        if (cache_final_flush) begin
+                            copy_complete_pending <= 1'b1;
+                            cache_final_flush <= 1'b0;
+                            state <= ST_IDLE;
+                        end else begin
+                            state <= ST_CACHE_SELECT_FILL;
+                        end
+                    end
+                end
+
+                ST_CACHE_SELECT_FILL: begin
+                    cache_band_index <= cache_target_band;
+                    cache_pixels_total <= band_pixel_count(cache_target_band);
+                    cache_words_done <= 16'd0;
+                    cache_maint_addr <= 16'd0;
+                    cache_load_pop_d <= 1'b0;
+                    if (cache_band_valid[cache_target_band]) begin
+                        sdram_rd_addr_cfg <= copy_target_base_words +
+                                             band_word_offset(cache_target_band);
+                        sdram_rd_max_addr_cfg <= copy_target_base_words +
+                                                 band_word_offset(cache_target_band) +
+                                                 band_word_count(cache_target_band);
+                        sdram_rd_load_pulse <= 1'b1;
+                        state <= ST_CACHE_LOAD_COLOR;
+                    end else begin
+                        state <= ST_CACHE_INIT;
+                    end
+                end
+
+                ST_CACHE_INIT: begin
+                    if (cache_maint_addr == cache_pixels_total - 16'd1) begin
+                        cache_valid <= 1'b1;
+                        cache_dirty <= 1'b0;
+                        cache_band_index <= cache_target_band;
+                        cache_maint_addr <= 16'd0;
+                        cache_resume_draw <= 1'b0;
+                        state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
+                    end else begin
+                        cache_maint_addr <= cache_maint_addr + 16'd1;
+                    end
+                end
+
+                ST_CACHE_LOAD_COLOR: begin
+                    if (cache_load_pop_d &&
+                        (cache_words_done == cache_pixels_total - 16'd1)) begin
+                        cache_words_done <= 16'd0;
+                        cache_maint_addr <= 16'd0;
+                        cache_load_pop_d <= 1'b0;
+                        sdram_rd_addr_cfg <= extmem_z_base_words +
+                                             band_word_offset(cache_target_band);
+                        sdram_rd_max_addr_cfg <= extmem_z_base_words +
+                                                 band_word_offset(cache_target_band) +
+                                                 band_word_count(cache_target_band);
+                        sdram_rd_load_pulse <= 1'b1;
+                        state <= ST_CACHE_LOAD_Z;
+                    end
+                end
+
+                ST_CACHE_LOAD_Z: begin
+                    if (cache_load_pop_d &&
+                        (cache_words_done == cache_pixels_total - 16'd1)) begin
+                        cache_valid <= 1'b1;
+                        cache_dirty <= 1'b0;
+                        cache_band_index <= cache_target_band;
+                        cache_words_done <= 16'd0;
+                        cache_maint_addr <= 16'd0;
+                        cache_load_pop_d <= 1'b0;
+                        cache_resume_draw <= 1'b0;
+                        state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
                     end
                 end
 
@@ -2339,12 +2571,12 @@ module voxel_gpu (
             endcase
 
             extmem_dma_status <= {
-                copy_words_written,
+                cache_words_done,
                 3'h0,
                 display_sel,
                 copy_target_sel,
                 copy_complete_pending,
-                (state == ST_COPY),
+                cache_maint_state,
                 scan_fill_active,
                 display_valid,
                 sdram_ready,

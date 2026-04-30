@@ -3,13 +3,14 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "voxel_gpu.h"
 #include "block_types.h" // Requires your block types and textures definitions
 
 typedef struct VoxelWorld VoxelWorld;
 
 // --- Constants ---
-#define SCREEN_WIDTH 320.0f
-#define SCREEN_HEIGHT 240.0f
+#define SCREEN_WIDTH ((float)VOXEL_RENDER_WIDTH)
+#define SCREEN_HEIGHT ((float)VOXEL_RENDER_HEIGHT)
 /*
  * A 3-chunk render radius over 16x16 grass terrain already exceeds 2k
  * visible quads on top faces alone, so keep enough headroom to avoid

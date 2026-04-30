@@ -581,7 +581,7 @@ _EMPTY_UV_NP = np.zeros(9, dtype=np.int64)
 
 class VirtualGPU:
     def __init__(
-        self, width: int = 320, height: int = 240, textures: bytes | None = None
+        self, width: int = 640, height: int = 480, textures: bytes | None = None
     ) -> None:
         self.width = width
         self.height = height

@@ -468,8 +468,9 @@ def load_texture_mif(path: str | Path) -> bytes:
     """Parse an Altera Memory Initialization File.
 
     This is the same file Quartus feeds to altsyncram's `init_file` for
-    the texture ROM in `voxel_gpu.sv`. Keeping one source of truth for
-    synthesis and simulation avoids drift -- see `hw/generate_textures.py`
+    the texture ROM in `hw/voxel_gpu/rtl/voxel_gpu.sv`. Keeping one source of truth for
+    synthesis and simulation avoids drift -- see
+    `hw/voxel_gpu/scripts/generate_textures.py`
     for how it is produced.
 
     The MIF grammar we need to support is tiny:

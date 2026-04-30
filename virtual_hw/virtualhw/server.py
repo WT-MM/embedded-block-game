@@ -34,7 +34,13 @@ from .raster import VirtualGPU, load_texture_mif
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
 POLL_TIMEOUT = 1.0 / 60.0
-DEFAULT_TEXTURE_PATH = Path(__file__).resolve().parents[2] / "hw" / "textures.mif"
+DEFAULT_TEXTURE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "hw"
+    / "voxel_gpu"
+    / "assets"
+    / "textures.mif"
+)
 DEFAULT_PERF_LOG_INTERVAL = 1.0
 
 

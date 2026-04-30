@@ -981,14 +981,14 @@ module voxel_gpu (
         .DEPTH(TEXTURE_BYTES),
         /*
          * The texture atlas lives as a single `.mif` file, produced by
-         * hw/generate_textures.py. Quartus consumes it here via the
+         * hw/voxel_gpu/scripts/generate_textures.py. Quartus consumes it here via the
          * altsyncram init_file, and the Python virtual hardware parses
          * the exact same file at runtime (see
          * virtualhw.raster.load_texture_mif) -- one source of truth.
          * Note: altsyncram does NOT accept Verilog $readmemh-style hex
          * files, only .mif or Intel-format .hex.
          */
-        .INIT_FILE("textures.mif")
+        .INIT_FILE("voxel_gpu/assets/textures.mif")
     ) texture_rom (
         .clk     (clk),
         .rd_addr (pipe2_tex_addr),
@@ -1318,10 +1318,10 @@ module voxel_gpu (
 
         /*
          * The texture atlas is loaded by voxel_texture_rom via
-         * altsyncram init_file (textures.mif); no $readmemh needed
+         * altsyncram init_file (voxel_gpu/assets/textures.mif); no $readmemh needed
          * for it here anymore.
          */
-        $readmemh("recip_lut.hex", recip_lut);
+        $readmemh("voxel_gpu/assets/recip_lut.hex", recip_lut);
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
@@ -2386,227 +2386,5 @@ module voxel_gpu (
             VGA_B = 8'h00;
         end
     end
-
-endmodule
-
-module voxel_sdp_ram #(
-    parameter int DATA_W = 8,
-    parameter int ADDR_W = 17,
-    parameter int DEPTH  = 76800
-) (
-    input  logic                clk,
-    input  logic [ADDR_W-1:0]   rd_addr,
-    output logic [DATA_W-1:0]   rd_data,
-    input  logic [ADDR_W-1:0]   wr_addr,
-    input  logic [DATA_W-1:0]   wr_data,
-    input  logic                wr_en
-);
-    wire [DATA_W-1:0] q_b;
-
-    assign rd_data = q_b;
-
-    /*
-     * Quartus stopped inferring this helper reliably once the surrounding
-     * copy/scanout refactor got more complicated, and turning a 320x240
-     * framebuffer into registers is fatal for fit. Use the vendor primitive
-     * directly so the BRAM/Z memories stay in M10Ks.
-     */
-    altsyncram altsyncram_component (
-        .address_a      (wr_addr),
-        .address_b      (rd_addr),
-        .clock0         (clk),
-        .data_a         (wr_data),
-        .wren_a         (wr_en),
-        .q_b            (q_b),
-        .aclr0          (1'b0),
-        .aclr1          (1'b0),
-        .addressstall_a (1'b0),
-        .addressstall_b (1'b0),
-        .byteena_a      (1'b1),
-        .byteena_b      (1'b1),
-        .clock1         (1'b1),
-        .clocken0       (1'b1),
-        .clocken1       (1'b1),
-        .clocken2       (1'b1),
-        .clocken3       (1'b1),
-        .data_b         ({DATA_W{1'b0}}),
-        .eccstatus      (),
-        .q_a            (),
-        .rden_a         (1'b1),
-        .rden_b         (1'b1),
-        .wren_b         (1'b0)
-    );
-    defparam
-        altsyncram_component.address_aclr_a = "NONE",
-        altsyncram_component.address_aclr_b = "NONE",
-        altsyncram_component.address_reg_b = "CLOCK0",
-        altsyncram_component.clock_enable_input_a = "BYPASS",
-        altsyncram_component.clock_enable_input_b = "BYPASS",
-        altsyncram_component.clock_enable_output_b = "BYPASS",
-        altsyncram_component.indata_aclr_a = "NONE",
-        altsyncram_component.intended_device_family = "Cyclone V",
-        altsyncram_component.lpm_type = "altsyncram",
-        altsyncram_component.numwords_a = DEPTH,
-        altsyncram_component.numwords_b = DEPTH,
-        altsyncram_component.operation_mode = "DUAL_PORT",
-        altsyncram_component.outdata_aclr_b = "NONE",
-        altsyncram_component.outdata_reg_b = "UNREGISTERED",
-        altsyncram_component.power_up_uninitialized = "FALSE",
-        altsyncram_component.ram_block_type = "M10K",
-        altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
-        altsyncram_component.widthad_a = ADDR_W,
-        altsyncram_component.widthad_b = ADDR_W,
-        altsyncram_component.width_a = DATA_W,
-        altsyncram_component.width_b = DATA_W,
-        altsyncram_component.width_byteena_a = 1,
-        altsyncram_component.width_byteena_b = 1;
-
-endmodule
-
-// ====================================================================
-// Texture-atlas ROM. Previously we let Quartus infer this from
-//
-//     (* ramstyle = "M10K" *) logic [7:0] texture_mem [0:TEXTURE_BYTES-1];
-//     ...
-//     always_ff @(posedge clk) tex_rd_data <= texture_mem[pipe2_tex_addr];
-//
-// but Quartus is free to implement that pattern with EITHER a 1-cycle
-// latency (addr_reg_a = CLOCK0, outdata_reg_a = UNREGISTERED, tex_rd_data
-// is absorbed as the output register) OR a 2-cycle latency (addr_reg_a +
-// outdata_reg_a BOTH registered, with tex_rd_data acting as a post-RAM
-// flop on top). On real silicon we saw the latter: tex_rd_data arrived
-// one cycle later than the rest of the draw_pipe metadata, so the first
-// pixel of each quad read the previous quad's final texel. That showed
-// up as 1-pixel colored fringes on every block edge whose color depended
-// on the immediately preceding quad's texture (e.g. stones next to sky
-// tiles picked up light-blue fringes) -- a "chromatic aberration" / edge
-// flicker symptom that did not go away even after pipelining the palette
-// read explicitly.
-//
-// Instantiating altsyncram directly with address_reg_a = CLOCK0 and
-// outdata_reg_a = UNREGISTERED pins the latency to a known 1 cycle, so
-// pipe2_tex_addr at cycle T drives rd_data at cycle T+1, in lockstep
-// with pipe2 -> draw_pipe.
-//
-// The atlas is initialised from a `.mif` file (see hw/generate_textures.py)
-// because altsyncram's init_file does not accept Verilog $readmemh-style
-// plain-byte dumps. We share that same `.mif` with the Python virtual
-// hardware, so simulation and synthesis read from a single source.
-// ====================================================================
-module voxel_texture_rom #(
-    parameter int DATA_W = 8,
-    parameter int ADDR_W = 14,
-    parameter int DEPTH  = 16384,
-    parameter      INIT_FILE = "textures.mif"
-) (
-    input  logic                clk,
-    input  logic [ADDR_W-1:0]   rd_addr,
-    output logic [DATA_W-1:0]   rd_data
-);
-    wire [DATA_W-1:0] q_a;
-    assign rd_data = q_a;
-
-    altsyncram altsyncram_rom (
-        .address_a      (rd_addr),
-        .clock0         (clk),
-        .q_a            (q_a),
-        .aclr0          (1'b0),
-        .aclr1          (1'b0),
-        .address_b      ({ADDR_W{1'b0}}),
-        .addressstall_a (1'b0),
-        .addressstall_b (1'b0),
-        .byteena_a      (1'b1),
-        .byteena_b      (1'b1),
-        .clock1         (1'b1),
-        .clocken0       (1'b1),
-        .clocken1       (1'b1),
-        .clocken2       (1'b1),
-        .clocken3       (1'b1),
-        .data_a         ({DATA_W{1'b0}}),
-        .data_b         ({DATA_W{1'b0}}),
-        .eccstatus      (),
-        .q_b            (),
-        .rden_a         (1'b1),
-        .rden_b         (1'b1),
-        .wren_a         (1'b0),
-        .wren_b         (1'b0)
-    );
-    defparam
-        altsyncram_rom.address_aclr_a = "NONE",
-        altsyncram_rom.clock_enable_input_a = "BYPASS",
-        altsyncram_rom.clock_enable_output_a = "BYPASS",
-        altsyncram_rom.init_file = INIT_FILE,
-        altsyncram_rom.intended_device_family = "Cyclone V",
-        altsyncram_rom.lpm_hint = "ENABLE_RUNTIME_MOD=NO",
-        altsyncram_rom.lpm_type = "altsyncram",
-        altsyncram_rom.numwords_a = DEPTH,
-        altsyncram_rom.operation_mode = "ROM",
-        altsyncram_rom.outdata_aclr_a = "NONE",
-        altsyncram_rom.outdata_reg_a = "UNREGISTERED",
-        altsyncram_rom.ram_block_type = "M10K",
-        altsyncram_rom.widthad_a = ADDR_W,
-        altsyncram_rom.width_a = DATA_W,
-        altsyncram_rom.width_byteena_a = 1;
-
-endmodule
-
-// ====================================================================
-// 640x480 VGA timing from a 50 MHz clock. hcount[10:1] corresponds to
-// the 640 visible pixel columns at the 25 MHz VGA rate.
-// ====================================================================
-module voxel_vga_counters (
-    input  logic        clk50,
-    input  logic        reset,
-    output logic [10:0] hcount,
-    output logic  [9:0] vcount,
-    output logic        VGA_CLK,
-    output logic        VGA_HS,
-    output logic        VGA_VS,
-    output logic        VGA_BLANK_n,
-    output logic        VGA_SYNC_n
-);
-
-    parameter HACTIVE      = 11'd1280;
-    parameter HFRONT_PORCH = 11'd32;
-    parameter HSYNC        = 11'd192;
-    parameter HBACK_PORCH  = 11'd96;
-    parameter HTOTAL       = HACTIVE + HFRONT_PORCH + HSYNC + HBACK_PORCH;
-
-    parameter VACTIVE      = 10'd480;
-    parameter VFRONT_PORCH = 10'd10;
-    parameter VSYNC        = 10'd2;
-    parameter VBACK_PORCH  = 10'd33;
-    parameter VTOTAL       = VACTIVE + VFRONT_PORCH + VSYNC + VBACK_PORCH;
-
-    logic endOfLine;
-    logic endOfField;
-
-    always_ff @(posedge clk50)
-        if (reset)          hcount <= 11'd0;
-        else if (endOfLine) hcount <= 11'd0;
-        else                hcount <= hcount + 11'd1;
-
-    assign endOfLine = (hcount == HTOTAL - 11'd1);
-
-    always_ff @(posedge clk50)
-        if (reset) begin
-            vcount <= 10'd0;
-        end else if (endOfLine) begin
-            if (endOfField)
-                vcount <= 10'd0;
-            else
-                vcount <= vcount + 10'd1;
-        end
-
-    assign endOfField = (vcount == VTOTAL - 10'd1);
-
-    assign VGA_HS = !((hcount[10:8] == 3'b101) & !(hcount[7:5] == 3'b111));
-    assign VGA_VS = !(vcount[9:1] == 9'd245);
-
-    assign VGA_SYNC_n  = 1'b0;
-    assign VGA_BLANK_n = !(hcount[10] & (hcount[9] | hcount[8])) &
-                         !(vcount[9] | (vcount[8:5] == 4'b1111));
-    // Invert vs hcount[0]: DAC rising edge mid-pixel eye for ADV7123 setup/hold.
-    assign VGA_CLK     = ~hcount[0];
 
 endmodule

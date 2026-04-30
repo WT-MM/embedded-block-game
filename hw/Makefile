@@ -75,16 +75,21 @@ KERNEL_DIR = $(SOFTWARE_DIR)/linux-socfpga
 KERNEL_CONFIG = $(KERNEL_DIR)/.config
 ZIMAGE = $(KERNEL_DIR)/arch/arm/boot/zImage
 
+VOXEL_GPU_RTL = $(wildcard voxel_gpu/rtl/*.sv)
+VOXEL_GPU_ASSETS = voxel_gpu/assets/textures.mif voxel_gpu/assets/recip_lut.hex
+VOXEL_GPU_DEBUG_ASSETS = voxel_gpu/assets/textures_preview.png
+VOXEL_GPU_SCRIPTS = voxel_gpu/scripts/generate_textures.py voxel_gpu/scripts/generate_recip_lut.py
+
 TARFILES = Makefile \
 	$(TCL) \
 	$(QSYS) \
 	$(SYSTEM)_top.sv \
 	$(BOARD_INFO) \
 	$(SRF) \
-	generate_recip_lut.py \
-	generate_textures.py \
-	recip_lut.hex \
-	textures.mif \
+	$(VOXEL_GPU_RTL) \
+	$(VOXEL_GPU_ASSETS) \
+	$(VOXEL_GPU_DEBUG_ASSETS) \
+	$(VOXEL_GPU_SCRIPTS) \
 	ip/intr_capturer/intr_capturer.v \
 	ip/intr_capturer/intr_capturer_hw.tcl \
 	vga_ball.sv
@@ -125,8 +130,8 @@ project19 : project
 .PHONY : qsys
 qsys : $(QSYS_STAMP)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu.sv voxel_gpu_hw.tcl textures.mif recip_lut.hex \
-	generate_textures.py generate_recip_lut.py vga_ball.sv vga_ball_hw.tcl \
+QSYS_COMPONENT_SOURCES = voxel_gpu_hw.tcl $(VOXEL_GPU_RTL) $(VOXEL_GPU_ASSETS) \
+	$(VOXEL_GPU_SCRIPTS) vga_ball.sv vga_ball_hw.tcl \
 	$(wildcard sdram_local_test/*.v) \
 	$(wildcard sdram_local_test/*.h) \
 	$(wildcard sdram_local_test/sdram_pll0/*.v)

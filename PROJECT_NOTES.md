@@ -18,7 +18,8 @@ were:
 
 Root Cause
 ----------
-The bug was in `hw/voxel_gpu.sv` inside the edge-function evaluation logic.
+The bug was in `hw/voxel_gpu/rtl/voxel_gpu.sv` inside the edge-function
+evaluation logic.
 The older code formed the constant term with a manual concatenation:
 
     {{32{edge_C[i][31]}}, edge_C[i]}
@@ -51,7 +52,8 @@ negative edge terms should have excluded pixels instead admitted them instead.
 Fix
 ---
 We rewrote the edge-function path so the full expression stays explicitly in
-signed 64-bit arithmetic. The current implementation in `hw/voxel_gpu.sv`
+signed 64-bit arithmetic. The current implementation in
+`hw/voxel_gpu/rtl/voxel_gpu.sv`
 creates signed intermediate wires for:
 
   * `edge_A[i] * draw_x_s`
@@ -128,7 +130,7 @@ atlas was correct, and the software-side quad descriptors were correct.
 
 Root Cause
 ----------
-In `hw/voxel_gpu.sv`, the palette storage was declared with
+In `hw/voxel_gpu/rtl/voxel_gpu.sv`, the palette storage was declared with
 
     (* ramstyle = "M10K" *) logic [23:0] palette [0:255];
 
@@ -170,7 +172,7 @@ Fix (applied)
 Change the palette's `ramstyle` from `"M10K"` to `"MLAB"`. MLAB (distributed)
 RAM supports asynchronous reads natively, and 256 × 24 bits = 6144 bits fits
 comfortably in a handful of MLAB cells. The palette array now lives in MLAB
-at `hw/voxel_gpu.sv`:
+at `hw/voxel_gpu/rtl/voxel_gpu.sv`:
 
     (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
 
@@ -333,8 +335,9 @@ Fix: instantiate `texture_mem` as an explicit `altsyncram` ROM via a new
   * `operation_mode = "ROM"`
   * `address_reg_a = CLOCK0` (implicit for port A on M10K)
   * `outdata_reg_a = "UNREGISTERED"`
-  * `init_file = "textures.mif"` (see the `altsyncram init_file`
-    footnote below for why we moved off the Verilog `$readmemh` format)
+  * `init_file = "voxel_gpu/assets/textures.mif"` (see the
+    `altsyncram init_file` footnote below for why we moved off the
+    Verilog `$readmemh` format)
   * `ram_block_type = "M10K"`
 
 That gives a guaranteed 1-cycle latency: `pipe2_tex_addr` drives the
@@ -343,7 +346,7 @@ clock edge, and the data appears combinationally on `rd_data` (= `tex_rd_data`)
 on the following cycle. `tex_rd_data` is now a `wire`, not a reg, and the
 `always_ff tex_rd_data <= texture_mem[...]` line has been removed along
 with `$readmemh("textures.hex", texture_mem)` -- the altsyncram loads the
-atlas directly from `textures.mif` via `init_file`.
+atlas directly from `voxel_gpu/assets/textures.mif` via `init_file`.
 
 This change does *not* introduce a new pipeline stage, so
 `DRAW_FLUSH_CYCLES` and the `pal_rd` / `plr` counts are unchanged. It only
@@ -385,10 +388,12 @@ old `textures.hex` was.
 We picked `.mif` as the **single source of truth** for the texture
 atlas (no more sidecar files, no more drift risk):
 
-  * `hw/generate_textures.py` emits only `textures.mif`
+  * `hw/voxel_gpu/scripts/generate_textures.py` emits only
+    `hw/voxel_gpu/assets/textures.mif`
     (`WIDTH=8`, `DEPTH=16384`, address ordering `tile << 8 | (v << 4) | u`).
-  * `voxel_texture_rom`'s `init_file` points at `textures.mif`, and
-    `textures.mif` is added as a MIF-type file in `voxel_gpu_hw.tcl`
+  * `voxel_texture_rom`'s `init_file` points at
+    `voxel_gpu/assets/textures.mif`, and that MIF is added as a file in
+    `voxel_gpu_hw.tcl`
     so Qsys copies it into `soc_system/synthesis/submodules/`.
   * The Python virtual hardware parses the same file at runtime via
     `virtualhw.raster.load_texture_mif`. The MIF parser understands
@@ -397,7 +402,8 @@ atlas (no more sidecar files, no more drift risk):
     `--` comments. Unspecified addresses default to zero, matching
     Quartus's behaviour.
 
-If you change the atlas generator, re-run `python3 generate_textures.py`
+If you change the atlas generator, re-run
+`python3 voxel_gpu/scripts/generate_textures.py` from `hw/`
 and both synthesis and simulation pick up the new bytes automatically.
 `$readmemh` is no longer used for the texture atlas anywhere in the
 tree; the only remaining `$readmemh` is for `recip_lut.hex`, which
@@ -425,7 +431,7 @@ Two recent commits on `main` collided:
     face's u/v axes ships as one `u_size * v_size` quad.
 
   * `83b47b5` added `QUAD_TEX_REPEAT_UV` (bit 6 of `tex_or_color`) plus the
-    `texture_coord()` function in `hw/voxel_gpu.sv`. When the repeat flag is
+    `texture_coord()` function in `hw/voxel_gpu/rtl/voxel_gpu.sv`. When the repeat flag is
     set, `texture_coord()` selects the texel with `value[35:32]`, i.e. it
     throws away the integer tile index and takes `u mod 16`.
 
@@ -486,3 +492,25 @@ values; in two's-complement that is simply `value[35:32]`.
 The hardware now applies the repeat case first. The renderer once again uses
 merged far quads by default, and `BLOCK_GAME_MERGE_FAR_QUADS=0` remains as a
 runtime fallback to force unit-quad expansion for A/B testing.
+
+Future Architecture Idea: True 640x480 Resolution via Direct-to-SDRAM Z-Cache
+-----------------------------------------------------------------------------
+
+Currently, the renderer is limited to a 320x240 internal resolution upscaled 2x2 because a single 16-bit RGB565 backbuffer and 16-bit Z-buffer completely exhaust the FPGA's ~512 KB of internal M10K block RAM. Expanding to a true 640x480 resolution would require ~1.2 MB, which physically will not fit on the Cyclone V.
+
+To achieve true 640x480 in the future without moving to a Tile-Based Rendering (TBR) approach, we could restructure the rasterizer to write directly to the massive external SDRAM. 
+
+However, because the Z-buffer requires a Read-Modify-Write cycle for every single pixel, the latency of SDRAM would bottleneck the 1-pixel-per-cycle pipeline. The solution is to eliminate the full-frame internal BRAM buffers entirely and replace them with a microscopic BRAM Z-Cache (e.g., an 8x8 pixel block, taking only 256 bytes total).
+
+The rasterizer would operate on this tiny cache at full speed. When it moves out of the 8x8 bounds (a cache miss), the hardware would stall, flush the dirty cache block out to SDRAM via burst writes, and burst-read the new block from SDRAM. This provides the massive resolution limits of SDRAM while retaining the high-speed math capability of the FPGA's internal memory.
+
+Cache Sizing & The "Scanline Cache" Optimization
+------------------------------------------------
+By removing the full 320x240 framebuffers from BRAM, we free up approximately 400 KB of internal memory on the Cyclone V. Because each pixel takes 4 bytes (2 for RGB565, 2 for Z-depth), we could theoretically cache up to ~100,000 pixels at once—nearly 1/3rd of the entire 640x480 screen.
+
+However, SDRAM incurs massive latency penalties for 2D memory access patterns (like an 8x8 square) because it destroys burst efficiency. To optimize SDRAM bursts, the cache shape should be 1-dimensional. 
+
+A highly optimized architecture would use a **Scanline Cache**. Using the 400 KB of free BRAM, we could cache a horizontal block of 640x32 pixels (roughly 81 KB). 
+- SDRAM can burst-read/write full horizontal lines with maximum efficiency.
+- The rasterizer stays within the 32-row vertical bounds for a long time, drawing quads at the full 50 MHz rate.
+- A cache miss only occurs when the rasterizer crosses the 32-row boundary, meaning the massive SDRAM latency penalty is amortized over thousands of rapid cache hits, preserving the framerate.

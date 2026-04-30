@@ -613,9 +613,11 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
 
 
 def main() -> int:
-    here = Path(__file__).parent
-    mif_path = here / "textures.mif"
-    preview_path = here / "textures_preview.png"
+    root = Path(__file__).resolve().parents[1]
+    assets = root / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    mif_path = assets / "textures.mif"
+    preview_path = assets / "textures_preview.png"
 
     write_mif(mif_path)
     print(f"wrote {mif_path}")

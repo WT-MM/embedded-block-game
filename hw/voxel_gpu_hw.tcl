@@ -41,9 +41,12 @@ add_fileset QUARTUS_SYNTH QUARTUS_SYNTH "" ""
 set_fileset_property QUARTUS_SYNTH TOP_LEVEL voxel_gpu
 set_fileset_property QUARTUS_SYNTH ENABLE_RELATIVE_INCLUDE_PATHS false
 set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
-add_fileset_file voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu.sv TOP_LEVEL_FILE
-add_fileset_file textures.mif MIF PATH textures.mif
-add_fileset_file recip_lut.hex HEX PATH recip_lut.hex
+add_fileset_file voxel_gpu/rtl/voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_gpu.sv TOP_LEVEL_FILE
+add_fileset_file voxel_gpu/rtl/voxel_sdp_ram.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_sdp_ram.sv
+add_fileset_file voxel_gpu/rtl/voxel_texture_rom.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_texture_rom.sv
+add_fileset_file voxel_gpu/rtl/voxel_vga_counters.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_vga_counters.sv
+add_fileset_file voxel_gpu/assets/textures.mif MIF PATH voxel_gpu/assets/textures.mif
+add_fileset_file voxel_gpu/assets/recip_lut.hex HEX PATH voxel_gpu/assets/recip_lut.hex
 add_fileset_file sdram_local_test/Sdram_Control.v VERILOG PATH sdram_local_test/Sdram_Control.v
 add_fileset_file sdram_local_test/control_interface.v VERILOG PATH sdram_local_test/control_interface.v
 add_fileset_file sdram_local_test/command.v VERILOG PATH sdram_local_test/command.v

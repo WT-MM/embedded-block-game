@@ -1,0 +1,59 @@
+// 640x480 VGA timing from a 50 MHz clock. hcount[10:1] corresponds to
+// the 640 visible pixel columns at the 25 MHz VGA rate.
+// ====================================================================
+module voxel_vga_counters (
+    input  logic        clk50,
+    input  logic        reset,
+    output logic [10:0] hcount,
+    output logic  [9:0] vcount,
+    output logic        VGA_CLK,
+    output logic        VGA_HS,
+    output logic        VGA_VS,
+    output logic        VGA_BLANK_n,
+    output logic        VGA_SYNC_n
+);
+
+    parameter HACTIVE      = 11'd1280;
+    parameter HFRONT_PORCH = 11'd32;
+    parameter HSYNC        = 11'd192;
+    parameter HBACK_PORCH  = 11'd96;
+    parameter HTOTAL       = HACTIVE + HFRONT_PORCH + HSYNC + HBACK_PORCH;
+
+    parameter VACTIVE      = 10'd480;
+    parameter VFRONT_PORCH = 10'd10;
+    parameter VSYNC        = 10'd2;
+    parameter VBACK_PORCH  = 10'd33;
+    parameter VTOTAL       = VACTIVE + VFRONT_PORCH + VSYNC + VBACK_PORCH;
+
+    logic endOfLine;
+    logic endOfField;
+
+    always_ff @(posedge clk50)
+        if (reset)          hcount <= 11'd0;
+        else if (endOfLine) hcount <= 11'd0;
+        else                hcount <= hcount + 11'd1;
+
+    assign endOfLine = (hcount == HTOTAL - 11'd1);
+
+    always_ff @(posedge clk50)
+        if (reset) begin
+            vcount <= 10'd0;
+        end else if (endOfLine) begin
+            if (endOfField)
+                vcount <= 10'd0;
+            else
+                vcount <= vcount + 10'd1;
+        end
+
+    assign endOfField = (vcount == VTOTAL - 10'd1);
+
+    assign VGA_HS = !((hcount[10:8] == 3'b101) & !(hcount[7:5] == 3'b111));
+    assign VGA_VS = !(vcount[9:1] == 9'd245);
+
+    assign VGA_SYNC_n  = 1'b0;
+    assign VGA_BLANK_n = !(hcount[10] & (hcount[9] | hcount[8])) &
+                         !(vcount[9] | (vcount[8:5] == 4'b1111));
+    // Invert vs hcount[0]: DAC rising edge mid-pixel eye for ADV7123 setup/hold.
+    assign VGA_CLK     = ~hcount[0];
+
+endmodule

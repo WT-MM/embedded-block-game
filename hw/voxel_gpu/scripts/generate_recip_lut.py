@@ -23,7 +23,9 @@ def write_hex(path: Path) -> None:
 
 
 def main() -> int:
-    out_path = Path(__file__).with_name("recip_lut.hex")
+    assets = Path(__file__).resolve().parents[1] / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    out_path = assets / "recip_lut.hex"
     write_hex(out_path)
     print(f"wrote {out_path}")
     return 0

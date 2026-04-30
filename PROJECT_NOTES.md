@@ -730,3 +730,46 @@ Bring-up caveats:
     scanout. That is acceptable for the first correctness pass, but visible
     scanout starvation while rendering is possible until we add smarter read
     arbitration or software-side cache-friendly ordering.
+
+Follow-up: Stabilize Scanout During Cache Maintenance
+-----------------------------------------------------
+The first hardware try after the band-cache migration produced a flashing mess.
+That matched the main risk above: cache maintenance and VGA scanout were sharing
+one SDRAM controller, but cache work could keep feeding the SDRAM FIFOs even
+when scanout was about to run out of prefetched line data.
+
+Two fixes were made in `voxel_gpu.sv`:
+
+  * Added `scanout_slack`, which is true only when no frame is displayed yet,
+    VGA is blanking, or scanout already has the next visible line buffered.
+    Cache flush writes and cache load reads now advance only during those slack
+    windows. This favors a stable displayed frame over render throughput.
+  * Fixed cache-load setup so `RD_LOAD` is only pulsed in states where
+    `sdram_rd_length_cfg` is non-zero. Previously the color/z cache-load start
+    pulses were issued from setup states while the length mux still returned
+    zero, which could make revisited-band reloads unpredictable.
+
+Expected effect: flashing/black-line instability should be reduced to stalls or
+lower frame rate. If the image is stable but slow, the remaining work is
+performance policy rather than basic SDRAM ownership correctness.
+
+Additional quality fix: exclusive SDRAM read ownership
+------------------------------------------------------
+The first stabilization pass still allowed cache loads to start during a slack
+window even if scanout had an outstanding line-fill burst or leftover words in
+the shared SDRAM read FIFO. That can mix scanout words into cache loads (or vice
+versa), which shows up as flashing, sparkle, or wrong bands rather than a simple
+slow frame.
+
+The RTL now has `cache_read_start_ok`, which requires:
+
+  * scanout slack,
+  * no active scanout fill,
+  * no armed scanout read,
+  * no delayed scanout pop, and
+  * an empty SDRAM read FIFO.
+
+Cache color/z loads only pulse `RD_LOAD` under that condition. This is
+intentionally conservative: scanout owns the read side unless it is fully idle.
+The expected tradeoff is lower render throughput, but the visible frame should
+be much less likely to tear or flash due to mixed FIFO ownership.

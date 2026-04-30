@@ -6,7 +6,8 @@
  *   (B) Expose /dev/voxel_gpu via the misc subsystem.
  *   (C) Stream user-space command bytes into the on-chip FIFO via write().
  *   (D) Provide the control ioctls: CLEAR_FRAME, FLIP, SET_PALETTE,
- *       GET_STATUS, GET_FRAME_COUNT, SET_FOG, SET_EXTMEM, GET_EXTMEM.
+ *       GET_STATUS, GET_FRAME_COUNT, SET_FOG, SET_EXTMEM, GET_EXTMEM,
+ *       BEGIN_BAND, END_BAND.
  *   (E) Use polling on STATUS for synchronization (no interrupts).
  *
  * The driver is intentionally thin: it does not parse, validate, or
@@ -250,6 +251,57 @@ out:
 	return ret;
 }
 
+static long voxel_ioc_begin_band(void __user *uarg)
+{
+	struct voxel_band_state band;
+	int ret;
+
+	if (copy_from_user(&band, uarg, sizeof(band)))
+		return -EFAULT;
+	if (band.band_index >= VOXEL_BAND_COUNT)
+		return -EINVAL;
+
+	mutex_lock(&voxdev.lock);
+
+	ret = voxel_poll_status(VOXEL_STAT_FEM, VOXEL_STAT_FEM,
+				VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+
+	voxel_wr(VOXEL_REG_BAND_INDEX, band.band_index);
+	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_BEGIN);
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+
+out:
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
+static long voxel_ioc_end_band(void)
+{
+	int ret;
+
+	mutex_lock(&voxdev.lock);
+
+	ret = voxel_poll_status(VOXEL_STAT_FEM, VOXEL_STAT_FEM,
+				VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+
+	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_FLUSH);
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+
+out:
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
 static long voxel_ioc_set_palette(void __user *uarg)
 {
 	struct voxel_palette_entry e;
@@ -376,6 +428,10 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_set_extmem((void __user *)arg);
 	case VOXEL_IOC_GET_EXTMEM:
 		return voxel_ioc_get_extmem((void __user *)arg);
+	case VOXEL_IOC_BEGIN_BAND:
+		return voxel_ioc_begin_band((void __user *)arg);
+	case VOXEL_IOC_END_BAND:
+		return voxel_ioc_end_band();
 	default:
 		return -ENOTTY;
 	}

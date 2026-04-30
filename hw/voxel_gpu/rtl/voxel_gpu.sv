@@ -1,14 +1,14 @@
 // voxel_gpu.sv — SDRAM-backed display path with RGB565 external frames.
 //
-// The rasterizer renders at true 640x480 through a hardware-managed 640x64
-// BRAM band cache. Palette entries are still the source-color ABI, but resolved
-// pixels are stored as RGB565 so translucent quads can alpha blend against the
-// existing destination pixel.
+// The rasterizer renders at true 640x480 through an explicit 640x96 BRAM band
+// cache. Userspace bins descriptors into five vertical passes and brackets each
+// pass with BEGIN_BAND / END_BAND CSRs. Palette entries are still the
+// source-color ABI, but resolved pixels are stored as RGB565 so translucent
+// quads can alpha blend against the existing destination pixel.
 // FLIP no longer copies a full BRAM framebuffer. Instead:
-//   * the rasterizer writes the inactive SDRAM color frame through the band
-//     cache, with a matching SDRAM-backed z frame,
-//   * cache misses stall, flush dirty bands, and load or lazily initialize the
-//     requested band, and
+//   * BEGIN_BAND clears the resident color/z band,
+//   * the rasterizer writes only pixels that fall inside that resident band,
+//   * END_BAND flushes the color band to the inactive SDRAM color frame, and
 //   * scanout reads the active SDRAM frame through small line buffers.
 //
 // This keeps BRAM usage close to the indexed design while making the external
@@ -63,15 +63,17 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_EXTMEM_STRIDE = 13'h00A;
     localparam logic [12:0] ADDR_EXTMEM_TILE = 13'h00B;
     localparam logic [12:0] ADDR_EXTMEM_STAT = 13'h00C;
+    localparam logic [12:0] ADDR_BAND_INDEX = 13'h00D;
+    localparam logic [12:0] ADDR_BAND_CTRL = 13'h00E;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
     localparam int FB_WIDTH       = 640;
     localparam int FB_HEIGHT      = 480;
     localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
-    localparam int BAND_HEIGHT    = 64;
+    localparam int BAND_HEIGHT    = 96;
     localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
-    localparam int BAND_COUNT     = (FB_HEIGHT + BAND_HEIGHT - 1) / BAND_HEIGHT;
+    localparam int BAND_COUNT     = 5;
     localparam int FIFO_DEPTH     = 2048;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
@@ -94,7 +96,7 @@ module voxel_gpu (
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
     localparam logic [24:0] FB_WORDS_25 = 25'd307200;
     localparam logic [24:0] LINE_WORDS_25 = 25'd640;
-    localparam logic [24:0] BAND_WORDS_25 = 25'd40960;
+    localparam logic [24:0] BAND_WORDS_25 = 25'd61440;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
@@ -482,6 +484,9 @@ module voxel_gpu (
 
     logic  [2:0] cache_band_index;
     logic  [2:0] cache_target_band;
+    logic  [2:0] band_index_cfg;
+    logic        band_begin_pending;
+    logic        band_flush_pending;
     logic        cache_valid;
     logic        cache_dirty;
     logic  [7:0] cache_band_valid;
@@ -492,6 +497,7 @@ module voxel_gpu (
     logic [15:0] cache_words_issued;
     logic [15:0] cache_words_done;
     logic        cache_fetch_inflight;
+    logic        cache_flush_load_pending;
     logic  [7:0] cache_drain_count;
     logic        cache_word_pending_valid;
     logic [15:0] cache_word_pending;
@@ -516,11 +522,13 @@ module voxel_gpu (
     logic vga_vs_d;
 
     wire wr = chipselect & write;
+    wire ctrl_clear_write = wr && (address == ADDR_CONTROL) && writedata[3];
     wire fifo_push_req = wr && (address >= ADDR_FIFO_LO) && (address < ADDR_FIFO_HI) && !fifo_full;
     wire desc_has_uv = desc_flags[FLAG_TEX_BIT];
     wire [5:0] fetch_target_words = ((fetch_count >= 6'd16) && desc_has_uv) ? 6'd32 : 6'd16;
     wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
-    wire engine_busy = (state != ST_IDLE);
+    wire engine_busy = (state != ST_IDLE) || clear_pending ||
+                       band_begin_pending || band_flush_pending;
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
     wire [24:0] extmem_front_base_words = extmem_front_base[25:1];
     wire [24:0] extmem_back_base_words  = extmem_back_base[25:1];
@@ -557,26 +565,21 @@ module voxel_gpu (
         scan_fill_pop_d && (scan_fill_words_complete[5:0] == 6'd0);
     wire [24:0] scan_fill_next_chunk_base_words =
         scan_fill_base_words + {15'd0, scan_fill_words_complete};
-    wire        cache_flush_state =
-        (state == ST_CACHE_FLUSH_COLOR) || (state == ST_CACHE_FLUSH_Z);
-    wire        cache_load_state =
-        (state == ST_CACHE_LOAD_COLOR) || (state == ST_CACHE_LOAD_Z);
-    wire        cache_rd_load_state =
-        ((state == ST_CACHE_SELECT_FILL) && cache_band_valid[cache_target_band] &&
-         cache_read_start_ok) ||
-        ((state == ST_CACHE_START_LOAD_Z) && cache_read_start_ok);
+    wire        cache_flush_state = (state == ST_CACHE_FLUSH_COLOR);
+    wire        cache_load_state = 1'b0;
+    wire        cache_rd_load_state = 1'b0;
     wire [15:0] cache_load_words_complete =
         cache_words_done + (cache_load_pop_d ? 16'd1 : 16'd0);
     wire        cache_init_state = (state == ST_CACHE_INIT);
     wire        cache_maint_state = cache_flush_state || cache_load_state || cache_init_state;
     wire        sdram_wr_push = cache_flush_state && cache_word_pending_valid &&
                                 !sdram_wr_full && scanout_slack;
-    wire        cache_rd_pop = cache_load_state && scanout_slack && !sdram_rd_empty &&
+    wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
                                (cache_load_words_complete < cache_pixels_total);
     wire        scan_rd_pop = scan_fill_active && !sdram_rd_empty &&
                               (scan_fill_words_complete < LINE_WORDS_10) &&
                               !scan_fill_chunk_done;
-    wire        sdram_rd_pop = cache_load_state ? cache_rd_pop : scan_rd_pop;
+    wire        sdram_rd_pop = scan_rd_pop;
     wire        cache_can_issue_read =
         cache_flush_state &&
         (cache_words_issued < cache_pixels_total) &&
@@ -656,7 +659,7 @@ module voxel_gpu (
                                      ($signed(draw_dz_dx) * draw_dx_s) +
                                      ($signed(draw_dz_dy) * draw_dy_s);
     wire [15:0] draw_z_value = clamp_z(draw_z_eval);
-    wire [2:0]  draw_band_index = draw_y_cur[8:6];
+    wire [2:0]  draw_band_index = y_to_band(draw_y_cur);
     wire        draw_cache_hit = cache_valid && (cache_band_index == draw_band_index);
     wire [15:0] draw_cache_addr = band_local_addr(draw_x_cur, draw_y_cur, cache_band_index);
     wire signed [63:0] draw_uw_base = $signed({{32{draw_uw_0[31]}}, draw_uw_0});
@@ -729,9 +732,9 @@ module voxel_gpu (
      * fog_start_dist / fog_end_dist registers.
      */
     wire signed [11:0] draw_pipe_dx_center =
-        $signed({1'b0, draw_pipe_x}) - 12'sd160;
+        $signed({1'b0, draw_pipe_x}) - 12'sd320;
     wire signed [10:0] draw_pipe_dy_center =
-        11'sd120 - $signed({1'b0, draw_pipe_y});
+        11'sd240 - $signed({1'b0, draw_pipe_y});
     wire [23:0] draw_pipe_dx_sq = draw_pipe_dx_center * draw_pipe_dx_center;
     wire [23:0] draw_pipe_dy_sq = draw_pipe_dy_center * draw_pipe_dy_center;
     wire [24:0] draw_pipe_radius_sq = draw_pipe_dx_sq + draw_pipe_dy_sq;
@@ -818,28 +821,63 @@ module voxel_gpu (
     function automatic [15:0] band_local_addr(input logic [9:0] x,
                                               input logic [8:0] y,
                                               input logic [2:0] band);
-        logic [5:0] local_y;
+        logic [8:0] band_base_y;
+        logic [8:0] local_y;
         begin
-            local_y = y[5:0] - (band == 3'd7 ? 6'd0 : 6'd0);
+            band_base_y = band_base_row(band);
+            local_y = (y >= band_base_y) ? (y - band_base_y) : 9'd0;
             band_local_addr = ({local_y, 9'd0} + {local_y, 7'd0}) + {6'd0, x};
         end
     endfunction
 
     function automatic [15:0] band_pixel_count(input logic [2:0] band);
         begin
-            band_pixel_count = (band == 3'd7) ? 16'd20480 : 16'd40960;
+            band_pixel_count = 16'd61440;
         end
     endfunction
 
     function automatic [24:0] band_word_count(input logic [2:0] band);
         begin
-            band_word_count = (band == 3'd7) ? 25'd20480 : 25'd40960;
+            band_word_count = 25'd61440;
         end
     endfunction
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            band_word_offset = {22'd0, band} * BAND_WORDS_25;
+            case (band)
+                3'd0: band_word_offset = 25'd0;
+                3'd1: band_word_offset = 25'd61440;
+                3'd2: band_word_offset = 25'd122880;
+                3'd3: band_word_offset = 25'd184320;
+                default: band_word_offset = 25'd245760;
+            endcase
+        end
+    endfunction
+
+    function automatic [8:0] band_base_row(input logic [2:0] band);
+        begin
+            case (band)
+                3'd0: band_base_row = 9'd0;
+                3'd1: band_base_row = 9'd96;
+                3'd2: band_base_row = 9'd192;
+                3'd3: band_base_row = 9'd288;
+                default: band_base_row = 9'd384;
+            endcase
+        end
+    endfunction
+
+    function automatic [2:0] y_to_band(input logic [8:0] y);
+        begin
+            if (y < 9'd96)
+                y_to_band = 3'd0;
+            else if (y < 9'd192)
+                y_to_band = 3'd1;
+            else if (y < 9'd288)
+                y_to_band = 3'd2;
+            else if (y < 9'd384)
+                y_to_band = 3'd3;
+            else
+                y_to_band = 3'd4;
         end
     endfunction
 
@@ -1773,6 +1811,9 @@ module voxel_gpu (
             sdram_rd_load_pulse <= 1'b0;
             cache_band_index <= 3'd0;
             cache_target_band <= 3'd0;
+            band_index_cfg <= 3'd0;
+            band_begin_pending <= 1'b0;
+            band_flush_pending <= 1'b0;
             cache_valid <= 1'b0;
             cache_dirty <= 1'b0;
             cache_band_valid <= 8'h00;
@@ -1783,6 +1824,7 @@ module voxel_gpu (
             cache_words_issued <= 16'd0;
             cache_words_done <= 16'd0;
             cache_fetch_inflight <= 1'b0;
+            cache_flush_load_pending <= 1'b0;
             cache_drain_count <= 8'd0;
             cache_word_pending_valid <= 1'b0;
             cache_word_pending <= 16'd0;
@@ -1914,6 +1956,16 @@ module voxel_gpu (
                     ADDR_EXTMEM_BACK: extmem_back_base <= writedata;
                     ADDR_EXTMEM_STRIDE: extmem_stride_bytes <= writedata;
                     ADDR_EXTMEM_TILE: extmem_tile_cfg <= writedata;
+                    ADDR_BAND_INDEX: begin
+                        if (writedata[2:0] < 3'd5)
+                            band_index_cfg <= writedata[2:0];
+                    end
+                    ADDR_BAND_CTRL: begin
+                        if (writedata[0])
+                            band_begin_pending <= 1'b1;
+                        if (writedata[1])
+                            band_flush_pending <= 1'b1;
+                    end
                     default: ;
                 endcase
             end
@@ -2155,20 +2207,39 @@ module voxel_gpu (
                     fog0_valid <= 1'b0;
                     fog1_valid <= 1'b0;
                     commit_valid <= 1'b0;
-                    if (ctrl_flp_pending && sdram_ready && !copy_complete_pending) begin
-                        if (cache_valid && cache_dirty) begin
-                            cache_final_flush <= 1'b1;
-                            cache_resume_draw <= 1'b0;
-                            cache_target_band <= cache_band_index;
-                            state <= ST_CACHE_EVICT;
-                        end else begin
-                            copy_complete_pending <= 1'b1;
-                            cache_final_flush <= 1'b0;
-                        end
-                    end else if (clear_pending) begin
+                    if (clear_pending) begin
                         state         <= ST_CLEAR;
                         clear_pending <= 1'b0;
                         clear_addr    <= 16'd0;
+                    end else if (band_begin_pending) begin
+                        band_begin_pending <= 1'b0;
+                        cache_target_band <= band_index_cfg;
+                        cache_band_index <= band_index_cfg;
+                        cache_pixels_total <= band_pixel_count(band_index_cfg);
+                        cache_maint_addr <= 16'd0;
+                        cache_valid <= 1'b0;
+                        cache_dirty <= 1'b0;
+                        state <= ST_CACHE_INIT;
+                    end else if (band_flush_pending) begin
+                        band_flush_pending <= 1'b0;
+                        if (cache_valid) begin
+                            cache_words_issued <= 16'd0;
+                            cache_words_done <= 16'd0;
+                            cache_maint_addr <= 16'd0;
+                            cache_fetch_inflight <= 1'b0;
+                            cache_word_pending_valid <= 1'b0;
+                            cache_pixels_total <= band_pixel_count(cache_band_index);
+                            sdram_wr_addr_cfg <= copy_target_base_words +
+                                                 band_word_offset(cache_band_index);
+                            sdram_wr_max_addr_cfg <= copy_target_base_words +
+                                                     band_word_offset(cache_band_index) +
+                                                     band_word_count(cache_band_index);
+                            cache_flush_load_pending <= 1'b1;
+                            state <= ST_CACHE_FLUSH_COLOR;
+                        end
+                    end else if (ctrl_flp_pending && sdram_ready && !copy_complete_pending) begin
+                        copy_complete_pending <= 1'b1;
+                        cache_final_flush <= 1'b0;
                     end else if (ctrl_en && (fifo_count >= 12'd16)) begin
                         state       <= ST_FETCH;
                         fetch_count <= 6'd0;
@@ -2182,6 +2253,8 @@ module voxel_gpu (
                     cache_band_valid <= 8'h00;
                     cache_resume_draw <= 1'b0;
                     cache_final_flush <= 1'b0;
+                    band_begin_pending <= 1'b0;
+                    band_flush_pending <= 1'b0;
                     copy_complete_pending <= 1'b0;
                     state <= ST_IDLE;
                 end
@@ -2192,7 +2265,7 @@ module voxel_gpu (
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
-                        draw_row_base <= band_local_addr(desc_x_min, desc_y_min, desc_y_min[8:6]);
+                        draw_row_base <= band_local_addr(desc_x_min, desc_y_min, cache_band_index);
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
                         draw_tex_or_color <= desc_tex_or_color;
@@ -2427,11 +2500,24 @@ module voxel_gpu (
                         end
                     end else if (state == ST_DRAW) begin
                         pipe0_valid <= 1'b0;
-                        cache_target_band <= draw_band_index;
-                        cache_resume_draw <= 1'b1;
-                        cache_final_flush <= 1'b0;
-                        state <= ST_DRAW_FLUSH;
-                        draw_flush_count <= DRAW_FLUSH_CYCLES;
+                        /*
+                         * Software has already binned this descriptor into each
+                         * overlapping band pass. Pixels outside the resident
+                         * band are ignored here and will be drawn during their
+                         * own BEGIN_BAND/END_BAND pass.
+                         */
+                        if (draw_x_cur == draw_x_max) begin
+                            if (draw_y_cur == draw_y_max) begin
+                                state <= ST_DRAW_FLUSH;
+                                draw_flush_count <= DRAW_FLUSH_CYCLES;
+                            end else begin
+                                draw_row_base <= draw_row_base + 16'd640;
+                                draw_x_cur <= draw_x_min;
+                                draw_y_cur <= draw_y_cur + 9'd1;
+                            end
+                        end else begin
+                            draw_x_cur <= draw_x_cur + 10'd1;
+                        end
                     end else begin
                         pipe0_valid <= 1'b0;
                         pipe0_inside <= 1'b0;
@@ -2452,10 +2538,7 @@ module voxel_gpu (
 
                         if (draw_flush_count == 4'd1) begin
                             draw_flush_count <= 4'd0;
-                            if (cache_resume_draw)
-                                state <= ST_CACHE_EVICT;
-                            else
-                                state <= ST_IDLE;
+                            state <= ST_IDLE;
                         end else begin
                             draw_flush_count <= draw_flush_count - 4'd1;
                         end
@@ -2476,7 +2559,7 @@ module voxel_gpu (
                         sdram_wr_max_addr_cfg <= copy_target_base_words +
                                                  band_word_offset(cache_band_index) +
                                                  band_word_count(cache_band_index);
-                        sdram_wr_load_pulse <= 1'b1;
+                        cache_flush_load_pending <= 1'b1;
                         state <= ST_CACHE_FLUSH_COLOR;
                     end else begin
                         state <= ST_CACHE_SELECT_FILL;
@@ -2484,6 +2567,11 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_FLUSH_COLOR: begin
+                    if (cache_flush_load_pending) begin
+                        sdram_wr_load_pulse <= 1'b1;
+                        cache_flush_load_pending <= 1'b0;
+                    end
+
                     if ((cache_words_done == cache_pixels_total) &&
                         !cache_word_pending_valid &&
                         !cache_fetch_inflight &&
@@ -2493,13 +2581,10 @@ module voxel_gpu (
                         cache_maint_addr <= 16'd0;
                         cache_fetch_inflight <= 1'b0;
                         cache_word_pending_valid <= 1'b0;
-                        sdram_wr_addr_cfg <= extmem_z_base_words +
-                                             band_word_offset(cache_band_index);
-                        sdram_wr_max_addr_cfg <= extmem_z_base_words +
-                                                 band_word_offset(cache_band_index) +
-                                                 band_word_count(cache_band_index);
-                        sdram_wr_load_pulse <= 1'b1;
-                        state <= ST_CACHE_FLUSH_Z;
+                        cache_band_valid[cache_band_index] <= 1'b1;
+                        cache_dirty <= 1'b0;
+                        cache_valid <= 1'b0;
+                        state <= ST_IDLE;
                     end
                 end
 
@@ -2549,7 +2634,7 @@ module voxel_gpu (
                         cache_band_index <= cache_target_band;
                         cache_maint_addr <= 16'd0;
                         cache_resume_draw <= 1'b0;
-                        state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
+                        state <= ST_IDLE;
                     end else begin
                         cache_maint_addr <= cache_maint_addr + 16'd1;
                     end
@@ -2594,6 +2679,55 @@ module voxel_gpu (
                 default: state <= ST_IDLE;
             endcase
 
+            /*
+             * CLR is a frame-level abort/restart request from the driver. Do
+             * not wait for ST_IDLE: cache maintenance can legitimately take a
+             * long time at 640x480, and if a previous frame wedges we need the
+             * next CLEAR_FRAME ioctl to recover the engine instead of timing
+             * out behind stale BUSY.
+             */
+            if (ctrl_clear_write) begin
+                state <= ST_IDLE;
+                clear_pending <= 1'b0;
+                ctrl_flp_pending <= 1'b0;
+                copy_complete_pending <= 1'b0;
+                copy_target_sel <= ~display_sel;
+                cache_valid <= 1'b0;
+                cache_dirty <= 1'b0;
+                cache_band_valid <= 8'h00;
+                band_begin_pending <= 1'b0;
+                band_flush_pending <= 1'b0;
+                cache_resume_draw <= 1'b0;
+                cache_final_flush <= 1'b0;
+                cache_words_issued <= 16'd0;
+                cache_words_done <= 16'd0;
+                cache_maint_addr <= 16'd0;
+                cache_fetch_inflight <= 1'b0;
+                cache_flush_load_pending <= 1'b0;
+                cache_word_pending_valid <= 1'b0;
+                cache_load_pop_d <= 1'b0;
+                sdram_wr_load_pulse <= 1'b0;
+                sdram_rd_load_pulse <= 1'b0;
+                fifo_wr_ptr <= 11'd0;
+                fifo_rd_ptr <= 11'd0;
+                fifo_count <= 12'd0;
+                fetch_count <= 6'd0;
+                draw_flush_count <= 4'd0;
+                pipe0_valid <= 1'b0;
+                recip0_valid <= 1'b0;
+                recip1_valid <= 1'b0;
+                recip2_valid <= 1'b0;
+                pipe1_valid <= 1'b0;
+                tex0_valid <= 1'b0;
+                pipe2_valid <= 1'b0;
+                draw_pipe_valid <= 1'b0;
+                pal_rd_valid <= 1'b0;
+                plr_valid <= 1'b0;
+                fog0_valid <= 1'b0;
+                fog1_valid <= 1'b0;
+                commit_valid <= 1'b0;
+            end
+
             extmem_dma_status <= {
                 cache_words_done,
                 3'h0,
@@ -2627,6 +2761,8 @@ module voxel_gpu (
             ADDR_EXTMEM_STRIDE: readdata = extmem_stride_bytes;
             ADDR_EXTMEM_TILE: readdata = extmem_tile_cfg;
             ADDR_EXTMEM_STAT: readdata = extmem_dma_status;
+            ADDR_BAND_INDEX: readdata = {29'h0, band_index_cfg};
+            ADDR_BAND_CTRL: readdata = {30'h0, band_flush_pending, band_begin_pending};
             default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end

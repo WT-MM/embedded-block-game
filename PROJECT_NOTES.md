@@ -773,3 +773,62 @@ Cache color/z loads only pulse `RD_LOAD` under that condition. This is
 intentionally conservative: scanout owns the read side unless it is fully idle.
 The expected tradeoff is lower render throughput, but the visible frame should
 be much less likely to tear or flash due to mixed FIFO ownership.
+
+Follow-up: Avoid cache-read deadlock and make CLR recover the engine
+--------------------------------------------------------------------
+The stricter read-start gate fixed ownership but exposed a liveness problem:
+once a cache read burst has already started, continuing to gate every FIFO pop
+on scanout slack can strand cache words in the read FIFO. The engine then stays
+busy in a cache-load state, which makes the next userspace `CLEAR_FRAME` ioctl
+time out because the old RTL only consumed `clear_pending` from `ST_IDLE`.
+
+Two liveness fixes were added:
+
+  * Cache reads still require exclusive ownership before pulsing `RD_LOAD`, but
+    once a cache burst is in flight the cache drains the read FIFO continuously
+    until the band load completes.
+  * A CONTROL write with CLR set is now treated as an engine abort/restart. It
+    invalidates cache state, drops pending flip/cache work, clears the descriptor
+    FIFO and pipeline valid bits, and returns the state machine to `ST_IDLE`
+    immediately instead of waiting behind the previous frame.
+
+This is deliberately biased toward recovery. If a frame hits a bad cache
+maintenance corner, the next frame begin should unwedge the hardware rather than
+leaving `/dev/voxel_gpu` stuck in timeout loops.
+
+April 2026: Band-Pass SDRAM Renderer Implementation
+---------------------------------------------------
+The hardware-managed random band cache was the wrong first full-resolution
+shape. It could preserve descriptor order, but it forced the raster engine,
+cache refill path, cache flush path, and VGA scanout to fight over one
+FIFO-style SDRAM read/write path. On hardware this showed up as flashing, then
+black frames with `CLEAR_FRAME` / descriptor writes timing out.
+
+The replacement first pass is explicit band rendering:
+
+  * Full render target remains 640x480 RGB565 in SDRAM.
+  * The on-chip working set is one 640x96 color band plus one 640x96 z band.
+  * There are exactly five bands: rows 0-95, 96-191, 192-287, 288-383, and
+    384-479.
+  * `CLEAR_FRAME` selects the inactive SDRAM color frame and resets band/FIFO
+    state. It does not clear a full framebuffer.
+  * `BEGIN_BAND(index)` clears the resident 96-line color/z band on chip.
+  * Userspace writes only the descriptors that overlap that band.
+  * `END_BAND` drains the FIFO/raster pipe and flushes the color band to the
+    inactive SDRAM frame at `frame_base + band_index * 640 * 96` words.
+  * `FLIP` only waits for the frame to be complete and swaps visible SDRAM
+    frames on vsync.
+
+Software binning is intentionally isolated in `sw/gpu_transport.c`. The
+renderer still builds one packed descriptor buffer for the whole frame. The
+transport parses that buffer, duplicates each descriptor into every overlapping
+band bin, and wraps each hardware bin with `BEGIN_BAND` / `END_BAND`. The
+virtual socket backend keeps receiving the original whole-frame stream so the
+Python rasterizer remains a simple reference model.
+
+This is conservative but deterministic. It removes all SDRAM color reloads and
+all SDRAM z traffic from the first hardware pass. Later, once the full-res path
+is stable, the transport can get smarter without changing `renderer.c`: sky can
+be treated as a per-band clear/background, large full-screen quads can be
+special-cased, and repeated descriptor duplication can be replaced with tighter
+software bins.

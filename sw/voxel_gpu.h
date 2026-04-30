@@ -19,6 +19,8 @@
  *   0x0028  EXTMEM_STRIDE bytes per scanline in SDRAM             (R/W)
  *   0x002C  EXTMEM_TILE  [15:0]=tile_w [31:16]=tile_h            (R/W)
  *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
+ *   0x0034  BAND_INDEX   active 96-line render band index          (R/W)
+ *   0x0038  BAND_CTRL    [1]=FLUSH [0]=BEGIN band command pulses   (W)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -56,6 +58,8 @@ typedef int32_t  __s32;
 #define VOXEL_REG_EXTMEM_STRIDE 0x0028
 #define VOXEL_REG_EXTMEM_TILE   0x002C
 #define VOXEL_REG_EXTMEM_STAT   0x0030
+#define VOXEL_REG_BAND_INDEX    0x0034
+#define VOXEL_REG_BAND_CTRL     0x0038
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x3000          /* exclusive */
@@ -66,15 +70,15 @@ typedef int32_t  __s32;
 
 /* ----- render/display geometry ----- */
 /*
- * Target geometry for the SDRAM-backed renderer. The first full-resolution
- * hardware pass keeps software descriptor submission order unchanged and makes
- * the RTL responsible for cache misses through an SDRAM-backed vertical band
- * cache. See PROJECT_NOTES.md for the cache contract and bring-up plan.
+ * Target geometry for the SDRAM-backed renderer. Userspace submits the same
+ * descriptor stream renderer.c already builds; gpu_transport.c bins that stream
+ * into 96-line passes and uses BEGIN_BAND/END_BAND to make the hardware render
+ * one resident on-chip band before flushing color to SDRAM.
  */
 #define VOXEL_RENDER_WIDTH      640u
 #define VOXEL_RENDER_HEIGHT     480u
 #define VOXEL_RENDER_STRIDE     (VOXEL_RENDER_WIDTH * 2u) /* RGB565 bytes */
-#define VOXEL_BAND_CACHE_HEIGHT 64u
+#define VOXEL_BAND_CACHE_HEIGHT 96u
 #define VOXEL_BAND_COUNT        ((VOXEL_RENDER_HEIGHT + VOXEL_BAND_CACHE_HEIGHT - 1u) / \
                                  VOXEL_BAND_CACHE_HEIGHT)
 
@@ -83,6 +87,10 @@ typedef int32_t  __s32;
 #define VOXEL_CTRL_FLP          (1u << 1)
 #define VOXEL_CTRL_IEN          (1u << 2)
 #define VOXEL_CTRL_CLR          (1u << 3)
+
+/* ----- BAND_CTRL bits ----- */
+#define VOXEL_BAND_CTRL_BEGIN   (1u << 0)
+#define VOXEL_BAND_CTRL_FLUSH   (1u << 1)
 
 /* ----- STATUS bits ----- */
 #define VOXEL_STAT_BSY          (1u << 0)       /* rasterizer busy */
@@ -126,6 +134,10 @@ struct voxel_extmem_state {
 	__u32 dma_status;       /* read-only SDRAM copy/scanout status */
 };
 
+struct voxel_band_state {
+	__u32 band_index;       /* 0..VOXEL_BAND_COUNT-1 */
+};
+
 /* ----- ioctl numbers ----- */
 #define VOXEL_IOC_MAGIC 'v'
 
@@ -137,8 +149,10 @@ struct voxel_extmem_state {
 #define VOXEL_IOC_SET_FOG          _IOW(VOXEL_IOC_MAGIC, 6, struct voxel_fog_state)
 #define VOXEL_IOC_SET_EXTMEM       _IOW(VOXEL_IOC_MAGIC, 7, struct voxel_extmem_state)
 #define VOXEL_IOC_GET_EXTMEM       _IOR(VOXEL_IOC_MAGIC, 8, struct voxel_extmem_state)
+#define VOXEL_IOC_BEGIN_BAND       _IOW(VOXEL_IOC_MAGIC, 9, struct voxel_band_state)
+#define VOXEL_IOC_END_BAND         _IO(VOXEL_IOC_MAGIC, 10)
 
-#define VOXEL_IOC_MAXNR            8
+#define VOXEL_IOC_MAXNR            10
 
 #define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
 #define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)
@@ -209,5 +223,6 @@ _Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 bytes");
 _Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 bytes");
 _Static_assert(sizeof(struct voxel_fog_state) == 8, "voxel_fog_state must be 8 bytes");
 _Static_assert(sizeof(struct voxel_extmem_state) == 24, "voxel_extmem_state must be 24 bytes");
+_Static_assert(sizeof(struct voxel_band_state) == 4, "voxel_band_state must be 4 bytes");
 
 #endif /* _VOXEL_GPU_H */

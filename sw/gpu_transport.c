@@ -26,6 +26,11 @@ struct GPUTransport {
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
+struct descriptor_bin {
+    uint8_t *bytes;
+    size_t used;
+};
+
 static const char *backend_mode_name(GPUBackendMode mode)
 {
     switch (mode) {
@@ -111,6 +116,197 @@ static int read_all(int fd, void *buf, size_t len)
     }
 
     return 0;
+}
+
+static int quad_descriptor_size(const struct quad_desc *desc, size_t *size)
+{
+    *size = sizeof(struct quad_desc);
+    if (desc->flags & QUAD_FLAG_TEX)
+        *size += sizeof(struct quad_desc_uv);
+    return 0;
+}
+
+static int bin_append(struct descriptor_bin *bin, const uint8_t *src, size_t len)
+{
+    if (SIZE_MAX - bin->used < len)
+        return -EOVERFLOW;
+
+    memcpy(bin->bytes + bin->used, src, len);
+    bin->used += len;
+    return 0;
+}
+
+static uint16_t clamp_z_i64(int64_t value)
+{
+    if (value < 0)
+        return 0;
+    if (value > UINT16_MAX)
+        return UINT16_MAX;
+    return (uint16_t)value;
+}
+
+static int32_t clamp_s32_i64(int64_t value)
+{
+    if (value < INT32_MIN)
+        return INT32_MIN;
+    if (value > INT32_MAX)
+        return INT32_MAX;
+    return (int32_t)value;
+}
+
+static int bin_append_y_clipped(struct descriptor_bin *bin,
+                                const uint8_t *src,
+                                size_t len,
+                                int clipped_y_min,
+                                int clipped_y_max)
+{
+    uint8_t clipped[sizeof(struct quad_desc) + sizeof(struct quad_desc_uv)];
+    struct quad_desc *desc;
+    int delta_y;
+    int64_t z0;
+
+    if (len > sizeof(clipped))
+        return -EINVAL;
+
+    memcpy(clipped, src, len);
+    desc = (struct quad_desc *)(void *)clipped;
+    delta_y = clipped_y_min - desc->y_min;
+
+    z0 = (int64_t)desc->z0 + (int64_t)desc->dz_dy * delta_y;
+    desc->z0 = clamp_z_i64(z0);
+    desc->y_min = (__s16)clipped_y_min;
+    desc->y_max = (__s16)clipped_y_max;
+
+    if (desc->flags & QUAD_FLAG_TEX) {
+        struct quad_desc_uv *uv =
+            (struct quad_desc_uv *)(void *)(clipped + sizeof(*desc));
+
+        uv->u_over_w_0 = clamp_s32_i64((int64_t)uv->u_over_w_0 +
+                                       (int64_t)uv->u_over_w_dy * delta_y);
+        uv->v_over_w_0 = clamp_s32_i64((int64_t)uv->v_over_w_0 +
+                                       (int64_t)uv->v_over_w_dy * delta_y);
+        uv->one_over_w_0 = clamp_s32_i64((int64_t)uv->one_over_w_0 +
+                                         (int64_t)uv->one_over_w_dy * delta_y);
+    }
+
+    return bin_append(bin, clipped, len);
+}
+
+static int submit_hw_band(GPUTransport *transport, unsigned band_index,
+                          const void *descriptors, size_t descriptor_bytes)
+{
+    struct voxel_band_state band = { .band_index = band_index };
+    int ret;
+
+    if (ioctl(transport->hw_fd, VOXEL_IOC_BEGIN_BAND, &band) < 0) {
+        perror("ioctl(BEGIN_BAND)");
+        return -errno;
+    }
+
+    if (descriptor_bytes > 0) {
+        ret = write_all(transport->hw_fd, descriptors, descriptor_bytes);
+        if (ret < 0) {
+            errno = -ret;
+            perror("write(descriptors)");
+            return ret;
+        }
+    }
+
+    if (ioctl(transport->hw_fd, VOXEL_IOC_END_BAND) < 0) {
+        perror("ioctl(END_BAND)");
+        return -errno;
+    }
+
+    return 0;
+}
+
+static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
+                            size_t descriptor_bytes)
+{
+    const uint8_t *stream = descriptors;
+    struct descriptor_bin bins[VOXEL_BAND_COUNT];
+    size_t offset = 0;
+    int ret = 0;
+
+    if (descriptor_bytes == 0) {
+        for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
+            ret = submit_hw_band(transport, band, NULL, 0);
+            if (ret < 0)
+                return ret;
+        }
+        return 0;
+    }
+
+    memset(bins, 0, sizeof(bins));
+    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
+        bins[band].bytes = malloc(descriptor_bytes);
+        if (!bins[band].bytes) {
+            ret = -ENOMEM;
+            goto out;
+        }
+    }
+
+    while (offset < descriptor_bytes) {
+        const struct quad_desc *desc;
+        size_t desc_size;
+        int y_min;
+        int y_max;
+        unsigned first_band;
+        unsigned last_band;
+
+        if (descriptor_bytes - offset < sizeof(struct quad_desc)) {
+            ret = -EINVAL;
+            goto out;
+        }
+
+        desc = (const struct quad_desc *)(const void *)(stream + offset);
+        quad_descriptor_size(desc, &desc_size);
+        if (descriptor_bytes - offset < desc_size) {
+            ret = -EINVAL;
+            goto out;
+        }
+
+        y_min = desc->y_min;
+        y_max = desc->y_max;
+        if (y_max < 0 || y_min >= (int)VOXEL_RENDER_HEIGHT || y_min > y_max) {
+            offset += desc_size;
+            continue;
+        }
+        if (y_min < 0)
+            y_min = 0;
+        if (y_max >= (int)VOXEL_RENDER_HEIGHT)
+            y_max = (int)VOXEL_RENDER_HEIGHT - 1;
+
+        first_band = (unsigned)y_min / VOXEL_BAND_CACHE_HEIGHT;
+        last_band = (unsigned)y_max / VOXEL_BAND_CACHE_HEIGHT;
+        if (last_band >= VOXEL_BAND_COUNT)
+            last_band = VOXEL_BAND_COUNT - 1;
+
+        for (unsigned band = first_band; band <= last_band; band++) {
+            int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
+            int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
+            int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
+            int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
+
+            ret = bin_append_y_clipped(&bins[band], stream + offset, desc_size,
+                                       clipped_y_min, clipped_y_max);
+            if (ret < 0)
+                goto out;
+        }
+
+        offset += desc_size;
+    }
+
+    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
+        ret = submit_hw_band(transport, band, bins[band].bytes, bins[band].used);
+        if (ret < 0)
+            goto out;
+    }
+
+out:
+    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++)
+        free(bins[band].bytes);
+    return ret;
 }
 
 static int connect_socket_path(const char *path)
@@ -376,15 +572,7 @@ int gpu_transport_submit_descriptors(GPUTransport *transport,
         return -E2BIG;
 
     if (transport_needs_hw(transport)) {
-        ssize_t written = write(transport->hw_fd, descriptors, descriptor_bytes);
-        if (written < 0) {
-            perror("write(descriptors)");
-            ret = -errno;
-        } else if ((size_t)written != descriptor_bytes) {
-            fprintf(stderr, "short write(descriptors): %zd / %zu\n",
-                    written, descriptor_bytes);
-            ret = -EIO;
-        }
+        ret = submit_hw_binned(transport, descriptors, descriptor_bytes);
     }
 
     if (transport_needs_socket(transport)) {

@@ -110,12 +110,17 @@ static int voxel_poll_status(u32 mask, u32 expect, unsigned int timeout_ms)
 static int voxel_fifo_wait_space(size_t *space_words, size_t min_req)
 {
 	unsigned long deadline = jiffies + msecs_to_jiffies(VOXEL_POLL_TIMEOUT_MS);
+	unsigned int short_waits = 0;
 
 	for (;;) {
 		u32 used = voxel_fifo_count();
 		u32 space = used < VOXEL_FIFO_WORDS ? VOXEL_FIFO_WORDS - used : 0;
 
 		if (space >= min_req) {
+			*space_words = space;
+			return 0;
+		}
+		if (space > 0 && ++short_waits >= 8) {
 			*space_words = space;
 			return 0;
 		}

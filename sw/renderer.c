@@ -1704,8 +1704,12 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     }
     int x_min = (int)ceilf(fxmin - 0.5f);  if (x_min <   0) x_min =   0;
     int y_min = (int)ceilf(fymin - 0.5f);  if (y_min <   0) y_min =   0;
-    int x_max = (int)floorf(fxmax - 0.5f); if (x_max > 319) x_max = 319;
-    int y_max = (int)floorf(fymax - 0.5f); if (y_max > 239) y_max = 239;
+    int x_max = (int)floorf(fxmax - 0.5f);
+    int y_max = (int)floorf(fymax - 0.5f);
+    if (x_max > (int)VOXEL_RENDER_WIDTH - 1)
+        x_max = (int)VOXEL_RENDER_WIDTH - 1;
+    if (y_max > (int)VOXEL_RENDER_HEIGHT - 1)
+        y_max = (int)VOXEL_RENDER_HEIGHT - 1;
 
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */

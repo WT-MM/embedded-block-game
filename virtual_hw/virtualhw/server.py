@@ -169,6 +169,8 @@ class Monitor:
         self._pygame = pygame
         self._window = pygame.display.set_mode((width * scale, height * scale))
         pygame.display.set_caption("Virtual Voxel GPU")
+        self._window.fill((0, 0, 0))
+        pygame.display.flip()
 
     def close(self) -> None:
         if self._pygame is not None:

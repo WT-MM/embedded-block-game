@@ -449,12 +449,12 @@ module voxel_gpu (
     logic        scan_visible_r;
     logic [15:0] draw_addr;
     logic [15:0] fb_back_rd_addr;
-    logic [15:0] fb_back_rd_data;
+    // fb_back_rd_data is now a wire driven by the ping-pong cache mux
     logic [15:0] fb_wr_addr;
     logic [15:0] fb_wr_data;
     logic        fb_back_wr_en;
     logic [15:0] z_rd_addr;
-    logic [15:0] z_rd_data;
+    // z_rd_data is now a wire driven by the ping-pong cache mux
     logic [15:0] z_wr_addr;
     logic [15:0] z_wr_data;
     logic        z_wr_en;
@@ -507,6 +507,34 @@ module voxel_gpu (
     logic [24:0] sdram_wr_addr_cfg;
     logic [24:0] sdram_wr_max_addr_cfg;
     logic        sdram_wr_load_pulse;
+
+    /* ── Ping-pong band cache ─────────────────────────────── */
+    logic        draw_cache_sel;           // 0 = A active, 1 = B active
+    logic        flush_active;             // background flush running
+    logic [15:0] flush_maint_addr;         // read address into inactive cache
+    logic [15:0] flush_pixels_total;       // pixels in the flushing band
+    logic [15:0] flush_words_issued;       // reads issued to inactive cache
+    logic [15:0] flush_words_done;         // words pushed to SDRAM wr FIFO
+    logic        flush_fetch_inflight;     // one-cycle read latency pending
+    logic        flush_word_pending_valid; // captured pixel waiting for SDRAM push
+    logic [15:0] flush_word_pending;       // the captured pixel value
+    logic        flush_load_pending;       // kick the SDRAM write burst
+    logic  [2:0] flush_band_index;         // which band is being flushed
+    logic [24:0] flush_sdram_wr_addr;      // SDRAM write base for flush
+    logic [24:0] flush_sdram_wr_max_addr;  // SDRAM write end for flush
+    logic        flush_cache_sel;          // which cache to flush (0=A, 1=B)
+
+    // Per-cache read/write signals (active = rasterizer, inactive = flush/init)
+    logic [15:0] fb_A_rd_addr, fb_B_rd_addr;
+    logic [15:0] fb_A_rd_data, fb_B_rd_data;
+    logic [15:0] fb_A_wr_addr, fb_B_wr_addr;
+    logic [15:0] fb_A_wr_data, fb_B_wr_data;
+    logic        fb_A_wr_en,   fb_B_wr_en;
+    logic [15:0] z_A_rd_addr,  z_B_rd_addr;
+    logic [15:0] z_A_rd_data,  z_B_rd_data;
+    logic [15:0] z_A_wr_addr,  z_B_wr_addr;
+    logic [15:0] z_A_wr_data,  z_B_wr_data;
+    logic        z_A_wr_en,    z_B_wr_en;
 
     logic [17:0] sdram_powerup_counter;
     logic [15:0] sdram_init_wait_counter;
@@ -573,8 +601,15 @@ module voxel_gpu (
         cache_words_done + (cache_load_pop_d ? 16'd1 : 16'd0);
     wire        cache_init_state = (state == ST_CACHE_INIT);
     wire        cache_maint_state = cache_flush_state || cache_load_state || cache_init_state;
-    wire        sdram_wr_push = cache_flush_state && cache_word_pending_valid &&
-                                !sdram_wr_full && scanout_slack;
+
+    /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
+    wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
+                                     !sdram_wr_full && scanout_slack;
+    wire        bg_flush_wr_push   = flush_active && flush_word_pending_valid &&
+                                     !cache_flush_state &&
+                                     !sdram_wr_full && scanout_slack;
+    wire        sdram_wr_push      = main_flush_wr_push || bg_flush_wr_push;
+
     wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
                                (cache_load_words_complete < cache_pixels_total);
     /*
@@ -595,9 +630,21 @@ module voxel_gpu (
         !cache_fetch_inflight &&
         scanout_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
-        (!cache_word_pending_valid || sdram_wr_push);
+        (!cache_word_pending_valid || main_flush_wr_push);
     wire        cache_issue_read = cache_can_issue_read;
-    wire [8:0]  sdram_wr_length_cfg = cache_flush_state ? COPY_BURST_WORDS_9 : 9'd0;
+
+    /* Background flush controller can issue a read from the inactive cache */
+    wire        flush_can_issue_read =
+        flush_active &&
+        !cache_flush_state &&
+        (flush_words_issued < flush_pixels_total) &&
+        !flush_fetch_inflight &&
+        scanout_slack &&
+        (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
+        (!flush_word_pending_valid || bg_flush_wr_push);
+
+    wire [8:0]  sdram_wr_length_cfg = (cache_flush_state || flush_active) ?
+                                      COPY_BURST_WORDS_9 : 9'd0;
     /*
      * Keep SDRAM reads in 64-word chunks. A full scanline burst can cross the
      * SDRAM row/column boundary; 64-word chunks stay aligned because both the
@@ -606,6 +653,13 @@ module voxel_gpu (
     wire [8:0]  sdram_rd_length_cfg = (scan_fill_armed || cache_rd_load_state ||
                                        (cache_load_state && scanout_slack)) ?
                                       READ_BURST_WORDS_9 : 9'd0;
+
+    /* ── Ping-pong cache port muxing ─────────────────────────────────────── */
+    /* Rasterizer read data from active cache */
+    wire [15:0] fb_back_rd_data = draw_cache_sel ? fb_B_rd_data : fb_A_rd_data;
+    wire [15:0] z_rd_data       = draw_cache_sel ? z_B_rd_data  : z_A_rd_data;
+    /* Flush read data from flush_cache_sel's cache */
+    wire [15:0] flush_fb_rd_data = flush_cache_sel ? fb_B_rd_data : fb_A_rd_data;
 
     wire signed [15:0] desc_x_min_raw = $signed(desc_words[0][15:0]);
     wire signed [15:0] desc_y_min_raw = $signed(desc_words[0][31:16]);
@@ -1033,12 +1087,13 @@ module voxel_gpu (
         .REF_CLK     (clk),
         .RESET_N     (sdram_ctrl_reset_n),
         .CLK         (sdram_ctrl_clk),
-        .WR_DATA     (cache_word_pending),
+        .WR_DATA     (cache_flush_state ? cache_word_pending : flush_word_pending),
         .WR          (sdram_wr_push),
-        .WR_ADDR     (sdram_wr_addr_cfg),
-        .WR_MAX_ADDR (sdram_wr_max_addr_cfg),
+        .WR_ADDR     (cache_flush_state ? sdram_wr_addr_cfg : flush_sdram_wr_addr),
+        .WR_MAX_ADDR (cache_flush_state ? sdram_wr_max_addr_cfg : flush_sdram_wr_max_addr),
         .WR_LENGTH   (sdram_wr_length_cfg),
-        .WR_LOAD     (sdram_wr_load_pulse),
+        .WR_LOAD     (cache_flush_state ? sdram_wr_load_pulse :
+                      (flush_active && flush_load_pending)),
         .WR_CLK      (clk),
         .WR_FULL     (sdram_wr_full),
         .WR_USE      (sdram_wr_use),
@@ -1065,30 +1120,57 @@ module voxel_gpu (
 
     assign DRAM_CS_N = dram_cs_n_bus[0];
 
+    /* ── Ping-pong band caches A and B ───────────────────── */
     voxel_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
-    ) fb_back_ram (
+    ) fb_back_ram_A (
         .clk     (clk),
-        .rd_addr (fb_back_rd_addr),
-        .rd_data (fb_back_rd_data),
-        .wr_addr (fb_wr_addr),
-        .wr_data (fb_wr_data),
-        .wr_en   (fb_back_wr_en)
+        .rd_addr (fb_A_rd_addr),
+        .rd_data (fb_A_rd_data),
+        .wr_addr (fb_A_wr_addr),
+        .wr_data (fb_A_wr_data),
+        .wr_en   (fb_A_wr_en)
     );
 
     voxel_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
-    ) z_ram (
+    ) fb_back_ram_B (
         .clk     (clk),
-        .rd_addr (z_rd_addr),
-        .rd_data (z_rd_data),
-        .wr_addr (z_wr_addr),
-        .wr_data (z_wr_data),
-        .wr_en   (z_wr_en)
+        .rd_addr (fb_B_rd_addr),
+        .rd_data (fb_B_rd_data),
+        .wr_addr (fb_B_wr_addr),
+        .wr_data (fb_B_wr_data),
+        .wr_en   (fb_B_wr_en)
+    );
+
+    voxel_sdp_ram #(
+        .DATA_W(16),
+        .ADDR_W(16),
+        .DEPTH(BAND_PIXELS)
+    ) z_ram_A (
+        .clk     (clk),
+        .rd_addr (z_A_rd_addr),
+        .rd_data (z_A_rd_data),
+        .wr_addr (z_A_wr_addr),
+        .wr_data (z_A_wr_data),
+        .wr_en   (z_A_wr_en)
+    );
+
+    voxel_sdp_ram #(
+        .DATA_W(16),
+        .ADDR_W(16),
+        .DEPTH(BAND_PIXELS)
+    ) z_ram_B (
+        .clk     (clk),
+        .rd_addr (z_B_rd_addr),
+        .rd_data (z_B_rd_data),
+        .wr_addr (z_B_wr_addr),
+        .wr_data (z_B_wr_data),
+        .wr_en   (z_B_wr_en)
     );
 
     /*
@@ -1545,6 +1627,76 @@ module voxel_gpu (
 
             default: ;
         endcase
+
+        /* ── Ping-pong port routing ────────────────────────────────────── */
+        /* Rasterizer (draw_cache_sel): owns read+write of active cache.   */
+        /* Flush controller (flush_cache_sel): reads from its cache.       */
+
+        /* ── Cache A ports ── */
+        if (draw_cache_sel == 1'b0) begin
+            /* A is active → rasterizer read+write */
+            fb_A_rd_addr = fb_back_rd_addr;
+            fb_A_wr_addr = fb_wr_addr;
+            fb_A_wr_data = fb_wr_data;
+            fb_A_wr_en   = fb_back_wr_en;
+            z_A_rd_addr  = z_rd_addr;
+            z_A_wr_addr  = z_wr_addr;
+            z_A_wr_data  = z_wr_data;
+            z_A_wr_en    = z_wr_en;
+        end else if (flush_cache_sel == 1'b0 && flush_active) begin
+            /* A is being flushed → flush reads */
+            fb_A_rd_addr = flush_maint_addr;
+            fb_A_wr_addr = 16'd0;
+            fb_A_wr_data = 16'd0;
+            fb_A_wr_en   = 1'b0;
+            z_A_rd_addr  = flush_maint_addr;
+            z_A_wr_addr  = 16'd0;
+            z_A_wr_data  = 16'd0;
+            z_A_wr_en    = 1'b0;
+        end else begin
+            /* A is idle */
+            fb_A_rd_addr = 16'd0;
+            fb_A_wr_addr = 16'd0;
+            fb_A_wr_data = 16'd0;
+            fb_A_wr_en   = 1'b0;
+            z_A_rd_addr  = 16'd0;
+            z_A_wr_addr  = 16'd0;
+            z_A_wr_data  = 16'd0;
+            z_A_wr_en    = 1'b0;
+        end
+
+        /* ── Cache B ports ── */
+        if (draw_cache_sel == 1'b1) begin
+            /* B is active → rasterizer read+write */
+            fb_B_rd_addr = fb_back_rd_addr;
+            fb_B_wr_addr = fb_wr_addr;
+            fb_B_wr_data = fb_wr_data;
+            fb_B_wr_en   = fb_back_wr_en;
+            z_B_rd_addr  = z_rd_addr;
+            z_B_wr_addr  = z_wr_addr;
+            z_B_wr_data  = z_wr_data;
+            z_B_wr_en    = z_wr_en;
+        end else if (flush_cache_sel == 1'b1 && flush_active) begin
+            /* B is being flushed → flush reads */
+            fb_B_rd_addr = flush_maint_addr;
+            fb_B_wr_addr = 16'd0;
+            fb_B_wr_data = 16'd0;
+            fb_B_wr_en   = 1'b0;
+            z_B_rd_addr  = flush_maint_addr;
+            z_B_wr_addr  = 16'd0;
+            z_B_wr_data  = 16'd0;
+            z_B_wr_en    = 1'b0;
+        end else begin
+            /* B is idle */
+            fb_B_rd_addr = 16'd0;
+            fb_B_wr_addr = 16'd0;
+            fb_B_wr_data = 16'd0;
+            fb_B_wr_en   = 1'b0;
+            z_B_rd_addr  = 16'd0;
+            z_B_wr_addr  = 16'd0;
+            z_B_wr_data  = 16'd0;
+            z_B_wr_en    = 1'b0;
+        end
     end
 
     always_ff @(posedge clk) begin
@@ -1842,6 +1994,22 @@ module voxel_gpu (
             sdram_wr_addr_cfg <= 25'd0;
             sdram_wr_max_addr_cfg <= 25'd0;
             sdram_wr_load_pulse <= 1'b0;
+            /* Ping-pong cache reset */
+            draw_cache_sel <= 1'b0;
+            flush_active <= 1'b0;
+            flush_maint_addr <= 16'd0;
+            flush_pixels_total <= 16'd0;
+            flush_words_issued <= 16'd0;
+            flush_words_done <= 16'd0;
+            flush_fetch_inflight <= 1'b0;
+            flush_word_pending_valid <= 1'b0;
+            flush_word_pending <= 16'd0;
+            flush_load_pending <= 1'b0;
+            flush_band_index <= 3'd0;
+            flush_sdram_wr_addr <= 25'd0;
+            flush_sdram_wr_max_addr <= 25'd0;
+            flush_cache_sel <= 1'b0;
+            draw_row_inside <= 1'b0;
             sdram_powerup_counter <= 18'd0;
             sdram_init_wait_counter <= 16'd0;
             sdram_ctrl_reset_n <= 1'b0;
@@ -2088,14 +2256,15 @@ module voxel_gpu (
                 scan_fill_pop_d <= 1'b0;
             end
 
-            if (sdram_wr_push) begin
+            /* Main-FSM flush: used for ST_CACHE_FLUSH_COLOR/Z only */
+            if (main_flush_wr_push) begin
                 cache_word_pending_valid <= 1'b0;
                 cache_words_done <= cache_words_done + 16'd1;
             end
 
             if (cache_flush_state) begin
                 if (cache_fetch_inflight &&
-                    (!cache_word_pending_valid || sdram_wr_push)) begin
+                    (!cache_word_pending_valid || main_flush_wr_push)) begin
                     cache_word_pending <= (state == ST_CACHE_FLUSH_Z) ?
                                           z_rd_data : fb_back_rd_data;
                     cache_word_pending_valid <= 1'b1;
@@ -2106,6 +2275,44 @@ module voxel_gpu (
                     cache_maint_addr <= cache_words_issued;
                     cache_words_issued <= cache_words_issued + 16'd1;
                     cache_fetch_inflight <= 1'b1;
+                end
+            end
+
+            /* ── Background flush controller ─────────────────────────── */
+            /* Runs independently of the main FSM. Reads from the inactive
+             * cache and streams pixels to the SDRAM write FIFO. */
+            if (bg_flush_wr_push) begin
+                flush_word_pending_valid <= 1'b0;
+                flush_words_done <= flush_words_done + 16'd1;
+            end
+
+            if (flush_active && !cache_flush_state) begin
+                /* Clear load pending after one cycle */
+                if (flush_load_pending)
+                    flush_load_pending <= 1'b0;
+
+                /* Capture read data after one-cycle latency */
+                if (flush_fetch_inflight &&
+                    (!flush_word_pending_valid || bg_flush_wr_push)) begin
+                    flush_word_pending <= flush_fb_rd_data;
+                    flush_word_pending_valid <= 1'b1;
+                    flush_fetch_inflight <= 1'b0;
+                end
+
+                /* Issue next read from inactive cache */
+                if (flush_can_issue_read) begin
+                    flush_maint_addr <= flush_words_issued;
+                    flush_words_issued <= flush_words_issued + 16'd1;
+                    flush_fetch_inflight <= 1'b1;
+                end
+
+                /* Flush complete: all words pushed to SDRAM and FIFO drained */
+                if ((flush_words_done == flush_pixels_total) &&
+                    !flush_word_pending_valid &&
+                    !flush_fetch_inflight &&
+                    (sdram_wr_use[8:0] == 9'd0)) begin
+                    flush_active <= 1'b0;
+                    cache_band_valid[flush_band_index] <= 1'b1;
                 end
             end
 
@@ -2228,25 +2435,38 @@ module voxel_gpu (
                         cache_maint_addr <= 16'd0;
                         cache_valid <= 1'b0;
                         cache_dirty <= 1'b0;
+                        /* Toggle cache selector: draw into the other cache */
+                        draw_cache_sel <= ~draw_cache_sel;
                         state <= ST_CACHE_INIT;
-                    end else if (band_flush_pending) begin
+                    end else if (band_flush_pending && !flush_active) begin
                         band_flush_pending <= 1'b0;
-                        if (cache_valid) begin
-                            cache_words_issued <= 16'd0;
-                            cache_words_done <= 16'd0;
-                            cache_maint_addr <= 16'd0;
-                            cache_fetch_inflight <= 1'b0;
-                            cache_word_pending_valid <= 1'b0;
-                            cache_pixels_total <= band_pixel_count(cache_band_index);
-                            sdram_wr_addr_cfg <= copy_target_base_words +
-                                                 band_word_offset(cache_band_index);
-                            sdram_wr_max_addr_cfg <= copy_target_base_words +
-                                                     band_word_offset(cache_band_index) +
-                                                     band_word_count(cache_band_index);
-                            cache_flush_load_pending <= 1'b1;
-                            state <= ST_CACHE_FLUSH_COLOR;
+                        if (cache_valid && cache_dirty) begin
+                            /* Kick background flush on the current active cache.
+                             * The next BEGIN_BAND will toggle draw_cache_sel,
+                             * so the rasterizer will switch to the other cache
+                             * while this one flushes in the background. */
+                            flush_active <= 1'b1;
+                            flush_band_index <= cache_band_index;
+                            flush_pixels_total <= band_pixel_count(cache_band_index);
+                            flush_maint_addr <= 16'd0;
+                            flush_words_issued <= 16'd0;
+                            flush_words_done <= 16'd0;
+                            flush_fetch_inflight <= 1'b0;
+                            flush_word_pending_valid <= 1'b0;
+                            flush_load_pending <= 1'b1;
+                            flush_cache_sel <= draw_cache_sel;
+                            flush_sdram_wr_addr <= copy_target_base_words +
+                                                   band_word_offset(cache_band_index);
+                            flush_sdram_wr_max_addr <= copy_target_base_words +
+                                                       band_word_offset(cache_band_index) +
+                                                       band_word_count(cache_band_index);
+                            cache_valid <= 1'b0;
+                            cache_dirty <= 1'b0;
                         end
-                    end else if (ctrl_flp_pending && sdram_ready && !copy_complete_pending) begin
+                        /* Don't enter ST_CACHE_FLUSH_COLOR — stay in ST_IDLE
+                         * so the next BEGIN_BAND can proceed immediately */
+                    end else if (ctrl_flp_pending && sdram_ready &&
+                                !copy_complete_pending && !flush_active) begin
                         copy_complete_pending <= 1'b1;
                         cache_final_flush <= 1'b0;
                     end else if (ctrl_en && (fifo_count >= 12'd16)) begin
@@ -2265,6 +2485,10 @@ module voxel_gpu (
                     band_begin_pending <= 1'b0;
                     band_flush_pending <= 1'b0;
                     copy_complete_pending <= 1'b0;
+                    draw_cache_sel <= 1'b0;
+                    flush_active <= 1'b0;
+                    flush_word_pending_valid <= 1'b0;
+                    flush_fetch_inflight <= 1'b0;
                     state <= ST_IDLE;
                 end
 

@@ -893,3 +893,140 @@ the first burst of a scanline, i.e. `scan_linebuf[0]`, which the scanout shifts
 out as the leftmost pixel. Subsequent words came from the correct burst.
 
 Confirmed fixed on hardware after reflash.
+
+
+April 30 2026: FPS Bottleneck Diagnosis
+---------------------------------------
+
+Problem
+-------
+After moving from 320×240 on-chip-only framebuffer to 640×480 SDRAM-backed
+banding, FPS dropped from ~60 to 6–15 FPS. The perf counters show:
+
+    update = 19–69 ms   (chunk meshing / lighting)
+    draw   = 12–20 ms   (CPU descriptor emission, ~1800 quads)
+    end    = 47–60 ms   (hardware rasterization + band flush + vsync)
+
+Total frame time: 80–150 ms. Need ≤33 ms for 30 FPS.
+
+Diagnosis: Where the Time Goes
+------------------------------
+The `end` phase calls `renderer_end_frame()`, which loops over 5 bands:
+
+    for each band 0..4:
+        BEGIN_BAND ioctl    → kernel polls BSY until ST_CACHE_INIT finishes
+        write() descriptors → kernel pushes into 2048-word FIFO, blocks when full
+        END_BAND ioctl      → kernel polls BSY until rasterizer + cache flush done
+    FLIP ioctl              → kernel polls until next vsync
+
+The CPU is idle during `end`. It's blocked in kernel-space `udelay()` polls
+waiting for the hardware. The hardware bottleneck is the rasterizer:
+
+  * 1 pixel evaluated per FPGA clock at 50 MHz.
+  * ~1800 world quads × ~1400 pixels average bounding box = ~2.5M pixel evals.
+  * 2.5M / 50 MHz = **50 ms** of pure rasterization. Matches observed `end`.
+
+The SDRAM cache flush (ST_CACHE_FLUSH_COLOR) adds additional time but is gated
+by `scanout_slack` to avoid bus contention with VGA scanout reads. Each flush
+drains 61,440 words through the SDRAM write FIFO, interleaved with scanout
+read bursts.
+
+What We Tried (and Learned)
+---------------------------
+1. **Removed `scanout_slack` gate from cache flush** — Attempted to let SDRAM
+   writes proceed during active scanout. Result: caused left-side pixel
+   corruption (SDRAM read/write contention during VGA scanout). REVERTED.
+
+2. **Flat buffer transport** (iovec→single write) — Reduced per-band syscall
+   overhead. Helped CPU-side transport cost but didn't touch the hardware
+   rasterization time, which dominates.
+
+3. **Quad budget cap** (WORLD_QUAD_BUDGET=800) — Capping world quads would
+   bring `end` under 20 ms but degrades visual quality unacceptably. REVERTED.
+
+What Actually Helps
+-------------------
+1. **Early scanline exit** (RTL, applied) — For convex quads, once the edge
+   function transitions inside→outside while scanning a row left-to-right,
+   all remaining pixels on that row are outside. Skip to next row. Saves
+   ~30–40% of pixel evaluations for typical perspective-projected quads.
+   Zero resource cost.
+
+2. **Duplicate rebuild fix** (game.c, applied) — The lighting + mesh rebuild
+   block was copy-pasted twice in the game loop. Removing the duplicate cuts
+   `update` spikes roughly in half.
+
+3. **Faster kernel polling** (voxel_gpu.c, applied) — Reduced udelay from
+   10 μs to 1 μs. CPU reacts faster when FIFO drains or BSY clears.
+
+4. **Larger bounce buffer** (voxel_gpu.c, applied) — 2 KB → 8 KB. Fewer
+   copy_from_user transitions per band.
+
+5. **Ping-pong band cache** (RTL, planned) — See below.
+
+Ping-Pong Band Cache Plan
+--------------------------
+### The Problem
+
+Per-band processing is fully serial:
+
+    Band 0: INIT(1.2ms) → DRAW(X ms) → FLUSH(Y ms)
+    Band 1: INIT(1.2ms) → DRAW(X ms) → FLUSH(Y ms)
+    ...
+
+The INIT and FLUSH phases are pure overhead. INIT writes 61,440 pixels of
+clear values to fb_back_ram + z_ram (one pixel/cycle = 1.2 ms). FLUSH reads
+61,440 words from fb_back_ram and streams them to SDRAM (throttled by
+scanout_slack, ~2–12 ms depending on VGA timing).
+
+### The Fix
+
+Duplicate the band cache (fb_back_ram + z_ram). While the rasterizer draws
+into cache A, cache B can be flushing to SDRAM. When band N finishes drawing,
+swap: start drawing band N+1 into cache B, start flushing cache A.
+
+    Cache A: [INIT+DRAW band 0] ──────────── [INIT+DRAW band 2] ────
+    Cache B:            [FLUSH 0 + INIT+DRAW band 1] ──── [FLUSH 1 + DRAW 3]
+
+This overlaps FLUSH with DRAW, hiding the flush latency. 5 bands × ~2–12 ms
+flush = 10–60 ms saved.
+
+### Resource Cost
+
+Current band cache:
+  * fb_back_ram: 61,440 × 16-bit = ~120 KB (M10K)
+  * z_ram:       61,440 × 16-bit = ~120 KB (M10K)
+  * Total:       ~240 KB (47% of Cyclone V's 512 KB M10K)
+
+Ping-pong doubles this to ~480 KB (94% of M10K). Tight but feasible. The
+texture ROM (16 KB), FIFO (8 KB), palette (<1 KB), and scanline buffers (~3 KB)
+fit in the remaining ~30 KB.
+
+### Port Mapping
+
+Each voxel_sdp_ram has one read port and one write port. With ping-pong:
+
+    Active cache (rasterizer):
+      write port → rasterizer pixel writes (fb_wr_addr/data)
+      read port  → alpha-blend readback (pipe0_addr) + Z-test read (pipe0_addr)
+
+    Inactive cache (flush):
+      read port  → cache_maint_addr for SDRAM flush
+      write port → cache INIT (clear values)
+
+No port conflicts. The key insight: the flush controller only needs the read
+port of the inactive cache, and INIT only needs the write port of the inactive
+cache. Both are free while the rasterizer owns the active cache.
+
+### Implementation Steps
+
+1. Instantiate fb_back_ram_A, fb_back_ram_B, z_ram_A, z_ram_B
+2. Add `draw_cache_sel` register (0=A, 1=B), toggled at band boundaries
+3. Mux the rasterizer's read/write ports to the active cache
+4. Add a parallel flush FSM (or extend the main FSM) that reads from the
+   inactive cache and pushes to the SDRAM write FIFO
+5. Overlap: when END_BAND fires, start the flush on the inactive cache
+   AND immediately allow BEGIN_BAND to start INIT+DRAW on the active cache
+6. The FLIP ioctl must wait for the last outstanding flush to complete before
+   swapping SDRAM display pointers
+

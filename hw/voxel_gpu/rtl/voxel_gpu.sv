@@ -71,9 +71,9 @@ module voxel_gpu (
     localparam int FB_WIDTH       = 640;
     localparam int FB_HEIGHT      = 480;
     localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
-    localparam int BAND_HEIGHT    = 96;
+    localparam int BAND_HEIGHT    = 64;
     localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
-    localparam int BAND_COUNT     = 5;
+    localparam int BAND_COUNT     = 8;
     localparam int FIFO_DEPTH     = 2048;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
@@ -96,16 +96,15 @@ module voxel_gpu (
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
     localparam logic [24:0] FB_WORDS_25 = 25'd307200;
     localparam logic [24:0] LINE_WORDS_25 = 25'd640;
-    localparam logic [24:0] BAND_WORDS_25 = 25'd61440;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
     localparam logic [8:0]  READ_BURST_WORDS_9 = 9'd64;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
-    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd614400;
+    localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd1048576; // 1MB
     localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd1280;
-    localparam logic [31:0] DEFAULT_EXTMEM_Z_BASE = 32'd1228800;
+    localparam logic [31:0] DEFAULT_EXTMEM_Z_BASE = 32'd2097152; // 2MB
     localparam int SDRAM_POWERUP_HOLD_CYCLES = 200000;
     localparam int SDRAM_INIT_WAIT_CYCLES = 32000;
     localparam int FLAG_TEX_BIT        = 0;
@@ -895,52 +894,35 @@ module voxel_gpu (
 
     function automatic [15:0] band_pixel_count(input logic [2:0] band);
         begin
-            band_pixel_count = 16'd61440;
+            band_pixel_count = BAND_PIXELS[15:0];
         end
     endfunction
 
     function automatic [24:0] band_word_count(input logic [2:0] band);
         begin
-            band_word_count = 25'd61440;
+            band_word_count = BAND_PIXELS[24:0];
         end
     endfunction
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            case (band)
-                3'd0: band_word_offset = 25'd0;
-                3'd1: band_word_offset = 25'd61440;
-                3'd2: band_word_offset = 25'd122880;
-                3'd3: band_word_offset = 25'd184320;
-                default: band_word_offset = 25'd245760;
-            endcase
+            /* BAND_PIXELS is 640 * 64 = 40960. 
+             * 40960 * band = (32768 + 8192) * band = (band << 15) + (band << 13) */
+            band_word_offset = {10'd0, band, 15'd0} + {12'd0, band, 13'd0};
         end
     endfunction
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            case (band)
-                3'd0: band_base_row = 9'd0;
-                3'd1: band_base_row = 9'd96;
-                3'd2: band_base_row = 9'd192;
-                3'd3: band_base_row = 9'd288;
-                default: band_base_row = 9'd384;
-            endcase
+            /* band * 64 */
+            band_base_row = {band, 6'd0};
         end
     endfunction
 
     function automatic [2:0] y_to_band(input logic [8:0] y);
         begin
-            if (y < 9'd96)
-                y_to_band = 3'd0;
-            else if (y < 9'd192)
-                y_to_band = 3'd1;
-            else if (y < 9'd288)
-                y_to_band = 3'd2;
-            else if (y < 9'd384)
-                y_to_band = 3'd3;
-            else
-                y_to_band = 3'd4;
+            /* y / 64 */
+            y_to_band = y[8:6];
         end
     endfunction
 

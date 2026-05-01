@@ -34,10 +34,10 @@ struct descriptor_bin {
     /* Flat buffer for binned descriptors */
     uint8_t *flat_buf;
     size_t flat_used;
+    size_t flat_capacity;
 };
 
 static struct descriptor_bin g_bins[VOXEL_BAND_COUNT];
-static size_t g_flat_capacity;
 
 /* Per-band "primer" quad. Submitted as the first descriptor of every band so
  * the very first pixel through the rasterizer pipeline after BEGIN_BAND lands
@@ -267,22 +267,21 @@ static int submit_hw_band_flat(GPUTransport *transport, unsigned band_index,
     return 0;
 }
 
-static int bins_ensure_flat_capacity(size_t needed)
+static int bin_ensure_flat_capacity(struct descriptor_bin *bin, size_t needed)
 {
-    if (g_flat_capacity >= needed)
+    if (bin->flat_capacity >= needed)
         return 0;
 
-    size_t new_cap = g_flat_capacity ? g_flat_capacity : 8192;
+    size_t new_cap = bin->flat_capacity ? bin->flat_capacity : 8192;
     while (new_cap < needed)
         new_cap *= 2;
 
-    for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
-        uint8_t *p = realloc(g_bins[i].flat_buf, new_cap);
-        if (!p)
-            return -ENOMEM;
-        g_bins[i].flat_buf = p;
-    }
-    g_flat_capacity = new_cap;
+    uint8_t *p = realloc(bin->flat_buf, new_cap);
+    if (!p)
+        return -ENOMEM;
+
+    bin->flat_buf = p;
+    bin->flat_capacity = new_cap;
     return 0;
 }
 
@@ -295,8 +294,12 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
     int16_t diag_x_min = INT16_MAX, diag_x_max = INT16_MIN;
     int16_t diag_y_min = INT16_MAX, diag_y_max = INT16_MIN;
 
-    struct timespec t_start, t_binned, t_submit;
-    clock_gettime(CLOCK_MONOTONIC, &t_start);
+    struct timespec t_start = {0}, t_binned = {0}, t_submit = {0};
+    int have_t_binned = 0;
+    int have_t_submit = 0;
+
+    if (g_diag_bbox)
+        clock_gettime(CLOCK_MONOTONIC, &t_start);
 
     /* Reset bins up front so the empty/error paths below see clean state. */
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
@@ -311,11 +314,6 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         }
         return 0;
     }
-
-    /* Worst case for flat_buf: every quad lands in this band. */
-    ret = bins_ensure_flat_capacity(descriptor_bytes);
-    if (ret < 0)
-        return ret;
 
     while (offset < descriptor_bytes) {
         const struct quad_desc *desc;
@@ -363,8 +361,14 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         /* Fast path: descriptor fits inside one band and didn't need y-clipping. */
         if (first_band == last_band &&
             (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
-            memcpy(g_bins[first_band].flat_buf + g_bins[first_band].flat_used, stream + offset, desc_size);
-            g_bins[first_band].flat_used += desc_size;
+            struct descriptor_bin *bin = &g_bins[first_band];
+
+            ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
+            if (ret < 0)
+                goto done;
+
+            memcpy(bin->flat_buf + bin->flat_used, stream + offset, desc_size);
+            bin->flat_used += desc_size;
             offset += desc_size;
             continue;
         }
@@ -376,8 +380,13 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
             int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
             int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
-            uint8_t *dst = bin->flat_buf + bin->flat_used;
+            uint8_t *dst;
 
+            ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
+            if (ret < 0)
+                goto done;
+
+            dst = bin->flat_buf + bin->flat_used;
             rewrite_clipped(dst, stream + offset, desc_size,
                             clipped_y_min, clipped_y_max);
             bin->flat_used += desc_size;
@@ -386,7 +395,10 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         offset += desc_size;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &t_binned);
+    if (g_diag_bbox) {
+        clock_gettime(CLOCK_MONOTONIC, &t_binned);
+        have_t_binned = 1;
+    }
 
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         ret = submit_hw_band_flat(transport, band,
@@ -395,10 +407,14 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             goto done;
     }
 
+    if (g_diag_bbox) {
         clock_gettime(CLOCK_MONOTONIC, &t_submit);
+        have_t_submit = 1;
+    }
 
 done:
-    if (g_diag_bbox && (g_diag_frame_count++ % 60) == 0) {
+    if (g_diag_bbox && have_t_binned && have_t_submit &&
+        (g_diag_frame_count++ % 60) == 0) {
         double ms_bin = (t_binned.tv_sec - t_start.tv_sec) * 1000.0 + (t_binned.tv_nsec - t_start.tv_nsec) / 1e6;
         double ms_submit = (t_submit.tv_sec - t_binned.tv_sec) * 1000.0 + (t_submit.tv_nsec - t_binned.tv_nsec) / 1e6;
         fprintf(stderr,
@@ -633,8 +649,8 @@ void gpu_transport_close(GPUTransport *transport)
         free(g_bins[i].flat_buf);
         g_bins[i].flat_buf = NULL;
         g_bins[i].flat_used = 0;
+        g_bins[i].flat_capacity = 0;
     }
-    g_flat_capacity = 0;
 }
 
 int gpu_transport_clear(GPUTransport *transport)
@@ -662,10 +678,11 @@ int gpu_transport_clear(GPUTransport *transport)
 
 int gpu_transport_flip(GPUTransport *transport)
 {
-    struct timespec t0, t1;
+    struct timespec t0 = {0}, t1 = {0};
     int ret = 0;
 
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (g_diag_bbox)
+        clock_gettime(CLOCK_MONOTONIC, &t0);
 
     if (transport_needs_hw(transport) &&
         ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
@@ -683,8 +700,8 @@ int gpu_transport_flip(GPUTransport *transport)
         }
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &t1);
     if (g_diag_bbox && (g_diag_frame_count % 60) == 0) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
         double ms_flip = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
         fprintf(stderr, "renderer: FLIP flip=%5.2fms\n", ms_flip);
     }

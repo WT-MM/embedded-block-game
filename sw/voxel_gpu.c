@@ -54,6 +54,7 @@
  */
 #define VOXEL_POLL_TIMEOUT_MS   250
 #define VOXEL_POLL_DELAY_US     1
+#define VOXEL_FIFO_MIN_BURST_WORDS 64
 
 struct voxel_gpu_dev {
 	struct resource res;
@@ -106,21 +107,21 @@ static int voxel_poll_status(u32 mask, u32 expect, unsigned int timeout_ms)
 
 /* ---------- FIFO streaming ---------- */
 
-static int voxel_fifo_wait_space(size_t *space_words)
+static int voxel_fifo_wait_space(size_t *space_words, size_t min_req)
 {
 	unsigned long deadline = jiffies + msecs_to_jiffies(VOXEL_POLL_TIMEOUT_MS);
 
 	for (;;) {
 		u32 used = voxel_fifo_count();
+		u32 space = used < VOXEL_FIFO_WORDS ? VOXEL_FIFO_WORDS - used : 0;
 
-		if (used < VOXEL_FIFO_WORDS) {
-			*space_words = VOXEL_FIFO_WORDS - used;
+		if (space >= min_req) {
+			*space_words = space;
 			return 0;
 		}
 		if (time_after(jiffies, deadline))
 			return -ETIMEDOUT;
-		udelay(VOXEL_POLL_DELAY_US);
-		cond_resched();
+		usleep_range(10, 50);
 	}
 }
 
@@ -177,12 +178,15 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 		while (written_words < words) {
 			size_t space_words;
 			size_t burst_words;
+			size_t rem_words = words - written_words;
+			size_t min_req = min_t(size_t, VOXEL_FIFO_MIN_BURST_WORDS,
+					       rem_words);
 
-			ret = voxel_fifo_wait_space(&space_words);
+			ret = voxel_fifo_wait_space(&space_words, min_req);
 			if (ret)
 				goto out;
 
-			burst_words = min(space_words, words - written_words);
+			burst_words = min(space_words, rem_words);
 			iowrite32_rep(voxdev.base + VOXEL_FIFO_BASE,
 				      &bounce[written_words],
 				      burst_words);

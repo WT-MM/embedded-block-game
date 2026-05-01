@@ -1,6 +1,120 @@
 Project Notes
 =============
 
+May 2026: Frame-Rate Optimization Pass
+--------------------------------------
+
+Summary
+-------
+We investigated a frame-rate bottleneck report that pointed at three likely
+hot spots:
+
+  * kernel FIFO submission degenerating into one-word AXI writes
+  * userspace descriptor packing spending too much time in libc rounding calls
+  * userspace opaque-quad sorting/copying duplicating work already handled by
+    the hardware banding transport path
+
+The report was directionally correct, but the banding recommendation needed to
+be adapted to this codebase: `sw/gpu_transport.c` already performs the actual
+per-band descriptor binning/clipping before issuing `BEGIN_BAND`/`END_BAND`.
+Adding another set of band buffers inside `RenderContext` would have duplicated
+that ownership. The cleaner fix was to remove the redundant renderer-side
+opaque sort and keep transport as the single place that understands hardware
+band submission.
+
+Work Completed
+--------------
+Kernel FIFO streaming in `sw/voxel_gpu.c` now waits for burst-sized FIFO space
+before writing descriptors. The old loop resumed as soon as *one* FIFO word was
+free, which could collapse into repeated AXI status reads and tiny one-word
+writes when software outran the rasterizer. The new path waits for 64 words
+unless fewer words remain in the current write chunk, then pushes the whole
+available burst with `iowrite32_rep()`. The wait loop now uses
+`usleep_range(10, 50)` instead of a tight `udelay()` spin, and defensively
+clamps bogus FIFO-count reads above the FIFO depth to zero available space.
+
+Descriptor fixed-point packing in `sw/renderer.c` no longer calls `roundf()` or
+`lroundf()` in the hot per-quad path. The Q24.8, Q1.15, Q8.8, Q0.16, and Q16.16
+packers now use bounded multiply-plus-cast rounding. This keeps the descriptor
+setup loop from paying libc math-call overhead for every edge/depth/UV
+coefficient.
+
+The inclusive bbox calculation in `stage_prepared_quad()` now uses integer
+Q24.8 math after screen-space snapping instead of `ceilf()`/`floorf()`. A local
+sanity check verified that the integer formulas match the previous float
+formulas over the tested fixed-point range.
+
+The old `sort_opaque_quads()` path was removed from `sw/renderer.c`. That code
+allocated/sized descriptor refs, ran `qsort()`, copied descriptor bytes into a
+scratch buffer, then copied them back into `submit_buffer`. Since
+`gpu_transport_submit_descriptors()` already bins descriptors by hardware band,
+the sort was redundant O(N log N) work plus extra memory traffic.
+
+Transport-side hardware binning in `sw/gpu_transport.c` now grows each band's
+flat descriptor buffer independently. Previously, `bins_ensure_flat_capacity()`
+allocated enough space for the entire frame's descriptor stream for *every*
+band, even though most frames distribute descriptors across bands. Per-band
+capacity reduces memory footprint and cache pressure while preserving the same
+hardware submission protocol.
+
+Normal-frame timing syscalls in `sw/gpu_transport.c` were also gated behind
+`VOXEL_DIAG_BBOX`. `clock_gettime()` remains available for diagnostics, but
+the regular submit/flip path no longer pays those syscall costs every frame.
+
+Validation
+----------
+The software renderer targets rebuilt successfully after the optimization pass:
+
+  * `tests/renderer_scene_test`
+  * `tests/renderer_static_test`
+  * `tests/renderer_quad_test`
+  * `tests/renderer_edge_test`
+  * `tests/renderer_fog_test`
+
+`git diff --check` passed.
+
+`tests/renderer_quad_test` ran successfully against `virtualhw` using the socket
+backend.
+
+Known local validation limits:
+
+  * The `game` target does not compile on the development Mac because the local
+    SDK does not provide `linux/input.h`; this is an environment issue, not a
+    regression from the optimization pass.
+  * `tests/world_chunk_test` currently fails with
+    `lamp face was not self-lit`; that failure predates and appears unrelated
+    to this FPS work.
+
+Future Work
+-----------
+Measure the hardware impact with `VOXEL_DIAG_BBOX=1` and external frame timing
+on the DE1-SoC. The changes target CPU/AXI overhead, but the real win should be
+confirmed on the HPS/FPGA pair rather than inferred from desktop builds.
+
+Consider moving hardware band binning earlier, directly into renderer
+submission, so descriptors are never first staged as one giant frame stream and
+then re-binned in `gpu_transport.c`. This is a larger ownership change than the
+safe transport cleanup above. It should only be done if profiling still shows
+descriptor copying/binning as a meaningful bottleneck.
+
+Audit the remaining non-hot `lroundf()` calls in `sw/renderer.c`. Most are
+palette/light setup or block lookup and are much less urgent than descriptor
+packing, but they could be converted to local fast-round helpers if profiling
+shows they matter.
+
+Review `renderer_draw_chunk()` for ad hoc block-array rendering. It still
+builds a hash lookup every call. The main game path uses premeshed world chunks,
+so this is probably not the primary FPS issue, but tests or debug scenes that
+call `renderer_draw_chunk()` heavily may benefit from caching or avoiding the
+lookup rebuild.
+
+Investigate whether the per-band primer quads in `gpu_transport.c` are still
+needed after the palette-pipeline fixes. They are currently disabled/unreferenced
+and generate an unused-function warning. If the left-edge stale-palette issue is
+confirmed gone on hardware, remove the dead primer path; otherwise wire it back
+in intentionally and document the cost.
+
+
 April 2026: Rasterizer Edge-Function Signedness Bug
 ---------------------------------------------------
 
@@ -1029,4 +1143,3 @@ cache. Both are free while the rasterizer owns the active cache.
    AND immediately allow BEGIN_BAND to start INIT+DRAW on the active cache
 6. The FLIP ioctl must wait for the last outstanding flush to complete before
    swapping SDRAM display pointers
-

@@ -122,16 +122,17 @@ module voxel_gpu (
         ST_IDLE              = 4'd0,
         ST_CLEAR             = 4'd1,
         ST_FETCH             = 4'd2,
-        ST_DRAW              = 4'd3,
-        ST_DRAW_FLUSH        = 4'd4,
-        ST_CACHE_EVICT       = 4'd5,
-        ST_CACHE_FLUSH_COLOR = 4'd6,
-        ST_CACHE_FLUSH_Z     = 4'd7,
-        ST_CACHE_SELECT_FILL = 4'd8,
-        ST_CACHE_INIT        = 4'd9,
-        ST_CACHE_LOAD_COLOR  = 4'd10,
-        ST_CACHE_START_LOAD_Z = 4'd11,
-        ST_CACHE_LOAD_Z      = 4'd12
+        ST_SETUP             = 4'd3,
+        ST_DRAW              = 4'd4,
+        ST_DRAW_FLUSH        = 4'd5,
+        ST_CACHE_EVICT       = 4'd6,
+        ST_CACHE_FLUSH_COLOR = 4'd7,
+        ST_CACHE_FLUSH_Z     = 4'd8,
+        ST_CACHE_SELECT_FILL = 4'd9,
+        ST_CACHE_INIT        = 4'd10,
+        ST_CACHE_LOAD_COLOR  = 4'd11,
+        ST_CACHE_START_LOAD_Z = 4'd12,
+        ST_CACHE_LOAD_Z      = 4'd13
     } engine_state_t;
 
     engine_state_t state;
@@ -212,6 +213,13 @@ module voxel_gpu (
     logic signed [31:0] edge_A [0:3];
     logic signed [31:0] edge_B [0:3];
     logic signed [31:0] edge_C [0:3];
+    logic signed [63:0] edge_row_val [0:3];
+    logic signed [63:0] edge_cur_val [0:3];
+    logic signed [47:0] z_row_val;
+    logic signed [47:0] z_cur_val;
+    logic signed [63:0] uw_row_val, uw_cur_val;
+    logic signed [63:0] vw_row_val, vw_cur_val;
+    logic signed [63:0] iw_row_val, iw_cur_val;
     logic        pipe0_valid;
     logic        pipe0_inside;
     logic        pipe0_ztest;
@@ -739,58 +747,40 @@ module voxel_gpu (
     wire signed [31:0] desc_iw_dx   = $signed(desc_words[23]);
     wire signed [31:0] desc_iw_dy   = $signed(desc_words[24]);
 
-    wire signed [10:0] draw_x_s = $signed({1'b0, draw_x_cur});
-    wire signed  [9:0] draw_y_s = $signed({1'b0, draw_y_cur});
+    wire signed [10:0] setup_start_x = $signed({1'b0, draw_x_min});
+    wire signed  [9:0] setup_start_y = $signed({1'b0, draw_y_min});
     /*
      * Keep the whole edge-function expression in signed arithmetic.
      * A manual sign-extension concat here becomes an unsigned operand,
      * which can flip the entire add tree into unsigned math and break
      * negative edge coefficients.
      */
-    wire signed [63:0] edge_ax0 = $signed(edge_A[0]) * draw_x_s;
-    wire signed [63:0] edge_by0 = $signed(edge_B[0]) * draw_y_s;
+    wire signed [63:0] edge_ax0 = $signed(edge_A[0]) * setup_start_x;
+    wire signed [63:0] edge_by0 = $signed(edge_B[0]) * setup_start_y;
     wire signed [63:0] edge_c0  = $signed({{32{edge_C[0][31]}}, edge_C[0]});
-    wire signed [63:0] edge_ax1 = $signed(edge_A[1]) * draw_x_s;
-    wire signed [63:0] edge_by1 = $signed(edge_B[1]) * draw_y_s;
+    wire signed [63:0] edge_ax1 = $signed(edge_A[1]) * setup_start_x;
+    wire signed [63:0] edge_by1 = $signed(edge_B[1]) * setup_start_y;
     wire signed [63:0] edge_c1  = $signed({{32{edge_C[1][31]}}, edge_C[1]});
-    wire signed [63:0] edge_ax2 = $signed(edge_A[2]) * draw_x_s;
-    wire signed [63:0] edge_by2 = $signed(edge_B[2]) * draw_y_s;
+    wire signed [63:0] edge_ax2 = $signed(edge_A[2]) * setup_start_x;
+    wire signed [63:0] edge_by2 = $signed(edge_B[2]) * setup_start_y;
     wire signed [63:0] edge_c2  = $signed({{32{edge_C[2][31]}}, edge_C[2]});
-    wire signed [63:0] edge_ax3 = $signed(edge_A[3]) * draw_x_s;
-    wire signed [63:0] edge_by3 = $signed(edge_B[3]) * draw_y_s;
+    wire signed [63:0] edge_ax3 = $signed(edge_A[3]) * setup_start_x;
+    wire signed [63:0] edge_by3 = $signed(edge_B[3]) * setup_start_y;
     wire signed [63:0] edge_c3  = $signed({{32{edge_C[3][31]}}, edge_C[3]});
     wire signed [63:0] edge_eval0 = edge_ax0 + edge_by0 + edge_c0;
     wire signed [63:0] edge_eval1 = edge_ax1 + edge_by1 + edge_c1;
     wire signed [63:0] edge_eval2 = edge_ax2 + edge_by2 + edge_c2;
     wire signed [63:0] edge_eval3 = edge_ax3 + edge_by3 + edge_c3;
-    wire draw_inside = (edge_eval0 >= 0) && (edge_eval1 >= 0) &&
-                       (edge_eval2 >= 0) && (edge_eval3 >= 0);
-    wire signed [10:0] draw_dx_s = $signed({1'b0, draw_x_cur}) -
-                                   $signed({1'b0, draw_x_min});
-    wire signed  [9:0] draw_dy_s = $signed({1'b0, draw_y_cur}) -
-                                   $signed({1'b0, draw_y_min});
-    wire signed [47:0] draw_z_eval = $signed({32'd0, draw_z0}) +
-                                     ($signed(draw_dz_dx) * draw_dx_s) +
-                                     ($signed(draw_dz_dy) * draw_dy_s);
-    wire [15:0] draw_z_value = clamp_z(draw_z_eval);
+    wire draw_inside = (edge_cur_val[0] >= 0) && (edge_cur_val[1] >= 0) &&
+                       (edge_cur_val[2] >= 0) && (edge_cur_val[3] >= 0);
+    wire [15:0] draw_z_value = clamp_z(z_cur_val);
     wire [2:0]  draw_band_index = y_to_band(draw_y_cur);
     wire        draw_cache_hit = cache_valid && (cache_band_index == draw_band_index);
-    wire [15:0] draw_cache_addr = band_local_addr(draw_x_cur, draw_y_cur, cache_band_index);
-    wire signed [63:0] draw_uw_base = $signed({{32{draw_uw_0[31]}}, draw_uw_0});
-    wire signed [63:0] draw_vw_base = $signed({{32{draw_vw_0[31]}}, draw_vw_0});
-    wire signed [63:0] draw_iw_base = $signed({{32{draw_iw_0[31]}}, draw_iw_0});
-    wire signed [63:0] draw_uw_eval = draw_uw_base +
-                                      ($signed(draw_uw_dx) * draw_dx_s) +
-                                      ($signed(draw_uw_dy) * draw_dy_s);
-    wire signed [63:0] draw_vw_eval = draw_vw_base +
-                                      ($signed(draw_vw_dx) * draw_dx_s) +
-                                      ($signed(draw_vw_dy) * draw_dy_s);
-    wire signed [63:0] draw_iw_eval = draw_iw_base +
-                                      ($signed(draw_iw_dx) * draw_dx_s) +
-                                      ($signed(draw_iw_dy) * draw_dy_s);
-    wire signed [31:0] draw_uw_q = clamp_s32(draw_uw_eval);
-    wire signed [31:0] draw_vw_q = clamp_s32(draw_vw_eval);
-    wire [31:0] draw_iw_q = clamp_pos_u32(draw_iw_eval);
+    wire [15:0] draw_x_offset = {6'd0, draw_x_cur} - {6'd0, draw_x_min};
+    wire [15:0] draw_cache_addr = draw_row_base + draw_x_offset;
+    wire signed [31:0] draw_uw_q = clamp_s32(uw_cur_val);
+    wire signed [31:0] draw_vw_q = clamp_s32(vw_cur_val);
+    wire [31:0] draw_iw_q = clamp_pos_u32(iw_cur_val);
     wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
     wire [31:0] pipe0_iw_norm_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
                                   (pipe0_iw_msb >= 6'd16) ?
@@ -1293,6 +1283,14 @@ module voxel_gpu (
         draw_iw_0        = 32'sd0;
         draw_iw_dx       = 32'sd0;
         draw_iw_dy       = 32'sd0;
+        z_row_val        = 48'sd0;
+        z_cur_val        = 48'sd0;
+        uw_row_val       = 64'sd0;
+        uw_cur_val       = 64'sd0;
+        vw_row_val       = 64'sd0;
+        vw_cur_val       = 64'sd0;
+        iw_row_val       = 64'sd0;
+        iw_cur_val       = 64'sd0;
         pipe0_valid      = 1'b0;
         pipe0_inside     = 1'b0;
         pipe0_ztest      = 1'b0;
@@ -1588,6 +1586,8 @@ module voxel_gpu (
             edge_A[i] = 32'sd0;
             edge_B[i] = 32'sd0;
             edge_C[i] = 32'sd0;
+            edge_row_val[i] = 64'sd0;
+            edge_cur_val[i] = 64'sd0;
         end
 
         for (i = 0; i < LINE_WORDS; i = i + 1) begin
@@ -1797,6 +1797,14 @@ module voxel_gpu (
             draw_iw_0        <= 32'sd0;
             draw_iw_dx       <= 32'sd0;
             draw_iw_dy       <= 32'sd0;
+            z_row_val        <= 48'sd0;
+            z_cur_val        <= 48'sd0;
+            uw_row_val       <= 64'sd0;
+            uw_cur_val       <= 64'sd0;
+            vw_row_val       <= 64'sd0;
+            vw_cur_val       <= 64'sd0;
+            iw_row_val       <= 64'sd0;
+            iw_cur_val       <= 64'sd0;
             pipe0_valid      <= 1'b0;
             pipe0_inside     <= 1'b0;
             pipe0_ztest      <= 1'b0;
@@ -2070,6 +2078,8 @@ module voxel_gpu (
                 edge_A[ei] <= 32'sd0;
                 edge_B[ei] <= 32'sd0;
                 edge_C[ei] <= 32'sd0;
+                edge_row_val[ei] <= 64'sd0;
+                edge_cur_val[ei] <= 64'sd0;
             end
         end else begin
             /*
@@ -2635,10 +2645,32 @@ module voxel_gpu (
                         if ((desc_x_min > desc_x_max) || (desc_y_min > desc_y_max))
                             state <= ST_IDLE;
                         else
-                            state <= ST_DRAW;
+                            state <= ST_SETUP;
                     end else if (fifo_pop_req) begin
                         fetch_count <= fetch_count + 6'd1;
                     end
+                end
+
+                ST_SETUP: begin
+                    edge_row_val[0] <= edge_eval0;
+                    edge_cur_val[0] <= edge_eval0;
+                    edge_row_val[1] <= edge_eval1;
+                    edge_cur_val[1] <= edge_eval1;
+                    edge_row_val[2] <= edge_eval2;
+                    edge_cur_val[2] <= edge_eval2;
+                    edge_row_val[3] <= edge_eval3;
+                    edge_cur_val[3] <= edge_eval3;
+
+                    z_row_val <= $signed({32'd0, draw_z0});
+                    z_cur_val <= $signed({32'd0, draw_z0});
+                    uw_row_val <= $signed({{32{draw_uw_0[31]}}, draw_uw_0});
+                    uw_cur_val <= $signed({{32{draw_uw_0[31]}}, draw_uw_0});
+                    vw_row_val <= $signed({{32{draw_vw_0[31]}}, draw_vw_0});
+                    vw_cur_val <= $signed({{32{draw_vw_0[31]}}, draw_vw_0});
+                    iw_row_val <= $signed({{32{draw_iw_0[31]}}, draw_iw_0});
+                    iw_cur_val <= $signed({{32{draw_iw_0[31]}}, draw_iw_0});
+
+                    state <= ST_DRAW;
                 end
 
                 ST_DRAW,
@@ -2823,9 +2855,33 @@ module voxel_gpu (
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
+                                edge_row_val[0] <= edge_row_val[0] + edge_B[0];
+                                edge_cur_val[0] <= edge_row_val[0] + edge_B[0];
+                                edge_row_val[1] <= edge_row_val[1] + edge_B[1];
+                                edge_cur_val[1] <= edge_row_val[1] + edge_B[1];
+                                edge_row_val[2] <= edge_row_val[2] + edge_B[2];
+                                edge_cur_val[2] <= edge_row_val[2] + edge_B[2];
+                                edge_row_val[3] <= edge_row_val[3] + edge_B[3];
+                                edge_cur_val[3] <= edge_row_val[3] + edge_B[3];
+                                z_row_val <= z_row_val + draw_dz_dy;
+                                z_cur_val <= z_row_val + draw_dz_dy;
+                                uw_row_val <= uw_row_val + draw_uw_dy;
+                                uw_cur_val <= uw_row_val + draw_uw_dy;
+                                vw_row_val <= vw_row_val + draw_vw_dy;
+                                vw_cur_val <= vw_row_val + draw_vw_dy;
+                                iw_row_val <= iw_row_val + draw_iw_dy;
+                                iw_cur_val <= iw_row_val + draw_iw_dy;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd1;
+                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0];
+                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1];
+                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2];
+                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3];
+                            z_cur_val <= z_cur_val + draw_dz_dx;
+                            uw_cur_val <= uw_cur_val + draw_uw_dx;
+                            vw_cur_val <= vw_cur_val + draw_vw_dx;
+                            iw_cur_val <= iw_cur_val + draw_iw_dx;
                         end
                     end else if (state == ST_DRAW) begin
                         pipe0_valid <= 1'b0;
@@ -2849,9 +2905,33 @@ module voxel_gpu (
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
+                                edge_row_val[0] <= edge_row_val[0] + edge_B[0];
+                                edge_cur_val[0] <= edge_row_val[0] + edge_B[0];
+                                edge_row_val[1] <= edge_row_val[1] + edge_B[1];
+                                edge_cur_val[1] <= edge_row_val[1] + edge_B[1];
+                                edge_row_val[2] <= edge_row_val[2] + edge_B[2];
+                                edge_cur_val[2] <= edge_row_val[2] + edge_B[2];
+                                edge_row_val[3] <= edge_row_val[3] + edge_B[3];
+                                edge_cur_val[3] <= edge_row_val[3] + edge_B[3];
+                                z_row_val <= z_row_val + draw_dz_dy;
+                                z_cur_val <= z_row_val + draw_dz_dy;
+                                uw_row_val <= uw_row_val + draw_uw_dy;
+                                uw_cur_val <= uw_row_val + draw_uw_dy;
+                                vw_row_val <= vw_row_val + draw_vw_dy;
+                                vw_cur_val <= vw_row_val + draw_vw_dy;
+                                iw_row_val <= iw_row_val + draw_iw_dy;
+                                iw_cur_val <= iw_row_val + draw_iw_dy;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd1;
+                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0];
+                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1];
+                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2];
+                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3];
+                            z_cur_val <= z_cur_val + draw_dz_dx;
+                            uw_cur_val <= uw_cur_val + draw_uw_dx;
+                            vw_cur_val <= vw_cur_val + draw_vw_dx;
+                            iw_cur_val <= iw_cur_val + draw_iw_dx;
                         end
                     end else begin
                         pipe0_valid <= 1'b0;

@@ -258,7 +258,7 @@ static long voxel_ioc_begin_band(void __user *uarg)
 
 	if (copy_from_user(&band, uarg, sizeof(band)))
 		return -EFAULT;
-	if (band.band_index >= VOXEL_BAND_COUNT)
+	if (band.band_index > 7)
 		return -EINVAL;
 
 	mutex_lock(&voxdev.lock);

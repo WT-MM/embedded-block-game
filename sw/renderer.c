@@ -2272,7 +2272,7 @@ bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    const float half = 8.0f;
+    const float half = 8.0f * HUD_SCALE;
     const float x0 = cx - half, y0 = cy - half;
     const float x1 = cx + half, y1 = cy + half;
 

@@ -11,6 +11,15 @@ typedef struct VoxelWorld VoxelWorld;
 // --- Constants ---
 #define SCREEN_WIDTH ((float)VOXEL_RENDER_WIDTH)
 #define SCREEN_HEIGHT ((float)VOXEL_RENDER_HEIGHT)
+/* Multiplier for HUD elements that were originally laid out for the 320x240
+ * design res. Integer-only — fractional scales would create sub-pixel seams
+ * in the bitmap digits and rect borders. */
+#if VOXEL_RENDER_WIDTH >= 640u
+#  define HUD_SCALE_I  2
+#else
+#  define HUD_SCALE_I  1
+#endif
+#define HUD_SCALE     ((float)HUD_SCALE_I)
 /*
  * A 3-chunk render radius over 16x16 grass terrain already exceeds 2k
  * visible quads on top faces alone, so keep enough headroom to avoid

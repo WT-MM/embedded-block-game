@@ -129,6 +129,29 @@ static const char *read_world_save_dir(void)
     return value;
 }
 
+/* Camera focal length is stored in screen pixels, so the FOV scales with the
+ * render resolution unless we compensate. The pre-SDRAM 320x240 build used
+ * focal=170 → horizontal FOV ≈ 86.5°. This computes a focal that preserves
+ * that FOV at any resolution, with VOXEL_FOV_DEG to override. */
+static float compute_camera_focal_px(void)
+{
+    const float default_fov_deg = 86.5f;
+    const char *value = getenv("VOXEL_FOV_DEG");
+    float fov_deg = default_fov_deg;
+
+    if (value && value[0] != '\0') {
+        char *end = NULL;
+        float parsed = strtof(value, &end);
+        if (end != value && (!end || *end == '\0') &&
+            parsed >= 30.0f && parsed <= 150.0f) {
+            fov_deg = parsed;
+        }
+    }
+
+    float fov_rad = fov_deg * (float)M_PI / 180.0f;
+    return (SCREEN_WIDTH * 0.5f) / tanf(fov_rad * 0.5f);
+}
+
 static Vec3 camera_forward(const Camera *cam)
 {
     float cos_pitch = cosf(cam->pitch);
@@ -262,15 +285,16 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
         return;
 
     const uint8_t *rows = HOTBAR_DIGITS[digit - 1];
+    const float px = HUD_SCALE;
 
     for (int row = 0; row < 5; row++) {
         for (int col = 0; col < 3; col++) {
             if (rows[row] & (1u << (2 - col))) {
                 renderer_fill_rect(ctx,
-                                   x + (float)col,
-                                   y + (float)row,
-                                   x + (float)col + 1.0f,
-                                   y + (float)row + 1.0f,
+                                   x + (float)col * px,
+                                   y + (float)row * px,
+                                   x + (float)(col + 1) * px,
+                                   y + (float)(row + 1) * px,
                                    palette_index,
                                    0);
             }
@@ -280,20 +304,23 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
 
 static void draw_hotbar(RenderContext *ctx, int selected_slot)
 {
-    const float slot_size = 20.0f;
-    const float gap = 4.0f;
-    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f;
+    const float s = HUD_SCALE;
+    const float slot_size = 20.0f * s;
+    const float gap = 4.0f * s;
+    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f * s;
     const float total_width =
         HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
     const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
 
     renderer_fill_rect(ctx,
-                       slot_left - 4.0f, slot_top - 4.0f,
-                       slot_left + total_width + 4.0f, slot_top + slot_size + 4.0f,
+                       slot_left - 4.0f * s, slot_top - 4.0f * s,
+                       slot_left + total_width + 4.0f * s,
+                       slot_top + slot_size + 4.0f * s,
                        14, 0);
     renderer_fill_rect(ctx,
-                       slot_left - 3.0f, slot_top - 3.0f,
-                       slot_left + total_width + 3.0f, slot_top + slot_size + 3.0f,
+                       slot_left - 3.0f * s, slot_top - 3.0f * s,
+                       slot_left + total_width + 3.0f * s,
+                       slot_top + slot_size + 3.0f * s,
                        0, 0);
 
     for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
@@ -305,19 +332,21 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
         uint8_t number = (i == selected_slot) ? 8 : 5;
 
         renderer_fill_rect(ctx, x0, y0, x1, y1, border, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x1 - 1.0f, y1 - 1.0f, 0, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x1 - 1.0f * s, y1 - 1.0f * s, 0, 0);
         renderer_draw_screen_tile(ctx,
-                                  x0 + 2.0f, y0 + 2.0f,
-                                  x1 - 2.0f, y1 - 2.0f,
+                                  x0 + 2.0f * s, y0 + 2.0f * s,
+                                  x1 - 2.0f * s, y1 - 2.0f * s,
                                   block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
                                   0);
-        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x0 + 5.0f, y0 + 7.0f, 0, 0);
-        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f, y0 + 2.0f, number);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x0 + 5.0f * s, y0 + 7.0f * s, 0, 0);
+        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f * s, y0 + 2.0f * s, number);
 
         if (i == selected_slot) {
             renderer_fill_rect(ctx,
-                               x0 + 2.0f, y1 - 3.0f,
-                               x1 - 2.0f, y1 - 1.0f,
+                               x0 + 2.0f * s, y1 - 3.0f * s,
+                               x1 - 2.0f * s, y1 - 1.0f * s,
                                8, 0);
         }
     }
@@ -357,7 +386,7 @@ int main(void)
         .position = { player.x, player_get_eye_height(&player), player.z },
         .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
-        .depth    = 170.0f,
+        .depth    = compute_camera_focal_px(),
     };
 
     if (!world_init_infinite_procedural(&world,

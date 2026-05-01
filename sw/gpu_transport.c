@@ -31,6 +31,18 @@ struct descriptor_bin {
     size_t used;
 };
 
+/* Bins live across frames; per-frame malloc was a measurable share of CPU
+ * time at full resolution. Each bin sizes to the worst case (every quad
+ * landing in one band) and grows monotonically. */
+static struct descriptor_bin g_bins[VOXEL_BAND_COUNT];
+static size_t g_bin_capacity;
+
+/* Diagnostics gated by VOXEL_DIAG_BBOX=1: scan submitted x_min/x_max and
+ * y_min/y_max ranges so we can confirm nothing is leaking off-screen on
+ * the left/top edges (red-stripe investigation). */
+static int g_diag_bbox;
+static unsigned g_diag_frame_count;
+
 static const char *backend_mode_name(GPUBackendMode mode)
 {
     switch (mode) {
@@ -220,13 +232,33 @@ static int submit_hw_band(GPUTransport *transport, unsigned band_index,
     return 0;
 }
 
+static int bins_ensure_capacity(size_t needed)
+{
+    if (g_bin_capacity >= needed)
+        return 0;
+
+    size_t new_cap = g_bin_capacity ? g_bin_capacity : 8192;
+    while (new_cap < needed)
+        new_cap *= 2;
+
+    for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
+        uint8_t *p = realloc(g_bins[i].bytes, new_cap);
+        if (!p)
+            return -ENOMEM;
+        g_bins[i].bytes = p;
+    }
+    g_bin_capacity = new_cap;
+    return 0;
+}
+
 static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                             size_t descriptor_bytes)
 {
     const uint8_t *stream = descriptors;
-    struct descriptor_bin bins[VOXEL_BAND_COUNT];
     size_t offset = 0;
     int ret = 0;
+    int16_t diag_x_min = INT16_MAX, diag_x_max = INT16_MIN;
+    int16_t diag_y_min = INT16_MAX, diag_y_max = INT16_MIN;
 
     if (descriptor_bytes == 0) {
         for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
@@ -237,14 +269,12 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         return 0;
     }
 
-    memset(bins, 0, sizeof(bins));
-    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-        bins[band].bytes = malloc(descriptor_bytes);
-        if (!bins[band].bytes) {
-            ret = -ENOMEM;
-            goto out;
-        }
-    }
+    ret = bins_ensure_capacity(descriptor_bytes);
+    if (ret < 0)
+        return ret;
+
+    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++)
+        g_bins[band].used = 0;
 
     while (offset < descriptor_bytes) {
         const struct quad_desc *desc;
@@ -256,14 +286,21 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
 
         if (descriptor_bytes - offset < sizeof(struct quad_desc)) {
             ret = -EINVAL;
-            goto out;
+            goto done;
         }
 
         desc = (const struct quad_desc *)(const void *)(stream + offset);
         quad_descriptor_size(desc, &desc_size);
         if (descriptor_bytes - offset < desc_size) {
             ret = -EINVAL;
-            goto out;
+            goto done;
+        }
+
+        if (g_diag_bbox) {
+            if (desc->x_min < diag_x_min) diag_x_min = desc->x_min;
+            if (desc->x_max > diag_x_max) diag_x_max = desc->x_max;
+            if (desc->y_min < diag_y_min) diag_y_min = desc->y_min;
+            if (desc->y_max > diag_y_max) diag_y_max = desc->y_max;
         }
 
         y_min = desc->y_min;
@@ -282,31 +319,80 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         if (last_band >= VOXEL_BAND_COUNT)
             last_band = VOXEL_BAND_COUNT - 1;
 
+        /* Fast path: descriptor fits inside one band and didn't need
+         * y-clipping. The renderer already clamps y_min/y_max into the
+         * viewport, so this hits for every face that doesn't straddle a
+         * 96-line seam — the common case. Skip the gradient rewrite. */
+        if (first_band == last_band &&
+            (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
+            ret = bin_append(&g_bins[first_band], stream + offset, desc_size);
+            if (ret < 0)
+                goto done;
+            offset += desc_size;
+            continue;
+        }
+
         for (unsigned band = first_band; band <= last_band; band++) {
             int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
             int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
             int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
             int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
 
-            ret = bin_append_y_clipped(&bins[band], stream + offset, desc_size,
+            ret = bin_append_y_clipped(&g_bins[band], stream + offset, desc_size,
                                        clipped_y_min, clipped_y_max);
             if (ret < 0)
-                goto out;
+                goto done;
         }
 
         offset += desc_size;
     }
 
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-        ret = submit_hw_band(transport, band, bins[band].bytes, bins[band].used);
+        ret = submit_hw_band(transport, band, g_bins[band].bytes,
+                             g_bins[band].used);
         if (ret < 0)
-            goto out;
+            goto done;
     }
 
-out:
-    for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++)
-        free(bins[band].bytes);
+done:
+    if (g_diag_bbox && (g_diag_frame_count++ % 60) == 0) {
+        fprintf(stderr,
+                "renderer: frame %u quad bbox x=[%d,%d] y=[%d,%d] "
+                "(viewport %ux%u)\n",
+                g_diag_frame_count,
+                (int)diag_x_min, (int)diag_x_max,
+                (int)diag_y_min, (int)diag_y_max,
+                VOXEL_RENDER_WIDTH, VOXEL_RENDER_HEIGHT);
+    }
     return ret;
+}
+
+static void log_extmem_state(int hw_fd)
+{
+    struct voxel_extmem_state ext;
+
+    if (ioctl(hw_fd, VOXEL_IOC_GET_EXTMEM, &ext) < 0) {
+        perror("ioctl(GET_EXTMEM)");
+        return;
+    }
+
+    fprintf(stderr,
+            "renderer: extmem ctrl=0x%08x front=0x%08x back=0x%08x "
+            "stride=%u tile=0x%08x dma=0x%08x (sw expects stride=%u)\n",
+            ext.ctrl, ext.front_base, ext.back_base, ext.stride_bytes,
+            ext.tile_cfg, ext.dma_status, VOXEL_RENDER_STRIDE);
+
+    if (ext.stride_bytes != VOXEL_RENDER_STRIDE) {
+        fprintf(stderr,
+                "renderer: WARNING extmem stride %u != expected %u — "
+                "left-edge pixels likely show wrong color\n",
+                ext.stride_bytes, VOXEL_RENDER_STRIDE);
+    }
+    if ((ext.front_base | ext.back_base) & 1u) {
+        fprintf(stderr,
+                "renderer: WARNING extmem buffer base not 16-bit aligned — "
+                "RGB565 byte order will be swapped\n");
+    }
 }
 
 static int connect_socket_path(const char *path)
@@ -457,6 +543,16 @@ GPUTransport *gpu_transport_open(void)
         fprintf(stderr, " socket=%s", transport->socket_path);
     fprintf(stderr, "\n");
 
+    if (transport_needs_hw(transport))
+        log_extmem_state(transport->hw_fd);
+
+    {
+        const char *diag = getenv("VOXEL_DIAG_BBOX");
+        g_diag_bbox = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
+        if (g_diag_bbox)
+            fprintf(stderr, "renderer: VOXEL_DIAG_BBOX enabled (per-60-frame quad bbox log)\n");
+    }
+
     return transport;
 }
 
@@ -470,6 +566,13 @@ void gpu_transport_close(GPUTransport *transport)
     if (transport->hw_fd >= 0)
         close(transport->hw_fd);
     free(transport);
+
+    for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
+        free(g_bins[i].bytes);
+        g_bins[i].bytes = NULL;
+        g_bins[i].used = 0;
+    }
+    g_bin_capacity = 0;
 }
 
 int gpu_transport_clear(GPUTransport *transport)

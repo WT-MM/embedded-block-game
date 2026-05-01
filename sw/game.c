@@ -624,8 +624,10 @@ int main(void)
             draw_hotbar(ctx, selected_hotbar_slot);
         renderer_draw_crosshair(ctx);
         pause_menu_draw(&pause, ctx);
-        if (fps_text_len > 0)
-            chat_draw_text(ctx, fps_text, fps_text_len, 4.0f, 4.0f, 5);
+        if (fps_text_len > 0) {
+            chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);
+            chat_draw_text(ctx, fps_text, fps_text_len, 12.0f, 12.0f, 5);
+        }
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);

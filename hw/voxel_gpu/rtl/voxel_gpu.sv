@@ -1,7 +1,7 @@
 // voxel_gpu.sv — SDRAM-backed display path with RGB565 external frames.
 //
-// The rasterizer renders at true 640x480 through an explicit 640x96 BRAM band
-// cache. Userspace bins descriptors into five vertical passes and brackets each
+// The rasterizer renders at true 640x480 through an explicit 640x64 BRAM band
+// cache. Userspace bins descriptors into eight vertical passes and brackets each
 // pass with BEGIN_BAND / END_BAND CSRs. Palette entries are still the
 // source-color ABI, but resolved pixels are stored as RGB565 so translucent
 // quads can alpha blend against the existing destination pixel.
@@ -462,19 +462,24 @@ module voxel_gpu (
 
     (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] scan_linebuf0 [0:LINE_WORDS-1];
     (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] scan_linebuf1 [0:LINE_WORDS-1];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] scan_linebuf2 [0:LINE_WORDS-1];
     logic        scan_line0_ready;
     logic        scan_line1_ready;
+    logic        scan_line2_ready;
     logic  [8:0] scan_line0_row;
     logic  [8:0] scan_line1_row;
+    logic  [8:0] scan_line2_row;
     logic [24:0] scan_line0_base_words;
     logic [24:0] scan_line1_base_words;
-    logic        scan_active_bank;
+    logic [24:0] scan_line2_base_words;
+    logic  [1:0] scan_active_bank;
     logic        scan_active_valid;
     logic  [8:0] scan_active_row;
     logic [24:0] scan_active_base_words;
     logic        scan_fill_active;
     logic        scan_fill_armed;
-    logic        scan_fill_bank;
+    logic        scan_fill_load_pending;
+    logic  [1:0] scan_fill_bank;
     logic  [8:0] scan_fill_row;
     logic [24:0] scan_fill_base_words;
     logic  [9:0] scan_fill_store_idx;
@@ -570,18 +575,43 @@ module voxel_gpu (
     wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < 10'd640);
     wire        scan_active_row_matches = scan_active_valid && (scan_active_row == scan_current_row);
-    wire        scan_active_bank_ready  = scan_active_bank ? scan_line1_ready : scan_line0_ready;
-    wire [8:0]  scan_active_bank_row    = scan_active_bank ? scan_line1_row : scan_line0_row;
-    wire        scan_bank0_matches      = scan_line0_ready && (scan_line0_row == scan_current_row);
-    wire        scan_bank1_matches      = scan_line1_ready && (scan_line1_row == scan_current_row);
+    wire        scan_active_bank_ready  = (scan_active_bank == 2'd0) ? scan_line0_ready :
+                                          (scan_active_bank == 2'd1) ? scan_line1_ready :
+                                                                       scan_line2_ready;
+    wire [8:0]  scan_active_bank_row    = (scan_active_bank == 2'd0) ? scan_line0_row :
+                                          (scan_active_bank == 2'd1) ? scan_line1_row :
+                                                                       scan_line2_row;
     wire        scan_bank0_next_ready   = scan_line0_ready && (scan_line0_row == (scan_active_row + 9'd1));
     wire        scan_bank1_next_ready   = scan_line1_ready && (scan_line1_row == (scan_active_row + 9'd1));
+    wire        scan_bank2_next_ready   = scan_line2_ready && (scan_line2_row == (scan_active_row + 9'd1));
     wire        scan_next_line_ready    = !scan_active_valid ||
-                                          (scan_active_bank ? scan_bank0_next_ready :
-                                                              scan_bank1_next_ready);
+                                          scan_bank0_next_ready ||
+                                          scan_bank1_next_ready ||
+                                          scan_bank2_next_ready;
+    wire [8:0]  scan_prefetch_step      = scan_next_line_ready ? 9'd2 : 9'd1;
+    wire [8:0]  scan_prefetch_row       = scan_active_row + scan_prefetch_step;
+    wire [24:0] scan_prefetch_base_words =
+        scan_active_base_words + (scan_next_line_ready ? (LINE_WORDS_25 + LINE_WORDS_25) :
+                                                       LINE_WORDS_25);
+    wire        scan_prefetch_valid     = scan_active_valid &&
+                                          (scan_prefetch_row < 9'd480);
+    wire        scan_prefetch_ready     =
+        (scan_line0_ready && (scan_line0_row == scan_prefetch_row)) ||
+        (scan_line1_ready && (scan_line1_row == scan_prefetch_row)) ||
+        (scan_line2_ready && (scan_line2_row == scan_prefetch_row));
+    wire        scan_bank0_free         = (scan_active_bank != 2'd0) &&
+                                          !(scan_line0_ready && (scan_line0_row == (scan_active_row + 9'd1)));
+    wire        scan_bank1_free         = (scan_active_bank != 2'd1) &&
+                                          !(scan_line1_ready && (scan_line1_row == (scan_active_row + 9'd1)));
+    wire        scan_bank2_free         = (scan_active_bank != 2'd2) &&
+                                          !(scan_line2_ready && (scan_line2_row == (scan_active_row + 9'd1)));
+    wire [1:0]  scan_prefetch_bank      = scan_bank0_free ? 2'd0 :
+                                          scan_bank1_free ? 2'd1 :
+                                          scan_bank2_free ? 2'd2 : 2'd3;
     wire        scanout_slack           = !display_valid || !VGA_BLANK_n ||
                                           scan_next_line_ready;
     wire        scan_read_idle          = !scan_fill_active && !scan_fill_armed &&
+                                          !scan_fill_load_pending &&
                                           sdram_rd_empty;
     wire        cache_flush_state       = (state == ST_CACHE_FLUSH_COLOR);
     wire        cache_load_state        = (state == ST_CACHE_LOAD_COLOR || state == ST_CACHE_LOAD_Z);
@@ -592,8 +622,7 @@ module voxel_gpu (
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
                                           sdram_ready && scan_active_valid &&
                                           (scan_active_row < 9'd479) &&
-                                          ((!scan_active_bank && !scan_bank1_next_ready) ||
-                                           ( scan_active_bank && !scan_bank0_next_ready));
+                                          !scan_next_line_ready;
     wire        scan_read_start_req     = scan_vsync_read_req || scan_next_read_req;
     wire        cache_read_start_ok     = scanout_slack && scan_read_idle &&
                                           !scan_read_start_req;
@@ -607,9 +636,6 @@ module voxel_gpu (
         scan_rd_capture && (scan_fill_words_complete == LINE_WORDS_10);
     wire        scan_fill_chunk_done =
         scan_rd_capture && (scan_fill_words_complete[5:0] == 6'd0);
-    wire [24:0] scan_fill_next_chunk_base_words =
-        scan_fill_base_words + {15'd0, scan_fill_words_complete};
-
     /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
     wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
                                      !sdram_wr_full && scanout_slack;
@@ -662,7 +688,13 @@ module voxel_gpu (
      * SDRAM row/column boundary; 64-word chunks stay aligned because both the
      * frame line width and SDRAM column size are multiples of 64.
      */
-    wire [8:0]  sdram_rd_length_cfg = (scan_fill_armed ||
+    /*
+     * While scan_fill_load_pending is high, the next burst address is being
+     * staged but RD_LOAD has not reached Sdram_Control yet. Holding LENGTH at
+     * zero for that one cycle prevents the controller from launching a burst
+     * at the previous 64-word chunk address.
+     */
+    wire [8:0]  sdram_rd_length_cfg = ((scan_fill_armed && !scan_fill_load_pending) ||
                                        (cache_load_state && scanout_slack)) ?
                                       READ_BURST_WORDS_9 : 9'd0;
 
@@ -906,14 +938,22 @@ module voxel_gpu (
     endfunction
 
     function automatic [15:0] band_pixel_count(input logic [2:0] band);
+        logic [8:0] base_row;
         begin
-            band_pixel_count = BAND_PIXELS[15:0];
+            base_row = band_base_row(band);
+            if (base_row >= FB_HEIGHT[8:0])
+                band_pixel_count = 16'd0;
+            else if ((base_row + BAND_HEIGHT[8:0]) > FB_HEIGHT[8:0])
+                band_pixel_count = ({7'd0, FB_HEIGHT[8:0]} - {7'd0, base_row}) *
+                                   FB_WIDTH[15:0];
+            else
+                band_pixel_count = BAND_PIXELS[15:0];
         end
     endfunction
 
     function automatic [24:0] band_word_count(input logic [2:0] band);
         begin
-            band_word_count = BAND_PIXELS[24:0];
+            band_word_count = {9'd0, band_pixel_count(band)};
         end
     endfunction
 
@@ -1448,17 +1488,21 @@ module voxel_gpu (
         scan_visible_r   = 1'b0;
         scan_line0_ready = 1'b0;
         scan_line1_ready = 1'b0;
+        scan_line2_ready = 1'b0;
         scan_line0_row   = 9'd0;
         scan_line1_row   = 9'd0;
+        scan_line2_row   = 9'd0;
         scan_line0_base_words = 25'd0;
         scan_line1_base_words = 25'd0;
-        scan_active_bank = 1'b0;
+        scan_line2_base_words = 25'd0;
+        scan_active_bank = 2'd0;
         scan_active_valid = 1'b0;
         scan_active_row  = 9'd0;
         scan_active_base_words = 25'd0;
         scan_fill_active = 1'b0;
         scan_fill_armed  = 1'b0;
-        scan_fill_bank   = 1'b0;
+        scan_fill_load_pending = 1'b0;
+        scan_fill_bank   = 2'd0;
         scan_fill_row    = 9'd0;
         scan_fill_base_words = 25'd0;
         scan_fill_store_idx = 10'd0;
@@ -1542,14 +1586,17 @@ module voxel_gpu (
         for (i = 0; i < LINE_WORDS; i = i + 1) begin
             scan_linebuf0[i] = 16'h0000;
             scan_linebuf1[i] = 16'h0000;
+            scan_linebuf2[i] = 16'h0000;
         end
     end
 
     always_comb begin
         if (!scan_current_x_valid)
             scan_rgb565_now = 16'h0000;
-        else if (scan_active_bank)
+        else if (scan_active_bank == 2'd1)
             scan_rgb565_now = scan_linebuf1[scan_current_x];
+        else if (scan_active_bank == 2'd2)
+            scan_rgb565_now = scan_linebuf2[scan_current_x];
         else
             scan_rgb565_now = scan_linebuf0[scan_current_x];
 
@@ -1944,17 +1991,21 @@ module voxel_gpu (
             scan_rgb565_r    <= 16'h0000;
             scan_line0_ready <= 1'b0;
             scan_line1_ready <= 1'b0;
+            scan_line2_ready <= 1'b0;
             scan_line0_row   <= 9'd0;
             scan_line1_row   <= 9'd0;
+            scan_line2_row   <= 9'd0;
             scan_line0_base_words <= 25'd0;
             scan_line1_base_words <= 25'd0;
-            scan_active_bank <= 1'b0;
+            scan_line2_base_words <= 25'd0;
+            scan_active_bank <= 2'd0;
             scan_active_valid <= 1'b0;
             scan_active_row  <= 9'd0;
             scan_active_base_words <= 25'd0;
             scan_fill_active <= 1'b0;
             scan_fill_armed  <= 1'b0;
-            scan_fill_bank   <= 1'b0;
+            scan_fill_load_pending <= 1'b0;
+            scan_fill_bank   <= 2'd0;
             scan_fill_row    <= 9'd0;
             scan_fill_base_words <= 25'd0;
             scan_fill_store_idx <= 10'd0;
@@ -2048,15 +2099,21 @@ module voxel_gpu (
                 frame_count <= frame_count + 32'd1;
                 scan_line0_ready <= 1'b0;
                 scan_line1_ready <= 1'b0;
+                scan_line2_ready <= 1'b0;
+                scan_line0_row <= 9'd0;
+                scan_line1_row <= 9'd0;
+                scan_line2_row <= 9'd0;
                 scan_line0_base_words <= 25'd0;
                 scan_line1_base_words <= 25'd0;
-                scan_active_bank <= 1'b0;
+                scan_line2_base_words <= 25'd0;
+                scan_active_bank <= 2'd0;
                 scan_active_valid <= 1'b0;
                 scan_active_row <= 9'd0;
                 scan_active_base_words <= 25'd0;
                 scan_fill_active <= 1'b0;
                 scan_fill_armed <= 1'b0;
-                scan_fill_bank <= 1'b0;
+                scan_fill_load_pending <= 1'b0;
+                scan_fill_bank <= 2'd0;
                 scan_fill_row <= 9'd0;
                 scan_fill_base_words <= 25'd0;
                 scan_fill_store_idx <= 10'd0;
@@ -2071,7 +2128,8 @@ module voxel_gpu (
                     if (sdram_ready) begin
                         scan_fill_active <= 1'b1;
                         scan_fill_armed <= 1'b1;
-                        scan_fill_bank <= 1'b0;
+                        scan_fill_load_pending <= 1'b0;
+                        scan_fill_bank <= 2'd0;
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= copy_target_base_words;
                         scan_fill_store_idx <= 10'd0;
@@ -2084,7 +2142,8 @@ module voxel_gpu (
                     if (display_valid && sdram_ready) begin
                         scan_fill_active <= 1'b1;
                         scan_fill_armed <= 1'b1;
-                        scan_fill_bank <= 1'b0;
+                        scan_fill_load_pending <= 1'b0;
+                        scan_fill_bank <= 2'd0;
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= display_base_words;
                         scan_fill_store_idx <= 10'd0;
@@ -2162,27 +2221,45 @@ module voxel_gpu (
             endcase
 
             if (!vsync_pulse && !cache_load_state) begin
-                if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty)
+                if (scan_fill_load_pending) begin
+                    scan_fill_load_pending <= 1'b0;
+                    sdram_rd_addr_cfg <= scan_fill_base_words +
+                                         {15'd0, scan_fill_store_idx};
+                    sdram_rd_max_addr_cfg <= scan_fill_base_words +
+                                             {15'd0, scan_fill_store_idx} +
+                                             READ_BURST_WORDS_25;
+                    sdram_rd_load_pulse <= 1'b1;
+                end else if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty) begin
                     scan_fill_armed <= 1'b0;
+                end
 
                 if (scan_rd_capture) begin
-                    if (scan_fill_bank)
-                        scan_linebuf1[scan_fill_store_idx] <= sdram_rd_data;
-                    else
-                        scan_linebuf0[scan_fill_store_idx] <= sdram_rd_data;
+                    case (scan_fill_bank)
+                        2'd0: scan_linebuf0[scan_fill_store_idx] <= sdram_rd_data;
+                        2'd1: scan_linebuf1[scan_fill_store_idx] <= sdram_rd_data;
+                        default: scan_linebuf2[scan_fill_store_idx] <= sdram_rd_data;
+                    endcase
 
                     if (scan_fill_line_done) begin
                         scan_fill_active <= 1'b0;
                         scan_fill_armed <= 1'b0;
-                        if (scan_fill_bank) begin
-                            scan_line1_ready <= 1'b1;
-                            scan_line1_row <= scan_fill_row;
-                            scan_line1_base_words <= scan_fill_base_words;
-                        end else begin
-                            scan_line0_ready <= 1'b1;
-                            scan_line0_row <= scan_fill_row;
-                            scan_line0_base_words <= scan_fill_base_words;
-                        end
+                        case (scan_fill_bank)
+                            2'd0: begin
+                                scan_line0_ready <= 1'b1;
+                                scan_line0_row <= scan_fill_row;
+                                scan_line0_base_words <= scan_fill_base_words;
+                            end
+                            2'd1: begin
+                                scan_line1_ready <= 1'b1;
+                                scan_line1_row <= scan_fill_row;
+                                scan_line1_base_words <= scan_fill_base_words;
+                            end
+                            default: begin
+                                scan_line2_ready <= 1'b1;
+                                scan_line2_row <= scan_fill_row;
+                                scan_line2_base_words <= scan_fill_base_words;
+                            end
+                        endcase
 
                         if (!scan_active_valid) begin
                             scan_active_valid <= 1'b1;
@@ -2194,53 +2271,71 @@ module voxel_gpu (
                         scan_fill_store_idx <= scan_fill_store_idx + 10'd1;
                         if (scan_fill_chunk_done) begin
                             scan_fill_armed <= 1'b1;
-                            sdram_rd_addr_cfg <= scan_fill_next_chunk_base_words;
-                            sdram_rd_max_addr_cfg <= scan_fill_next_chunk_base_words +
-                                                     READ_BURST_WORDS_25;
-                            sdram_rd_load_pulse <= 1'b1;
+                            scan_fill_load_pending <= 1'b1;
                         end
                     end
                 end
 
                 if (display_valid && scan_active_valid && (scan_active_row != scan_target_row)) begin
-                    if (!scan_active_bank && scan_line1_ready && (scan_line1_row == scan_target_row)) begin
-                        scan_active_bank <= 1'b1;
-                        scan_active_row <= scan_target_row;
-                        scan_active_base_words <= scan_line1_base_words;
-                    end else if (scan_active_bank && scan_line0_ready && (scan_line0_row == scan_target_row)) begin
-                        scan_active_bank <= 1'b0;
+                    if (scan_line0_ready && (scan_line0_row == scan_target_row)) begin
+                        scan_active_bank <= 2'd0;
                         scan_active_row <= scan_target_row;
                         scan_active_base_words <= scan_line0_base_words;
+                    end else if (scan_line1_ready && (scan_line1_row == scan_target_row)) begin
+                        scan_active_bank <= 2'd1;
+                        scan_active_row <= scan_target_row;
+                        scan_active_base_words <= scan_line1_base_words;
+                    end else if (scan_line2_ready && (scan_line2_row == scan_target_row)) begin
+                        scan_active_bank <= 2'd2;
+                        scan_active_row <= scan_target_row;
+                        scan_active_base_words <= scan_line2_base_words;
                     end
                 end
 
                 if (!scan_fill_active && display_valid && sdram_ready && scan_active_valid &&
-                    (scan_active_row < 9'd479)) begin
-                    if (!scan_active_bank && !scan_bank1_next_ready) begin
+                    scan_prefetch_valid && !scan_prefetch_ready &&
+                    (scan_prefetch_bank != 2'd3)) begin
+                    case (scan_prefetch_bank)
+                    2'd0: begin
                         scan_fill_active <= 1'b1;
                         scan_fill_armed <= 1'b1;
-                        scan_fill_bank <= 1'b1;
-                        scan_fill_row <= scan_active_row + 9'd1;
-                        scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
-                        scan_fill_store_idx <= 10'd0;
-                        scan_line1_ready <= 1'b0;
-                        sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
-                        sdram_rd_max_addr_cfg <= scan_active_base_words +
-                                                 (LINE_WORDS_25 + READ_BURST_WORDS_25);
-                        sdram_rd_load_pulse <= 1'b1;
-                    end else if (scan_active_bank && !scan_bank0_next_ready) begin
-                        scan_fill_active <= 1'b1;
-                        scan_fill_armed <= 1'b1;
-                        scan_fill_bank <= 1'b0;
-                        scan_fill_row <= scan_active_row + 9'd1;
-                        scan_fill_base_words <= scan_active_base_words + LINE_WORDS_25;
+                        scan_fill_load_pending <= 1'b0;
+                        scan_fill_bank <= 2'd0;
+                        scan_fill_row <= scan_prefetch_row;
+                        scan_fill_base_words <= scan_prefetch_base_words;
                         scan_fill_store_idx <= 10'd0;
                         scan_line0_ready <= 1'b0;
-                        sdram_rd_addr_cfg <= scan_active_base_words + LINE_WORDS_25;
-                        sdram_rd_max_addr_cfg <= scan_active_base_words +
-                                                 (LINE_WORDS_25 + READ_BURST_WORDS_25);
+                        sdram_rd_addr_cfg <= scan_prefetch_base_words;
+                        sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
                     end
+                    2'd1: begin
+                        scan_fill_active <= 1'b1;
+                        scan_fill_armed <= 1'b1;
+                        scan_fill_load_pending <= 1'b0;
+                        scan_fill_bank <= 2'd1;
+                        scan_fill_row <= scan_prefetch_row;
+                        scan_fill_base_words <= scan_prefetch_base_words;
+                        scan_fill_store_idx <= 10'd0;
+                        scan_line1_ready <= 1'b0;
+                        sdram_rd_addr_cfg <= scan_prefetch_base_words;
+                        sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
+                        sdram_rd_load_pulse <= 1'b1;
+                    end
+                    default: begin
+                        scan_fill_active <= 1'b1;
+                        scan_fill_armed <= 1'b1;
+                        scan_fill_load_pending <= 1'b0;
+                        scan_fill_bank <= 2'd2;
+                        scan_fill_row <= scan_prefetch_row;
+                        scan_fill_base_words <= scan_prefetch_base_words;
+                        scan_fill_store_idx <= 10'd0;
+                        scan_line2_ready <= 1'b0;
+                        sdram_rd_addr_cfg <= scan_prefetch_base_words;
+                        sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
+                        sdram_rd_load_pulse <= 1'b1;
+                    end
+                    endcase
                 end
             end
 
@@ -2948,6 +3043,7 @@ module voxel_gpu (
                 sdram_wr_load_pulse <= 1'b0;
                 sdram_rd_load_pulse <= 1'b0;
                 scan_rd_capture <= 1'b0;
+                scan_fill_load_pending <= 1'b0;
                 fifo_wr_ptr <= 11'd0;
                 fifo_rd_ptr <= 11'd0;
                 fifo_count <= 12'd0;
@@ -2979,11 +3075,11 @@ module voxel_gpu (
                 scan_fill_active,
                 display_valid,
                 sdram_ready,
-                scan_active_bank,
-                scan_fill_bank,
+                scan_active_bank[0],
+                scan_fill_bank[0],
+                scan_line2_ready,
                 scan_line1_ready,
-                scan_line0_ready,
-                1'b0
+                scan_line0_ready
             };
         end
     end

@@ -19,7 +19,7 @@
  *   0x0028  EXTMEM_STRIDE bytes per scanline in SDRAM             (R/W)
  *   0x002C  EXTMEM_TILE  [15:0]=tile_w [31:16]=tile_h            (R/W)
  *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
- *   0x0034  BAND_INDEX   active 96-line render band index          (R/W)
+ *   0x0034  BAND_INDEX   active 64-line render band index          (R/W)
  *   0x0038  BAND_CTRL    [1]=FLUSH [0]=BEGIN band command pulses   (W)
  *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
  *
@@ -72,7 +72,7 @@ typedef int32_t  __s32;
 /*
  * Target geometry for the SDRAM-backed renderer. Userspace submits the same
  * descriptor stream renderer.c already builds; gpu_transport.c bins that stream
- * into 96-line passes and uses BEGIN_BAND/END_BAND to make the hardware render
+ * into 64-line passes and uses BEGIN_BAND/END_BAND to make the hardware render
  * one resident on-chip band before flushing color to SDRAM.
  */
 #define VOXEL_RENDER_WIDTH      640u

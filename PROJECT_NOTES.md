@@ -1194,3 +1194,129 @@ copy/scanout path.
    warnings, but stops on missing Intel primitives/wrappers (`dcfifo`,
    `altsyncram`, PLL generated module). Remaining width warnings are in the
    SDRAM vendor/test controller, not the top-level voxel GPU logic.
+
+DSP-Aware RTL Speedup Ideas (Future Work)
+-----------------------------------------
+
+Device context: the current board target is `5CSEMA5F31C6`. Treat Quartus as
+the source of truth, but this Cyclone V class has enough variable-precision DSP
+blocks that the renderer is unlikely to be fundamentally DSP-limited today.
+The exact current usage should be checked after a full fit with:
+
+    quartus_sh --flow compile soc_system
+    rg -n "DSP|embedded multiplier|Resource" output_files/*.fit.rpt output_files/*.map.rpt
+
+The current RTL uses a one-pixel-per-cycle raster pipe with many multiplies in
+the setup/evaluate path:
+
+  * edge functions: `edge_A/B * x/y`
+  * z plane: `dz_dx/dz_dy * dx/dy`
+  * perspective planes: `uw/vw/iw dx/dy`
+  * UV reconstruction: `u_over_w * w`, `v_over_w * w`
+  * fog radial math
+
+That gives several plausible DSP-side speedups.
+
+### 1. Incremental Edge/Z/UV Stepping
+
+Right now each pixel recomputes plane values from `x/y` with multiplies. For a
+quad, compute row-start values once, then advance each pixel with additions:
+
+    edge(x + 1, y) = edge(x, y) + A
+    z(x + 1, y)    = z(x, y)    + dz_dx
+    uw(x + 1, y)   = uw(x, y)   + uw_dx
+
+At end of row, advance row-start values by the `*_dy` terms.
+
+Expected benefit: large ALM/DSP timing reduction and simpler critical path.
+It may not consume more DSPs; it may free them. This is probably the first
+speedup to do before widening the pixel pipe, because it makes every later
+parallel lane cheaper.
+
+Risk: must preserve the current exact edge inclusion behavior. Add a small RTL
+or verilator-style reference test for shared-edge quads before changing this.
+
+### 2. Two-Pixel Raster Pipe
+
+After incremental stepping, evaluate two adjacent pixels per cycle:
+
+    lane0 uses current values
+    lane1 uses current + dx_step
+    next cycle advances by 2 * dx_step
+
+This needs duplicate compare/Z/texture/palette/fog/commit lanes, or at least a
+split where two coverage/Z candidates feed a narrower commit backend. It also
+needs two writes per cycle to the color and Z band caches. The current
+`voxel_sdp_ram` instances expose one write port, so a true two-pixel commit
+probably requires banking the band cache by even/odd x:
+
+    color_even, color_odd, z_even, z_odd
+
+Expected benefit: up to 2x raster fill for large quads, if memory ports and
+texture/palette lookup keep up.
+
+Cost: roughly doubles color/Z cache RAM instances or complicates write
+arbitration. Given M10K pressure from ping-pong 640x64 bands, this is only
+attractive if Quartus confirms comfortable M10K headroom.
+
+### 3. Parallel Setup for Next Quad
+
+Keep the existing one-pixel draw pipe, but add a setup pipe that precomputes
+the next descriptor's edge constants, bbox clamps, row-start values, and
+perspective increments while the current quad is still draining.
+
+Expected benefit: hides descriptor/setup bubbles, especially for many small
+quads like block faces and UI glyph rectangles.
+
+DSP use: modest. This mainly uses extra registers and a few duplicate setup
+multipliers/adders. It avoids the RAM-port explosion of a multi-pixel commit
+pipe.
+
+Risk: descriptor FIFO/control complexity. Keep the current descriptor ABI, but
+add a small two-entry decoded descriptor queue.
+
+### 4. Dedicated Fog/Blend DSP Pipeline
+
+Fog currently adds several multiplies after texture/palette work. If fog or
+alpha blending becomes part of the timing limiter, move it into a deeper,
+dedicated pipeline with explicit DSP inference and registers between:
+
+    center offset square -> radial scale -> depth scale -> blend
+
+Expected benefit: higher Fmax and less pressure on the main draw pipe. It does
+not reduce cycle count unless paired with wider pixel lanes, but it can make
+more aggressive parallelism fit timing.
+
+Risk: pipeline alignment bugs. Every added stage must carry `valid/pass/addr/z`
+and source/destination color metadata exactly.
+
+### 5. Tile/Span Fill Fast Path
+
+Many screen/UI/sky quads and block faces cover contiguous spans. Add a fast
+path that recognizes flat-color, no-texture, no-z-test spans and writes a run
+of pixels without going through perspective texture and fog arithmetic. A
+variant could issue two or four pixels per cycle into banked color RAM.
+
+Expected benefit: big for sky, chat text shadows, hotbar rectangles, and simple
+solid geometry. This saves DSP cycles for the textured path rather than using
+more of them.
+
+Risk: must not reorder translucent/UI quads relative to world quads. Treat it
+as an internal execution optimization for descriptors that are already next in
+stream order.
+
+### Practical Order
+
+Recommended sequence:
+
+  1. Run Quartus fit and record actual DSP/M10K/Fmax.
+  2. Convert edge/z/uv plane evaluation to incremental stepping.
+  3. Add next-quad setup predecode if small-quad overhead is visible.
+  4. Only then consider a 2-pixel pipe, because it likely needs band-cache
+     banking and may trade DSP headroom for scarce RAM ports.
+
+The main warning: spare DSPs alone do not guarantee a faster renderer. The
+current architecture is also constrained by on-chip RAM ports, SDRAM flush
+bandwidth, and VGA scanout arbitration. Use DSPs aggressively where they remove
+the per-pixel critical path, but avoid a wider commit pipe until the memory-port
+story is clean.

@@ -47,10 +47,11 @@ module voxel_vga_counters (
 
     assign endOfField = (vcount == VTOTAL - 10'd1);
 
-    wire vga_hs_out = !((hcount[10:8] == 3'b101) & !(hcount[7:5] == 3'b111));
-    wire vga_vs_out = !(vcount[9:1] == 9'd245);
-    wire vga_blank_out = !(hcount[10] & (hcount[9] | hcount[8])) &
-                         !(vcount[9] | (vcount[8:5] == 4'b1111));
+    wire vga_hs_out = ~((hcount >= (HACTIVE + HFRONT_PORCH)) &&
+                        (hcount <  (HACTIVE + HFRONT_PORCH + HSYNC)));
+    wire vga_vs_out = ~((vcount >= (VACTIVE + VFRONT_PORCH)) &&
+                        (vcount <  (VACTIVE + VFRONT_PORCH + VSYNC)));
+    wire vga_blank_out = (hcount < HACTIVE) && (vcount < VACTIVE);
     wire vga_sync_out  = 1'b0;
 
     always_ff @(posedge clk50) begin

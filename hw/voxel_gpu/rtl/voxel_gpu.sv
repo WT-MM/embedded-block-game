@@ -624,8 +624,15 @@ module voxel_gpu (
                                           (scan_active_row < 9'd479) &&
                                           !scan_next_line_ready;
     wire        scan_read_start_req     = scan_vsync_read_req || scan_next_read_req;
+    wire        scan_prefetch_req       = !scan_fill_active && display_valid &&
+                                          sdram_ready && scan_active_valid &&
+                                          scan_prefetch_valid && !scan_prefetch_ready &&
+                                          (scan_prefetch_bank != 2'd3);
+    wire        scanout_read_load_req   = scan_vsync_read_req ||
+                                          scan_fill_load_pending ||
+                                          scan_prefetch_req;
     wire        cache_read_start_ok     = scanout_slack && scan_read_idle &&
-                                          !scan_read_start_req;
+                                          !scan_read_start_req && !scan_prefetch_req;
     wire        scan_visible_data_ready = display_valid && sdram_ready &&
                                           scan_active_row_matches &&
                                           scan_active_bank_ready &&
@@ -2292,9 +2299,7 @@ module voxel_gpu (
                     end
                 end
 
-                if (!scan_fill_active && display_valid && sdram_ready && scan_active_valid &&
-                    scan_prefetch_valid && !scan_prefetch_ready &&
-                    (scan_prefetch_bank != 2'd3)) begin
+                if (scan_prefetch_req) begin
                     case (scan_prefetch_bank)
                     2'd0: begin
                         scan_fill_active <= 1'b1;
@@ -2897,7 +2902,7 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_FLUSH_COLOR: begin
-                    if (cache_flush_load_pending) begin
+                    if (cache_flush_load_pending && !scanout_read_load_req) begin
                         sdram_wr_load_pulse <= 1'b1;
                         cache_flush_load_pending <= 1'b0;
                     end

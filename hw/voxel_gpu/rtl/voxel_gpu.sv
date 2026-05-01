@@ -2113,8 +2113,7 @@ module voxel_gpu (
                     ADDR_EXTMEM_STRIDE: extmem_stride_bytes <= writedata;
                     ADDR_EXTMEM_TILE: extmem_tile_cfg <= writedata;
                     ADDR_BAND_INDEX: begin
-                        if (writedata[2:0] < 3'd5)
-                            band_index_cfg <= writedata[2:0];
+                        band_index_cfg <= writedata[2:0];
                     end
                     ADDR_BAND_CTRL: begin
                         if (writedata[0])

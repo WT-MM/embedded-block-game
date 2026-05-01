@@ -1620,7 +1620,15 @@ module voxel_gpu (
         else
             scan_rgb565_now = scan_linebuf0[scan_current_x];
 
-        scan_visible_now = VGA_BLANK_n && scan_visible_data_ready;
+        // VGA_BLANK_n is registered inside voxel_vga_counters (1-cycle late vs
+        // hcount). scan_visible_r is then registered again here, putting it
+        // 2 cycles behind hcount. scan_rgb565_r is only 1 cycle behind. The
+        // resulting phase mismatch blanks pixel 0 every line (linebuf[0] is
+        // computed but the visibility flag is still showing last cycle's
+        // blanking from hcount=1599). Use the combinational visible predicate
+        // so scan_visible_r and VGA_BLANK_n at the DAC are in phase.
+        scan_visible_now = scan_current_x_valid && vcount_visible &&
+                           scan_visible_data_ready;
         if (!scan_visible_now)
             scan_rgb565_now = 16'h0000;
 

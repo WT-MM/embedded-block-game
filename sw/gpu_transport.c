@@ -47,6 +47,52 @@ struct descriptor_bin {
 static struct descriptor_bin g_bins[VOXEL_BAND_COUNT];
 static size_t g_slow_capacity;
 
+/* Per-band "primer" quad. Submitted as the first descriptor of every band so
+ * the very first pixel through the rasterizer pipeline after BEGIN_BAND lands
+ * on a known, hidden 1-px write at column 0 of the band's first scanline.
+ *
+ * The motivation is the family of palette-pipeline staleness bugs documented
+ * in PROJECT_NOTES.md: after the FIFO drains and rasterization restarts, the
+ * first pixel through the pipeline can latch a stale palette index from the
+ * previous frame's tail (red `0x06` was historically the most-visible value).
+ * This was patched on the per-quad seam with the pal_rd+plr stages, but the
+ * SDRAM banding upgrade introduced a new "first-quad-of-band" idle restart
+ * which manifests as occasional red speckles on the absolute left edge.
+ *
+ * The primer absorbs that first-pixel state into a write at (0, band_start)
+ * with palette index 0. Sky/world quads then overdraw that pixel, so the
+ * primer is invisible in steady state but always paints the leading edge
+ * with a known color even if the pipeline is glitchy on its first cycle. */
+static struct quad_desc g_band_primers[VOXEL_BAND_COUNT];
+static int g_band_primers_initialized;
+
+static void init_band_primers(void)
+{
+    if (g_band_primers_initialized)
+        return;
+    for (unsigned b = 0; b < VOXEL_BAND_COUNT; b++) {
+        struct quad_desc *p = &g_band_primers[b];
+        memset(p, 0, sizeof(*p));
+        p->x_min = 0;
+        p->x_max = 0;
+        p->y_min = (__s16)(b * VOXEL_BAND_CACHE_HEIGHT);
+        p->y_max = p->y_min;
+        /* All 4 edges constant +1 in Q24.8 → e(x,y) ≥ 0 everywhere → the
+         * single bbox pixel evaluates inside, primes the pipeline. */
+        for (int i = 0; i < 4; i++) {
+            p->edges[i].A = 0;
+            p->edges[i].B = 0;
+            p->edges[i].C = 1 << 8;
+        }
+        p->z0 = 0;
+        p->dz_dx = 0;
+        p->dz_dy = 0;
+        p->tex_or_color = 0;  /* palette index 0 = clear color */
+        p->flags = 0;          /* flat color, no z-test, no fog, no alpha-key */
+    }
+    g_band_primers_initialized = 1;
+}
+
 #ifndef IOV_MAX
 #  define IOV_MAX 1024
 #endif
@@ -269,9 +315,25 @@ static int submit_hw_band_iov(GPUTransport *transport, unsigned band_index,
     struct voxel_band_state band = { .band_index = band_index };
     int ret;
 
+    init_band_primers();
+
     if (ioctl(transport->hw_fd, VOXEL_IOC_BEGIN_BAND, &band) < 0) {
         perror("ioctl(BEGIN_BAND)");
         return -errno;
+    }
+
+    {
+        const struct quad_desc *primer = &g_band_primers[band_index];
+        ssize_t got = write(transport->hw_fd, primer, sizeof(*primer));
+        if (got != (ssize_t)sizeof(*primer)) {
+            if (got < 0)
+                perror("write(band primer)");
+            else
+                fprintf(stderr,
+                        "renderer: short write of band primer (%zd/%zu)\n",
+                        got, sizeof(*primer));
+            return -EIO;
+        }
     }
 
     if (iov_count > 0) {

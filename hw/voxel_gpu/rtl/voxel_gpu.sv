@@ -564,6 +564,7 @@ module voxel_gpu (
     wire [24:0] display_base_words      = display_sel ? extmem_back_base_words : extmem_front_base_words;
     wire [24:0] copy_target_base_words  = copy_target_sel ? extmem_back_base_words : extmem_front_base_words;
     wire [8:0]  scan_current_row        = vcount[8:0];
+    wire [8:0]  scan_target_row         = (hcount >= 11'd1280) ? (scan_current_row + 9'd1) : scan_current_row;
     wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < FB_WIDTH);
     wire        scan_active_row_matches = scan_active_valid && (scan_active_row == scan_current_row);
@@ -2189,16 +2190,14 @@ module voxel_gpu (
 
                 scan_fill_pop_d <= scan_fill_active ? scan_rd_pop : 1'b0;
 
-                wire [8:0] target_row = (hcount >= 11'd1280) ? (scan_current_row + 9'd1) : scan_current_row;
-
-                if (display_valid && scan_active_valid && (scan_active_row != target_row)) begin
-                    if (!scan_active_bank && scan_line1_ready && (scan_line1_row == target_row)) begin
+                if (display_valid && scan_active_valid && (scan_active_row != scan_target_row)) begin
+                    if (!scan_active_bank && scan_line1_ready && (scan_line1_row == scan_target_row)) begin
                         scan_active_bank <= 1'b1;
-                        scan_active_row <= target_row;
+                        scan_active_row <= scan_target_row;
                         scan_active_base_words <= scan_line1_base_words;
-                    end else if (scan_active_bank && scan_line0_ready && (scan_line0_row == target_row)) begin
+                    end else if (scan_active_bank && scan_line0_ready && (scan_line0_row == scan_target_row)) begin
                         scan_active_bank <= 1'b0;
-                        scan_active_row <= target_row;
+                        scan_active_row <= scan_target_row;
                         scan_active_base_words <= scan_line0_base_words;
                     end
                 end

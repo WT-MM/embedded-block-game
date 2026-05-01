@@ -578,8 +578,21 @@ module voxel_gpu (
     wire [24:0] extmem_z_base_words     = DEFAULT_EXTMEM_Z_BASE[25:1];
     wire [24:0] display_base_words      = display_sel ? extmem_back_base_words : extmem_front_base_words;
     wire [24:0] copy_target_base_words  = copy_target_sel ? extmem_back_base_words : extmem_front_base_words;
-    wire [8:0]  scan_current_row        = vcount[8:0];
-    wire [8:0]  scan_target_row         = (hcount >= 11'd1280) ? (scan_current_row + 9'd1) : scan_current_row;
+    /*
+     * vcount counts 0..524 (VTOTAL-1) but scan_current_row is only 9 bits, so
+     * a naive vcount[8:0] wraps at vcount=512 — during the back porch the
+     * scanout consumer would see scan_current_row=0..12 and race the advance
+     * logic ahead, popping ~13 prefetched rows before the visible frame even
+     * starts. That shows up as black at the top (source rows 0..12 gone) and
+     * black at the bottom (prefetcher caps at row 479, so active_row stalls
+     * there for the last 13 visible vcounts). Pin scan_current_row to 0 outside
+     * the active region so neither the comparator nor the +1 target lookahead
+     * fires while vcount is past 479.
+     */
+    wire        vcount_visible          = (vcount < 10'd480);
+    wire [8:0]  scan_current_row        = vcount_visible ? vcount[8:0] : 9'd0;
+    wire [8:0]  scan_target_row         = (hcount >= 11'd1280 && vcount_visible) ?
+                                          (scan_current_row + 9'd1) : scan_current_row;
     wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < 10'd640);
     wire        scan_active_row_matches = scan_active_valid && (scan_active_row == scan_current_row);

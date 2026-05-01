@@ -2898,7 +2898,7 @@ module voxel_gpu (
              */
             if (ctrl_clear_write) begin
                 state <= ST_IDLE;
-                clear_pending <= 1'b0;
+                clear_pending <= 1'b1;
                 ctrl_flp_pending <= 1'b0;
                 copy_complete_pending <= 1'b0;
                 copy_target_sel <= ~display_sel;
@@ -2909,6 +2909,14 @@ module voxel_gpu (
                 band_flush_pending <= 1'b0;
                 cache_resume_draw <= 1'b0;
                 cache_final_flush <= 1'b0;
+                draw_cache_sel <= 1'b0;
+                flush_active <= 1'b0;
+                flush_words_issued <= 16'd0;
+                flush_words_done <= 16'd0;
+                flush_maint_addr <= 16'd0;
+                flush_fetch_inflight <= 1'b0;
+                flush_word_pending_valid <= 1'b0;
+                flush_load_pending <= 1'b0;
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;

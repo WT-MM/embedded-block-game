@@ -136,6 +136,7 @@ typedef struct {
     size_t offset;
     size_t size;
     int y_min;
+    int is_slow;
 } QuadRef;
 
 struct RenderContext {
@@ -1867,6 +1868,8 @@ static int compare_quad_ref_band(const void *a, const void *b)
 
     if (band_a < band_b) return -1;
     if (band_a > band_b) return 1;
+    if (ra->is_slow < rb->is_slow) return -1;
+    if (ra->is_slow > rb->is_slow) return 1;
     if (ra->offset < rb->offset) return -1;
     if (ra->offset > rb->offset) return 1;
     return 0;
@@ -1905,9 +1908,21 @@ static void sort_opaque_quads(RenderContext *ctx, int start_quad, int end_quad,
         size_t size = sizeof(struct quad_desc);
         if (desc->flags & QUAD_FLAG_TEX) size += sizeof(struct quad_desc_uv);
 
+        int y_min = desc->y_min;
+        int y_max = desc->y_max;
+        if (y_min < 0) y_min = 0;
+        if (y_max >= (int)VOXEL_RENDER_HEIGHT) y_max = (int)VOXEL_RENDER_HEIGHT - 1;
+
+        int first_band = y_min / VOXEL_BAND_CACHE_HEIGHT;
+        int last_band = y_max / VOXEL_BAND_CACHE_HEIGHT;
+        if (last_band >= VOXEL_BAND_COUNT) last_band = VOXEL_BAND_COUNT - 1;
+
+        int is_slow = (first_band != last_band) || (desc->y_min != y_min) || (desc->y_max != y_max);
+
         ctx->sort_refs[i].offset = offset;
         ctx->sort_refs[i].size = size;
-        ctx->sort_refs[i].y_min = desc->y_min;
+        ctx->sort_refs[i].y_min = y_min;
+        ctx->sort_refs[i].is_slow = is_slow;
         offset += size;
     }
 

@@ -43,7 +43,7 @@
  * chunk into the FIFO in bursts sized by STATUS.FIFO_COUNT. Keep it under
  * the 8 KB FIFO so each copied chunk can drain without unbounded buffering.
  */
-#define VOXEL_BOUNCE_WORDS  512                       /* 2 KB per chunk */
+#define VOXEL_BOUNCE_WORDS  2048                      /* 8 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
 /*
@@ -53,7 +53,7 @@
  * is wedged".
  */
 #define VOXEL_POLL_TIMEOUT_MS   250
-#define VOXEL_POLL_DELAY_US     10
+#define VOXEL_POLL_DELAY_US     1
 
 struct voxel_gpu_dev {
 	struct resource res;

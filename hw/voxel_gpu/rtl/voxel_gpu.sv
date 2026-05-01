@@ -193,6 +193,7 @@ module voxel_gpu (
     logic  [9:0] draw_x_min, draw_x_max, draw_x_cur;
     logic  [8:0] draw_y_min;
     logic  [8:0] draw_y_max, draw_y_cur;
+    logic        draw_row_inside;  // set when draw_inside seen on current row
     logic  [7:0] draw_tex_or_color;
     logic  [7:0] draw_flags;
     logic [15:0] draw_z0;
@@ -2276,6 +2277,7 @@ module voxel_gpu (
                         draw_row_base <= band_local_addr(desc_x_min, desc_y_min, cache_band_index);
                         draw_x_cur <= desc_x_min;
                         draw_y_cur <= desc_y_min;
+                        draw_row_inside <= 1'b0;
                         draw_tex_or_color <= desc_tex_or_color;
                         draw_flags <= desc_flags;
                         draw_z0    <= desc_z0;
@@ -2494,7 +2496,16 @@ module voxel_gpu (
                         pipe0_vw_q <= draw_vw_q;
                         pipe0_iw_q <= draw_iw_q;
 
-                        if (draw_x_cur == draw_x_max) begin
+                        /* Track inside-to-outside transition for early row exit */
+                        if (draw_inside)
+                            draw_row_inside <= 1'b1;
+
+                        /* Early scanline exit: if we were inside the quad on
+                         * this row and now we're outside, all remaining pixels
+                         * on this row are also outside (convex quad property).
+                         * Skip directly to the next row. */
+                        if (draw_x_cur == draw_x_max ||
+                            (draw_row_inside && !draw_inside)) begin
                             if (draw_y_cur == draw_y_max) begin
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
@@ -2502,6 +2513,7 @@ module voxel_gpu (
                                 draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
+                                draw_row_inside <= 1'b0;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd1;
@@ -2514,7 +2526,12 @@ module voxel_gpu (
                          * band are ignored here and will be drawn during their
                          * own BEGIN_BAND/END_BAND pass.
                          */
-                        if (draw_x_cur == draw_x_max) begin
+                        /* Early scanline exit for cache-miss path too */
+                        if (draw_inside)
+                            draw_row_inside <= 1'b1;
+
+                        if (draw_x_cur == draw_x_max ||
+                            (draw_row_inside && !draw_inside)) begin
                             if (draw_y_cur == draw_y_max) begin
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
@@ -2522,6 +2539,7 @@ module voxel_gpu (
                                 draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_min;
                                 draw_y_cur <= draw_y_cur + 9'd1;
+                                draw_row_inside <= 1'b0;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd1;

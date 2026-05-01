@@ -23,7 +23,6 @@
 #define SKY_DAY_LENGTH_SECONDS 180.0f
 #define SKY_DOME_DISTANCE 512.0f
 #define SKY_GRADIENT_BANDS 24
-#define WORLD_QUAD_BUDGET 800
 
 enum {
     PAL_SKY_HIGH = 25,
@@ -2033,8 +2032,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        face->u_size ? face->u_size : 1,
                                        face->v_size ? face->v_size : 1,
                                        light_flags);
-            if (ctx->n_quads - before >= WORLD_QUAD_BUDGET ||
-                ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                 sort_opaque_quads(ctx, opaque_start_quad, ctx->n_quads,
                                   opaque_start_bytes, ctx->submit_bytes);
                 return ctx->n_quads - before;
@@ -2115,8 +2113,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        ref->face->u_size ? ref->face->u_size : 1,
                                        ref->face->v_size ? ref->face->v_size : 1,
                                        light_flags);
-            if (ctx->n_quads - before >= WORLD_QUAD_BUDGET ||
-                ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }
     }

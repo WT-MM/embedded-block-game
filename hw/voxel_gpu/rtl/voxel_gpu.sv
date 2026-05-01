@@ -476,7 +476,6 @@ module voxel_gpu (
     logic  [8:0] scan_fill_row;
     logic [24:0] scan_fill_base_words;
     logic  [9:0] scan_fill_store_idx;
-    logic        scan_fill_pop_d;
     logic [15:0] scan_rgb565_now;
     logic [24:0] sdram_rd_addr_cfg;
     logic [24:0] sdram_rd_max_addr_cfg;
@@ -501,7 +500,6 @@ module voxel_gpu (
     logic  [7:0] cache_drain_count;
     logic        cache_word_pending_valid;
     logic [15:0] cache_word_pending;
-    logic        cache_load_pop_d;
     logic        cache_load_is_z;
     logic [24:0] sdram_wr_addr_cfg;
     logic [24:0] sdram_wr_max_addr_cfg;
@@ -580,7 +578,7 @@ module voxel_gpu (
     wire        scanout_slack           = !display_valid || !VGA_BLANK_n ||
                                           scan_next_line_ready;
     wire        scan_read_idle          = !scan_fill_active && !scan_fill_armed &&
-                                          !scan_fill_pop_d && sdram_rd_empty;
+                                          sdram_rd_empty;
     wire        cache_read_start_ok     = scanout_slack && scan_read_idle;
     wire        scan_visible_data_ready = display_valid && sdram_ready &&
                                           scan_active_row_matches &&
@@ -595,7 +593,7 @@ module voxel_gpu (
     wire [24:0] scan_fill_next_chunk_base_words =
         scan_fill_base_words + {15'd0, scan_fill_words_complete};
     wire        cache_flush_state = (state == ST_CACHE_FLUSH_COLOR);
-    wire        cache_load_state = 1'b0;
+    wire        cache_load_state = (state == ST_CACHE_LOAD_COLOR || state == ST_CACHE_LOAD_Z);
     wire        cache_rd_load_state = 1'b0;
     wire [15:0] cache_load_words_complete =
         cache_words_done + (cache_rd_pop ? 16'd1 : 16'd0);
@@ -623,7 +621,7 @@ module voxel_gpu (
     wire        scan_rd_pop = scan_fill_active && !scan_fill_armed && !sdram_rd_empty &&
                               (scan_fill_words_complete < LINE_WORDS_10) &&
                               !scan_fill_chunk_done;
-    wire        sdram_rd_pop = scan_rd_pop;
+    wire        sdram_rd_pop = scan_rd_pop || cache_rd_pop;
     wire        cache_can_issue_read =
         cache_flush_state &&
         (cache_words_issued < cache_pixels_total) &&
@@ -837,7 +835,7 @@ module voxel_gpu (
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
     wire [31:0] status_word = {
-        16'h0,
+        12'h0,
         {4'h0, fifo_count},
         vsy_latch,
         fifo_empty,
@@ -1450,7 +1448,6 @@ module voxel_gpu (
         scan_fill_row    = 9'd0;
         scan_fill_base_words = 25'd0;
         scan_fill_store_idx = 10'd0;
-        scan_fill_pop_d  = 1'b0;
         sdram_rd_addr_cfg = 25'd0;
         sdram_rd_max_addr_cfg = 25'd0;
         sdram_rd_load_pulse = 1'b0;
@@ -1469,7 +1466,6 @@ module voxel_gpu (
         cache_drain_count = 8'd0;
         cache_word_pending_valid = 1'b0;
         cache_word_pending = 16'd0;
-        cache_load_pop_d = 1'b0;
         cache_load_is_z = 1'b0;
         sdram_wr_addr_cfg = 25'd0;
         sdram_wr_max_addr_cfg = 25'd0;
@@ -1575,7 +1571,7 @@ module voxel_gpu (
             end
 
             ST_CACHE_LOAD_COLOR: begin
-                if (cache_load_pop_d) begin
+                if (cache_rd_pop) begin
                     fb_wr_addr = cache_maint_addr;
                     fb_wr_data = sdram_rd_data;
                     fb_back_wr_en = 1'b1;
@@ -1583,7 +1579,7 @@ module voxel_gpu (
             end
 
             ST_CACHE_LOAD_Z: begin
-                if (cache_load_pop_d) begin
+                if (cache_rd_pop) begin
                     z_wr_addr = cache_maint_addr;
                     z_wr_data = sdram_rd_data;
                     z_wr_en = 1'b1;
@@ -1638,11 +1634,11 @@ module voxel_gpu (
             fb_A_rd_addr = 16'd0;
             fb_A_wr_addr = 16'd0;
             fb_A_wr_data = 16'd0;
-            fb_A_wr_en   = 1'b0;
+            fb_A_wr_en   = 16'd0;
             z_A_rd_addr  = 16'd0;
             z_A_wr_addr  = 16'd0;
             z_A_wr_data  = 16'd0;
-            z_A_wr_en    = 1'b0;
+            z_A_wr_en    = 16'd0;
         end
 
         /* ── Cache B ports ── */
@@ -1661,21 +1657,21 @@ module voxel_gpu (
             fb_B_rd_addr = flush_maint_addr;
             fb_B_wr_addr = 16'd0;
             fb_B_wr_data = 16'd0;
-            fb_B_wr_en   = 1'b0;
+            fb_B_wr_en   = 16'd0;
             z_B_rd_addr  = flush_maint_addr;
             z_B_wr_addr  = 16'd0;
             z_B_wr_data  = 16'd0;
-            z_B_wr_en    = 1'b0;
+            z_B_wr_en    = 16'd0;
         end else begin
             /* B is idle */
             fb_B_rd_addr = 16'd0;
             fb_B_wr_addr = 16'd0;
             fb_B_wr_data = 16'd0;
-            fb_B_wr_en   = 1'b0;
+            fb_B_wr_en   = 16'd0;
             z_B_rd_addr  = 16'd0;
             z_B_wr_addr  = 16'd0;
             z_B_wr_data  = 16'd0;
-            z_B_wr_en    = 1'b0;
+            z_B_wr_en    = 16'd0;
         end
     end
 
@@ -1946,7 +1942,6 @@ module voxel_gpu (
             scan_fill_row    <= 9'd0;
             scan_fill_base_words <= 25'd0;
             scan_fill_store_idx <= 10'd0;
-            scan_fill_pop_d  <= 1'b0;
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
             sdram_rd_load_pulse <= 1'b0;
@@ -1969,7 +1964,6 @@ module voxel_gpu (
             cache_drain_count <= 8'd0;
             cache_word_pending_valid <= 1'b0;
             cache_word_pending <= 16'd0;
-            cache_load_pop_d <= 1'b0;
             cache_load_is_z <= 1'b0;
             sdram_wr_addr_cfg <= 25'd0;
             sdram_wr_max_addr_cfg <= 25'd0;
@@ -2046,7 +2040,6 @@ module voxel_gpu (
                 scan_fill_row <= 9'd0;
                 scan_fill_base_words <= 25'd0;
                 scan_fill_store_idx <= 10'd0;
-                scan_fill_pop_d <= 1'b0;
 
                 if (copy_complete_pending) begin
                     display_sel <= copy_target_sel;
@@ -2188,8 +2181,6 @@ module voxel_gpu (
                     end
                 end
 
-                // scan_fill_pop_d removed to match FWFT FIFO timing
-
                 if (display_valid && scan_active_valid && (scan_active_row != scan_target_row)) begin
                     if (!scan_active_bank && scan_line1_ready && (scan_line1_row == scan_target_row)) begin
                         scan_active_bank <= 1'b1;
@@ -2230,8 +2221,6 @@ module voxel_gpu (
                         sdram_rd_load_pulse <= 1'b1;
                     end
                 end
-            end else if (cache_load_state) begin
-                scan_fill_pop_d <= 1'b0;
             end
 
             /* Main-FSM flush: used for ST_CACHE_FLUSH_COLOR/Z only */
@@ -2295,13 +2284,10 @@ module voxel_gpu (
             end
 
             if (cache_load_state) begin
-                if (cache_load_pop_d) begin
+                if (cache_rd_pop) begin
                     cache_maint_addr <= cache_maint_addr + 16'd1;
                     cache_words_done <= cache_words_done + 16'd1;
                 end
-                cache_load_pop_d <= cache_rd_pop;
-            end else begin
-                cache_load_pop_d <= 1'b0;
             end
 
             /* pal_rd stage: register the palette source/fog addresses
@@ -2838,8 +2824,6 @@ module voxel_gpu (
                     cache_band_index <= cache_target_band;
                     cache_pixels_total <= band_pixel_count(cache_target_band);
                     cache_words_done <= 16'd0;
-                    cache_maint_addr <= 16'd0;
-                    cache_load_pop_d <= 1'b0;
                     if (cache_band_valid[cache_target_band] && cache_read_start_ok) begin
                         sdram_rd_addr_cfg <= copy_target_base_words +
                                              band_word_offset(cache_target_band);
@@ -2869,11 +2853,10 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_LOAD_COLOR: begin
-                    if (cache_load_pop_d &&
+                    if (cache_rd_pop &&
                         (cache_words_done == cache_pixels_total - 16'd1)) begin
                         cache_words_done <= 16'd0;
                         cache_maint_addr <= 16'd0;
-                        cache_load_pop_d <= 1'b0;
                         state <= ST_CACHE_START_LOAD_Z;
                     end
                 end
@@ -2891,14 +2874,13 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_LOAD_Z: begin
-                    if (cache_load_pop_d &&
+                    if (cache_rd_pop &&
                         (cache_words_done == cache_pixels_total - 16'd1)) begin
                         cache_valid <= 1'b1;
                         cache_dirty <= 1'b0;
                         cache_band_index <= cache_target_band;
                         cache_words_done <= 16'd0;
                         cache_maint_addr <= 16'd0;
-                        cache_load_pop_d <= 1'b0;
                         cache_resume_draw <= 1'b0;
                         state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
                     end
@@ -2933,7 +2915,6 @@ module voxel_gpu (
                 cache_fetch_inflight <= 1'b0;
                 cache_flush_load_pending <= 1'b0;
                 cache_word_pending_valid <= 1'b0;
-                cache_load_pop_d <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
                 sdram_rd_load_pulse <= 1'b0;
                 fifo_wr_ptr <= 11'd0;

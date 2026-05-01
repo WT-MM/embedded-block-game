@@ -573,7 +573,7 @@ module voxel_gpu (
     wire        cache_init_state = (state == ST_CACHE_INIT);
     wire        cache_maint_state = cache_flush_state || cache_load_state || cache_init_state;
     wire        sdram_wr_push = cache_flush_state && cache_word_pending_valid &&
-                                !sdram_wr_full && scanout_slack;
+                                !sdram_wr_full;
     wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
                                (cache_load_words_complete < cache_pixels_total);
     /*
@@ -592,7 +592,6 @@ module voxel_gpu (
         cache_flush_state &&
         (cache_words_issued < cache_pixels_total) &&
         !cache_fetch_inflight &&
-        scanout_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!cache_word_pending_valid || sdram_wr_push);
     wire        cache_issue_read = cache_can_issue_read;

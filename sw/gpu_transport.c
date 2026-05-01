@@ -11,6 +11,8 @@
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <time.h>
+#include <stdint.h>
 
 #define DEV_PATH "/dev/voxel_gpu"
 #define SOCKET_MAGIC "VGPU"
@@ -309,6 +311,9 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
     int16_t diag_x_min = INT16_MAX, diag_x_max = INT16_MIN;
     int16_t diag_y_min = INT16_MAX, diag_y_max = INT16_MIN;
 
+    struct timespec t_start, t_binned, t_submit;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
     /* Reset bins up front so the empty/error paths below see clean state. */
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         g_bins[band].flat_used = 0;
@@ -397,6 +402,8 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         offset += desc_size;
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &t_binned);
+
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         ret = submit_hw_band_flat(transport, band,
                                   g_bins[band].flat_buf, g_bins[band].flat_used);
@@ -404,12 +411,17 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             goto done;
     }
 
+        clock_gettime(CLOCK_MONOTONIC, &t_submit);
+
 done:
     if (g_diag_bbox && (g_diag_frame_count++ % 60) == 0) {
+        double ms_bin = (t_binned.tv_sec - t_start.tv_sec) * 1000.0 + (t_binned.tv_nsec - t_start.tv_nsec) / 1e6;
+        double ms_submit = (t_submit.tv_sec - t_binned.tv_sec) * 1000.0 + (t_submit.tv_nsec - t_binned.tv_nsec) / 1e6;
         fprintf(stderr,
-                "renderer: HW mode [flat buf, %u quads, bbox: (%d,%d)-(%d,%d)]\n",
+                "renderer: HW mode [flat buf, %u quads, bbox: (%d,%d)-(%d,%d)] bin=%5.2fms bands=%5.2fms\n",
                 (unsigned)(descriptor_bytes / sizeof(struct quad_desc)), /* approx */
-                diag_x_min, diag_y_min, diag_x_max, diag_y_max);
+                diag_x_min, diag_y_min, diag_x_max, diag_y_max,
+                ms_bin, ms_submit);
     }
     return ret;
 }
@@ -666,7 +678,10 @@ int gpu_transport_clear(GPUTransport *transport)
 
 int gpu_transport_flip(GPUTransport *transport)
 {
+    struct timespec t0, t1;
     int ret = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     if (transport_needs_hw(transport) &&
         ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
@@ -682,6 +697,12 @@ int gpu_transport_flip(GPUTransport *transport)
                     strerror(-sock_ret));
             ret = sock_ret;
         }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (g_diag_bbox && (g_diag_frame_count % 60) == 0) {
+        double ms_flip = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+        fprintf(stderr, "renderer: FLIP flip=%5.2fms\n", ms_flip);
     }
 
     return ret;

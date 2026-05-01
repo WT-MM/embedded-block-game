@@ -832,3 +832,64 @@ is stable, the transport can get smarter without changing `renderer.c`: sky can
 be treated as a per-band clear/background, large full-screen quads can be
 special-cased, and repeated descriptor duplication can be replaced with tighter
 software bins.
+
+April 2026: Column-0 Red Speckle Bug (SDRAM Read FIFO Residual)
+---------------------------------------------------------------
+
+Symptom
+-------
+After the SDRAM full-resolution upgrade (640x480 with 5 x 96-line bands),
+intermittent red specks appeared at the absolute left edge of the screen
+(column 0). Specks were sparse, time-varying, and only ever in the leftmost
+column. Red is `palette[0x06]` aka the block-fault color, which is the
+worst-visible stale value when something goes wrong upstream.
+
+Wrong Hypotheses (ruled out)
+----------------------------
+We first chased software-side stale-state hypotheses:
+
+  * Per-quad pipeline staleness on the first descriptor of each band - tested
+    by prepending a 1x1 hidden primer quad per band in `sw/gpu_transport.c`.
+    No effect, ruling this out.
+  * `ST_CACHE_INIT` first-cycle stale-address race - claimed by an investigation
+    pass but verified incorrect: `cache_maint_addr <= 0` and `state <= ST_CACHE_INIT`
+    are non-blocking assignments in the same `always_ff` and update on the same
+    edge.
+
+Root Cause
+----------
+The scanout linebuffer fill path was popping the SDRAM read FIFO before the
+just-programmed burst's data had actually arrived. In `hw/voxel_gpu/rtl/voxel_gpu.sv`
+the pop wire was originally:
+
+    wire scan_rd_pop = scan_fill_active && !sdram_rd_empty &&
+                       (scan_fill_words_complete < LINE_WORDS_10) &&
+                       !scan_fill_chunk_done;
+
+`scan_fill_armed=1` means `sdram_rd_load_pulse` was just asserted to program
+a new 64-word burst, but the SDRAM controller has not yet started delivering
+data for it. During that window any `!sdram_rd_empty` is residual from the
+prior burst, not new line data. The pop wire did not gate on `!scan_fill_armed`,
+so on rare timings the very first word into `scan_linebuf[0]` (column 0 of the
+line) came from the prior burst's tail. With showahead=OFF on the SDRAM read
+dcfifo, the 1-cycle rdreq->q latency made this race visible only sometimes.
+
+Fix
+---
+Gate the pop wire on `!scan_fill_armed`:
+
+    wire scan_rd_pop = scan_fill_active && !scan_fill_armed && !sdram_rd_empty &&
+                       (scan_fill_words_complete < LINE_WORDS_10) &&
+                       !scan_fill_chunk_done;
+
+`scan_fill_armed` clears one cycle after `!sdram_rd_load_pulse && !sdram_rd_empty`
+(see lines ~1995 in `voxel_gpu.sv`), i.e. once the new burst's data has actually
+landed in the FIFO. Pops resume the cycle after that. Worst case we add one
+cycle of latency at burst-start; with `LINE_WORDS_10=10` 64-word bursts per
+scanline and ample slack before scanout consumes the line, this is harmless.
+
+Why column 0 specifically: the contaminated word was always the first word of
+the first burst of a scanline, i.e. `scan_linebuf[0]`, which the scanout shifts
+out as the leftmost pixel. Subsequent words came from the correct burst.
+
+Confirmed fixed on hardware after reflash.

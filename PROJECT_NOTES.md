@@ -1143,3 +1143,54 @@ cache. Both are free while the rasterizer owns the active cache.
    AND immediately allow BEGIN_BAND to start INIT+DRAW on the active cache
 6. The FLIP ioctl must wait for the last outstanding flush to complete before
    swapping SDRAM display pointers
+
+RTL/Software Blank-Screen Follow-Up Pass (2026-05-01)
+-----------------------------------------------------
+
+### What was checked
+
+After the renderer reported live HW submission, full-screen descriptor bounds,
+and successful per-frame flips while the monitor stayed blank, the likely fault
+surface moved downstream from game/descriptor generation into the SDRAM
+copy/scanout path.
+
+### Changes applied
+
+1. **SDRAM read arbitration hardening** — Prevent scanout line fills and cache
+   color/Z reloads from arming the shared SDRAM read controller in the same
+   cycle. Cache reads now wait when a vsync scan fill or next-line scan fill is
+   about to start.
+
+2. **Read-pop completion fix** — Removed self-referential completion checks
+   where `cache_rd_pop` depended on a value that also included `cache_rd_pop`,
+   and similarly simplified `scan_rd_pop`. This avoids combinational feedback
+   around the SDRAM read FIFO pop path.
+
+3. **Scan/cache read isolation** — `scan_rd_pop` is gated off during cache load
+   states, so cache reloads cannot accidentally be consumed by the scanline
+   buffer path.
+
+4. **Lint cleanup in `voxel_gpu.sv`** — Removed the dead
+   `cache_rd_load_state`, made status packing a full 32 bits by exposing
+   `flush_active`, changed 1-bit write-enable zeroes to `1'b0`, and made local
+   comparisons/adds width-explicit. This does not change intended behavior, but
+   makes future warnings more meaningful.
+
+### Remaining potential issues
+
+1. **Empty bands do not force an SDRAM clear** — A BEGIN/END pair with no quads
+   initializes the on-chip band cache but does not mark it dirty, so that band
+   may not be flushed to SDRAM. Full-screen sky/world geometry usually masks
+   this, but sparse scenes can leave stale pixels. Fixing it is possible by
+   marking initialized empty bands dirty, but that adds SDRAM traffic.
+
+2. **Last band over-flushes past visible height** — The RTL uses a fixed
+   64-line band size for every band, so band 7 flushes 40960 words even though
+   only 32 rows are visible at 640x480. The extra writes land after the visible
+   frame inside the back-buffer allocation gap, so this should not blank the
+   display, but it wastes bandwidth.
+
+3. **Verilator cannot fully lint vendor IP here** — Local lint reaches useful
+   warnings, but stops on missing Intel primitives/wrappers (`dcfifo`,
+   `altsyncram`, PLL generated module). Remaining width warnings are in the
+   SDRAM vendor/test controller, not the top-level voxel GPU logic.

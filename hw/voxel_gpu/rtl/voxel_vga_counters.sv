@@ -47,13 +47,28 @@ module voxel_vga_counters (
 
     assign endOfField = (vcount == VTOTAL - 10'd1);
 
-    assign VGA_HS = !((hcount[10:8] == 3'b101) & !(hcount[7:5] == 3'b111));
-    assign VGA_VS = !(vcount[9:1] == 9'd245);
-
-    assign VGA_SYNC_n  = 1'b0;
-    assign VGA_BLANK_n = !(hcount[10] & (hcount[9] | hcount[8])) &
+    wire vga_hs_out = !((hcount[10:8] == 3'b101) & !(hcount[7:5] == 3'b111));
+    wire vga_vs_out = !(vcount[9:1] == 9'd245);
+    wire vga_blank_out = !(hcount[10] & (hcount[9] | hcount[8])) &
                          !(vcount[9] | (vcount[8:5] == 4'b1111));
+    wire vga_sync_out  = 1'b0;
+
+    always_ff @(posedge clk50) begin
+        if (reset) begin
+            VGA_HS <= 1'b1;
+            VGA_VS <= 1'b1;
+            VGA_BLANK_n <= 1'b0;
+            VGA_SYNC_n <= 1'b0;
+        end else begin
+            VGA_HS <= vga_hs_out;
+            VGA_VS <= vga_vs_out;
+            VGA_BLANK_n <= vga_blank_out;
+            VGA_SYNC_n <= vga_sync_out;
+        end
+    end
+
     // Invert vs hcount[0]: DAC rising edge mid-pixel eye for ADV7123 setup/hold.
+    // This clock goes directly to the DAC, so it must not be delayed.
     assign VGA_CLK     = ~hcount[0];
 
 endmodule

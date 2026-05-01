@@ -587,18 +587,18 @@ module voxel_gpu (
                                           scan_active_bank_ready &&
                                           (scan_active_bank_row == scan_current_row);
     wire [9:0]  scan_fill_words_complete =
-        scan_fill_store_idx + (scan_fill_pop_d ? 10'd1 : 10'd0);
+        scan_fill_store_idx + (scan_rd_pop ? 10'd1 : 10'd0);
     wire        scan_fill_line_done =
-        scan_fill_pop_d && (scan_fill_words_complete == LINE_WORDS_10);
+        scan_rd_pop && (scan_fill_words_complete == LINE_WORDS_10);
     wire        scan_fill_chunk_done =
-        scan_fill_pop_d && (scan_fill_words_complete[5:0] == 6'd0);
+        scan_rd_pop && (scan_fill_words_complete[5:0] == 6'd0);
     wire [24:0] scan_fill_next_chunk_base_words =
         scan_fill_base_words + {15'd0, scan_fill_words_complete};
     wire        cache_flush_state = (state == ST_CACHE_FLUSH_COLOR);
     wire        cache_load_state = 1'b0;
     wire        cache_rd_load_state = 1'b0;
     wire [15:0] cache_load_words_complete =
-        cache_words_done + (cache_load_pop_d ? 16'd1 : 16'd0);
+        cache_words_done + (cache_rd_pop ? 16'd1 : 16'd0);
     wire        cache_init_state = (state == ST_CACHE_INIT);
     wire        cache_maint_state = cache_flush_state || cache_load_state || cache_init_state;
 
@@ -2151,7 +2151,7 @@ module voxel_gpu (
                 if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty)
                     scan_fill_armed <= 1'b0;
 
-                if (scan_fill_pop_d) begin
+                if (scan_rd_pop) begin
                     if (scan_fill_bank)
                         scan_linebuf1[scan_fill_store_idx] <= sdram_rd_data;
                     else
@@ -2188,7 +2188,7 @@ module voxel_gpu (
                     end
                 end
 
-                scan_fill_pop_d <= scan_fill_active ? scan_rd_pop : 1'b0;
+                // scan_fill_pop_d removed to match FWFT FIFO timing
 
                 if (display_valid && scan_active_valid && (scan_active_row != scan_target_row)) begin
                     if (!scan_active_bank && scan_line1_ready && (scan_line1_row == scan_target_row)) begin

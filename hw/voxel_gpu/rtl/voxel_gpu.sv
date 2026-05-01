@@ -888,7 +888,7 @@ module voxel_gpu (
         begin
             band_base_y = band_base_row(band);
             local_y = (y >= band_base_y) ? (y - band_base_y) : 9'd0;
-            band_local_addr = 16'(local_y) * 16'd640 + 16'(x);
+            band_local_addr = local_y * 16'd640 + x;
         end
     endfunction
 
@@ -906,13 +906,13 @@ module voxel_gpu (
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            band_word_offset = 25'(band) * 25'd40960;
+            band_word_offset = band * 25'd40960;
         end
     endfunction
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            band_base_row = 9'(band) * 9'd64;
+            band_base_row = band * 9'd64;
         end
     endfunction
 

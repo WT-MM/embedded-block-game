@@ -533,6 +533,7 @@ module voxel_gpu (
     logic        flush_word_pending_valid; // captured pixel waiting for SDRAM push
     logic [15:0] flush_word_pending;       // the captured pixel value
     logic        flush_load_pending;       // kick the SDRAM write burst
+    logic  [7:0] flush_drain_count;        // wait after WR FIFO empty for final SDRAM burst
     logic  [2:0] flush_band_index;         // which band is being flushed
     logic [24:0] flush_sdram_wr_addr;      // SDRAM write base for flush
     logic [24:0] flush_sdram_wr_max_addr;  // SDRAM write end for flush
@@ -647,6 +648,12 @@ module voxel_gpu (
                                           sdram_ready && scan_active_valid &&
                                           scan_prefetch_valid && !scan_prefetch_ready &&
                                           (scan_prefetch_bank != 2'd3);
+    /*
+     * Let SDRAM writes/render-cache loads run during active video only after
+     * scanout has both the next line and the prefetch target resident. The old
+     * one-line margin allowed write bursts to start just as scanout needed the
+     * next read, which showed up as view-dependent horizontal flashes.
+     */
     wire        scan_prefetch_margin_ready =
         scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
     wire        scanout_slack           = !display_valid ||
@@ -2088,6 +2095,7 @@ module voxel_gpu (
             flush_word_pending_valid <= 1'b0;
             flush_word_pending <= 16'd0;
             flush_load_pending <= 1'b0;
+            flush_drain_count <= 8'd0;
             flush_band_index <= 3'd0;
             flush_sdram_wr_addr <= 25'd0;
             flush_sdram_wr_max_addr <= 25'd0;
@@ -2430,13 +2438,22 @@ module voxel_gpu (
                     flush_fetch_inflight <= 1'b1;
                 end
 
-                /* Flush complete: all words pushed to SDRAM and FIFO drained */
+                /* Flush complete: all words pushed to SDRAM, FIFO drained,
+                 * and the SDRAM controller has had time to finish the final
+                 * burst it already pulled out of the FIFO. */
                 if ((flush_words_done == flush_pixels_total) &&
                     !flush_word_pending_valid &&
                     !flush_fetch_inflight &&
                     (sdram_wr_use[8:0] == 9'd0)) begin
-                    flush_active <= 1'b0;
-                    cache_band_valid[flush_band_index] <= 1'b1;
+                    if (flush_drain_count == COPY_DRAIN_CYCLES) begin
+                        flush_active <= 1'b0;
+                        cache_band_valid[flush_band_index] <= 1'b1;
+                        flush_drain_count <= 8'd0;
+                    end else begin
+                        flush_drain_count <= flush_drain_count + 8'd1;
+                    end
+                end else begin
+                    flush_drain_count <= 8'd0;
                 end
             end
 
@@ -2575,6 +2592,7 @@ module voxel_gpu (
                             flush_fetch_inflight <= 1'b0;
                             flush_word_pending_valid <= 1'b0;
                             flush_load_pending <= 1'b1;
+                            flush_drain_count <= 8'd0;
                             flush_cache_sel <= draw_cache_sel;
                             flush_sdram_wr_addr <= copy_target_base_words +
                                                    band_word_offset(cache_band_index);
@@ -3017,15 +3035,22 @@ module voxel_gpu (
                         !cache_word_pending_valid &&
                         !cache_fetch_inflight &&
                         (sdram_wr_use[8:0] == 9'd0)) begin
-                        cache_words_issued <= 16'd0;
-                        cache_words_done <= 16'd0;
-                        cache_maint_addr <= 16'd0;
-                        cache_fetch_inflight <= 1'b0;
-                        cache_word_pending_valid <= 1'b0;
-                        cache_band_valid[cache_band_index] <= 1'b1;
-                        cache_dirty <= 1'b0;
-                        cache_valid <= 1'b0;
-                        state <= ST_IDLE;
+                        if (cache_drain_count == COPY_DRAIN_CYCLES) begin
+                            cache_words_issued <= 16'd0;
+                            cache_words_done <= 16'd0;
+                            cache_maint_addr <= 16'd0;
+                            cache_fetch_inflight <= 1'b0;
+                            cache_word_pending_valid <= 1'b0;
+                            cache_band_valid[cache_band_index] <= 1'b1;
+                            cache_dirty <= 1'b0;
+                            cache_valid <= 1'b0;
+                            cache_drain_count <= 8'd0;
+                            state <= ST_IDLE;
+                        end else begin
+                            cache_drain_count <= cache_drain_count + 8'd1;
+                        end
+                    end else begin
+                        cache_drain_count <= 8'd0;
                     end
                 end
 
@@ -3034,16 +3059,23 @@ module voxel_gpu (
                         !cache_word_pending_valid &&
                         !cache_fetch_inflight &&
                         (sdram_wr_use[8:0] == 9'd0)) begin
-                        cache_band_valid[cache_band_index] <= 1'b1;
-                        cache_dirty <= 1'b0;
-                        cache_valid <= 1'b0;
-                        if (cache_final_flush) begin
-                            copy_complete_pending <= 1'b1;
-                            cache_final_flush <= 1'b0;
-                            state <= ST_IDLE;
+                        if (cache_drain_count == COPY_DRAIN_CYCLES) begin
+                            cache_band_valid[cache_band_index] <= 1'b1;
+                            cache_dirty <= 1'b0;
+                            cache_valid <= 1'b0;
+                            cache_drain_count <= 8'd0;
+                            if (cache_final_flush) begin
+                                copy_complete_pending <= 1'b1;
+                                cache_final_flush <= 1'b0;
+                                state <= ST_IDLE;
+                            end else begin
+                                state <= ST_CACHE_SELECT_FILL;
+                            end
                         end else begin
-                            state <= ST_CACHE_SELECT_FILL;
+                            cache_drain_count <= cache_drain_count + 8'd1;
                         end
+                    end else begin
+                        cache_drain_count <= 8'd0;
                     end
                 end
 
@@ -3144,6 +3176,7 @@ module voxel_gpu (
                 flush_fetch_inflight <= 1'b0;
                 flush_word_pending_valid <= 1'b0;
                 flush_load_pending <= 1'b0;
+                flush_drain_count <= 8'd0;
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;

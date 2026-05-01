@@ -87,12 +87,26 @@ static float read_mouse_sensitivity(void)
     return parsed;
 }
 
-static int read_status_log_enabled(void)
+static int read_debug_enabled(void)
+{
+    const char *value = getenv("DEBUG");
+
+    if (!value || value[0] == '\0')
+        return 0;
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "false") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "no") == 0)
+        return 0;
+    return 1;
+}
+
+static int read_status_log_enabled(int debug_enabled)
 {
     const char *value = getenv("VOXEL_STATUS_LOG");
 
     if (!value || value[0] == '\0' || strcmp(value, "auto") == 0)
-        return isatty(STDOUT_FILENO);
+        return debug_enabled;
     if (strcmp(value, "0") == 0 ||
         strcmp(value, "false") == 0 ||
         strcmp(value, "off") == 0 ||
@@ -402,22 +416,25 @@ int main(void)
         return 1;
     }
 
-    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
-    printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
-           player_mode_name(player.mode));
-    printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
-           WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
-    printf("World save dir: %s\n", world_save_dir);
-    printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
-           world.chunks_x, world.chunks_z, world.render_distance_chunks,
-           world_chunk_capacity(&world));
-    printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
-           world_loaded_chunk_count(&world),
-           world_total_blocks(&world), world_total_faces(&world),
-           world.chunks_generated_last_stream,
-           world.meshes_rebuilt_last_stream);
-    printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
-           mouse_sens);
+    int debug_enabled = read_debug_enabled();
+    if (debug_enabled) {
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
+               player_mode_name(player.mode));
+        printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
+               WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
+        printf("World save dir: %s\n", world_save_dir);
+        printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
+               world.chunks_x, world.chunks_z, world.render_distance_chunks,
+               world_chunk_capacity(&world));
+        printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
+               world_loaded_chunk_count(&world),
+               world_total_blocks(&world), world_total_faces(&world),
+               world.chunks_generated_last_stream,
+               world.meshes_rebuilt_last_stream);
+        printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
+               mouse_sens);
+    }
 
     struct timespec prev, now, frame_end;
     struct timespec perf_window_start;
@@ -434,7 +451,9 @@ int main(void)
     double perf_sleep_ns = 0.0;
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
-    int status_log_enabled = read_status_log_enabled();
+    int status_log_enabled = read_status_log_enabled(debug_enabled);
+    char fps_text[16] = "fps --";
+    int fps_text_len = (int)strlen(fps_text);
     clock_gettime(CLOCK_MONOTONIC, &prev);
     perf_window_start = prev;
 
@@ -615,6 +634,8 @@ int main(void)
             draw_hotbar(ctx, selected_hotbar_slot);
         renderer_draw_crosshair(ctx);
         pause_menu_draw(&pause, ctx);
+        if (fps_text_len > 0)
+            chat_draw_text(ctx, fps_text, fps_text_len, 4.0f, 4.0f, 5);
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);
@@ -666,29 +687,37 @@ int main(void)
         if (perf_elapsed_ns >= PERF_LOG_NS && perf_frames > 0) {
             double elapsed_s = (double)perf_elapsed_ns / 1e9;
             double frame_div = (double)perf_frames;
+            double fps = frame_div / elapsed_s;
 
-            if (status_log_enabled) {
-                printf("\n");
-                fflush(stdout);
+            int n = snprintf(fps_text, sizeof(fps_text), "fps %.1f", fps);
+            if (n < 0) n = 0;
+            if (n > (int)sizeof(fps_text) - 1) n = (int)sizeof(fps_text) - 1;
+            fps_text_len = n;
+
+            if (debug_enabled) {
+                if (status_log_enabled) {
+                    printf("\n");
+                    fflush(stdout);
+                }
+
+                fprintf(stderr,
+                        "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
+                        "update=%5.2fms begin=%5.2fms draw=%6.2fms "
+                        "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
+                        "quads=%5.1f sky=%4.1f phys=%4.1f\n",
+                        fps,
+                        ns_to_ms((double)perf_elapsed_ns / frame_div),
+                        ns_to_ms(perf_work_ns / frame_div),
+                        ns_to_ms(perf_update_ns / frame_div),
+                        ns_to_ms(perf_begin_ns / frame_div),
+                        ns_to_ms(perf_draw_ns / frame_div),
+                        ns_to_ms(perf_end_ns / frame_div),
+                        ns_to_ms(perf_sleep_ns / frame_div),
+                        ns_to_ms(perf_max_work_ns),
+                        (double)perf_quads / frame_div,
+                        (double)perf_sky_quads / frame_div,
+                        (double)perf_physics_steps / frame_div);
             }
-
-            fprintf(stderr,
-                    "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
-                    "update=%5.2fms begin=%5.2fms draw=%6.2fms "
-                    "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
-                    "quads=%5.1f sky=%4.1f phys=%4.1f\n",
-                    frame_div / elapsed_s,
-                    ns_to_ms((double)perf_elapsed_ns / frame_div),
-                    ns_to_ms(perf_work_ns / frame_div),
-                    ns_to_ms(perf_update_ns / frame_div),
-                    ns_to_ms(perf_begin_ns / frame_div),
-                    ns_to_ms(perf_draw_ns / frame_div),
-                    ns_to_ms(perf_end_ns / frame_div),
-                    ns_to_ms(perf_sleep_ns / frame_div),
-                    ns_to_ms(perf_max_work_ns),
-                    (double)perf_quads / frame_div,
-                    (double)perf_sky_quads / frame_div,
-                    (double)perf_physics_steps / frame_div);
 
             perf_window_start = perf_now;
             perf_frames = 0;

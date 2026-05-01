@@ -836,7 +836,7 @@ module voxel_gpu (
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
     wire [31:0] status_word = {
-        12'h0,
+        16'h0,
         {4'h0, fifo_count},
         vsy_latch,
         fifo_empty,
@@ -2189,15 +2189,16 @@ module voxel_gpu (
 
                 scan_fill_pop_d <= scan_fill_active ? scan_rd_pop : 1'b0;
 
-                if (display_valid && scan_active_valid && VGA_BLANK_n &&
-                    (scan_current_row != scan_active_row)) begin
-                    if (!scan_active_bank && scan_bank1_matches) begin
+                wire [8:0] target_row = (hcount >= 11'd1280) ? (scan_current_row + 9'd1) : scan_current_row;
+
+                if (display_valid && scan_active_valid && (scan_active_row != target_row)) begin
+                    if (!scan_active_bank && scan_line1_ready && (scan_line1_row == target_row)) begin
                         scan_active_bank <= 1'b1;
-                        scan_active_row <= scan_current_row;
+                        scan_active_row <= target_row;
                         scan_active_base_words <= scan_line1_base_words;
-                    end else if (scan_active_bank && scan_bank0_matches) begin
+                    end else if (scan_active_bank && scan_line0_ready && (scan_line0_row == target_row)) begin
                         scan_active_bank <= 1'b0;
-                        scan_active_row <= scan_current_row;
+                        scan_active_row <= target_row;
                         scan_active_base_words <= scan_line0_base_words;
                     end
                 end

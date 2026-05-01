@@ -245,25 +245,9 @@ static int submit_hw_band_flat(GPUTransport *transport, unsigned band_index,
     struct voxel_band_state band = { .band_index = band_index };
     int ret;
 
-    init_band_primers();
-
     if (ioctl(transport->hw_fd, VOXEL_IOC_BEGIN_BAND, &band) < 0) {
         perror("ioctl(BEGIN_BAND)");
         return -errno;
-    }
-
-    {
-        const struct quad_desc *primer = &g_band_primers[band_index];
-        ssize_t got = write(transport->hw_fd, primer, sizeof(*primer));
-        if (got != (ssize_t)sizeof(*primer)) {
-            if (got < 0)
-                perror("write(band primer)");
-            else
-                fprintf(stderr,
-                        "renderer: short write of band primer (%zd/%zu)\n",
-                        got, sizeof(*primer));
-            return -EIO;
-        }
     }
 
     if (buf_bytes > 0) {

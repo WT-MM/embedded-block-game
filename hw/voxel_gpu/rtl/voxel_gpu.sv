@@ -2730,7 +2730,7 @@ module voxel_gpu (
 
             extmem_dma_status <= {
                 cache_words_done,
-                3'h0,
+                cache_band_index,
                 display_sel,
                 copy_target_sel,
                 copy_complete_pending,

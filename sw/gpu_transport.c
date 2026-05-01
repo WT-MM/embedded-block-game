@@ -447,8 +447,12 @@ GPUTransport *gpu_transport_open(void)
         }
     }
 
-    fprintf(stderr, "renderer: gpu backend=%s",
-            backend_mode_name(transport->mode));
+    fprintf(stderr, "renderer: gpu backend=%s render=%ux%u band=%ux%u",
+            backend_mode_name(transport->mode),
+            VOXEL_RENDER_WIDTH,
+            VOXEL_RENDER_HEIGHT,
+            VOXEL_RENDER_WIDTH,
+            VOXEL_BAND_CACHE_HEIGHT);
     if (transport_needs_socket(transport))
         fprintf(stderr, " socket=%s", transport->socket_path);
     fprintf(stderr, "\n");

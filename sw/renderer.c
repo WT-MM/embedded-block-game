@@ -132,6 +132,12 @@ typedef struct {
     float view_z;
 } TranslucentFaceRef;
 
+typedef struct {
+    size_t offset;
+    size_t size;
+    int y_min;
+} QuadRef;
+
 struct RenderContext {
     GPUTransport *transport;
     Camera current_camera;
@@ -160,6 +166,11 @@ struct RenderContext {
      * than it has before. */
     TranslucentFaceRef *translucent_scratch;
     int translucent_scratch_capacity;
+
+    QuadRef *sort_refs;
+    int sort_refs_capacity;
+    uint8_t *sort_buffer;
+    size_t sort_buffer_capacity;
 };
 
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad);
@@ -1610,6 +1621,10 @@ RenderContext *renderer_init(void)
     ctx->lookup_capacity = 0;
     ctx->translucent_scratch = NULL;
     ctx->translucent_scratch_capacity = 0;
+    ctx->sort_refs = NULL;
+    ctx->sort_refs_capacity = 0;
+    ctx->sort_buffer = NULL;
+    ctx->sort_buffer_capacity = 0;
     if (!ctx->submit_buffer) {
         free(ctx->submit_buffer);
         gpu_transport_close(ctx->transport);
@@ -1629,6 +1644,8 @@ RenderContext *renderer_init(void)
 void renderer_shutdown(RenderContext *ctx)
 {
     if (!ctx) return;
+    free(ctx->sort_buffer);
+    free(ctx->sort_refs);
     free(ctx->translucent_scratch);
     free(ctx->lookup_entries);
     free(ctx->submit_buffer);
@@ -1841,6 +1858,70 @@ static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,
     }
 }
 
+static int compare_quad_ref_band(const void *a, const void *b)
+{
+    const QuadRef *ra = (const QuadRef *)a;
+    const QuadRef *rb = (const QuadRef *)b;
+    int band_a = ra->y_min / VOXEL_BAND_CACHE_HEIGHT;
+    int band_b = rb->y_min / VOXEL_BAND_CACHE_HEIGHT;
+
+    if (band_a < band_b) return -1;
+    if (band_a > band_b) return 1;
+    if (ra->offset < rb->offset) return -1;
+    if (ra->offset > rb->offset) return 1;
+    return 0;
+}
+
+static void sort_opaque_quads(RenderContext *ctx, int start_quad, int end_quad,
+                              size_t start_bytes, size_t end_bytes)
+{
+    int num_quads = end_quad - start_quad;
+    size_t total_bytes = end_bytes - start_bytes;
+
+    if (num_quads <= 0 || total_bytes == 0)
+        return;
+
+    if (num_quads > ctx->sort_refs_capacity) {
+        int new_cap = ctx->sort_refs_capacity ? ctx->sort_refs_capacity * 2 : MAX_QUADS_IN_FLIGHT;
+        if (new_cap < num_quads) new_cap = num_quads;
+        QuadRef *new_refs = realloc(ctx->sort_refs, (size_t)new_cap * sizeof(QuadRef));
+        if (!new_refs) return;
+        ctx->sort_refs = new_refs;
+        ctx->sort_refs_capacity = new_cap;
+    }
+
+    if (total_bytes > ctx->sort_buffer_capacity) {
+        size_t new_cap = ctx->sort_buffer_capacity ? ctx->sort_buffer_capacity * 2 : 1024 * 1024;
+        if (new_cap < total_bytes) new_cap = total_bytes;
+        uint8_t *new_buf = realloc(ctx->sort_buffer, new_cap);
+        if (!new_buf) return;
+        ctx->sort_buffer = new_buf;
+        ctx->sort_buffer_capacity = new_cap;
+    }
+
+    size_t offset = start_bytes;
+    for (int i = 0; i < num_quads; i++) {
+        struct quad_desc *desc = (struct quad_desc *)(ctx->submit_buffer + offset);
+        size_t size = sizeof(struct quad_desc);
+        if (desc->flags & QUAD_FLAG_TEX) size += sizeof(struct quad_desc_uv);
+
+        ctx->sort_refs[i].offset = offset;
+        ctx->sort_refs[i].size = size;
+        ctx->sort_refs[i].y_min = desc->y_min;
+        offset += size;
+    }
+
+    qsort(ctx->sort_refs, (size_t)num_quads, sizeof(QuadRef), compare_quad_ref_band);
+
+    size_t out_offset = 0;
+    for (int i = 0; i < num_quads; i++) {
+        memcpy(ctx->sort_buffer + out_offset, ctx->submit_buffer + ctx->sort_refs[i].offset, ctx->sort_refs[i].size);
+        out_offset += ctx->sort_refs[i].size;
+    }
+
+    memcpy(ctx->submit_buffer + start_bytes, ctx->sort_buffer, total_bytes);
+}
+
 int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 {
     BlockLookup lookup;
@@ -1901,6 +1982,9 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
         candidates[j + 1] = key;
     }
 
+    int opaque_start_quad = ctx->n_quads;
+    size_t opaque_start_bytes = ctx->submit_bytes;
+
     /*
      * Opaque pass: emit all non-translucent faces first, chunks nearest
      * first. Glass/translucent faces also write Z through QUAD_FLAG_ZTEST,
@@ -1933,10 +2017,16 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        face->u_size ? face->u_size : 1,
                                        face->v_size ? face->v_size : 1,
                                        light_flags);
-            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
+                sort_opaque_quads(ctx, opaque_start_quad, ctx->n_quads,
+                                  opaque_start_bytes, ctx->submit_bytes);
                 return ctx->n_quads - before;
+            }
         }
     }
+
+    sort_opaque_quads(ctx, opaque_start_quad, ctx->n_quads,
+                      opaque_start_bytes, ctx->submit_bytes);
 
     /*
      * Translucent pass: collect every glass face, sort back-to-front by

@@ -576,7 +576,15 @@ module voxel_gpu (
                                 !sdram_wr_full && scanout_slack;
     wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
                                (cache_load_words_complete < cache_pixels_total);
-    wire        scan_rd_pop = scan_fill_active && !sdram_rd_empty &&
+    /*
+     * Suppress pops while scan_fill_armed is asserted: the burst was just
+     * programmed via sdram_rd_load_pulse but the SDRAM controller has not yet
+     * begun delivering data for it, so any !sdram_rd_empty in this window is
+     * stale residual from the prior burst that would otherwise contaminate
+     * scan_linebuf[0]. scan_fill_armed clears at lines ~1995 the cycle after
+     * sdram_rd_empty deasserts (new data arrived), at which point pops resume.
+     */
+    wire        scan_rd_pop = scan_fill_active && !scan_fill_armed && !sdram_rd_empty &&
                               (scan_fill_words_complete < LINE_WORDS_10) &&
                               !scan_fill_chunk_done;
     wire        sdram_rd_pop = scan_rd_pop;

@@ -29,23 +29,13 @@ struct GPUTransport {
 };
 
 struct descriptor_bin {
-    /* iovecs reference either the original submit_buffer (fast-path quads,
-     * zero-copy) or this band's slow_buf (band-crossing quads that need a
-     * rewritten z0/uv). Adjacent same-band iovecs are coalesced so a chunk's
-     * worth of contiguous descriptors collapses into a single entry. */
-    struct iovec *iov;
-    size_t iov_count;
-    size_t iov_capacity;
-
-    /* Side buffer for rewritten descriptors. Pre-sized to descriptor_bytes
-     * so iovecs can safely point into it without being invalidated by a
-     * mid-frame realloc. */
-    uint8_t *slow_buf;
-    size_t slow_used;
+    /* Flat buffer for binned descriptors */
+    uint8_t *flat_buf;
+    size_t flat_used;
 };
 
 static struct descriptor_bin g_bins[VOXEL_BAND_COUNT];
-static size_t g_slow_capacity;
+static size_t g_flat_capacity;
 
 /* Per-band "primer" quad. Submitted as the first descriptor of every band so
  * the very first pixel through the rasterizer pipeline after BEGIN_BAND lands
@@ -245,72 +235,10 @@ static void rewrite_clipped(uint8_t *dst, const uint8_t *src, size_t len,
     }
 }
 
-static int bin_add_iov(struct descriptor_bin *bin, void *ptr, size_t len)
-{
-    /* Coalesce with the previous entry when the new range is contiguous in
-     * memory — the typical case for a chunk's worth of fast-path quads
-     * (consecutive in submit_buffer, all landing in the same band) and for
-     * runs of slow-path rewrites (consecutive in slow_buf). */
-    if (bin->iov_count > 0) {
-        struct iovec *last = &bin->iov[bin->iov_count - 1];
-        if ((uint8_t *)last->iov_base + last->iov_len == (uint8_t *)ptr) {
-            last->iov_len += len;
-            return 0;
-        }
-    }
 
-    if (bin->iov_count >= bin->iov_capacity) {
-        size_t new_cap = bin->iov_capacity ? bin->iov_capacity * 2 : 256;
-        struct iovec *p = realloc(bin->iov, new_cap * sizeof(*p));
-        if (!p)
-            return -ENOMEM;
-        bin->iov = p;
-        bin->iov_capacity = new_cap;
-    }
 
-    bin->iov[bin->iov_count].iov_base = ptr;
-    bin->iov[bin->iov_count].iov_len = len;
-    bin->iov_count++;
-    return 0;
-}
-
-static int writev_all(int fd, struct iovec *iov, size_t count)
-{
-    /* Walk the iovec array in IOV_MAX chunks. The voxel_gpu kernel write()
-     * is all-or-nothing per call (it only returns short on -EINTR after
-     * partial copy_from_user, which we treat as fatal here), so we don't
-     * need to handle partial-iovec consumption. */
-    size_t i = 0;
-    while (i < count) {
-        size_t batch = count - i;
-        if (batch > IOV_MAX)
-            batch = IOV_MAX;
-
-        ssize_t got = writev(fd, iov + i, (int)batch);
-        if (got < 0) {
-            if (errno == EINTR)
-                continue;
-            return -errno;
-        }
-        if (got == 0)
-            return -EPIPE;
-
-        size_t consumed = (size_t)got;
-        while (i < count && consumed >= iov[i].iov_len) {
-            consumed -= iov[i].iov_len;
-            i++;
-        }
-        if (consumed > 0) {
-            /* Partial write through an iovec entry — adjust and retry. */
-            iov[i].iov_base = (uint8_t *)iov[i].iov_base + consumed;
-            iov[i].iov_len -= consumed;
-        }
-    }
-    return 0;
-}
-
-static int submit_hw_band_iov(GPUTransport *transport, unsigned band_index,
-                              struct iovec *iov, size_t iov_count)
+static int submit_hw_band_flat(GPUTransport *transport, unsigned band_index,
+                               const void *buf, size_t buf_bytes)
 {
     struct voxel_band_state band = { .band_index = band_index };
     int ret;
@@ -336,11 +264,11 @@ static int submit_hw_band_iov(GPUTransport *transport, unsigned band_index,
         }
     }
 
-    if (iov_count > 0) {
-        ret = writev_all(transport->hw_fd, iov, iov_count);
+    if (buf_bytes > 0) {
+        ret = write_all(transport->hw_fd, buf, buf_bytes);
         if (ret < 0) {
             errno = -ret;
-            perror("writev(descriptors)");
+            perror("write(descriptors)");
             return ret;
         }
     }
@@ -353,25 +281,22 @@ static int submit_hw_band_iov(GPUTransport *transport, unsigned band_index,
     return 0;
 }
 
-static int bins_ensure_slow_capacity(size_t needed)
+static int bins_ensure_flat_capacity(size_t needed)
 {
-    if (g_slow_capacity >= needed)
+    if (g_flat_capacity >= needed)
         return 0;
 
-    size_t new_cap = g_slow_capacity ? g_slow_capacity : 8192;
+    size_t new_cap = g_flat_capacity ? g_flat_capacity : 8192;
     while (new_cap < needed)
         new_cap *= 2;
 
-    /* Realloc all bands' slow_bufs at once, BEFORE any iovec entries point
-     * into them this frame. Iovec entries from the previous frame have
-     * already been reset (iov_count = 0) by the time we get here. */
     for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
-        uint8_t *p = realloc(g_bins[i].slow_buf, new_cap);
+        uint8_t *p = realloc(g_bins[i].flat_buf, new_cap);
         if (!p)
             return -ENOMEM;
-        g_bins[i].slow_buf = p;
+        g_bins[i].flat_buf = p;
     }
-    g_slow_capacity = new_cap;
+    g_flat_capacity = new_cap;
     return 0;
 }
 
@@ -386,23 +311,20 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
 
     /* Reset bins up front so the empty/error paths below see clean state. */
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-        g_bins[band].iov_count = 0;
-        g_bins[band].slow_used = 0;
+        g_bins[band].flat_used = 0;
     }
 
     if (descriptor_bytes == 0) {
         for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-            ret = submit_hw_band_iov(transport, band, NULL, 0);
+            ret = submit_hw_band_flat(transport, band, NULL, 0);
             if (ret < 0)
                 return ret;
         }
         return 0;
     }
 
-    /* Worst case for slow_buf: every quad is a band-crosser landing in this
-     * band → descriptor_bytes total. Pre-size up front so iovec entries
-     * stay valid across the binning pass. */
-    ret = bins_ensure_slow_capacity(descriptor_bytes);
+    /* Worst case for flat_buf: every quad lands in this band. */
+    ret = bins_ensure_flat_capacity(descriptor_bytes);
     if (ret < 0)
         return ret;
 
@@ -449,62 +371,45 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         if (last_band >= VOXEL_BAND_COUNT)
             last_band = VOXEL_BAND_COUNT - 1;
 
-        /* Fast path: descriptor fits inside one band and didn't need
-         * y-clipping. Point an iovec straight at submit_buffer — zero-copy.
-         * Adjacent fast-path quads in the same band coalesce into one
-         * iovec entry. */
+        /* Fast path: descriptor fits inside one band and didn't need y-clipping. */
         if (first_band == last_band &&
             (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
-            ret = bin_add_iov(&g_bins[first_band],
-                              (void *)(uintptr_t)(stream + offset),
-                              desc_size);
-            if (ret < 0)
-                goto done;
+            memcpy(g_bins[first_band].flat_buf + g_bins[first_band].flat_used, stream + offset, desc_size);
+            g_bins[first_band].flat_used += desc_size;
             offset += desc_size;
             continue;
         }
 
-        /* Slow path: rewrite z0/uv into per-band slow_buf, point iovec there. */
+        /* Slow path: rewrite z0/uv into per-band flat_buf. */
         for (unsigned band = first_band; band <= last_band; band++) {
             struct descriptor_bin *bin = &g_bins[band];
             int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
             int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
             int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
             int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
-            uint8_t *dst = bin->slow_buf + bin->slow_used;
+            uint8_t *dst = bin->flat_buf + bin->flat_used;
 
             rewrite_clipped(dst, stream + offset, desc_size,
                             clipped_y_min, clipped_y_max);
-            bin->slow_used += desc_size;
-
-            ret = bin_add_iov(bin, dst, desc_size);
-            if (ret < 0)
-                goto done;
+            bin->flat_used += desc_size;
         }
 
         offset += desc_size;
     }
 
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-        ret = submit_hw_band_iov(transport, band,
-                                 g_bins[band].iov, g_bins[band].iov_count);
+        ret = submit_hw_band_flat(transport, band,
+                                  g_bins[band].flat_buf, g_bins[band].flat_used);
         if (ret < 0)
             goto done;
     }
 
 done:
     if (g_diag_bbox && (g_diag_frame_count++ % 60) == 0) {
-        size_t total_iov = 0;
-        for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++)
-            total_iov += g_bins[i].iov_count;
         fprintf(stderr,
-                "renderer: frame %u quad bbox x=[%d,%d] y=[%d,%d] "
-                "viewport %ux%u iovecs=%zu\n",
-                g_diag_frame_count,
-                (int)diag_x_min, (int)diag_x_max,
-                (int)diag_y_min, (int)diag_y_max,
-                VOXEL_RENDER_WIDTH, VOXEL_RENDER_HEIGHT,
-                total_iov);
+                "renderer: HW mode [flat buf, %u quads, bbox: (%d,%d)-(%d,%d)]\n",
+                (unsigned)(descriptor_bytes / sizeof(struct quad_desc)), /* approx */
+                diag_x_min, diag_y_min, diag_x_max, diag_y_max);
     }
     return ret;
 }
@@ -729,15 +634,11 @@ void gpu_transport_close(GPUTransport *transport)
     free(transport);
 
     for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
-        free(g_bins[i].iov);
-        free(g_bins[i].slow_buf);
-        g_bins[i].iov = NULL;
-        g_bins[i].slow_buf = NULL;
-        g_bins[i].iov_count = 0;
-        g_bins[i].iov_capacity = 0;
-        g_bins[i].slow_used = 0;
+        free(g_bins[i].flat_buf);
+        g_bins[i].flat_buf = NULL;
+        g_bins[i].flat_used = 0;
     }
-    g_slow_capacity = 0;
+    g_flat_capacity = 0;
 }
 
 int gpu_transport_clear(GPUTransport *transport)

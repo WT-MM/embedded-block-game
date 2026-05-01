@@ -629,8 +629,6 @@ module voxel_gpu (
     wire [1:0]  scan_prefetch_bank      = scan_bank0_free ? 2'd0 :
                                           scan_bank1_free ? 2'd1 :
                                           scan_bank2_free ? 2'd2 : 2'd3;
-    wire        scanout_slack           = !display_valid || !VGA_BLANK_n ||
-                                          scan_next_line_ready;
     wire        scan_read_idle          = !scan_fill_active && !scan_fill_armed &&
                                           !scan_fill_load_pending &&
                                           sdram_rd_empty;
@@ -649,6 +647,12 @@ module voxel_gpu (
                                           sdram_ready && scan_active_valid &&
                                           scan_prefetch_valid && !scan_prefetch_ready &&
                                           (scan_prefetch_bank != 2'd3);
+    wire        scan_prefetch_margin_ready =
+        scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
+    wire        scanout_slack           = !display_valid ||
+                                          (scan_read_idle &&
+                                           !scan_prefetch_req &&
+                                           (!VGA_BLANK_n || scan_prefetch_margin_ready));
     wire        scanout_read_load_req   = scan_vsync_read_req ||
                                           scan_fill_load_pending ||
                                           scan_prefetch_req;
@@ -709,7 +713,7 @@ module voxel_gpu (
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
 
-    wire [8:0]  sdram_wr_length_cfg = (cache_flush_state || flush_active) ?
+    wire [8:0]  sdram_wr_length_cfg = ((cache_flush_state || flush_active) && scanout_slack) ?
                                       COPY_BURST_WORDS_9 : 9'd0;
     /*
      * Keep SDRAM reads in 64-word chunks. A full scanline burst can cross the
@@ -2314,7 +2318,8 @@ module voxel_gpu (
                     end
                 end
 
-                if (display_valid && scan_active_valid && (scan_active_row != scan_target_row)) begin
+                if (vcount_visible && display_valid && scan_active_valid &&
+                    (scan_active_row != scan_target_row)) begin
                     if (scan_line0_ready && (scan_line0_row == scan_target_row)) begin
                         scan_active_bank <= 2'd0;
                         scan_active_row <= scan_target_row;

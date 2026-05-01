@@ -285,6 +285,18 @@ static int bin_ensure_flat_capacity(struct descriptor_bin *bin, size_t needed)
     return 0;
 }
 
+static int bin_append_descriptor(struct descriptor_bin *bin,
+                                 const void *desc, size_t desc_size)
+{
+    int ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
+    if (ret < 0)
+        return ret;
+
+    memcpy(bin->flat_buf + bin->flat_used, desc, desc_size);
+    bin->flat_used += desc_size;
+    return 0;
+}
+
 static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                             size_t descriptor_bytes)
 {
@@ -301,14 +313,22 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
     if (g_diag_bbox)
         clock_gettime(CLOCK_MONOTONIC, &t_start);
 
+    init_band_primers();
+
     /* Reset bins up front so the empty/error paths below see clean state. */
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         g_bins[band].flat_used = 0;
+        ret = bin_append_descriptor(&g_bins[band], &g_band_primers[band],
+                                    sizeof(g_band_primers[band]));
+        if (ret < 0)
+            return ret;
     }
 
     if (descriptor_bytes == 0) {
         for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-            ret = submit_hw_band_flat(transport, band, NULL, 0);
+            ret = submit_hw_band_flat(transport, band,
+                                      g_bins[band].flat_buf,
+                                      g_bins[band].flat_used);
             if (ret < 0)
                 return ret;
         }
@@ -363,12 +383,10 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
             struct descriptor_bin *bin = &g_bins[first_band];
 
-            ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
+            ret = bin_append_descriptor(bin, stream + offset, desc_size);
             if (ret < 0)
                 goto done;
 
-            memcpy(bin->flat_buf + bin->flat_used, stream + offset, desc_size);
-            bin->flat_used += desc_size;
             offset += desc_size;
             continue;
         }

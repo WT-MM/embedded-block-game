@@ -13,10 +13,11 @@ module voxel_vga_counters (
     output logic        VGA_SYNC_n
 );
 
+    parameter HIMAGE_SHIFT_CYCLES = 11'd16; // 8 VGA pixels, moves image right.
     parameter HACTIVE      = 11'd1280;
-    parameter HFRONT_PORCH = 11'd32;
+    parameter HFRONT_PORCH = 11'd32 - HIMAGE_SHIFT_CYCLES;
     parameter HSYNC        = 11'd192;
-    parameter HBACK_PORCH  = 11'd96;
+    parameter HBACK_PORCH  = 11'd96 + HIMAGE_SHIFT_CYCLES;
     parameter HTOTAL       = HACTIVE + HFRONT_PORCH + HSYNC + HBACK_PORCH;
 
     parameter VACTIVE      = 10'd480;

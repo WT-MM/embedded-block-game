@@ -132,7 +132,9 @@ module voxel_gpu (
         ST_CACHE_INIT        = 4'd10,
         ST_CACHE_LOAD_COLOR  = 4'd11,
         ST_CACHE_START_LOAD_Z = 4'd12,
-        ST_CACHE_LOAD_Z      = 4'd13
+        ST_CACHE_LOAD_Z      = 4'd13,
+        ST_CACHE_DRAIN_COLOR = 4'd14,
+        ST_CACHE_DRAIN_Z     = 4'd15
     } engine_state_t;
 
     engine_state_t state;
@@ -496,6 +498,18 @@ module voxel_gpu (
     logic [24:0] sdram_rd_addr_cfg;
     logic [24:0] sdram_rd_max_addr_cfg;
     logic        sdram_rd_load_pulse;
+    /*
+     * Stretch RD_LOAD to multiple REF_CLK cycles. The Sdram_RD_FIFO is a
+     * dual-clock FIFO clocked at 100 MHz on the write side and 50 MHz on
+     * the read side. Altera dcfifo aclr must be asserted for >=3 cycles in
+     * each domain to fully clear both pointers. A 1-cycle REF_CLK pulse
+     * gives the read side only 1 cycle, which can leave a stale word
+     * reachable by the very next RD_DATA — exactly the hazard that
+     * contaminates linebuf[0..63] after a chunk re-arm.
+     */
+    logic  [3:0] sdram_rd_load_hold;
+    wire         sdram_rd_load_out = sdram_rd_load_pulse ||
+                                     (sdram_rd_load_hold != 4'd0);
 
     logic  [2:0] cache_band_index;
     logic  [2:0] cache_target_band;
@@ -636,6 +650,18 @@ module voxel_gpu (
                                           sdram_rd_empty;
     wire        cache_flush_state       = (state == ST_CACHE_FLUSH_COLOR);
     wire        cache_load_state        = (state == ST_CACHE_LOAD_COLOR || state == ST_CACHE_LOAD_Z);
+    /*
+     * Drain phase after cache_load: the SDRAM controller auto-bursts in
+     * 64-word chunks, so the FIFO can hold up to 64 stale words after the
+     * last useful pixel for a band. Without an explicit drain, the next
+     * RD_LOAD races with those residuals and the new burst's first chunk
+     * (~64 pixels = 1/10 of a 640-wide line) lands wherever a scanline
+     * happens to capture, producing the left-edge streak. Drain pops every
+     * residual word and waits for sdram_rd_empty to be stable for
+     * COPY_DRAIN_CYCLES before allowing the next read or scan_fill burst.
+     */
+    wire        cache_drain_state       = (state == ST_CACHE_DRAIN_COLOR ||
+                                           state == ST_CACHE_DRAIN_Z);
     wire        cache_init_state        = (state == ST_CACHE_INIT);
     wire        cache_maint_state       = cache_flush_state || cache_load_state || cache_init_state;
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
@@ -645,10 +671,17 @@ module voxel_gpu (
                                           (scan_active_row < 9'd479) &&
                                           !scan_next_line_ready;
     wire        scan_read_start_req     = scan_vsync_read_req || scan_next_read_req;
+    /*
+     * Defense-in-depth: never spawn a scan-fill burst while the SDRAM RD
+     * FIFO still has residuals. The cache_load drain phase should keep
+     * this from being load-bearing, but gating here means a single missed
+     * drain elsewhere can't poison linebuf[0..63] with stale words.
+     */
     wire        scan_prefetch_req       = !scan_fill_active && display_valid &&
                                           sdram_ready && scan_active_valid &&
                                           scan_prefetch_valid && !scan_prefetch_ready &&
-                                          (scan_prefetch_bank != 2'd3);
+                                          (scan_prefetch_bank != 2'd3) &&
+                                          sdram_rd_empty;
     /*
      * Give visible scanout exclusive SDRAM ownership. A line-buffer miss near
      * the bottom of the frame leaves the remaining visible rows showing a
@@ -693,12 +726,19 @@ module voxel_gpu (
      * scan_linebuf[0]. scan_fill_armed clears at lines ~1995 the cycle after
      * sdram_rd_empty deasserts (new data arrived), at which point pops resume.
      */
-    wire        scan_rd_pop = !cache_load_state &&
+    wire        scan_rd_pop = !cache_load_state && !cache_drain_state &&
                               scan_fill_active && !scan_fill_armed && !sdram_rd_empty &&
                               (scan_fill_store_idx + (scan_rd_capture ? 10'd1 : 10'd0) <
                                LINE_WORDS_10) &&
                               !scan_fill_chunk_done;
-    wire        sdram_rd_pop = scan_rd_pop || cache_rd_pop;
+    /*
+     * During cache-load drain, pop without capturing anywhere. The SDRAM
+     * controller's RD_LENGTH is already 0 (cache_load_state went false at
+     * drain entry), so no new bursts launch — drain just empties the
+     * residuals from the last in-flight burst.
+     */
+    wire        drain_rd_pop = cache_drain_state && !sdram_rd_empty;
+    wire        sdram_rd_pop = scan_rd_pop || cache_rd_pop || drain_rd_pop;
     wire        cache_can_issue_read =
         cache_flush_state &&
         (cache_words_issued < cache_pixels_total) &&
@@ -1159,7 +1199,7 @@ module voxel_gpu (
         .RD_ADDR     (sdram_rd_addr_cfg),
         .RD_MAX_ADDR (sdram_rd_max_addr_cfg),
         .RD_LENGTH   (sdram_rd_length_cfg),
-        .RD_LOAD     (sdram_rd_load_pulse),
+        .RD_LOAD     (sdram_rd_load_out),
         .RD_CLK      (clk),
         .RD_EMPTY    (sdram_rd_empty),
         .RD_USE      (sdram_rd_use),
@@ -1543,6 +1583,7 @@ module voxel_gpu (
         sdram_rd_addr_cfg = 25'd0;
         sdram_rd_max_addr_cfg = 25'd0;
         sdram_rd_load_pulse = 1'b0;
+        sdram_rd_load_hold  = 4'd0;
         cache_band_index = 3'd0;
         cache_target_band = 3'd0;
         cache_valid = 1'b0;
@@ -2064,6 +2105,7 @@ module voxel_gpu (
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
             sdram_rd_load_pulse <= 1'b0;
+            sdram_rd_load_hold  <= 4'd0;
             cache_band_index <= 3'd0;
             cache_target_band <= 3'd0;
             band_index_cfg <= 3'd0;
@@ -2134,6 +2176,20 @@ module voxel_gpu (
             sdram_rd_load_pulse <= 1'b0;
             scan_rd_capture <= scan_rd_pop;
             cache_rd_capture <= cache_rd_pop;
+
+            /*
+             * Whenever the 1-cycle pulse is asserted (sampled here as
+             * "current value of sdram_rd_load_pulse" — the previous-cycle
+             * scheduler set it), prime the hold counter so RD_LOAD stays
+             * high for 3 additional REF_CLK cycles (4 total). This satisfies
+             * the dcfifo aclr requirement (>=3 cycles in each clock domain)
+             * even after the natural 1-cycle pulse falls.
+             */
+            if (sdram_rd_load_pulse) begin
+                sdram_rd_load_hold <= 4'd3;
+            end else if (sdram_rd_load_hold != 4'd0) begin
+                sdram_rd_load_hold <= sdram_rd_load_hold - 4'd1;
+            end
 
             if (!sdram_ctrl_reset_n) begin
                 if (sdram_powerup_counter == SDRAM_POWERUP_HOLD_LAST) begin
@@ -2274,7 +2330,7 @@ module voxel_gpu (
                 default: ;
             endcase
 
-            if (!vsync_pulse && !cache_load_state) begin
+            if (!vsync_pulse && !cache_load_state && !cache_drain_state) begin
                 if (scan_fill_load_pending) begin
                     scan_fill_load_pending <= 1'b0;
                     sdram_rd_addr_cfg <= scan_fill_base_words +
@@ -2283,7 +2339,7 @@ module voxel_gpu (
                                              {15'd0, scan_fill_store_idx} +
                                              READ_BURST_WORDS_25;
                     sdram_rd_load_pulse <= 1'b1;
-                end else if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty) begin
+                end else if (scan_fill_armed && !sdram_rd_load_out && !sdram_rd_empty) begin
                     scan_fill_armed <= 1'b0;
                 end
 
@@ -3150,7 +3206,30 @@ module voxel_gpu (
                         (cache_words_done == cache_pixels_total - 16'd1)) begin
                         cache_words_done <= 16'd0;
                         cache_maint_addr <= 16'd0;
-                        state <= ST_CACHE_START_LOAD_Z;
+                        cache_drain_count <= 8'd0;
+                        state <= ST_CACHE_DRAIN_COLOR;
+                    end
+                end
+
+                /*
+                 * Drain residual words from the SDRAM RD FIFO. The Sdram
+                 * controller auto-bursts in 64-word chunks, so the last
+                 * burst over-fetches up to 63 words past cache_pixels_total.
+                 * Pop until rd_empty has been stable for COPY_DRAIN_CYCLES
+                 * before issuing the next RD_LOAD. Without this, those
+                 * residuals sit in the FIFO and the next scan-fill burst
+                 * reads them as its first chunk → 64-pixel left-edge streak.
+                 */
+                ST_CACHE_DRAIN_COLOR: begin
+                    if (sdram_rd_empty) begin
+                        if (cache_drain_count == COPY_DRAIN_CYCLES) begin
+                            cache_drain_count <= 8'd0;
+                            state <= ST_CACHE_START_LOAD_Z;
+                        end else begin
+                            cache_drain_count <= cache_drain_count + 8'd1;
+                        end
+                    end else begin
+                        cache_drain_count <= 8'd0;
                     end
                 end
 
@@ -3174,8 +3253,23 @@ module voxel_gpu (
                         cache_band_index <= cache_target_band;
                         cache_words_done <= 16'd0;
                         cache_maint_addr <= 16'd0;
-                        cache_resume_draw <= 1'b0;
-                        state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
+                        cache_drain_count <= 8'd0;
+                        state <= ST_CACHE_DRAIN_Z;
+                    end
+                end
+
+                /* See ST_CACHE_DRAIN_COLOR comment. */
+                ST_CACHE_DRAIN_Z: begin
+                    if (sdram_rd_empty) begin
+                        if (cache_drain_count == COPY_DRAIN_CYCLES) begin
+                            cache_drain_count <= 8'd0;
+                            cache_resume_draw <= 1'b0;
+                            state <= cache_resume_draw ? ST_DRAW : ST_IDLE;
+                        end else begin
+                            cache_drain_count <= cache_drain_count + 8'd1;
+                        end
+                    end else begin
+                        cache_drain_count <= 8'd0;
                     end
                 end
 
@@ -3220,6 +3314,7 @@ module voxel_gpu (
                 cache_word_pending_valid <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
                 sdram_rd_load_pulse <= 1'b0;
+                sdram_rd_load_hold  <= 4'd0;
                 scan_rd_capture <= 1'b0;
                 scan_fill_load_pending <= 1'b0;
                 fifo_wr_ptr <= 11'd0;

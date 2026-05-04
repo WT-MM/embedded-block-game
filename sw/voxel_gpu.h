@@ -159,6 +159,7 @@ struct voxel_band_state {
 #define VOXEL_EXTMEM_CTRL_BACKBUF_EN    (1u << 2)
 #define VOXEL_EXTMEM_CTRL_RGB565        (1u << 3)
 #define VOXEL_EXTMEM_CTRL_TILE_CACHE_EN (1u << 4)
+#define VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR (1u << 5)
 
 /* ----- quad descriptor layout (§5.2) ----- */
 

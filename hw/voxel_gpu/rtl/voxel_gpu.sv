@@ -664,6 +664,24 @@ module voxel_gpu (
                                            state == ST_CACHE_DRAIN_Z);
     wire        cache_init_state        = (state == ST_CACHE_INIT);
     wire        cache_maint_state       = cache_flush_state || cache_load_state || cache_init_state;
+    /*
+     * "Rasterizer or cache-maintenance currently needs the active cache
+     * port." Used by the ping-pong port mux to decide whether the flush
+     * controller may take ownership when draw_cache_sel == flush_cache_sel.
+     * Without this gate, the FINAL band never gets a follow-up BEGIN_BAND
+     * to toggle draw_cache_sel away, so the flush reads through the
+     * rasterizer port (fb_back_rd_addr = pipe0_addr — stale) and writes a
+     * single repeated pixel for the entire bottom band. Keeping the
+     * rasterizer-priority branch live only while the rasterizer is
+     * actually using the cache lets the flush take over once the
+     * rasterizer/cache-maintenance pipeline is idle, while still
+     * preserving the intermediate-band ping-pong overlap.
+     */
+    wire        cache_used_by_main      = (state == ST_DRAW) ||
+                                          (state == ST_DRAW_FLUSH) ||
+                                          cache_init_state ||
+                                          cache_load_state ||
+                                          cache_flush_state;
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
                                           (copy_complete_pending || display_valid);
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
@@ -1756,7 +1774,7 @@ module voxel_gpu (
         /* Flush controller (flush_cache_sel): reads from its cache.       */
 
         /* ── Cache A ports ── */
-        if (draw_cache_sel == 1'b0) begin
+        if (draw_cache_sel == 1'b0 && cache_used_by_main) begin
             /* A is active → rasterizer read+write */
             fb_A_rd_addr = fb_back_rd_addr;
             fb_A_wr_addr = fb_wr_addr;
@@ -1789,7 +1807,7 @@ module voxel_gpu (
         end
 
         /* ── Cache B ports ── */
-        if (draw_cache_sel == 1'b1) begin
+        if (draw_cache_sel == 1'b1 && cache_used_by_main) begin
             /* B is active → rasterizer read+write */
             fb_B_rd_addr = fb_back_rd_addr;
             fb_B_wr_addr = fb_wr_addr;

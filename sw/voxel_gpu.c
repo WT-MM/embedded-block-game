@@ -282,7 +282,14 @@ static long voxel_ioc_begin_band(void __user *uarg)
 
 	voxel_wr(VOXEL_REG_BAND_INDEX, band.band_index);
 	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_BEGIN);
-	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	/*
+	 * Do not wait for the band cache init here. The command FIFO can be
+	 * filled while hardware clears/initializes the resident band; END_BAND
+	 * still waits for FIFO-empty + idle before it requests the flush. The
+	 * readback keeps the BAND_INDEX/BAND_CTRL writes ordered before the
+	 * userspace write() that streams descriptors immediately after this ioctl.
+	 */
+	voxel_rd(VOXEL_REG_BAND_CTRL);
 
 out:
 	mutex_unlock(&voxdev.lock);

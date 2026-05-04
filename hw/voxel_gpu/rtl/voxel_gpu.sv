@@ -371,6 +371,7 @@ module voxel_gpu (
     logic  [9:0] draw_pipe_x;
     logic  [8:0] draw_pipe_y;
     logic [31:0] draw_pipe_w_q;
+    logic        draw_is_band_primer;
 
     /* Palette-address register (pal_rd) stage: first half of the
      * pipelined palette read. We register the palette source/fog
@@ -520,6 +521,7 @@ module voxel_gpu (
     logic        band_flush_pending;
     logic        cache_valid;
     logic        cache_dirty;
+    logic        cache_draw_dirty;
     logic  [7:0] cache_band_valid;
     logic        cache_resume_draw;
     logic        cache_final_flush;
@@ -546,7 +548,7 @@ module voxel_gpu (
     logic        flush_active;             // background flush running
     logic [15:0] flush_maint_addr;         // read address into inactive cache
     logic [15:0] flush_pixels_total;       // pixels in the flushing band
-    logic [15:0] flush_words_issued;       // reads issued to inactive cache
+    logic [15:0] flush_words_issued;       // cache reads / generated words issued
     logic [15:0] flush_words_done;         // words pushed to SDRAM wr FIFO
     logic        flush_fetch_inflight;     // one-cycle read latency pending
     logic        flush_word_pending_valid; // captured pixel waiting for SDRAM push
@@ -557,6 +559,10 @@ module voxel_gpu (
     logic [24:0] flush_sdram_wr_addr;      // SDRAM write base for flush
     logic [24:0] flush_sdram_wr_max_addr;  // SDRAM write end for flush
     logic        flush_cache_sel;          // which cache to flush (0=A, 1=B)
+    logic        flush_generated_sky;      // source is sky palette, not local cache
+    logic  [9:0] flush_sky_x;
+    logic  [4:0] flush_sky_row_count;
+    logic  [7:0] flush_sky_palette;
 
     // Per-cache read/write signals (active = rasterizer, inactive = flush/init)
     logic [15:0] fb_A_rd_addr, fb_B_rd_addr;
@@ -689,7 +695,7 @@ module voxel_gpu (
                                           cache_load_state ||
                                           cache_flush_state;
     wire        band_begin_cache_available =
-        !flush_active || ((~draw_cache_sel) != flush_cache_sel);
+        !flush_active || flush_generated_sky || ((~draw_cache_sel) != flush_cache_sel);
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
                                           (copy_complete_pending || display_valid);
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
@@ -793,9 +799,18 @@ module voxel_gpu (
     /* Background flush controller can issue a read from the inactive cache */
     wire        flush_can_issue_read =
         bg_flush_stream_active &&
+        !flush_generated_sky &&
         !cache_flush_state &&
         (flush_words_issued < flush_pixels_total) &&
         !flush_fetch_inflight &&
+        scanout_write_slack &&
+        (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
+        (!flush_word_pending_valid || bg_flush_wr_push);
+    wire        flush_can_issue_sky =
+        bg_flush_stream_active &&
+        flush_generated_sky &&
+        !cache_flush_state &&
+        (flush_words_issued < flush_pixels_total) &&
         scanout_write_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
@@ -838,6 +853,7 @@ module voxel_gpu (
     wire signed [15:0] desc_dz_dy = $signed(desc_words[15][15:0]);
     wire [7:0] desc_tex_or_color = desc_words[15][23:16];
     wire [7:0] desc_flags = desc_words[15][31:24];
+    wire [8:0] desc_band_base_y = band_base_row(cache_band_index);
     wire       desc_redundant_sky_clear =
         sky_gradient_clear_enabled &&
         (desc_flags == 8'd0) &&
@@ -845,6 +861,13 @@ module voxel_gpu (
         (desc_tex_or_color <= PAL_SKY_GRADIENT_LAST) &&
         (desc_x_min == 10'd0) &&
         (desc_x_max == 10'd639);
+    wire       desc_band_primer =
+        (desc_flags == 8'd0) &&
+        (desc_tex_or_color == 8'd0) &&
+        (desc_x_min == 10'd0) &&
+        (desc_x_max == 10'd0) &&
+        (desc_y_min == desc_band_base_y) &&
+        (desc_y_max == desc_band_base_y);
     wire       cache_sky_patch_state =
         (state == ST_FETCH) &&
         (fetch_count == fetch_target_words) &&
@@ -1593,6 +1616,7 @@ module voxel_gpu (
         draw_pipe_x      = 10'd0;
         draw_pipe_y      = 9'd0;
         draw_pipe_w_q    = 32'd0;
+        draw_is_band_primer = 1'b0;
         pal_rd_valid     = 1'b0;
         pal_rd_pass      = 1'b0;
         pal_rd_ztest     = 1'b0;
@@ -1678,6 +1702,7 @@ module voxel_gpu (
         cache_target_band = 3'd0;
         cache_valid = 1'b0;
         cache_dirty = 1'b0;
+        cache_draw_dirty = 1'b0;
         cache_band_valid = 8'h00;
         cache_resume_draw = 1'b0;
         cache_final_flush = 1'b0;
@@ -1697,6 +1722,24 @@ module voxel_gpu (
         sdram_wr_addr_cfg = 25'd0;
         sdram_wr_max_addr_cfg = 25'd0;
         sdram_wr_load_pulse = 1'b0;
+        flush_active = 1'b0;
+        flush_maint_addr = 16'd0;
+        flush_pixels_total = 16'd0;
+        flush_words_issued = 16'd0;
+        flush_words_done = 16'd0;
+        flush_fetch_inflight = 1'b0;
+        flush_word_pending_valid = 1'b0;
+        flush_word_pending = 16'd0;
+        flush_load_pending = 1'b0;
+        flush_drain_count = 8'd0;
+        flush_band_index = 3'd0;
+        flush_sdram_wr_addr = 25'd0;
+        flush_sdram_wr_max_addr = 25'd0;
+        flush_cache_sel = 1'b0;
+        flush_generated_sky = 1'b0;
+        flush_sky_x = 10'd0;
+        flush_sky_row_count = 5'd0;
+        flush_sky_palette = PAL_SKY_GRADIENT_BASE;
         sdram_powerup_counter = 18'd0;
         sdram_init_wait_counter = 16'd0;
         sdram_ctrl_reset_n = 1'b0;
@@ -2128,6 +2171,7 @@ module voxel_gpu (
             draw_pipe_x      <= 10'd0;
             draw_pipe_y      <= 9'd0;
             draw_pipe_w_q    <= 32'd0;
+            draw_is_band_primer <= 1'b0;
             pal_rd_valid     <= 1'b0;
             pal_rd_pass      <= 1'b0;
             pal_rd_ztest     <= 1'b0;
@@ -2215,6 +2259,7 @@ module voxel_gpu (
             band_flush_pending <= 1'b0;
             cache_valid <= 1'b0;
             cache_dirty <= 1'b0;
+            cache_draw_dirty <= 1'b0;
             cache_band_valid <= 8'h00;
             cache_resume_draw <= 1'b0;
             cache_final_flush <= 1'b0;
@@ -2251,6 +2296,10 @@ module voxel_gpu (
             flush_sdram_wr_addr <= 25'd0;
             flush_sdram_wr_max_addr <= 25'd0;
             flush_cache_sel <= 1'b0;
+            flush_generated_sky <= 1'b0;
+            flush_sky_x <= 10'd0;
+            flush_sky_row_count <= 5'd0;
+            flush_sky_palette <= PAL_SKY_GRADIENT_BASE;
             draw_row_inside <= 1'b0;
             sdram_powerup_counter <= 18'd0;
             sdram_init_wait_counter <= 16'd0;
@@ -2636,7 +2685,7 @@ module voxel_gpu (
                     flush_load_pending <= 1'b0;
 
                 /* Capture read data after one-cycle latency */
-                if (flush_fetch_inflight &&
+                if (!flush_generated_sky && flush_fetch_inflight &&
                     (!flush_word_pending_valid || bg_flush_wr_push)) begin
                     flush_word_pending <= flush_fb_rd_data;
                     flush_word_pending_valid <= 1'b1;
@@ -2644,10 +2693,35 @@ module voxel_gpu (
                 end
 
                 /* Issue next read from inactive cache */
-                if (flush_can_issue_read) begin
+                if (!flush_generated_sky && flush_can_issue_read) begin
                     flush_maint_addr <= flush_words_issued;
                     flush_words_issued <= flush_words_issued + 16'd1;
                     flush_fetch_inflight <= 1'b1;
+                end
+
+                /*
+                 * Sky-only bands do not need the local cache as a flush source:
+                 * ST_CACHE_INIT already wrote the same gradient into the cache,
+                 * but no real draw committed over it. Generate the SDRAM stream
+                 * directly so the next fast band can reuse either local cache
+                 * without waiting for this flush to finish.
+                 */
+                if (flush_can_issue_sky) begin
+                    flush_word_pending <= rgb888_to_rgb565(palette[flush_sky_palette]);
+                    flush_word_pending_valid <= 1'b1;
+                    flush_words_issued <= flush_words_issued + 16'd1;
+                    if (flush_sky_x == 10'd639) begin
+                        flush_sky_x <= 10'd0;
+                        if (flush_sky_row_count == 5'd19) begin
+                            flush_sky_row_count <= 5'd0;
+                            if (flush_sky_palette != PAL_SKY_GRADIENT_LAST)
+                                flush_sky_palette <= flush_sky_palette + 8'd1;
+                        end else begin
+                            flush_sky_row_count <= flush_sky_row_count + 5'd1;
+                        end
+                    end else begin
+                        flush_sky_x <= flush_sky_x + 10'd1;
+                    end
                 end
 
                 /* Flush complete: all words pushed to SDRAM, FIFO drained,
@@ -2659,6 +2733,7 @@ module voxel_gpu (
                     (sdram_wr_use[8:0] == 9'd0)) begin
                     if (flush_drain_count == COPY_DRAIN_CYCLES) begin
                         flush_active <= 1'b0;
+                        flush_generated_sky <= 1'b0;
                         cache_band_valid[flush_band_index] <= 1'b1;
                         flush_drain_count <= 8'd0;
                     end else begin
@@ -2754,6 +2829,8 @@ module voxel_gpu (
             if ((state == ST_DRAW || state == ST_DRAW_FLUSH) &&
                 commit_valid && commit_pass) begin
                 cache_dirty <= 1'b1;
+                if (!draw_is_band_primer)
+                    cache_draw_dirty <= 1'b1;
             end
 
             case (state)
@@ -2796,6 +2873,7 @@ module voxel_gpu (
                             cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
                             cache_valid <= 1'b0;
                             cache_dirty <= 1'b0;
+                            cache_draw_dirty <= 1'b0;
                             /* Toggle cache selector: draw into the other cache */
                             draw_cache_sel <= ~draw_cache_sel;
                             state <= ST_CACHE_INIT;
@@ -2818,6 +2896,11 @@ module voxel_gpu (
                             flush_load_pending <= 1'b1;
                             flush_drain_count <= 8'd0;
                             flush_cache_sel <= draw_cache_sel;
+                            flush_generated_sky <= sky_gradient_clear_enabled &&
+                                                   !cache_draw_dirty;
+                            flush_sky_x <= 10'd0;
+                            flush_sky_row_count <= sky_clear_start_row_count(cache_band_index);
+                            flush_sky_palette <= sky_clear_start_palette(cache_band_index);
                             flush_sdram_wr_addr <= copy_target_base_words +
                                                    band_word_offset(cache_band_index);
                             flush_sdram_wr_max_addr <= copy_target_base_words +
@@ -2825,6 +2908,7 @@ module voxel_gpu (
                                                        band_word_count(cache_band_index);
                             cache_valid <= 1'b0;
                             cache_dirty <= 1'b0;
+                            cache_draw_dirty <= 1'b0;
                         end
                         /* Don't enter ST_CACHE_FLUSH_COLOR — stay in ST_IDLE
                          * so the next BEGIN_BAND can proceed immediately */
@@ -2842,6 +2926,7 @@ module voxel_gpu (
                     copy_target_sel <= ~display_sel;
                     cache_valid <= 1'b0;
                     cache_dirty <= 1'b0;
+                    cache_draw_dirty <= 1'b0;
                     cache_band_valid <= 8'h00;
                     cache_init_x <= 10'd0;
                     cache_init_sky_row_count <= 5'd0;
@@ -2855,6 +2940,7 @@ module voxel_gpu (
                     flush_active <= 1'b0;
                     flush_word_pending_valid <= 1'b0;
                     flush_fetch_inflight <= 1'b0;
+                    flush_generated_sky <= 1'b0;
                     state <= ST_IDLE;
                 end
 
@@ -2870,6 +2956,7 @@ module voxel_gpu (
                         draw_row_inside <= 1'b0;
                         draw_tex_or_color <= desc_tex_or_color;
                         draw_flags <= desc_flags;
+                        draw_is_band_primer <= desc_band_primer;
                         draw_z0    <= desc_z0;
                         draw_dz_dx <= desc_dz_dx;
                         draw_dz_dy <= desc_dz_dy;
@@ -3271,6 +3358,7 @@ module voxel_gpu (
                             cache_word_pending_valid <= 1'b0;
                             cache_band_valid[cache_band_index] <= 1'b1;
                             cache_dirty <= 1'b0;
+                            cache_draw_dirty <= 1'b0;
                             cache_valid <= 1'b0;
                             cache_drain_count <= 8'd0;
                             state <= ST_IDLE;
@@ -3290,6 +3378,7 @@ module voxel_gpu (
                         if (cache_drain_count == COPY_DRAIN_CYCLES) begin
                             cache_band_valid[cache_band_index] <= 1'b1;
                             cache_dirty <= 1'b0;
+                            cache_draw_dirty <= 1'b0;
                             cache_valid <= 1'b0;
                             cache_drain_count <= 8'd0;
                             if (cache_final_flush) begin
@@ -3334,6 +3423,7 @@ module voxel_gpu (
                     if (cache_maint_addr == cache_pixels_total - 16'd1) begin
                         cache_valid <= 1'b1;
                         cache_dirty <= sky_gradient_clear_enabled;
+                        cache_draw_dirty <= 1'b0;
                         cache_band_index <= cache_target_band;
                         cache_maint_addr <= 16'd0;
                         cache_init_x <= 10'd0;
@@ -3406,6 +3496,7 @@ module voxel_gpu (
                         (cache_words_done == cache_pixels_total - 16'd1)) begin
                         cache_valid <= 1'b1;
                         cache_dirty <= 1'b0;
+                        cache_draw_dirty <= 1'b0;
                         cache_band_index <= cache_target_band;
                         cache_words_done <= 16'd0;
                         cache_maint_addr <= 16'd0;
@@ -3447,6 +3538,7 @@ module voxel_gpu (
                 copy_target_sel <= ~display_sel;
                 cache_valid <= 1'b0;
                 cache_dirty <= 1'b0;
+                cache_draw_dirty <= 1'b0;
                 cache_band_valid <= 8'h00;
                 band_begin_pending <= 1'b0;
                 band_flush_pending <= 1'b0;
@@ -3461,6 +3553,10 @@ module voxel_gpu (
                 flush_word_pending_valid <= 1'b0;
                 flush_load_pending <= 1'b0;
                 flush_drain_count <= 8'd0;
+                flush_generated_sky <= 1'b0;
+                flush_sky_x <= 10'd0;
+                flush_sky_row_count <= 5'd0;
+                flush_sky_palette <= PAL_SKY_GRADIENT_BASE;
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;

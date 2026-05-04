@@ -961,16 +961,22 @@ module voxel_gpu (
     endfunction
 
     function automatic [15:0] band_pixel_count(input logic [2:0] band);
-        logic [8:0] base_row;
+        logic [9:0]  base_row;
+        logic [9:0]  band_end;
+        logic [15:0] visible_rows;
         begin
-            base_row = band_base_row(band);
-            if (base_row >= FB_HEIGHT[8:0])
+            /* Use 10-bit row math: the final band is 448..479, and 448+64
+             * wraps if this calculation is accidentally kept at 9 bits. */
+            base_row = {1'b0, band_base_row(band)};
+            band_end = base_row + 10'd64;
+            if (base_row >= 10'd480)
                 band_pixel_count = 16'd0;
-            else if ((base_row + BAND_HEIGHT[8:0]) > FB_HEIGHT[8:0])
-                band_pixel_count = ({7'd0, FB_HEIGHT[8:0]} - {7'd0, base_row}) *
-                                   FB_WIDTH[15:0];
-            else
-                band_pixel_count = BAND_PIXELS[15:0];
+            else if (band_end > 10'd480) begin
+                visible_rows = {6'd0, (10'd480 - base_row)};
+                band_pixel_count = visible_rows * 16'd640;
+            end else begin
+                band_pixel_count = 16'd40960;
+            end
         end
     endfunction
 

@@ -100,6 +100,7 @@ module voxel_gpu (
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
     localparam logic [8:0]  READ_BURST_WORDS_9 = 9'd64;
+    localparam logic [4:0]  SCAN_FILL_ARM_WAIT_CYCLES = 5'd16;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
     localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd1048576; // 1MB
@@ -491,6 +492,7 @@ module voxel_gpu (
     logic  [8:0] scan_fill_row;
     logic [24:0] scan_fill_base_words;
     logic  [9:0] scan_fill_store_idx;
+    logic  [4:0] scan_fill_arm_wait;
     logic        scan_rd_capture;
     logic [15:0] scan_rgb565_now;
     logic [24:0] sdram_rd_addr_cfg;
@@ -1535,6 +1537,7 @@ module voxel_gpu (
         scan_fill_row    = 9'd0;
         scan_fill_base_words = 25'd0;
         scan_fill_store_idx = 10'd0;
+        scan_fill_arm_wait = 5'd0;
         scan_rd_capture = 1'b0;
         sdram_rd_addr_cfg = 25'd0;
         sdram_rd_max_addr_cfg = 25'd0;
@@ -2056,6 +2059,7 @@ module voxel_gpu (
             scan_fill_row    <= 9'd0;
             scan_fill_base_words <= 25'd0;
             scan_fill_store_idx <= 10'd0;
+            scan_fill_arm_wait <= 5'd0;
             scan_rd_capture <= 1'b0;
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
@@ -2167,6 +2171,7 @@ module voxel_gpu (
                 scan_fill_row <= 9'd0;
                 scan_fill_base_words <= 25'd0;
                 scan_fill_store_idx <= 10'd0;
+                scan_fill_arm_wait <= 5'd0;
                 scan_rd_capture <= 1'b0;
 
                 if (copy_complete_pending) begin
@@ -2183,6 +2188,7 @@ module voxel_gpu (
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= copy_target_base_words;
                         scan_fill_store_idx <= 10'd0;
+                        scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
                         sdram_rd_addr_cfg <= copy_target_base_words;
                         sdram_rd_max_addr_cfg <= copy_target_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
@@ -2197,6 +2203,7 @@ module voxel_gpu (
                         scan_fill_row <= 9'd0;
                         scan_fill_base_words <= display_base_words;
                         scan_fill_store_idx <= 10'd0;
+                        scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
                         sdram_rd_addr_cfg <= display_base_words;
                         sdram_rd_max_addr_cfg <= display_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
@@ -2279,8 +2286,16 @@ module voxel_gpu (
                                              {15'd0, scan_fill_store_idx} +
                                              READ_BURST_WORDS_25;
                     sdram_rd_load_pulse <= 1'b1;
-                end else if (scan_fill_armed && !sdram_rd_load_pulse && !sdram_rd_empty) begin
-                    scan_fill_armed <= 1'b0;
+                    scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
+                end else if (scan_fill_armed && !sdram_rd_load_pulse) begin
+                    /* RD_EMPTY can lag the async FIFO clear/load boundary.
+                     * Hold off pops for a fixed guard window so stale tail
+                     * words cannot seed the first 64 pixels of a scanline. */
+                    if (scan_fill_arm_wait != 5'd0) begin
+                        scan_fill_arm_wait <= scan_fill_arm_wait - 5'd1;
+                    end else if (!sdram_rd_empty) begin
+                        scan_fill_armed <= 1'b0;
+                    end
                 end
 
                 if (scan_rd_capture) begin
@@ -2293,6 +2308,7 @@ module voxel_gpu (
                     if (scan_fill_line_done) begin
                         scan_fill_active <= 1'b0;
                         scan_fill_armed <= 1'b0;
+                        scan_fill_arm_wait <= 5'd0;
                         case (scan_fill_bank)
                             2'd0: begin
                                 scan_line0_ready <= 1'b1;
@@ -2353,6 +2369,7 @@ module voxel_gpu (
                         scan_fill_row <= scan_prefetch_row;
                         scan_fill_base_words <= scan_prefetch_base_words;
                         scan_fill_store_idx <= 10'd0;
+                        scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
                         scan_line0_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
@@ -2366,6 +2383,7 @@ module voxel_gpu (
                         scan_fill_row <= scan_prefetch_row;
                         scan_fill_base_words <= scan_prefetch_base_words;
                         scan_fill_store_idx <= 10'd0;
+                        scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
                         scan_line1_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
@@ -2379,6 +2397,7 @@ module voxel_gpu (
                         scan_fill_row <= scan_prefetch_row;
                         scan_fill_base_words <= scan_prefetch_base_words;
                         scan_fill_store_idx <= 10'd0;
+                        scan_fill_arm_wait <= SCAN_FILL_ARM_WAIT_CYCLES;
                         scan_line2_ready <= 1'b0;
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
@@ -3188,6 +3207,7 @@ module voxel_gpu (
                 sdram_rd_load_pulse <= 1'b0;
                 scan_rd_capture <= 1'b0;
                 scan_fill_load_pending <= 1'b0;
+                scan_fill_arm_wait <= 5'd0;
                 fifo_wr_ptr <= 11'd0;
                 fifo_rd_ptr <= 11'd0;
                 fifo_count <= 12'd0;

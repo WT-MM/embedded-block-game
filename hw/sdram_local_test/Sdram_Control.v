@@ -77,7 +77,8 @@ output							     SDR_CLK;				//SDRAM clock
 //	Controller
 reg		[`ASIZE-1:0]			  mADDR;					//Internal address
 reg		[8:0]					     mLENGTH;				//Internal length
-reg		[`ASIZE-1:0]			  rWR_ADDR;				//Register write address				
+wire	[`ASIZE-1:0]			  mLENGTH_ADDR;
+reg		[`ASIZE-1:0]			  rWR_ADDR;				//Register write address
 				
 reg		[`ASIZE-1:0]			 rRD_ADDR;				//Register read address
 reg							       WR_MASK;				//Write port active mask
@@ -135,7 +136,9 @@ wire							init_req;
 wire							cm_ack;
 wire							active;
 output                  CLK;
-	
+
+assign mLENGTH_ADDR = {{(`ASIZE-9){1'b0}}, mLENGTH};
+
 sdram_pll0 sdram_pll0_inst(
 		.refclk(REF_CLK),   //  refclk.clk
 		.rst(1'b0),      //   reset.reset
@@ -354,19 +357,22 @@ begin
 			rWR_ADDR	<=	WR_ADDR;
 		else if(mWR_DONE&WR_MASK)
 		begin
-			if(rWR_ADDR<WR_MAX_ADDR-WR_LENGTH)
-			rWR_ADDR	<=	rWR_ADDR+WR_LENGTH;
+			// WR_LENGTH can be throttled to zero between bursts by the client.
+			// Use the latched burst length that actually completed.
+			if(rWR_ADDR<WR_MAX_ADDR-mLENGTH_ADDR)
+			rWR_ADDR	<=	rWR_ADDR+mLENGTH_ADDR;
 			else
 			rWR_ADDR	<=	WR_ADDR;
 		end
 
-		//	Read Side 
+		//	Read Side
 		if(RD_LOAD)
 			rRD_ADDR	<=	RD_ADDR;
 		else if(mRD_DONE&RD_MASK)
 		begin
-			if(rRD_ADDR<RD_MAX_ADDR-RD_LENGTH)
-			rRD_ADDR	<=	rRD_ADDR+RD_LENGTH;
+			// RD_LENGTH may also be flow-controlled while a burst is active.
+			if(rRD_ADDR<RD_MAX_ADDR-mLENGTH_ADDR)
+			rRD_ADDR	<=	rRD_ADDR+mLENGTH_ADDR;
 			else
 			rRD_ADDR	<=	RD_ADDR;
 		end

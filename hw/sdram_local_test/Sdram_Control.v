@@ -397,8 +397,19 @@ begin
 			(WR_LOAD==0)	&&	(RD_LOAD==0) &&(flag==1) )
 		begin
 		
-					//	Write Side 
-			 if( (write_side_fifo_rusedw >= WR_LENGTH) && (WR_LENGTH!=0) )
+					//	Read Side: scanout needs bounded latency; let
+					//	pending reads win over queued write bursts.
+			 if( (read_side_fifo_wusedw < RD_LENGTH) && (RD_LENGTH!=0) )
+			begin
+				mADDR	<=	rRD_ADDR;
+				mLENGTH	<=	RD_LENGTH;
+				WR_MASK	<=	1'b0;
+				RD_MASK	<=	1'b1;
+				mWR		<=	0;
+				mRD		<=	1;
+			end
+			//	Write Side
+			else if( (write_side_fifo_rusedw >= WR_LENGTH) && (WR_LENGTH!=0) )
 			begin
 				mADDR	<=	rWR_ADDR;
 				mLENGTH	<=	WR_LENGTH;
@@ -406,16 +417,6 @@ begin
 				RD_MASK	<=	1'b0;
 				mWR		<=	1;
 				mRD		<=	0;
-			end
-			//	Read Side 
-			else if( (read_side_fifo_wusedw < RD_LENGTH) )
-			begin
-				mADDR	<=	rRD_ADDR;
-				mLENGTH	<=	RD_LENGTH;
-				WR_MASK	<=	1'b0;
-				RD_MASK	<=	1'b1;
-				mWR		<=	0;
-				mRD		<=	1;				
 			end
 
 		end

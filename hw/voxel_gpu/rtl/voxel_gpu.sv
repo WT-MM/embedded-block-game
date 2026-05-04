@@ -699,19 +699,26 @@ module voxel_gpu (
                                           (scan_prefetch_bank != 2'd3) &&
                                           sdram_rd_empty;
     /*
-     * Give visible scanout exclusive SDRAM ownership. A line-buffer miss near
-     * the bottom of the frame leaves the remaining visible rows showing a
-     * solid/stale band, and the sky/ground views make those misses easiest to
-     * trigger. Flush/load traffic can wait for horizontal/vertical blanking.
+     * Band flushes need active-video SDRAM time to avoid crawling at porch-only
+     * bandwidth. They are writes, so allow them once scanout has both the next
+     * line and the prefetch target resident. Keep SDRAM read-side cache loads
+     * restricted to blanking; those are the risky path for RD FIFO tail data.
      */
-    wire        scanout_slack           = !display_valid ||
+    wire        scan_prefetch_margin_ready =
+        scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
+    wire        scanout_write_slack     = !display_valid ||
+                                          (scan_read_idle &&
+                                           !scan_prefetch_req &&
+                                           (!VGA_BLANK_n ||
+                                            scan_prefetch_margin_ready));
+    wire        scanout_read_slack      = !display_valid ||
                                           (scan_read_idle &&
                                            !scan_prefetch_req &&
                                            !VGA_BLANK_n);
     wire        scanout_read_load_req   = scan_vsync_read_req ||
                                           scan_fill_load_pending ||
                                           scan_prefetch_req;
-    wire        cache_read_start_ok     = scanout_slack && scan_read_idle &&
+    wire        cache_read_start_ok     = scanout_read_slack && scan_read_idle &&
                                           !scan_read_start_req && !scan_prefetch_req;
     wire        scan_visible_data_ready = display_valid && sdram_ready &&
                                           scan_active_bank_ready &&
@@ -724,10 +731,10 @@ module voxel_gpu (
         scan_rd_capture && (scan_fill_words_complete[5:0] == 6'd0);
     /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
     wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
-                                     !sdram_wr_full && scanout_slack;
+                                     !sdram_wr_full && scanout_write_slack;
     wire        bg_flush_wr_push   = flush_active && flush_word_pending_valid &&
                                      !cache_flush_state &&
-                                     !sdram_wr_full && scanout_slack;
+                                     !sdram_wr_full && scanout_write_slack;
     wire        sdram_wr_push      = main_flush_wr_push || bg_flush_wr_push;
 
     wire [15:0] cache_load_words_requested =
@@ -759,7 +766,7 @@ module voxel_gpu (
         cache_flush_state &&
         (cache_words_issued < cache_pixels_total) &&
         !cache_fetch_inflight &&
-        scanout_slack &&
+        scanout_write_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!cache_word_pending_valid || main_flush_wr_push);
     wire        cache_issue_read = cache_can_issue_read;
@@ -770,11 +777,12 @@ module voxel_gpu (
         !cache_flush_state &&
         (flush_words_issued < flush_pixels_total) &&
         !flush_fetch_inflight &&
-        scanout_slack &&
+        scanout_write_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
 
-    wire [8:0]  sdram_wr_length_cfg = ((cache_flush_state || flush_active) && scanout_slack) ?
+    wire [8:0]  sdram_wr_length_cfg = ((cache_flush_state || flush_active) &&
+                                       scanout_write_slack) ?
                                       COPY_BURST_WORDS_9 : 9'd0;
     /*
      * Keep SDRAM reads in 64-word chunks. A full scanline burst can cross the
@@ -788,8 +796,8 @@ module voxel_gpu (
      * at the previous 64-word chunk address.
      */
     wire [8:0]  sdram_rd_length_cfg = ((scan_fill_armed && !scan_fill_load_pending) ||
-                                       (cache_load_state && scanout_slack)) ?
-                                      READ_BURST_WORDS_9 : 9'd0;
+                                      (cache_load_state && scanout_read_slack)) ?
+                                     READ_BURST_WORDS_9 : 9'd0;
 
     /* ── Ping-pong cache port muxing ─────────────────────────────────────── */
     /* Rasterizer read data from active cache */

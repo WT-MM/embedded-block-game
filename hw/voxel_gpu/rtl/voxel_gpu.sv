@@ -100,6 +100,7 @@ module voxel_gpu (
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
     localparam logic [8:0]  READ_BURST_WORDS_9 = 9'd64;
+    localparam logic [10:0] ACTIVE_WRITE_END_HCOUNT = 11'd960;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_000B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
     localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd1048576; // 1MB
@@ -701,16 +702,21 @@ module voxel_gpu (
     /*
      * Band flushes need active-video SDRAM time to avoid crawling at porch-only
      * bandwidth. They are writes, so allow them once scanout has both the next
-     * line and the prefetch target resident. Keep SDRAM read-side cache loads
-     * restricted to blanking; those are the risky path for RD FIFO tail data.
+     * line and the prefetch target resident, but stop launching active-visible
+     * bursts late in the line so the next scanline fill has recovery room.
+     * Keep SDRAM read-side cache loads restricted to blanking; those are the
+     * risky path for RD FIFO tail data.
      */
     wire        scan_prefetch_margin_ready =
         scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
+    wire        scan_active_write_window = vcount_visible &&
+                                           (hcount < ACTIVE_WRITE_END_HCOUNT);
     wire        scanout_write_slack     = !display_valid ||
                                           (scan_read_idle &&
                                            !scan_prefetch_req &&
                                            (!VGA_BLANK_n ||
-                                            scan_prefetch_margin_ready));
+                                            (scan_prefetch_margin_ready &&
+                                             scan_active_write_window)));
     wire        scanout_read_slack      = !display_valid ||
                                           (scan_read_idle &&
                                            !scan_prefetch_req &&
@@ -718,6 +724,10 @@ module voxel_gpu (
     wire        scanout_read_load_req   = scan_vsync_read_req ||
                                           scan_fill_load_pending ||
                                           scan_prefetch_req;
+    wire        bg_flush_wr_load_req    = flush_active && flush_load_pending &&
+                                          scanout_write_slack &&
+                                          !scanout_read_load_req;
+    wire        bg_flush_stream_active  = flush_active && !flush_load_pending;
     wire        cache_read_start_ok     = scanout_read_slack && scan_read_idle &&
                                           !scan_read_start_req && !scan_prefetch_req;
     wire        scan_visible_data_ready = display_valid && sdram_ready &&
@@ -732,7 +742,7 @@ module voxel_gpu (
     /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
     wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
                                      !sdram_wr_full && scanout_write_slack;
-    wire        bg_flush_wr_push   = flush_active && flush_word_pending_valid &&
+    wire        bg_flush_wr_push   = bg_flush_stream_active && flush_word_pending_valid &&
                                      !cache_flush_state &&
                                      !sdram_wr_full && scanout_write_slack;
     wire        sdram_wr_push      = main_flush_wr_push || bg_flush_wr_push;
@@ -773,7 +783,7 @@ module voxel_gpu (
 
     /* Background flush controller can issue a read from the inactive cache */
     wire        flush_can_issue_read =
-        flush_active &&
+        bg_flush_stream_active &&
         !cache_flush_state &&
         (flush_words_issued < flush_pixels_total) &&
         !flush_fetch_inflight &&
@@ -781,7 +791,7 @@ module voxel_gpu (
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
 
-    wire [8:0]  sdram_wr_length_cfg = ((cache_flush_state || flush_active) &&
+    wire [8:0]  sdram_wr_length_cfg = ((cache_flush_state || bg_flush_stream_active) &&
                                        scanout_write_slack) ?
                                       COPY_BURST_WORDS_9 : 9'd0;
     /*
@@ -1214,7 +1224,7 @@ module voxel_gpu (
         .WR_MAX_ADDR (cache_flush_state ? sdram_wr_max_addr_cfg : flush_sdram_wr_max_addr),
         .WR_LENGTH   (sdram_wr_length_cfg),
         .WR_LOAD     (cache_flush_state ? sdram_wr_load_pulse :
-                      (flush_active && flush_load_pending)),
+                      bg_flush_wr_load_req),
         .WR_CLK      (clk),
         .WR_FULL     (sdram_wr_full),
         .WR_USE      (sdram_wr_use),
@@ -2538,8 +2548,8 @@ module voxel_gpu (
             end
 
             if (flush_active && !cache_flush_state) begin
-                /* Clear load pending after one cycle */
-                if (flush_load_pending)
+                /* Clear load pending once WR_LOAD has safely reset the FIFO. */
+                if (bg_flush_wr_load_req)
                     flush_load_pending <= 1'b0;
 
                 /* Capture read data after one-cycle latency */

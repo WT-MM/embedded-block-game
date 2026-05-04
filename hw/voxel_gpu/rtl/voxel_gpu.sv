@@ -650,17 +650,15 @@ module voxel_gpu (
                                           scan_prefetch_valid && !scan_prefetch_ready &&
                                           (scan_prefetch_bank != 2'd3);
     /*
-     * Let SDRAM writes/render-cache loads run during active video only after
-     * scanout has both the next line and the prefetch target resident. The old
-     * one-line margin allowed write bursts to start just as scanout needed the
-     * next read, which showed up as view-dependent horizontal flashes.
+     * Give visible scanout exclusive SDRAM ownership. A line-buffer miss near
+     * the bottom of the frame leaves the remaining visible rows showing a
+     * solid/stale band, and the sky/ground views make those misses easiest to
+     * trigger. Flush/load traffic can wait for horizontal/vertical blanking.
      */
-    wire        scan_prefetch_margin_ready =
-        scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
     wire        scanout_slack           = !display_valid ||
                                           (scan_read_idle &&
                                            !scan_prefetch_req &&
-                                           (!VGA_BLANK_n || scan_prefetch_margin_ready));
+                                           !VGA_BLANK_n);
     wire        scanout_read_load_req   = scan_vsync_read_req ||
                                           scan_fill_load_pending ||
                                           scan_prefetch_req;

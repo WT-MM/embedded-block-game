@@ -596,8 +596,17 @@ module voxel_gpu (
     wire desc_has_uv = desc_flags[FLAG_TEX_BIT];
     wire [5:0] fetch_target_words = ((fetch_count >= 6'd16) && desc_has_uv) ? 6'd32 : 6'd16;
     wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
+    /*
+     * band_flush_pending is intentionally excluded from engine_busy.
+     * The background flush runs independently via flush_active; including
+     * the pending flag in BSY made the driver stall in END_BAND until the
+     * previous band's flush finished draining to SDRAM, which serialised
+     * every band and halved the frame rate on sky/ground views.  The FSM
+     * priority chain (flush before begin) and band_begin_cache_available
+     * gate handle the ordering correctly without blocking the driver.
+     */
     wire engine_busy = (state != ST_IDLE) || clear_pending ||
-                       band_begin_pending || band_flush_pending;
+                       band_begin_pending;
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
     wire [24:0] extmem_front_base_words = extmem_front_base[25:1];
     wire [24:0] extmem_back_base_words  = extmem_back_base[25:1];
@@ -2937,10 +2946,10 @@ module voxel_gpu (
                     band_flush_pending <= 1'b0;
                     copy_complete_pending <= 1'b0;
                     draw_cache_sel <= 1'b0;
-                    flush_active <= 1'b0;
-                    flush_word_pending_valid <= 1'b0;
-                    flush_fetch_inflight <= 1'b0;
-                    flush_generated_sky <= 1'b0;
+                    /* Do not kill flush_active here — see the comment in
+                     * ctrl_clear_write. Let the background flush drain
+                     * naturally so the SDRAM framebuffer is fully written
+                     * before scanout displays it. */
                     state <= ST_IDLE;
                 end
 
@@ -3545,18 +3554,17 @@ module voxel_gpu (
                 cache_resume_draw <= 1'b0;
                 cache_final_flush <= 1'b0;
                 draw_cache_sel <= 1'b0;
-                flush_active <= 1'b0;
-                flush_words_issued <= 16'd0;
-                flush_words_done <= 16'd0;
-                flush_maint_addr <= 16'd0;
-                flush_fetch_inflight <= 1'b0;
-                flush_word_pending_valid <= 1'b0;
-                flush_load_pending <= 1'b0;
-                flush_drain_count <= 8'd0;
-                flush_generated_sky <= 1'b0;
-                flush_sky_x <= 10'd0;
-                flush_sky_row_count <= 5'd0;
-                flush_sky_palette <= PAL_SKY_GRADIENT_BASE;
+                /*
+                 * Do not reset background-flush state here. CLEAR_FRAME
+                 * fires at the start of every software frame and on fast
+                 * sky/ground views it races the tail end of the previous
+                 * frame's band flush. Killing flush_active mid-stream
+                 * leaves partial data in the SDRAM framebuffer, which
+                 * scanout displays as a flash. The flush writes to the
+                 * old back buffer and completes harmlessly on its own;
+                 * band_begin_cache_available correctly stalls new bands
+                 * if the flush still owns a local cache.
+                 */
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;
@@ -3568,11 +3576,13 @@ module voxel_gpu (
                 cache_flush_load_pending <= 1'b0;
                 cache_word_pending_valid <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
-                sdram_rd_load_pulse <= 1'b0;
-                sdram_rd_load_stretch_req <= 1'b0;
-                sdram_rd_load_hold  <= 4'd0;
-                scan_rd_capture <= 1'b0;
-                scan_fill_load_pending <= 1'b0;
+                /*
+                 * Do not reset the scanout RD pipeline here. CLEAR_FRAME is
+                 * issued at the start of every software frame, and with the
+                 * 30 FPS cap it can land in the middle of active display.
+                 * Dropping scan_rd_capture/load/hold state mid-line corrupts
+                 * the line-buffer fill and shows up as sky/ground flashing.
+                 */
                 fifo_wr_ptr <= 11'd0;
                 fifo_rd_ptr <= 11'd0;
                 fifo_count <= 12'd0;

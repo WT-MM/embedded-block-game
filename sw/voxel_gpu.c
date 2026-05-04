@@ -311,7 +311,12 @@ static long voxel_ioc_end_band(void)
 		goto out;
 
 	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_FLUSH);
-	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	/*
+	 * Do not poll BSY here. The background flush runs independently
+	 * via flush_active; band_flush_pending is no longer in engine_busy
+	 * so BSY clears immediately. The FSM priority chain ensures the
+	 * flush completes before the next BEGIN_BAND starts drawing.
+	 */
 
 out:
 	mutex_unlock(&voxdev.lock);

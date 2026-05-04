@@ -688,6 +688,8 @@ module voxel_gpu (
                                           cache_init_state ||
                                           cache_load_state ||
                                           cache_flush_state;
+    wire        band_begin_cache_available =
+        !flush_active || ((~draw_cache_sel) != flush_cache_sel);
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
                                           (copy_complete_pending || display_valid);
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
@@ -2454,6 +2456,20 @@ module voxel_gpu (
                     endcase
 
                     if (scan_fill_line_done) begin
+                        /*
+                         * If the SDRAM RD FIFO output register coughs up a
+                         * stale word on the first pop after RD_LOAD, it
+                         * lands in linebuf[0] and looks like the rightmost
+                         * column wrapping to the left edge. Once the full
+                         * line is resident, copy column 1 over column 0 as
+                         * a one-pixel edge guard. This does not shift the
+                         * scanout timing or touch the actual framebuffer.
+                         */
+                        case (scan_fill_bank)
+                            2'd0: scan_linebuf0[10'd0] <= scan_linebuf0[10'd1];
+                            2'd1: scan_linebuf1[10'd0] <= scan_linebuf1[10'd1];
+                            default: scan_linebuf2[10'd0] <= scan_linebuf2[10'd1];
+                        endcase
                         scan_fill_active <= 1'b0;
                         scan_fill_armed <= 1'b0;
                         case (scan_fill_bank)
@@ -2762,19 +2778,28 @@ module voxel_gpu (
                         clear_pending <= 1'b0;
                         clear_addr    <= 16'd0;
                     end else if (band_begin_pending) begin
-                        band_begin_pending <= 1'b0;
-                        cache_target_band <= band_index_cfg;
-                        cache_band_index <= band_index_cfg;
-                        cache_pixels_total <= band_pixel_count(band_index_cfg);
-                        cache_maint_addr <= 16'd0;
-                        cache_init_x <= 10'd0;
-                        cache_init_sky_row_count <= sky_clear_start_row_count(band_index_cfg);
-                        cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
-                        cache_valid <= 1'b0;
-                        cache_dirty <= 1'b0;
-                        /* Toggle cache selector: draw into the other cache */
-                        draw_cache_sel <= ~draw_cache_sel;
-                        state <= ST_CACHE_INIT;
+                        /*
+                         * There are only two local caches. We can overlap one
+                         * band's background flush with the next band's draw,
+                         * but a second fast BEGIN_BAND would toggle back into
+                         * the cache still being flushed. Sky/ground views hit
+                         * this hard because bands complete almost immediately.
+                         */
+                        if (band_begin_cache_available) begin
+                            band_begin_pending <= 1'b0;
+                            cache_target_band <= band_index_cfg;
+                            cache_band_index <= band_index_cfg;
+                            cache_pixels_total <= band_pixel_count(band_index_cfg);
+                            cache_maint_addr <= 16'd0;
+                            cache_init_x <= 10'd0;
+                            cache_init_sky_row_count <= sky_clear_start_row_count(band_index_cfg);
+                            cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
+                            cache_valid <= 1'b0;
+                            cache_dirty <= 1'b0;
+                            /* Toggle cache selector: draw into the other cache */
+                            draw_cache_sel <= ~draw_cache_sel;
+                            state <= ST_CACHE_INIT;
+                        end
                     end else if (band_flush_pending && !flush_active) begin
                         band_flush_pending <= 1'b0;
                         if (cache_valid && cache_dirty) begin

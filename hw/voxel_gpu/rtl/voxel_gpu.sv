@@ -499,14 +499,12 @@ module voxel_gpu (
     logic [24:0] sdram_rd_max_addr_cfg;
     logic        sdram_rd_load_pulse;
     /*
-     * Stretch RD_LOAD to multiple REF_CLK cycles. The Sdram_RD_FIFO is a
-     * dual-clock FIFO clocked at 100 MHz on the write side and 50 MHz on
-     * the read side. Altera dcfifo aclr must be asserted for >=3 cycles in
-     * each domain to fully clear both pointers. A 1-cycle REF_CLK pulse
-     * gives the read side only 1 cycle, which can leave a stale word
-     * reachable by the very next RD_DATA — exactly the hazard that
-     * contaminates linebuf[0..63] after a chunk re-arm.
+     * Some RD_LOADs need a multi-cycle FIFO clear, but stretching every
+     * 64-word scanline chunk is expensive. Use the long clear for scanline
+     * starts and cache-load starts, where stale tail data can contaminate the
+     * first visible chunk; continuation chunks use the normal one-cycle pulse.
      */
+    logic        sdram_rd_load_stretch_req;
     logic  [3:0] sdram_rd_load_hold;
     wire         sdram_rd_load_out = sdram_rd_load_pulse ||
                                      (sdram_rd_load_hold != 4'd0);
@@ -1601,6 +1599,7 @@ module voxel_gpu (
         sdram_rd_addr_cfg = 25'd0;
         sdram_rd_max_addr_cfg = 25'd0;
         sdram_rd_load_pulse = 1'b0;
+        sdram_rd_load_stretch_req = 1'b0;
         sdram_rd_load_hold  = 4'd0;
         cache_band_index = 3'd0;
         cache_target_band = 3'd0;
@@ -2123,6 +2122,7 @@ module voxel_gpu (
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
             sdram_rd_load_pulse <= 1'b0;
+            sdram_rd_load_stretch_req <= 1'b0;
             sdram_rd_load_hold  <= 4'd0;
             cache_band_index <= 3'd0;
             cache_target_band <= 3'd0;
@@ -2192,18 +2192,16 @@ module voxel_gpu (
             scan_visible_r <= scan_visible_now;
             sdram_wr_load_pulse <= 1'b0;
             sdram_rd_load_pulse <= 1'b0;
+            sdram_rd_load_stretch_req <= 1'b0;
             scan_rd_capture <= scan_rd_pop;
             cache_rd_capture <= cache_rd_pop;
 
             /*
-             * Whenever the 1-cycle pulse is asserted (sampled here as
-             * "current value of sdram_rd_load_pulse" — the previous-cycle
-             * scheduler set it), prime the hold counter so RD_LOAD stays
-             * high for 3 additional REF_CLK cycles (4 total). This satisfies
-             * the dcfifo aclr requirement (>=3 cycles in each clock domain)
-             * even after the natural 1-cycle pulse falls.
+             * Whenever a stretched pulse is requested (sampled here as the
+             * previous-cycle scheduler result), prime the hold counter so
+             * RD_LOAD stays high for 3 additional REF_CLK cycles (4 total).
              */
-            if (sdram_rd_load_pulse) begin
+            if (sdram_rd_load_pulse && sdram_rd_load_stretch_req) begin
                 sdram_rd_load_hold <= 4'd3;
             end else if (sdram_rd_load_hold != 4'd0) begin
                 sdram_rd_load_hold <= sdram_rd_load_hold - 4'd1;
@@ -2264,6 +2262,7 @@ module voxel_gpu (
                         sdram_rd_addr_cfg <= copy_target_base_words;
                         sdram_rd_max_addr_cfg <= copy_target_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                     end
                 end else begin
                     vsy_latch <= !ctrl_flp_pending;
@@ -2278,6 +2277,7 @@ module voxel_gpu (
                         sdram_rd_addr_cfg <= display_base_words;
                         sdram_rd_max_addr_cfg <= display_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                     end
                 end
             end
@@ -2465,6 +2465,7 @@ module voxel_gpu (
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                     end
                     2'd1: begin
                         scan_fill_active <= 1'b1;
@@ -2478,6 +2479,7 @@ module voxel_gpu (
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                     end
                     default: begin
                         scan_fill_active <= 1'b1;
@@ -2491,6 +2493,7 @@ module voxel_gpu (
                         sdram_rd_addr_cfg <= scan_prefetch_base_words;
                         sdram_rd_max_addr_cfg <= scan_prefetch_base_words + READ_BURST_WORDS_25;
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                     end
                     endcase
                 end
@@ -3198,6 +3201,7 @@ module voxel_gpu (
                                                  band_word_offset(cache_target_band) +
                                                  band_word_count(cache_target_band);
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                         state <= ST_CACHE_LOAD_COLOR;
                     end else if (cache_band_valid[cache_target_band]) begin
                         state <= ST_CACHE_SELECT_FILL;
@@ -3259,6 +3263,7 @@ module voxel_gpu (
                                                  band_word_offset(cache_target_band) +
                                                  band_word_count(cache_target_band);
                         sdram_rd_load_pulse <= 1'b1;
+                        sdram_rd_load_stretch_req <= 1'b1;
                         state <= ST_CACHE_LOAD_Z;
                     end
                 end
@@ -3332,6 +3337,7 @@ module voxel_gpu (
                 cache_word_pending_valid <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
                 sdram_rd_load_pulse <= 1'b0;
+                sdram_rd_load_stretch_req <= 1'b0;
                 sdram_rd_load_hold  <= 4'd0;
                 scan_rd_capture <= 1'b0;
                 scan_fill_load_pending <= 1'b0;

@@ -1774,36 +1774,48 @@ single-port; per-quad it doesn't pay to widen.
 path, ~0.2-0.4 ns -- negligible vs the 20 ns clock period and orthogonal
 to the existing -2.7 ns sdram_pll0 violation (different clock domain).
 
-### Step 3: Promote texture ROM to true dual-port
+### Step 3: Promote texture ROM to two independent read ports
 
-**What changed:** `voxel_texture_rom.sv` switched the underlying altsyncram
-from `operation_mode = "ROM"` (single read port A) to
+**First attempt (rejected by Quartus):** tried to switch the single
+`altsyncram` from `operation_mode = "ROM"` to
 `operation_mode = "BIDIR_DUAL_PORT"` with both `wren_a` and `wren_b` tied
-to `1'b0`. This is the standard Altera pattern for a true dual-read ROM:
-both ports take registered addresses on `clock0`, both expose unregistered
-output ports, both share the same `init_file` (still
-`voxel_gpu/assets/textures.mif`). Read latency stays at exactly 1 cycle on
-both ports -- so when step 4 wires lane1 into port B, the timing still
-matches the rest of the pipe2->draw_pipe handoff.
+off, expecting Cyclone V to give us a true 2-read ROM. Quartus 21.1 (or
+the IP licence we're using) rejected that pattern with three errors:
 
-The module's external interface gains `rd_addr_b` / `rd_data_b`. Port A
-keeps its existing `rd_addr` / `rd_data` names so the rasterizer
+  * `272006`: "Must connect clock1 port of altsyncram megafunction when
+    using current set of parameters" -- BIDIR_DUAL_PORT refuses to share
+    `clock0` for both ports' addresses even when both are read-only.
+  * `272006`: "Cannot use different clock ports for address_b port and
+    data_b|wren_b|byteena_b(if used) port" -- forces extra clock plumbing
+    we don't actually want.
+  * `287078`: clear-box licence assertion -- BIDIR_DUAL_PORT on this
+    install is gated behind a feature we don't have.
+
+**What actually changed:** `voxel_texture_rom.sv` instantiates **two
+parallel `operation_mode = "ROM"` altsyncrams**, both driven by the
+same `clock0`, both initialised from the same `voxel_gpu/assets/textures.mif`,
+each serving one of the two read ports. Each instance is a standard
+single-port ROM (the same shape we already had pre-step-3), so latency,
+init pattern, and Quartus-licence requirements are all unchanged.
+Per-instance defparams keep `address_aclr_a = "NONE"`,
+`outdata_reg_a = "UNREGISTERED"` exactly as the original singleton did, so
+the 1-cycle read-latency contract that prevents the chromatic-fringe bug
+is preserved on both ports.
+
+The module's external interface still gains `rd_addr_b` / `rd_data_b`.
+Port A keeps its existing `rd_addr` / `rd_data` names so the rasterizer
 instantiation didn't need to rename anything; port B is tied off
 (`rd_addr_b = 14'd0`, `rd_data_b ` unconnected) until step 4.
 
 **M10K cost:** atlas is 64 tiles × 16 × 16 × 8 bits = 131 072 bits.
-Unbanked SDP/ROM packs ~13 M10Ks. BIDIR_DUAL_PORT mode forces TDP packing
-which on Cyclone V can drop usable density per M10K, so expect a few extra
-M10Ks (estimate +3-4). Pre-fit headroom was 51/397 unused, so this is
-comfortable. Will reconfirm after the next Quartus fit.
+Single-port ROM packs ~13 M10Ks; duplicating it doubles that to ~26
+M10Ks. Pre-fit headroom was 51/397 unused, so we still have room, but
+this is a real cost (vs the "+3-4" we hoped for from BIDIR_DUAL_PORT).
+Will reconfirm after the next Quartus fit.
 
 **Risks:** none functional this step -- port B is unused until step 4.
-The only behavioural change is that Quartus may now place the ROM in a
-different RAM block layout, but the synchronous-read latency contract is
-preserved by explicit `address_reg_b = "CLOCK0"` /
-`outdata_reg_b = "UNREGISTERED"`. The same rationale recorded for port A
-(prevent silent 2-cycle inference -> chromatic fringe bug) applies to
-port B.
+Both ROM copies hold byte-identical data because they share the same
+`.mif`, so an even/odd lane lookup at step 4 is guaranteed coherent.
 
 ### Step 4: Duplicate per-pixel datapath into even/odd lanes (planned, not applied)
 
@@ -1928,7 +1940,8 @@ ALMs at 81%, 346/397 M10Ks at 87%):**
 
   * ALMs: +4-7k for the duplicated per-pixel datapath (edge eval, recip,
     UV, fog math). Tight given 6,073 free.
-  * M10Ks: +0 from cache banking, +3-4 from texture ROM TDP. Comfortable.
+  * M10Ks: +0 from cache banking, +~13 from duplicating the texture ROM
+    (two ROM-mode altsyncrams sharing one `.mif`). Within 51 free pre-fit.
   * DSPs: +0 to +12 depending on whether Quartus shares multipliers
     across lanes. Plenty of headroom (30/87 today).
   * Fmax: same 50 MHz target. The added combinational load is wide but

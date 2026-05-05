@@ -538,6 +538,28 @@ static bool project_camera_vertex(RenderContext *ctx, const CameraVertex *in, Ve
     return true;
 }
 
+static bool camera_quad_outside_view(RenderContext *ctx, const CameraVertex v[4])
+{
+    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
+    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    bool outside_near = true;
+    bool outside_left = true;
+    bool outside_right = true;
+    bool outside_top = true;
+    bool outside_bottom = true;
+
+    for (int i = 0; i < 4; i++) {
+        outside_near &= (v[i].z < NEAR_PLANE);
+        outside_left &= (v[i].x + x_slope * v[i].z < 0.0f);
+        outside_right &= (-v[i].x + x_slope * v[i].z < 0.0f);
+        outside_top &= (y_slope * v[i].z - v[i].y < 0.0f);
+        outside_bottom &= (v[i].y + y_slope * v[i].z < 0.0f);
+    }
+
+    return outside_near || outside_left || outside_right ||
+           outside_top || outside_bottom;
+}
+
 /* Dot-product backface cull: skip face if normal points away from camera. */
 static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
 {
@@ -1404,6 +1426,8 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
          */
         face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span * (float)v_size;
     }
+    if (camera_quad_outside_view(ctx, face_cam))
+        return;
 
     base_tile = block_face_texture_id(type, face);
     texture_id = choose_face_texture_lod(ctx, base_tile, face_cam);

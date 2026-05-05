@@ -1942,3 +1942,114 @@ ALMs at 81%, 346/397 M10Ks at 87%):**
 If the post-4a fit shows the SDRAM PLL setup violation drifting
 (currently -2.7 ns), revisit the deferred SDC false-path fix from step 1
 before adding the lane1 pipeline.
+
+### May 5 2026: Post-2px board timing and current blocker
+
+After the full 2 px/cycle rasterizer build, visuals are reported good but
+frame rate is mostly unchanged. The new software diagnostics show the useful
+distinction: the per-pixel raster workload is no longer the obvious blocker,
+but frame completion is still dominated by band submission synchronization,
+FIFO backpressure, final flush, vsync waiting, and CPU-side scene/text setup.
+
+Captured target run:
+
+    renderer: HW mode [flat buf, 3147 quads, bbox: (0,0)-(639,479)] bin= 1.62ms bands=25.76ms
+    renderer: band detail b0= 0.90( 0.01/ 0.15/ 0.74,6720B) b1= 0.83( 0.00/ 0.01/ 0.82,320B) b2= 5.58( 0.00/ 0.01/ 5.56,448B) b3= 3.00( 0.00/ 0.01/ 2.98,576B) b4= 4.25( 0.00/ 0.01/ 4.24,320B) b5= 3.77( 0.00/ 0.01/ 3.75,320B) b6= 4.94( 0.00/ 4.63/ 0.30,100928B) b7= 2.49( 0.00/ 2.27/ 0.22,97280B)
+    renderer: calc desc=1677 copies=1734 tex=1499 sky_skip=30 bbox1= 2.48ms bbox2= 1.30ms save= 1.18ms init= 6.14ms fetch= 1.03ms overhead= 0.58ms flush_raw= 6.14ms flush_slack= 7.52ms ideal_ready=10.42ms vsync_floor=16.80ms slots=1
+    renderer: FLIP flip=21.10ms
+    perf: fps= 19.6 frame= 51.00ms work= 50.91ms update= 0.04ms begin= 0.01ms draw= 13.74ms end= 37.13ms sleep= 0.00ms max_work= 62.24ms quads=1719.6 sky=25.0 phys= 2.9
+
+Interpretation:
+
+  * `end=` in `game.c` is `renderer_end_frame()`: binned hardware submit
+    plus `FLIP`. It is not just the final ioctl.
+  * The diagnostic model estimates only 1.30 ms of two-lane bbox raster work
+    for this frame. That means the 2 px/cycle implementation did its narrow
+    job; the remaining problem is system-level pacing.
+  * `bands=25.76ms` is already too high. Bands 6 and 7 spend most of their
+    time in the descriptor write phase (`4.63ms` and `2.27ms`) because they
+    carry ~100 KB each of descriptor data. That is FIFO backpressure from the
+    hardware consuming descriptors/raster work slower than userspace can
+    stream it.
+  * Bands 2-5 have tiny descriptor payloads but large `END_BAND` waits, so
+    those bands are waiting for the hardware to become idle after their draw
+    pass. That points at synchronization/cache/flush ordering, not CPU binning.
+  * `FLIP=21.10ms` means the final wait is significant too: it includes
+    waiting for FIFO empty, engine idle, requesting flip, and then waiting for
+    the next `VSY` latch.
+  * `draw=13.74ms` is CPU-side scene/HUD construction before descriptors are
+    submitted. With the 30 FPS target, the whole frame must land inside the
+    2-vsync bucket: `2 * 16.8ms = 33.6ms`. A 13.7 ms CPU draw leaves only
+    about 19.9 ms for all submit/flip work; the captured submit+flip is
+    ~37 ms, so both CPU draw cost and hardware wait cost matter.
+
+Vsync bucket math:
+
+  * VGA timing is 50 MHz, 1600 cycles/line, 525 lines/frame:
+    840000 cycles = 16.8 ms = 59.52 Hz.
+  * 30 FPS corresponds to the 2-vsync bucket: 33.6 ms.
+  * 20 FPS corresponds to the 3-vsync bucket: 50.4 ms.
+  * 15 FPS corresponds to the 4-vsync bucket: 67.2 ms.
+  * Therefore the observed "20 FPS, then after a few seconds 15 FPS" is
+    consistent with work occasionally crossing from the 3-vsync bucket into
+    the 4-vsync bucket, not with a smooth linear slowdown.
+
+Fixed-cost lower bounds under the current SDRAM scanout policy:
+
+  * Full local band cache init/clear is 307200 cycles = 6.144 ms at 50 MHz.
+  * Full-frame color flush is 307200 words. Raw one-word-per-cycle push is
+    6.144 ms.
+  * Because active display owns part of SDRAM time, writes are allowed during
+    blanking plus the first 960 cycles of each visible line:
+    225600 + 460800 = 686400 allowed cycles per 840000-cycle VGA frame.
+    That makes a full-frame flush about 7.52 ms wall-clock in the simple
+    one-word-per-allowed-cycle model.
+
+Diagnostics currently available:
+
+  * `VOXEL_DIAG_BBOX=1` prints the binned bbox/model line once per 60 frames.
+  * The `band detail` tuple is `total(begin/write/end,bytes)`.
+  * Interpretation guide:
+    - large `begin` = waiting for prior background flush/cache availability
+      before `BEGIN_BAND`.
+    - large `write` = FIFO backpressure while streaming descriptors.
+    - large `end` = waiting for FIFO empty and hardware idle before issuing
+      `END_BAND`.
+    - large `FLIP` = final flush/idle/vsync wait.
+
+Immediate software change:
+
+  * `sw/chat.c` now merges contiguous lit pixels in each glyph row into one
+    rectangle before calling `renderer_fill_rect()`. This preserves exact
+    appearance but reduces text descriptor count.
+  * Calculated examples with the 5x7 font:
+    - `"fps 19.6"`: 88 per-pixel rects -> 50 row-run rects, 43.2% fewer.
+    - `"fps 15.0"`: 96 -> 55, 42.7% fewer.
+    - `"mode=survival"`: 191 -> 132, 30.9% fewer.
+  * This is relevant because the FPS overlay is not drawn until the first perf
+    window has produced `fps_text_len`; that timing matches the report that
+    FPS starts near 20 and drops to 15 after a few seconds. The fix is not a
+    quality reduction and should reduce both CPU `draw=` time and descriptor
+    pressure from HUD/chat text.
+  * `sw/renderer.c` now performs a conservative per-face camera-frustum reject
+    after the face's four camera-space vertices are computed and before
+    projection, clipping, LOD choice, UV-plane fit, and descriptor packing.
+    This rejects only faces whose entire quad is outside the same near/left/
+    right/top/bottom clip plane, so it should not change visible quality. The
+    reason is that chunk-level frustum culling is necessarily coarse: a visible
+    chunk can still contain many merged faces wholly off-screen, and those were
+    previously paying full CPU descriptor setup cost and sometimes adding
+    descriptor traffic before the viewport clipper rejected them.
+
+Current next hypotheses to test:
+
+  * If the next run still drops after the first FPS label appears, compare
+    diagnostics with the overlay disabled or with only one `chat_draw_text()`
+    call for FPS. That would confirm or rule out text/HUD descriptor pressure.
+  * If `band detail` still shows large `write` on bands 6/7, optimize world
+    descriptor volume next: better per-chunk/frustum face rejection, cheaper
+    screen-space rejection before descriptor generation, or more aggressive
+    far-face merging without changing visual quality.
+  * If `FLIP` remains >16.8 ms, investigate whether the final background flush
+    is missing the current vsync and should be requested earlier or tracked
+    separately from display flip.

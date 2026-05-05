@@ -581,13 +581,29 @@ static void draw_glyph(RenderContext *ctx, char ch, float x, float y, uint8_t pa
     for (int row = 0; row < GLYPH_H; row++) {
         uint8_t bits = g_glyphs[code][row];
         if (!bits) continue;
-        for (int col = 0; col < GLYPH_W; col++) {
-            if (!(bits & (1u << (GLYPH_W - 1 - col)))) continue;
-            float px = x + (float)(col * CHAT_TEXT_SCALE);
+        for (int col = 0; col < GLYPH_W;) {
+            int run_start;
+            int run_end;
+            float px;
             float py = y + (float)(row * CHAT_TEXT_SCALE);
+
+            if (!(bits & (1u << (GLYPH_W - 1 - col)))) {
+                col++;
+                continue;
+            }
+
+            run_start = col;
+            do {
+                col++;
+            } while (col < GLYPH_W &&
+                     (bits & (1u << (GLYPH_W - 1 - col))));
+            run_end = col;
+
+            px = x + (float)(run_start * CHAT_TEXT_SCALE);
             renderer_fill_rect(ctx,
                                px, py,
-                               px + (float)CHAT_TEXT_SCALE,
+                               px + (float)((run_end - run_start) *
+                                            CHAT_TEXT_SCALE),
                                py + (float)CHAT_TEXT_SCALE,
                                palette, 0);
         }

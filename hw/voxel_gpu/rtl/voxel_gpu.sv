@@ -564,17 +564,47 @@ module voxel_gpu (
     logic  [4:0] flush_sky_row_count;
     logic  [7:0] flush_sky_palette;
 
-    // Per-cache read/write signals (active = rasterizer, inactive = flush/init)
-    logic [15:0] fb_A_rd_addr, fb_B_rd_addr;
+    /*
+     * Per-cache, per-bank read/write signals. Each cache (fb_A, fb_B,
+     * z_A, z_B) is now a banked SDP RAM exposing two physical banks
+     * keyed on linear addr[0]: `_e` is the even bank and `_o` is the
+     * odd bank. For 1 px/cycle paths today, the cache port driver
+     * fans the unified addr/data/en to both banks of the active cache
+     * and qualifies each `wr_en_*` by linear addr[0]. The unified
+     * `rd_data` view that the rest of the design consumes is then
+     * recovered by muxing `rd_data_e` / `rd_data_o` with a 1-cycle
+     * delayed copy of the LSB of the read address (`*_rd_sel_q`) —
+     * the same trick the old in-wrapper mux performed, hoisted out so
+     * the per-bank ports can be driven independently in step 4b/c.
+     */
+    logic [15:0] fb_A_e_rd_addr, fb_A_o_rd_addr;
+    logic [15:0] fb_A_e_rd_data, fb_A_o_rd_data;
+    logic [15:0] fb_A_e_wr_addr, fb_A_o_wr_addr;
+    logic [15:0] fb_A_e_wr_data, fb_A_o_wr_data;
+    logic        fb_A_e_wr_en,   fb_A_o_wr_en;
+    logic [15:0] fb_B_e_rd_addr, fb_B_o_rd_addr;
+    logic [15:0] fb_B_e_rd_data, fb_B_o_rd_data;
+    logic [15:0] fb_B_e_wr_addr, fb_B_o_wr_addr;
+    logic [15:0] fb_B_e_wr_data, fb_B_o_wr_data;
+    logic        fb_B_e_wr_en,   fb_B_o_wr_en;
+    logic [15:0] z_A_e_rd_addr,  z_A_o_rd_addr;
+    logic [15:0] z_A_e_rd_data,  z_A_o_rd_data;
+    logic [15:0] z_A_e_wr_addr,  z_A_o_wr_addr;
+    logic [15:0] z_A_e_wr_data,  z_A_o_wr_data;
+    logic        z_A_e_wr_en,    z_A_o_wr_en;
+    logic [15:0] z_B_e_rd_addr,  z_B_o_rd_addr;
+    logic [15:0] z_B_e_rd_data,  z_B_o_rd_data;
+    logic [15:0] z_B_e_wr_addr,  z_B_o_wr_addr;
+    logic [15:0] z_B_e_wr_data,  z_B_o_wr_data;
+    logic        z_B_e_wr_en,    z_B_o_wr_en;
+    /* 1-cycle-delayed LSB of each cache's read address. Equal to what
+     * the old in-wrapper rd_sel_q used to be. */
+    logic        fb_A_rd_sel_q, fb_B_rd_sel_q;
+    logic        z_A_rd_sel_q,  z_B_rd_sel_q;
+    /* Reconstructed unified per-cache rd_data, consumed by the existing
+     * fb_back_rd_data / z_rd_data muxes. */
     logic [15:0] fb_A_rd_data, fb_B_rd_data;
-    logic [15:0] fb_A_wr_addr, fb_B_wr_addr;
-    logic [15:0] fb_A_wr_data, fb_B_wr_data;
-    logic        fb_A_wr_en,   fb_B_wr_en;
-    logic [15:0] z_A_rd_addr,  z_B_rd_addr;
     logic [15:0] z_A_rd_data,  z_B_rd_data;
-    logic [15:0] z_A_wr_addr,  z_B_wr_addr;
-    logic [15:0] z_A_wr_data,  z_B_wr_data;
-    logic        z_A_wr_en,    z_B_wr_en;
 
     logic [17:0] sdram_powerup_counter;
     logic [15:0] sdram_init_wait_counter;
@@ -1352,20 +1382,29 @@ module voxel_gpu (
 
     /* ── Ping-pong band caches A and B ───────────────────── *
      * Banked by addr[0] (= x[0]) so even/odd x land in disjoint
-     * SDP RAMs. Step 2 of the 2 px/cycle project keeps the external
-     * 1R/1W interface; step 4 will widen the wrapper to expose one
-     * port per bank for true two-pixel commit. */
+     * SDP RAMs. The wrapper now exposes per-bank read and write
+     * ports directly; the cache port driver below produces them by
+     * fanning out the unified addr/data/en to both banks and
+     * qualifying each bank's wr_en by linear addr[0]. The 1 px/cycle
+     * rasterizer drives both banks of the active cache with the same
+     * address; step 4b/c will start driving the lane-A and lane-B
+     * ports independently for 2 px/cycle. */
     voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
     ) fb_back_ram_A (
-        .clk     (clk),
-        .rd_addr (fb_A_rd_addr),
-        .rd_data (fb_A_rd_data),
-        .wr_addr (fb_A_wr_addr),
-        .wr_data (fb_A_wr_data),
-        .wr_en   (fb_A_wr_en)
+        .clk       (clk),
+        .rd_addr_e (fb_A_e_rd_addr),
+        .rd_data_e (fb_A_e_rd_data),
+        .rd_addr_o (fb_A_o_rd_addr),
+        .rd_data_o (fb_A_o_rd_data),
+        .wr_addr_e (fb_A_e_wr_addr),
+        .wr_data_e (fb_A_e_wr_data),
+        .wr_en_e   (fb_A_e_wr_en),
+        .wr_addr_o (fb_A_o_wr_addr),
+        .wr_data_o (fb_A_o_wr_data),
+        .wr_en_o   (fb_A_o_wr_en)
     );
 
     voxel_banked_sdp_ram #(
@@ -1373,12 +1412,17 @@ module voxel_gpu (
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
     ) fb_back_ram_B (
-        .clk     (clk),
-        .rd_addr (fb_B_rd_addr),
-        .rd_data (fb_B_rd_data),
-        .wr_addr (fb_B_wr_addr),
-        .wr_data (fb_B_wr_data),
-        .wr_en   (fb_B_wr_en)
+        .clk       (clk),
+        .rd_addr_e (fb_B_e_rd_addr),
+        .rd_data_e (fb_B_e_rd_data),
+        .rd_addr_o (fb_B_o_rd_addr),
+        .rd_data_o (fb_B_o_rd_data),
+        .wr_addr_e (fb_B_e_wr_addr),
+        .wr_data_e (fb_B_e_wr_data),
+        .wr_en_e   (fb_B_e_wr_en),
+        .wr_addr_o (fb_B_o_wr_addr),
+        .wr_data_o (fb_B_o_wr_data),
+        .wr_en_o   (fb_B_o_wr_en)
     );
 
     voxel_banked_sdp_ram #(
@@ -1386,12 +1430,17 @@ module voxel_gpu (
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
     ) z_ram_A (
-        .clk     (clk),
-        .rd_addr (z_A_rd_addr),
-        .rd_data (z_A_rd_data),
-        .wr_addr (z_A_wr_addr),
-        .wr_data (z_A_wr_data),
-        .wr_en   (z_A_wr_en)
+        .clk       (clk),
+        .rd_addr_e (z_A_e_rd_addr),
+        .rd_data_e (z_A_e_rd_data),
+        .rd_addr_o (z_A_o_rd_addr),
+        .rd_data_o (z_A_o_rd_data),
+        .wr_addr_e (z_A_e_wr_addr),
+        .wr_data_e (z_A_e_wr_data),
+        .wr_en_e   (z_A_e_wr_en),
+        .wr_addr_o (z_A_o_wr_addr),
+        .wr_data_o (z_A_o_wr_data),
+        .wr_en_o   (z_A_o_wr_en)
     );
 
     voxel_banked_sdp_ram #(
@@ -1399,13 +1448,29 @@ module voxel_gpu (
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
     ) z_ram_B (
-        .clk     (clk),
-        .rd_addr (z_B_rd_addr),
-        .rd_data (z_B_rd_data),
-        .wr_addr (z_B_wr_addr),
-        .wr_data (z_B_wr_data),
-        .wr_en   (z_B_wr_en)
+        .clk       (clk),
+        .rd_addr_e (z_B_e_rd_addr),
+        .rd_data_e (z_B_e_rd_data),
+        .rd_addr_o (z_B_o_rd_addr),
+        .rd_data_o (z_B_o_rd_data),
+        .wr_addr_e (z_B_e_wr_addr),
+        .wr_data_e (z_B_e_wr_data),
+        .wr_en_e   (z_B_e_wr_en),
+        .wr_addr_o (z_B_o_wr_addr),
+        .wr_data_o (z_B_o_wr_data),
+        .wr_en_o   (z_B_o_wr_en)
     );
+
+    /*
+     * Combine each cache's per-bank read outputs back into a unified
+     * `rd_data` view. The 1-cycle-delayed LSB of the read address picks
+     * whichever bank actually held the requested word — matches the
+     * behavior of the old in-wrapper rd_sel_q mux exactly.
+     */
+    assign fb_A_rd_data = fb_A_rd_sel_q ? fb_A_o_rd_data : fb_A_e_rd_data;
+    assign fb_B_rd_data = fb_B_rd_sel_q ? fb_B_o_rd_data : fb_B_e_rd_data;
+    assign z_A_rd_data  = z_A_rd_sel_q  ? z_A_o_rd_data  : z_A_e_rd_data;
+    assign z_B_rd_data  = z_B_rd_sel_q  ? z_B_o_rd_data  : z_B_e_rd_data;
 
     /*
      * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 64 tiles *
@@ -1933,68 +1998,116 @@ module voxel_gpu (
 
         /* ── Cache A ports ── */
         if (draw_cache_sel == 1'b0 && cache_used_by_main) begin
-            /* A is active → rasterizer read+write */
-            fb_A_rd_addr = fb_back_rd_addr;
-            fb_A_wr_addr = fb_wr_addr;
-            fb_A_wr_data = fb_wr_data;
-            fb_A_wr_en   = fb_back_wr_en;
-            z_A_rd_addr  = z_rd_addr;
-            z_A_wr_addr  = z_wr_addr;
-            z_A_wr_data  = z_wr_data;
-            z_A_wr_en    = z_wr_en;
+            /* A is active: rasterizer read+write. */
+            fb_A_e_rd_addr = fb_back_rd_addr;
+            fb_A_o_rd_addr = fb_back_rd_addr;
+            fb_A_e_wr_addr = fb_wr_addr;
+            fb_A_o_wr_addr = fb_wr_addr;
+            fb_A_e_wr_data = fb_wr_data;
+            fb_A_o_wr_data = fb_wr_data;
+            fb_A_e_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
+            fb_A_o_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
+            z_A_e_rd_addr  = z_rd_addr;
+            z_A_o_rd_addr  = z_rd_addr;
+            z_A_e_wr_addr  = z_wr_addr;
+            z_A_o_wr_addr  = z_wr_addr;
+            z_A_e_wr_data  = z_wr_data;
+            z_A_o_wr_data  = z_wr_data;
+            z_A_e_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b0);
+            z_A_o_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b1);
         end else if (flush_cache_sel == 1'b0 && flush_active) begin
-            /* A is being flushed → flush reads */
-            fb_A_rd_addr = flush_maint_addr;
-            fb_A_wr_addr = 16'd0;
-            fb_A_wr_data = 16'd0;
-            fb_A_wr_en   = 1'b0;
-            z_A_rd_addr  = flush_maint_addr;
-            z_A_wr_addr  = 16'd0;
-            z_A_wr_data  = 16'd0;
-            z_A_wr_en    = 1'b0;
+            /* A is being flushed: flush reads. */
+            fb_A_e_rd_addr = flush_maint_addr;
+            fb_A_o_rd_addr = flush_maint_addr;
+            fb_A_e_wr_addr = 16'd0;
+            fb_A_o_wr_addr = 16'd0;
+            fb_A_e_wr_data = 16'd0;
+            fb_A_o_wr_data = 16'd0;
+            fb_A_e_wr_en   = 1'b0;
+            fb_A_o_wr_en   = 1'b0;
+            z_A_e_rd_addr  = flush_maint_addr;
+            z_A_o_rd_addr  = flush_maint_addr;
+            z_A_e_wr_addr  = 16'd0;
+            z_A_o_wr_addr  = 16'd0;
+            z_A_e_wr_data  = 16'd0;
+            z_A_o_wr_data  = 16'd0;
+            z_A_e_wr_en    = 1'b0;
+            z_A_o_wr_en    = 1'b0;
         end else begin
             /* A is idle */
-            fb_A_rd_addr = 16'd0;
-            fb_A_wr_addr = 16'd0;
-            fb_A_wr_data = 16'd0;
-            fb_A_wr_en   = 1'b0;
-            z_A_rd_addr  = 16'd0;
-            z_A_wr_addr  = 16'd0;
-            z_A_wr_data  = 16'd0;
-            z_A_wr_en    = 1'b0;
+            fb_A_e_rd_addr = 16'd0;
+            fb_A_o_rd_addr = 16'd0;
+            fb_A_e_wr_addr = 16'd0;
+            fb_A_o_wr_addr = 16'd0;
+            fb_A_e_wr_data = 16'd0;
+            fb_A_o_wr_data = 16'd0;
+            fb_A_e_wr_en   = 1'b0;
+            fb_A_o_wr_en   = 1'b0;
+            z_A_e_rd_addr  = 16'd0;
+            z_A_o_rd_addr  = 16'd0;
+            z_A_e_wr_addr  = 16'd0;
+            z_A_o_wr_addr  = 16'd0;
+            z_A_e_wr_data  = 16'd0;
+            z_A_o_wr_data  = 16'd0;
+            z_A_e_wr_en    = 1'b0;
+            z_A_o_wr_en    = 1'b0;
         end
 
         /* ── Cache B ports ── */
         if (draw_cache_sel == 1'b1 && cache_used_by_main) begin
-            /* B is active → rasterizer read+write */
-            fb_B_rd_addr = fb_back_rd_addr;
-            fb_B_wr_addr = fb_wr_addr;
-            fb_B_wr_data = fb_wr_data;
-            fb_B_wr_en   = fb_back_wr_en;
-            z_B_rd_addr  = z_rd_addr;
-            z_B_wr_addr  = z_wr_addr;
-            z_B_wr_data  = z_wr_data;
-            z_B_wr_en    = z_wr_en;
+            /* B is active: rasterizer read+write. */
+            fb_B_e_rd_addr = fb_back_rd_addr;
+            fb_B_o_rd_addr = fb_back_rd_addr;
+            fb_B_e_wr_addr = fb_wr_addr;
+            fb_B_o_wr_addr = fb_wr_addr;
+            fb_B_e_wr_data = fb_wr_data;
+            fb_B_o_wr_data = fb_wr_data;
+            fb_B_e_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
+            fb_B_o_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
+            z_B_e_rd_addr  = z_rd_addr;
+            z_B_o_rd_addr  = z_rd_addr;
+            z_B_e_wr_addr  = z_wr_addr;
+            z_B_o_wr_addr  = z_wr_addr;
+            z_B_e_wr_data  = z_wr_data;
+            z_B_o_wr_data  = z_wr_data;
+            z_B_e_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b0);
+            z_B_o_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b1);
         end else if (flush_cache_sel == 1'b1 && flush_active) begin
-            /* B is being flushed → flush reads */
-            fb_B_rd_addr = flush_maint_addr;
-            fb_B_wr_addr = 16'd0;
-            fb_B_wr_data = 16'd0;
-            fb_B_wr_en   = 1'b0;
-            z_B_rd_addr  = flush_maint_addr;
-            z_B_wr_addr  = 16'd0;
-            z_B_wr_data  = 16'd0;
-            z_B_wr_en    = 1'b0;
+            /* B is being flushed: flush reads. */
+            fb_B_e_rd_addr = flush_maint_addr;
+            fb_B_o_rd_addr = flush_maint_addr;
+            fb_B_e_wr_addr = 16'd0;
+            fb_B_o_wr_addr = 16'd0;
+            fb_B_e_wr_data = 16'd0;
+            fb_B_o_wr_data = 16'd0;
+            fb_B_e_wr_en   = 1'b0;
+            fb_B_o_wr_en   = 1'b0;
+            z_B_e_rd_addr  = flush_maint_addr;
+            z_B_o_rd_addr  = flush_maint_addr;
+            z_B_e_wr_addr  = 16'd0;
+            z_B_o_wr_addr  = 16'd0;
+            z_B_e_wr_data  = 16'd0;
+            z_B_o_wr_data  = 16'd0;
+            z_B_e_wr_en    = 1'b0;
+            z_B_o_wr_en    = 1'b0;
         end else begin
             /* B is idle */
-            fb_B_rd_addr = 16'd0;
-            fb_B_wr_addr = 16'd0;
-            fb_B_wr_data = 16'd0;
-            fb_B_wr_en   = 1'b0;
-            z_B_rd_addr  = 16'd0;
-            z_B_wr_addr  = 16'd0;
-            z_B_wr_data  = 16'd0;
-            z_B_wr_en    = 1'b0;
+            fb_B_e_rd_addr = 16'd0;
+            fb_B_o_rd_addr = 16'd0;
+            fb_B_e_wr_addr = 16'd0;
+            fb_B_o_wr_addr = 16'd0;
+            fb_B_e_wr_data = 16'd0;
+            fb_B_o_wr_data = 16'd0;
+            fb_B_e_wr_en   = 1'b0;
+            fb_B_o_wr_en   = 1'b0;
+            z_B_e_rd_addr  = 16'd0;
+            z_B_o_rd_addr  = 16'd0;
+            z_B_e_wr_addr  = 16'd0;
+            z_B_o_wr_addr  = 16'd0;
+            z_B_e_wr_data  = 16'd0;
+            z_B_o_wr_data  = 16'd0;
+            z_B_e_wr_en    = 1'b0;
+            z_B_o_wr_en    = 1'b0;
         end
     end
 
@@ -2314,6 +2427,10 @@ module voxel_gpu (
             sdram_wr_load_pulse <= 1'b0;
             /* Ping-pong cache reset */
             draw_cache_sel <= 1'b0;
+            fb_A_rd_sel_q <= 1'b0;
+            fb_B_rd_sel_q <= 1'b0;
+            z_A_rd_sel_q <= 1'b0;
+            z_B_rd_sel_q <= 1'b0;
             flush_active <= 1'b0;
             flush_maint_addr <= 16'd0;
             flush_pixels_total <= 16'd0;
@@ -2363,6 +2480,10 @@ module voxel_gpu (
             sdram_rd_load_stretch_req <= 1'b0;
             scan_rd_capture <= scan_rd_pop;
             cache_rd_capture <= cache_rd_pop;
+            fb_A_rd_sel_q <= fb_A_e_rd_addr[0];
+            fb_B_rd_sel_q <= fb_B_e_rd_addr[0];
+            z_A_rd_sel_q <= z_A_e_rd_addr[0];
+            z_B_rd_sel_q <= z_B_e_rd_addr[0];
 
             /*
              * Whenever a stretched pulse is requested (sampled here as the

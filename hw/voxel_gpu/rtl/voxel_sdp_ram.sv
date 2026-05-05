@@ -76,23 +76,33 @@ endmodule
  * voxel_banked_sdp_ram
  * --------------------
  * Splits the array into an even-x bank and an odd-x bank using addr[0],
- * each implemented by a simple-dual-port voxel_sdp_ram.
+ * each implemented by a simple-dual-port voxel_sdp_ram. Both banks are
+ * exposed independently through per-bank read and write ports:
  *
- * For step 2 of the 2 px/cycle project, the wrapper exposes the original
- * 1R/1W external interface (rd_addr/rd_data/wr_addr/wr_data/wr_en).
- * Internally it routes the write to the matching bank via wr_addr[0] and
- * picks the read result via a 1-cycle-delayed rd_addr[0] mux that lines
- * up with the underlying altsyncram's 1-cycle read latency. Functionally
- * this is identical to a single SDP RAM of the original depth.
+ *     rd_addr_e / rd_data_e   -- even bank (linear addr LSB == 0)
+ *     rd_addr_o / rd_data_o   -- odd  bank (linear addr LSB == 1)
+ *     wr_addr_e / wr_data_e / wr_en_e
+ *     wr_addr_o / wr_data_o / wr_en_o
  *
- * For step 4 (lane duplication), the wrapper will be extended to also
- * expose independent per-bank ports so the rasterizer can issue an
- * even-x and an odd-x read+write in the same cycle without going through
- * the unified mux. The two SDP backing RAMs are already separate
- * hardware -- step 4 is purely an API change at this wrapper.
+ * The caller passes LINEAR addresses (full ADDR_W bits) on each port;
+ * the wrapper internally indexes the bank with addr[ADDR_W-1:1]. The
+ * caller is responsible for steering each port to the bank whose LSB
+ * matches: in particular, writes that target the even bank must arrive
+ * on `wr_addr_e/wr_data_e/wr_en_e` (and likewise for odd). Mismatched
+ * accesses silently land at the wrong physical entry — the LSB is
+ * dropped during the bank-internal indexing.
+ *
+ * For 1 px/cycle paths the caller can tie both banks' addresses to the
+ * same linear value, qualify each `wr_en_*` by linear `addr[0]`, and
+ * pick the right `rd_data_*` using a 1-cycle-delayed LSB of the read
+ * address (the underlying altsyncram has 1-cycle read latency, so the
+ * delayed LSB picks whichever bank actually held the requested entry).
+ *
+ * For 2 px/cycle paths each lane drives its own bank's port directly,
+ * with no output mux needed.
  *
  * M10K-neutral: 40,960 entries split into 2x20,480 packs into the same
- * total M10K count Quartus already produces for the unbanked instance.
+ * total M10K count Quartus already produces for an unbanked instance.
  */
 module voxel_banked_sdp_ram #(
     parameter int DATA_W = 16,
@@ -100,21 +110,22 @@ module voxel_banked_sdp_ram #(
     parameter int DEPTH  = 40960   // total depth across both banks; must be even
 ) (
     input  logic                clk,
-    input  logic [ADDR_W-1:0]   rd_addr,
-    output logic [DATA_W-1:0]   rd_data,
-    input  logic [ADDR_W-1:0]   wr_addr,
-    input  logic [DATA_W-1:0]   wr_data,
-    input  logic                wr_en
+    // Per-bank read ports. Address is the LINEAR address; only bits
+    // [ADDR_W-1:1] index the bank.
+    input  logic [ADDR_W-1:0]   rd_addr_e,
+    output logic [DATA_W-1:0]   rd_data_e,
+    input  logic [ADDR_W-1:0]   rd_addr_o,
+    output logic [DATA_W-1:0]   rd_data_o,
+    // Per-bank write ports. Same address convention as the read ports.
+    input  logic [ADDR_W-1:0]   wr_addr_e,
+    input  logic [DATA_W-1:0]   wr_data_e,
+    input  logic                wr_en_e,
+    input  logic [ADDR_W-1:0]   wr_addr_o,
+    input  logic [DATA_W-1:0]   wr_data_o,
+    input  logic                wr_en_o
 );
     localparam int BANK_ADDR_W = ADDR_W - 1;
     localparam int BANK_DEPTH  = DEPTH / 2;
-
-    logic [DATA_W-1:0] rd_data_even, rd_data_odd;
-    logic              rd_sel_q;
-
-    always_ff @(posedge clk) rd_sel_q <= rd_addr[0];
-
-    assign rd_data = rd_sel_q ? rd_data_odd : rd_data_even;
 
     voxel_sdp_ram #(
         .DATA_W(DATA_W),
@@ -122,11 +133,11 @@ module voxel_banked_sdp_ram #(
         .DEPTH(BANK_DEPTH)
     ) bank_even (
         .clk     (clk),
-        .rd_addr (rd_addr[ADDR_W-1:1]),
-        .rd_data (rd_data_even),
-        .wr_addr (wr_addr[ADDR_W-1:1]),
-        .wr_data (wr_data),
-        .wr_en   (wr_en && (wr_addr[0] == 1'b0))
+        .rd_addr (rd_addr_e[ADDR_W-1:1]),
+        .rd_data (rd_data_e),
+        .wr_addr (wr_addr_e[ADDR_W-1:1]),
+        .wr_data (wr_data_e),
+        .wr_en   (wr_en_e)
     );
 
     voxel_sdp_ram #(
@@ -135,10 +146,10 @@ module voxel_banked_sdp_ram #(
         .DEPTH(BANK_DEPTH)
     ) bank_odd (
         .clk     (clk),
-        .rd_addr (rd_addr[ADDR_W-1:1]),
-        .rd_data (rd_data_odd),
-        .wr_addr (wr_addr[ADDR_W-1:1]),
-        .wr_data (wr_data),
-        .wr_en   (wr_en && (wr_addr[0] == 1'b1))
+        .rd_addr (rd_addr_o[ADDR_W-1:1]),
+        .rd_data (rd_data_o),
+        .wr_addr (wr_addr_o[ADDR_W-1:1]),
+        .wr_data (wr_data_o),
+        .wr_en   (wr_en_o)
     );
 endmodule

@@ -450,12 +450,214 @@ module voxel_gpu (
     logic [15:0] commit_addr;
     logic [15:0] commit_z;
     logic [15:0] commit_color;
+
+    /* Odd lane for the 2 px/cycle raster pipe. Existing unsuffixed
+     * registers are lane0/even; `_o` registers carry lane1/odd. */
+    logic        pipe0_valid_o;
+    logic        pipe0_inside_o;
+    logic        pipe0_ztest_o;
+    logic        pipe0_textured_o;
+    logic        pipe0_alpha_key_o;
+    logic  [1:0] pipe0_alpha_o;
+    logic        pipe0_fog_o;
+    logic  [1:0] pipe0_light_bank_o;
+    logic  [7:0] pipe0_tex_or_color_o;
+    logic [15:0] pipe0_addr_o;
+    logic [15:0] pipe0_z_o;
+    logic  [9:0] pipe0_x_o;
+    logic  [8:0] pipe0_y_o;
+    logic signed [31:0] pipe0_uw_q_o;
+    logic signed [31:0] pipe0_vw_q_o;
+    logic [31:0] pipe0_iw_q_o;
+    logic        recip0_valid_o;
+    logic        recip0_inside_o;
+    logic        recip0_ztest_o;
+    logic        recip0_textured_o;
+    logic        recip0_alpha_key_o;
+    logic  [1:0] recip0_alpha_o;
+    logic        recip0_fog_o;
+    logic  [1:0] recip0_light_bank_o;
+    logic  [7:0] recip0_tex_or_color_o;
+    logic [15:0] recip0_addr_o;
+    logic [15:0] recip0_z_o;
+    logic  [9:0] recip0_x_o;
+    logic  [8:0] recip0_y_o;
+    logic signed [31:0] recip0_uw_q_o;
+    logic signed [31:0] recip0_vw_q_o;
+    logic        recip0_iw_zero_o;
+    logic  [5:0] recip0_iw_msb_o;
+    logic [31:0] recip0_iw_norm_q_o;
+    logic        recip1_valid_o;
+    logic        recip1_inside_o;
+    logic        recip1_ztest_o;
+    logic        recip1_textured_o;
+    logic        recip1_alpha_key_o;
+    logic  [1:0] recip1_alpha_o;
+    logic        recip1_fog_o;
+    logic  [1:0] recip1_light_bank_o;
+    logic  [7:0] recip1_tex_or_color_o;
+    logic [15:0] recip1_addr_o;
+    logic [15:0] recip1_z_o;
+    logic [15:0] recip1_z_ref_o;
+    logic [15:0] recip1_dst_rgb565_o;
+    logic  [9:0] recip1_x_o;
+    logic  [8:0] recip1_y_o;
+    logic signed [31:0] recip1_uw_q_o;
+    logic signed [31:0] recip1_vw_q_o;
+    logic        recip1_iw_zero_o;
+    logic  [5:0] recip1_iw_msb_o;
+    logic  [5:0] recip1_iw_lut_frac_o;
+    logic [31:0] recip1_w_norm_lo_o;
+    logic [31:0] recip1_w_norm_hi_o;
+    logic        recip2_valid_o;
+    logic        recip2_inside_o;
+    logic        recip2_ztest_o;
+    logic        recip2_textured_o;
+    logic        recip2_alpha_key_o;
+    logic  [1:0] recip2_alpha_o;
+    logic        recip2_fog_o;
+    logic  [1:0] recip2_light_bank_o;
+    logic  [7:0] recip2_tex_or_color_o;
+    logic [15:0] recip2_addr_o;
+    logic [15:0] recip2_z_o;
+    logic [15:0] recip2_z_ref_o;
+    logic [15:0] recip2_dst_rgb565_o;
+    logic  [9:0] recip2_x_o;
+    logic  [8:0] recip2_y_o;
+    logic signed [31:0] recip2_uw_q_o;
+    logic signed [31:0] recip2_vw_q_o;
+    logic        recip2_iw_zero_o;
+    logic  [5:0] recip2_iw_msb_o;
+    logic [31:0] recip2_w_norm_q_o;
+    logic        pipe1_valid_o;
+    logic        pipe1_inside_o;
+    logic        pipe1_ztest_o;
+    logic        pipe1_textured_o;
+    logic        pipe1_alpha_key_o;
+    logic  [1:0] pipe1_alpha_o;
+    logic        pipe1_fog_o;
+    logic  [1:0] pipe1_light_bank_o;
+    logic  [7:0] pipe1_tex_or_color_o;
+    logic [15:0] pipe1_addr_o;
+    logic [15:0] pipe1_z_o;
+    logic [15:0] pipe1_z_ref_o;
+    logic [15:0] pipe1_dst_rgb565_o;
+    logic  [9:0] pipe1_x_o;
+    logic  [8:0] pipe1_y_o;
+    logic signed [31:0] pipe1_uw_q_o;
+    logic signed [31:0] pipe1_vw_q_o;
+    logic [31:0] pipe1_w_q_o;
+    logic        tex0_valid_o;
+    logic        tex0_inside_o;
+    logic        tex0_ztest_o;
+    logic        tex0_textured_o;
+    logic        tex0_alpha_key_o;
+    logic  [1:0] tex0_alpha_o;
+    logic        tex0_fog_o;
+    logic  [1:0] tex0_light_bank_o;
+    logic  [7:0] tex0_tex_or_color_o;
+    logic [15:0] tex0_addr_o;
+    logic [15:0] tex0_z_o;
+    logic [15:0] tex0_z_ref_o;
+    logic [15:0] tex0_dst_rgb565_o;
+    logic  [9:0] tex0_x_o;
+    logic  [8:0] tex0_y_o;
+    logic [31:0] tex0_w_q_o;
+    logic signed [63:0] tex0_u_prod_o;
+    logic signed [63:0] tex0_v_prod_o;
+    logic        pipe2_valid_o;
+    logic        pipe2_inside_o;
+    logic        pipe2_ztest_o;
+    logic        pipe2_textured_o;
+    logic        pipe2_alpha_key_o;
+    logic  [1:0] pipe2_alpha_o;
+    logic        pipe2_fog_o;
+    logic  [1:0] pipe2_light_bank_o;
+    logic  [7:0] pipe2_tex_or_color_o;
+    logic [15:0] pipe2_addr_o;
+    logic [15:0] pipe2_z_o;
+    logic [15:0] pipe2_z_ref_o;
+    logic [15:0] pipe2_dst_rgb565_o;
+    logic  [9:0] pipe2_x_o;
+    logic  [8:0] pipe2_y_o;
+    logic [31:0] pipe2_w_q_o;
+    logic [13:0] pipe2_tex_addr_o;
+    logic        draw_pipe_valid_o;
+    logic        draw_pipe_inside_o;
+    logic        draw_pipe_ztest_o;
+    logic        draw_pipe_textured_o;
+    logic        draw_pipe_alpha_key_o;
+    logic  [1:0] draw_pipe_alpha_o;
+    logic        draw_pipe_fog_o;
+    logic  [1:0] draw_pipe_light_bank_o;
+    logic  [7:0] draw_pipe_tex_or_color_o;
+    logic [15:0] draw_pipe_addr_o;
+    logic [15:0] draw_pipe_z_o;
+    logic [15:0] draw_pipe_z_ref_o;
+    logic [15:0] draw_pipe_dst_rgb565_o;
+    logic  [9:0] draw_pipe_x_o;
+    logic  [8:0] draw_pipe_y_o;
+    logic [31:0] draw_pipe_w_q_o;
+    logic        pal_rd_valid_o;
+    logic        pal_rd_pass_o;
+    logic        pal_rd_ztest_o;
+    logic  [1:0] pal_rd_alpha_o;
+    logic        pal_rd_fog_o;
+    logic [15:0] pal_rd_addr_o;
+    logic [15:0] pal_rd_z_o;
+    logic  [7:0] pal_rd_src_addr_o;
+    logic  [7:0] pal_rd_fog_addr_o;
+    logic [15:0] pal_rd_dst_rgb565_o;
+    logic [31:0] pal_rd_w_q_o;
+    logic [33:0] pal_rd_ray_scale_q16_o;
+    logic        plr_valid_o;
+    logic        plr_pass_o;
+    logic        plr_ztest_o;
+    logic  [1:0] plr_alpha_o;
+    logic        plr_fog_o;
+    logic [15:0] plr_addr_o;
+    logic [15:0] plr_z_o;
+    logic [23:0] plr_src_rgb_o;
+    logic [15:0] plr_dst_rgb565_o;
+    logic [23:0] plr_fog_rgb_o;
+    logic [31:0] plr_w_q_o;
+    logic [33:0] plr_ray_scale_q16_o;
+    logic        fog0_valid_o;
+    logic        fog0_pass_o;
+    logic        fog0_ztest_o;
+    logic  [1:0] fog0_alpha_o;
+    logic        fog0_fog_o;
+    logic [15:0] fog0_addr_o;
+    logic [15:0] fog0_z_o;
+    logic [15:0] fog0_src_rgb565_o;
+    logic [15:0] fog0_dst_rgb565_o;
+    logic [15:0] fog0_fog_rgb565_o;
+    logic [31:0] fog0_w_q_o;
+    logic [33:0] fog0_ray_scale_q16_o;
+    logic        fog1_valid_o;
+    logic        fog1_pass_o;
+    logic        fog1_ztest_o;
+    logic  [1:0] fog1_alpha_o;
+    logic        fog1_fog_o;
+    logic [15:0] fog1_addr_o;
+    logic [15:0] fog1_z_o;
+    logic [15:0] fog1_src_rgb565_o;
+    logic [15:0] fog1_dst_rgb565_o;
+    logic [15:0] fog1_fog_rgb565_o;
+    logic [15:0] fog1_radial_q8_8_o;
+    logic        commit_valid_o;
+    logic        commit_pass_o;
+    logic        commit_ztest_o;
+    logic [15:0] commit_addr_o;
+    logic [15:0] commit_z_o;
+    logic [15:0] commit_color_o;
     // tex_rd_data is driven combinationally by voxel_texture_rom's
     // registered output. The ROM takes pipe2_tex_addr on cycle T and
     // presents mem[pipe2_tex_addr[T]] on cycle T+1, which is the same
     // 1-cycle latency the draw_pipe stage expects (see the instance
     // below and the voxel_texture_rom module header for rationale).
     wire   [7:0] tex_rd_data;
+    wire   [7:0] tex_rd_data_o;
 
     logic [10:0] hcount;
     logic  [9:0] vcount;
@@ -464,16 +666,31 @@ module voxel_gpu (
     logic [15:0] scan_rgb565_r;
     logic        scan_visible_r;
     logic [15:0] draw_addr;
+    logic [15:0] draw_addr_o;
     logic [15:0] fb_back_rd_addr;
+    logic [15:0] fb_back_rd_addr_o;
     // fb_back_rd_data is now a wire driven by the ping-pong cache mux
     logic [15:0] fb_wr_addr;
     logic [15:0] fb_wr_data;
     logic        fb_back_wr_en;
+    logic [15:0] fb_wr_addr_e;
+    logic [15:0] fb_wr_data_e;
+    logic        fb_back_wr_en_e;
+    logic [15:0] fb_wr_addr_o;
+    logic [15:0] fb_wr_data_o;
+    logic        fb_back_wr_en_o;
     logic [15:0] z_rd_addr;
+    logic [15:0] z_rd_addr_o;
     // z_rd_data is now a wire driven by the ping-pong cache mux
     logic [15:0] z_wr_addr;
     logic [15:0] z_wr_data;
     logic        z_wr_en;
+    logic [15:0] z_wr_addr_e;
+    logic [15:0] z_wr_data_e;
+    logic        z_wr_en_e;
+    logic [15:0] z_wr_addr_o;
+    logic [15:0] z_wr_data_o;
+    logic        z_wr_en_o;
 
     (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] scan_linebuf0 [0:LINE_WORDS-1];
     (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] scan_linebuf1 [0:LINE_WORDS-1];
@@ -888,6 +1105,10 @@ module voxel_gpu (
     /* Rasterizer read data from active cache */
     wire [15:0] fb_back_rd_data = draw_cache_sel ? fb_B_rd_data : fb_A_rd_data;
     wire [15:0] z_rd_data       = draw_cache_sel ? z_B_rd_data  : z_A_rd_data;
+    wire [15:0] fb_draw_rd_data_e = draw_cache_sel ? fb_B_e_rd_data : fb_A_e_rd_data;
+    wire [15:0] fb_draw_rd_data_o = draw_cache_sel ? fb_B_o_rd_data : fb_A_o_rd_data;
+    wire [15:0] z_draw_rd_data_e  = draw_cache_sel ? z_B_e_rd_data  : z_A_e_rd_data;
+    wire [15:0] z_draw_rd_data_o  = draw_cache_sel ? z_B_o_rd_data  : z_A_o_rd_data;
     /* Flush read data from flush_cache_sel's cache */
     wire [15:0] flush_fb_rd_data = flush_cache_sel ? fb_B_rd_data : fb_A_rd_data;
 
@@ -937,7 +1158,10 @@ module voxel_gpu (
     wire signed [31:0] desc_iw_dx   = $signed(desc_words[23]);
     wire signed [31:0] desc_iw_dy   = $signed(desc_words[24]);
 
-    wire signed [10:0] setup_start_x = $signed({1'b0, draw_x_min});
+    wire [9:0] desc_x_start_even = {desc_x_min[9:1], 1'b0};
+    wire [9:0] draw_x_start_even = {draw_x_min[9:1], 1'b0};
+    wire [9:0] draw_x_next = draw_x_cur + 10'd1;
+    wire signed [10:0] setup_start_x = $signed({1'b0, draw_x_start_even});
     wire signed  [9:0] setup_start_y = $signed({1'b0, draw_y_min});
     /*
      * Keep the whole edge-function expression in signed arithmetic.
@@ -963,42 +1187,109 @@ module voxel_gpu (
     wire signed [63:0] edge_eval3 = edge_ax3 + edge_by3 + edge_c3;
     wire draw_inside = (edge_cur_val[0] >= 0) && (edge_cur_val[1] >= 0) &&
                        (edge_cur_val[2] >= 0) && (edge_cur_val[3] >= 0);
+    wire signed [63:0] edge_cur_val_o0 = edge_cur_val[0] + edge_A[0];
+    wire signed [63:0] edge_cur_val_o1 = edge_cur_val[1] + edge_A[1];
+    wire signed [63:0] edge_cur_val_o2 = edge_cur_val[2] + edge_A[2];
+    wire signed [63:0] edge_cur_val_o3 = edge_cur_val[3] + edge_A[3];
+    wire draw_inside_o_edge = (edge_cur_val_o0 >= 0) &&
+                              (edge_cur_val_o1 >= 0) &&
+                              (edge_cur_val_o2 >= 0) &&
+                              (edge_cur_val_o3 >= 0);
+    wire draw_lane0_in_bounds = (draw_x_cur >= draw_x_min) &&
+                                (draw_x_cur <= draw_x_max);
+    wire draw_lane1_in_bounds = (draw_x_next >= draw_x_min) &&
+                                (draw_x_next <= draw_x_max);
+    wire draw_inside_lane0 = draw_inside && draw_lane0_in_bounds;
+    wire draw_inside_lane1 = draw_inside_o_edge && draw_lane1_in_bounds;
+    wire draw_pair_edge_inside = draw_inside || draw_inside_o_edge;
+    wire draw_pair_exited = draw_row_inside && !draw_inside && !draw_inside_o_edge;
+    wire draw_pair_last = (draw_x_next >= draw_x_max);
     wire [15:0] draw_z_value = clamp_z(z_cur_val);
+    wire signed [47:0] draw_dz_dx_ext = {{32{draw_dz_dx[15]}}, draw_dz_dx};
+    wire signed [63:0] draw_uw_dx_ext = {{32{draw_uw_dx[31]}}, draw_uw_dx};
+    wire signed [63:0] draw_vw_dx_ext = {{32{draw_vw_dx[31]}}, draw_vw_dx};
+    wire signed [63:0] draw_iw_dx_ext = {{32{draw_iw_dx[31]}}, draw_iw_dx};
+    wire signed [47:0] draw_z_start_val =
+        $signed({32'd0, draw_z0}) - (draw_x_min[0] ? draw_dz_dx_ext : 48'sd0);
+    wire signed [63:0] draw_uw_start_val =
+        $signed({{32{draw_uw_0[31]}}, draw_uw_0}) -
+        (draw_x_min[0] ? draw_uw_dx_ext : 64'sd0);
+    wire signed [63:0] draw_vw_start_val =
+        $signed({{32{draw_vw_0[31]}}, draw_vw_0}) -
+        (draw_x_min[0] ? draw_vw_dx_ext : 64'sd0);
+    wire signed [63:0] draw_iw_start_val =
+        $signed({{32{draw_iw_0[31]}}, draw_iw_0}) -
+        (draw_x_min[0] ? draw_iw_dx_ext : 64'sd0);
+    wire [15:0] draw_z_value_o = clamp_z(z_cur_val + draw_dz_dx_ext);
     wire [2:0]  draw_band_index = y_to_band(draw_y_cur);
     wire        draw_cache_hit = cache_valid && (cache_band_index == draw_band_index);
-    wire [15:0] draw_x_offset = {6'd0, draw_x_cur} - {6'd0, draw_x_min};
+    wire [15:0] draw_x_offset = {6'd0, draw_x_cur} - {6'd0, draw_x_start_even};
     wire [15:0] draw_cache_addr = draw_row_base + draw_x_offset;
+    wire [15:0] draw_cache_addr_o = draw_cache_addr + 16'd1;
     wire signed [31:0] draw_uw_q = clamp_s32(uw_cur_val);
     wire signed [31:0] draw_vw_q = clamp_s32(vw_cur_val);
     wire [31:0] draw_iw_q = clamp_pos_u32(iw_cur_val);
+    wire signed [31:0] draw_uw_q_o = clamp_s32(uw_cur_val + draw_uw_dx_ext);
+    wire signed [31:0] draw_vw_q_o = clamp_s32(vw_cur_val + draw_vw_dx_ext);
+    wire [31:0] draw_iw_q_o = clamp_pos_u32(iw_cur_val + draw_iw_dx_ext);
     wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
     wire [31:0] pipe0_iw_norm_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
                                   (pipe0_iw_msb >= 6'd16) ?
                                   (pipe0_iw_q >> (pipe0_iw_msb - 6'd16)) :
                                   (pipe0_iw_q << (6'd16 - pipe0_iw_msb));
+    wire [5:0] pipe0_iw_msb_o = msb_index32(pipe0_iw_q_o);
+    wire [31:0] pipe0_iw_norm_q_o = (pipe0_iw_q_o == 32'd0) ? 32'd0 :
+                                    (pipe0_iw_msb_o >= 6'd16) ?
+                                    (pipe0_iw_q_o >> (pipe0_iw_msb_o - 6'd16)) :
+                                    (pipe0_iw_q_o << (6'd16 - pipe0_iw_msb_o));
     wire [15:0] recip0_iw_phase = recip0_iw_norm_q[15:0];
     wire [10:0] recip0_iw_lut_idx = {1'b0, recip0_iw_phase[15:6]};
     wire [5:0] recip0_iw_lut_frac = recip0_iw_phase[5:0];
+    wire [15:0] recip0_iw_phase_o = recip0_iw_norm_q_o[15:0];
+    wire [10:0] recip0_iw_lut_idx_o = {1'b0, recip0_iw_phase_o[15:6]};
+    wire [5:0] recip0_iw_lut_frac_o = recip0_iw_phase_o[5:0];
     wire [31:0] recip1_w_norm_delta = recip1_w_norm_lo - recip1_w_norm_hi;
     wire [37:0] recip1_w_interp_prod = recip1_w_norm_delta * recip1_iw_lut_frac;
     wire [37:0] recip1_w_interp_step_ext = (recip1_w_interp_prod + 38'd32) >> 6;
     wire [31:0] recip1_w_interp_step = recip1_w_interp_step_ext[31:0];
     wire [31:0] recip1_w_norm_q = recip1_w_norm_lo - recip1_w_interp_step;
+    wire [31:0] recip1_w_norm_delta_o = recip1_w_norm_lo_o - recip1_w_norm_hi_o;
+    wire [37:0] recip1_w_interp_prod_o = recip1_w_norm_delta_o * recip1_iw_lut_frac_o;
+    wire [37:0] recip1_w_interp_step_ext_o = (recip1_w_interp_prod_o + 38'd32) >> 6;
+    wire [31:0] recip1_w_interp_step_o = recip1_w_interp_step_ext_o[31:0];
+    wire [31:0] recip1_w_norm_q_o = recip1_w_norm_lo_o - recip1_w_interp_step_o;
     wire [31:0] recip2_w_q = recip2_iw_zero ? 32'd0 :
                              (recip2_iw_msb >= 6'd16) ?
                              (recip2_w_norm_q >> (recip2_iw_msb - 6'd16)) :
                              (recip2_w_norm_q << (6'd16 - recip2_iw_msb));
+    wire [31:0] recip2_w_q_o = recip2_iw_zero_o ? 32'd0 :
+                               (recip2_iw_msb_o >= 6'd16) ?
+                               (recip2_w_norm_q_o >> (recip2_iw_msb_o - 6'd16)) :
+                               (recip2_w_norm_q_o << (6'd16 - recip2_iw_msb_o));
     wire signed [63:0] pipe1_u_prod = $signed(pipe1_uw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
+    wire signed [63:0] pipe1_u_prod_o = $signed(pipe1_uw_q_o) * $signed(pipe1_w_q_o);
+    wire signed [63:0] pipe1_v_prod_o = $signed(pipe1_vw_q_o) * $signed(pipe1_w_q_o);
     wire tex0_repeat_uv = tex0_tex_or_color[6];
     wire [3:0] tex0_tex_u = texture_coord(tex0_u_prod, tex0_repeat_uv);
     wire [3:0] tex0_tex_v = texture_coord(tex0_v_prod, tex0_repeat_uv);
     wire [13:0] tex0_tex_addr = tex0_textured ?
                                  {tex0_tex_or_color[5:0], tex0_tex_v, tex0_tex_u} :
                                  14'd0;
+    wire tex0_repeat_uv_o = tex0_tex_or_color_o[6];
+    wire [3:0] tex0_tex_u_o = texture_coord(tex0_u_prod_o, tex0_repeat_uv_o);
+    wire [3:0] tex0_tex_v_o = texture_coord(tex0_v_prod_o, tex0_repeat_uv_o);
+    wire [13:0] tex0_tex_addr_o = tex0_textured_o ?
+                                   {tex0_tex_or_color_o[5:0], tex0_tex_v_o, tex0_tex_u_o} :
+                                   14'd0;
     wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
     wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
+    wire  [7:0] draw_pipe_raw_color_o =
+        draw_pipe_textured_o ? tex_rd_data_o : draw_pipe_tex_or_color_o;
+    wire  [7:0] draw_pipe_color_o =
+        apply_light_bank(draw_pipe_raw_color_o, draw_pipe_light_bank_o);
     wire  [7:0] palette_src_addr = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color;
+    wire  [7:0] palette_src_addr_o = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color_o;
     /* Palette reads for the draw pipeline are sampled into plr_* one
      * cycle before fog0 (see the plr_* register block). The
      * rgb888_to_rgb565 conversion is cheap bit slicing, so we leave it
@@ -1007,6 +1298,8 @@ module voxel_gpu (
      * cycle. */
     wire [15:0] plr_src_rgb565 = rgb888_to_rgb565(plr_src_rgb);
     wire [15:0] plr_fog_rgb565 = rgb888_to_rgb565(plr_fog_rgb);
+    wire [15:0] plr_src_rgb565_o = rgb888_to_rgb565(plr_src_rgb_o);
+    wire [15:0] plr_fog_rgb565_o = rgb888_to_rgb565(plr_fog_rgb_o);
 
     /* Separate combinational reads used by clear/cache-init paths, which write
      * background colors straight to the local band cache and do not go through
@@ -1021,6 +1314,9 @@ module voxel_gpu (
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
                                  (draw_pipe_raw_color == 8'd0);
+    wire draw_pipe_transparent_o = draw_pipe_textured_o &&
+                                   draw_pipe_alpha_key_o &&
+                                   (draw_pipe_raw_color_o == 8'd0);
     /*
      * Radial distance estimate: starting from the per-pixel w (linear depth
      * along the camera forward axis) we scale by sqrt(1 + r^2/f^2) where r is
@@ -1041,9 +1337,23 @@ module voxel_gpu (
     wire [31:0] draw_pipe_r2_q16 = draw_pipe_r2_prod[31:0];
     wire [33:0] draw_pipe_ray_scale_q16 =
         34'd65536 + (({2'b00, draw_pipe_r2_q16} * 3'd3) >> 3);
+    wire signed [11:0] draw_pipe_dx_center_o =
+        $signed({1'b0, draw_pipe_x_o}) - 12'sd320;
+    wire signed [10:0] draw_pipe_dy_center_o =
+        11'sd240 - $signed({1'b0, draw_pipe_y_o});
+    wire [23:0] draw_pipe_dx_sq_o = draw_pipe_dx_center_o * draw_pipe_dx_center_o;
+    wire [23:0] draw_pipe_dy_sq_o = draw_pipe_dy_center_o * draw_pipe_dy_center_o;
+    wire [24:0] draw_pipe_radius_sq_o = draw_pipe_dx_sq_o + draw_pipe_dy_sq_o;
+    wire [40:0] draw_pipe_r2_prod_o = draw_pipe_radius_sq_o * fog_inv_proj_sq;
+    wire [31:0] draw_pipe_r2_q16_o = draw_pipe_r2_prod_o[31:0];
+    wire [33:0] draw_pipe_ray_scale_q16_o =
+        34'd65536 + (({2'b00, draw_pipe_r2_q16_o} * 3'd3) >> 3);
     wire [65:0] fog0_radial_prod = fog0_w_q * fog0_ray_scale_q16;
     wire [31:0] fog0_radial_q16 = fog0_radial_prod[47:16];
     wire [15:0] fog0_radial_q8_8 = fog0_radial_q16[23:8];
+    wire [65:0] fog0_radial_prod_o = fog0_w_q_o * fog0_ray_scale_q16_o;
+    wire [31:0] fog0_radial_q16_o = fog0_radial_prod_o[47:16];
+    wire [15:0] fog0_radial_q8_8_o = fog0_radial_q16_o[23:8];
 
     wire [15:0] fog_dist_span = fog_end_dist - fog_start_dist;
     wire [15:0] fog_dq1 = fog_start_dist + (fog_dist_span >> 2);
@@ -1055,6 +1365,12 @@ module voxel_gpu (
                            (fog1_radial_q8_8 > fog_start_dist);
     wire fog1_fog_full = fog1_fog_active &&
                          (fog1_radial_q8_8 >= fog_end_dist);
+    wire fog1_fog_active_o = fog_enable &&
+                             fog1_fog_o &&
+                             (fog_end_dist > fog_start_dist) &&
+                             (fog1_radial_q8_8_o > fog_start_dist);
+    wire fog1_fog_full_o = fog1_fog_active_o &&
+                           (fog1_radial_q8_8_o >= fog_end_dist);
     // Map active fog depth into the 4-level blend_rgb565 alpha scale
     // (0=no fog, 1=25%, 2=50%, 3=75%). Pixels past fog_end_dist bypass the
     // blend entirely and take the fog color directly.
@@ -1063,15 +1379,29 @@ module voxel_gpu (
         fog1_fog_full    ? 2'd0 :
         (fog1_radial_q8_8 < fog_dq1) ? 2'd1 :
         (fog1_radial_q8_8 < fog_dq2) ? 2'd2 : 2'd3;
+    wire [1:0] fog1_fog_alpha_o =
+        !fog1_fog_active_o ? 2'd0 :
+        fog1_fog_full_o    ? 2'd0 :
+        (fog1_radial_q8_8_o < fog_dq1) ? 2'd1 :
+        (fog1_radial_q8_8_o < fog_dq2) ? 2'd2 : 2'd3;
     wire [15:0] fog1_fog_blended =
         blend_rgb565(fog1_src_rgb565, fog1_fog_rgb565, fog1_fog_alpha);
     wire [15:0] fog1_fogged_rgb565 =
         fog1_fog_full ? fog1_fog_rgb565 : fog1_fog_blended;
     wire [15:0] fog1_out_rgb565 =
         blend_rgb565(fog1_fogged_rgb565, fog1_dst_rgb565, fog1_alpha);
+    wire [15:0] fog1_fog_blended_o =
+        blend_rgb565(fog1_src_rgb565_o, fog1_fog_rgb565_o, fog1_fog_alpha_o);
+    wire [15:0] fog1_fogged_rgb565_o =
+        fog1_fog_full_o ? fog1_fog_rgb565_o : fog1_fog_blended_o;
+    wire [15:0] fog1_out_rgb565_o =
+        blend_rgb565(fog1_fogged_rgb565_o, fog1_dst_rgb565_o, fog1_alpha_o);
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));
+    wire draw_commit_pass_o = draw_pipe_inside_o &&
+                              !draw_pipe_transparent_o &&
+                              (!draw_pipe_ztest_o || (draw_pipe_z_o < draw_pipe_z_ref_o));
     wire [31:0] status_word = {
         12'h0,
         {4'h0, fifo_count},
@@ -1499,12 +1829,10 @@ module voxel_gpu (
         .rd_addr   (pipe2_tex_addr),
         .rd_data   (tex_rd_data),
         /*
-         * Port B is the second-lane texel read for 2 px/cycle. Tied
-         * off until step 4 wires up the odd-lane pipeline; the M10K
-         * cost is unchanged because the ROM is already TDP-shaped.
+         * Port B serves the odd lane of the 2 px/cycle draw pipe.
          */
-        .rd_addr_b (14'd0),
-        .rd_data_b ()
+        .rd_addr_b (pipe2_tex_addr_o),
+        .rd_data_b (tex_rd_data_o)
     );
 
     integer i;
@@ -1767,6 +2095,19 @@ module voxel_gpu (
         commit_addr      = 16'd0;
         commit_z         = 16'd0;
         commit_color     = 16'h0000;
+        pipe0_valid_o    = 1'b0;
+        recip0_valid_o   = 1'b0;
+        recip1_valid_o   = 1'b0;
+        recip2_valid_o   = 1'b0;
+        pipe1_valid_o    = 1'b0;
+        tex0_valid_o     = 1'b0;
+        pipe2_valid_o    = 1'b0;
+        draw_pipe_valid_o = 1'b0;
+        pal_rd_valid_o   = 1'b0;
+        plr_valid_o      = 1'b0;
+        fog0_valid_o     = 1'b0;
+        fog1_valid_o     = 1'b0;
+        commit_valid_o   = 1'b0;
         scan_rgb565_r    = 16'h0000;
         scan_visible_r   = 1'b0;
         scan_line0_ready = 1'b0;
@@ -1922,14 +2263,29 @@ module voxel_gpu (
             scan_rgb565_now = 16'h0000;
 
         fb_back_rd_addr = cache_flush_state ? cache_maint_addr : pipe0_addr;
+        fb_back_rd_addr_o = cache_flush_state ? cache_maint_addr : pipe0_addr_o;
         draw_addr = draw_cache_addr;
+        draw_addr_o = draw_cache_addr_o;
         fb_wr_addr = draw_addr;
         fb_wr_data = 16'h0000;
         fb_back_wr_en = 1'b0;
+        fb_wr_addr_e = fb_wr_addr;
+        fb_wr_data_e = fb_wr_data;
+        fb_back_wr_en_e = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
+        fb_wr_addr_o = fb_wr_addr;
+        fb_wr_data_o = fb_wr_data;
+        fb_back_wr_en_o = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
         z_rd_addr = cache_flush_state ? cache_maint_addr : pipe0_addr;
+        z_rd_addr_o = cache_flush_state ? cache_maint_addr : pipe0_addr_o;
         z_wr_addr = draw_pipe_addr;
         z_wr_data = draw_pipe_z;
         z_wr_en   = 1'b0;
+        z_wr_addr_e = z_wr_addr;
+        z_wr_data_e = z_wr_data;
+        z_wr_en_e = z_wr_en && (z_wr_addr[0] == 1'b0);
+        z_wr_addr_o = z_wr_addr;
+        z_wr_data_o = z_wr_data;
+        z_wr_en_o = z_wr_en && (z_wr_addr[0] == 1'b1);
 
         case (state)
             ST_CLEAR: begin
@@ -1977,20 +2333,47 @@ module voxel_gpu (
             ST_DRAW,
             ST_DRAW_FLUSH: begin
                 if (commit_valid && commit_pass) begin
-                    fb_wr_addr = commit_addr;
-                    fb_wr_data = commit_color;
-                    fb_back_wr_en = 1'b1;
+                    fb_wr_addr_e = commit_addr;
+                    fb_wr_data_e = commit_color;
+                    fb_back_wr_en_e = 1'b1;
                 end
 
                 if (commit_valid && commit_pass && commit_ztest) begin
-                    z_wr_en = 1'b1;
-                    z_wr_addr = commit_addr;
-                    z_wr_data = commit_z;
+                    z_wr_en_e = 1'b1;
+                    z_wr_addr_e = commit_addr;
+                    z_wr_data_e = commit_z;
+                end
+
+                if (commit_valid_o && commit_pass_o) begin
+                    fb_wr_addr_o = commit_addr_o;
+                    fb_wr_data_o = commit_color_o;
+                    fb_back_wr_en_o = 1'b1;
+                end
+
+                if (commit_valid_o && commit_pass_o && commit_ztest_o) begin
+                    z_wr_en_o = 1'b1;
+                    z_wr_addr_o = commit_addr_o;
+                    z_wr_data_o = commit_z_o;
                 end
             end
 
             default: ;
         endcase
+
+        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH)) begin
+            fb_wr_addr_e = fb_wr_addr;
+            fb_wr_data_e = fb_wr_data;
+            fb_back_wr_en_e = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
+            fb_wr_addr_o = fb_wr_addr;
+            fb_wr_data_o = fb_wr_data;
+            fb_back_wr_en_o = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
+            z_wr_addr_e = z_wr_addr;
+            z_wr_data_e = z_wr_data;
+            z_wr_en_e = z_wr_en && (z_wr_addr[0] == 1'b0);
+            z_wr_addr_o = z_wr_addr;
+            z_wr_data_o = z_wr_data;
+            z_wr_en_o = z_wr_en && (z_wr_addr[0] == 1'b1);
+        end
 
         /* ── Ping-pong port routing ────────────────────────────────────── */
         /* Rasterizer (draw_cache_sel): owns read+write of active cache.   */
@@ -2000,21 +2383,21 @@ module voxel_gpu (
         if (draw_cache_sel == 1'b0 && cache_used_by_main) begin
             /* A is active: rasterizer read+write. */
             fb_A_e_rd_addr = fb_back_rd_addr;
-            fb_A_o_rd_addr = fb_back_rd_addr;
-            fb_A_e_wr_addr = fb_wr_addr;
-            fb_A_o_wr_addr = fb_wr_addr;
-            fb_A_e_wr_data = fb_wr_data;
-            fb_A_o_wr_data = fb_wr_data;
-            fb_A_e_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
-            fb_A_o_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
+            fb_A_o_rd_addr = fb_back_rd_addr_o;
+            fb_A_e_wr_addr = fb_wr_addr_e;
+            fb_A_o_wr_addr = fb_wr_addr_o;
+            fb_A_e_wr_data = fb_wr_data_e;
+            fb_A_o_wr_data = fb_wr_data_o;
+            fb_A_e_wr_en   = fb_back_wr_en_e;
+            fb_A_o_wr_en   = fb_back_wr_en_o;
             z_A_e_rd_addr  = z_rd_addr;
-            z_A_o_rd_addr  = z_rd_addr;
-            z_A_e_wr_addr  = z_wr_addr;
-            z_A_o_wr_addr  = z_wr_addr;
-            z_A_e_wr_data  = z_wr_data;
-            z_A_o_wr_data  = z_wr_data;
-            z_A_e_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b0);
-            z_A_o_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b1);
+            z_A_o_rd_addr  = z_rd_addr_o;
+            z_A_e_wr_addr  = z_wr_addr_e;
+            z_A_o_wr_addr  = z_wr_addr_o;
+            z_A_e_wr_data  = z_wr_data_e;
+            z_A_o_wr_data  = z_wr_data_o;
+            z_A_e_wr_en    = z_wr_en_e;
+            z_A_o_wr_en    = z_wr_en_o;
         end else if (flush_cache_sel == 1'b0 && flush_active) begin
             /* A is being flushed: flush reads. */
             fb_A_e_rd_addr = flush_maint_addr;
@@ -2057,21 +2440,21 @@ module voxel_gpu (
         if (draw_cache_sel == 1'b1 && cache_used_by_main) begin
             /* B is active: rasterizer read+write. */
             fb_B_e_rd_addr = fb_back_rd_addr;
-            fb_B_o_rd_addr = fb_back_rd_addr;
-            fb_B_e_wr_addr = fb_wr_addr;
-            fb_B_o_wr_addr = fb_wr_addr;
-            fb_B_e_wr_data = fb_wr_data;
-            fb_B_o_wr_data = fb_wr_data;
-            fb_B_e_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
-            fb_B_o_wr_en   = fb_back_wr_en && (fb_wr_addr[0] == 1'b1);
+            fb_B_o_rd_addr = fb_back_rd_addr_o;
+            fb_B_e_wr_addr = fb_wr_addr_e;
+            fb_B_o_wr_addr = fb_wr_addr_o;
+            fb_B_e_wr_data = fb_wr_data_e;
+            fb_B_o_wr_data = fb_wr_data_o;
+            fb_B_e_wr_en   = fb_back_wr_en_e;
+            fb_B_o_wr_en   = fb_back_wr_en_o;
             z_B_e_rd_addr  = z_rd_addr;
-            z_B_o_rd_addr  = z_rd_addr;
-            z_B_e_wr_addr  = z_wr_addr;
-            z_B_o_wr_addr  = z_wr_addr;
-            z_B_e_wr_data  = z_wr_data;
-            z_B_o_wr_data  = z_wr_data;
-            z_B_e_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b0);
-            z_B_o_wr_en    = z_wr_en && (z_wr_addr[0] == 1'b1);
+            z_B_o_rd_addr  = z_rd_addr_o;
+            z_B_e_wr_addr  = z_wr_addr_e;
+            z_B_o_wr_addr  = z_wr_addr_o;
+            z_B_e_wr_data  = z_wr_data_e;
+            z_B_o_wr_data  = z_wr_data_o;
+            z_B_e_wr_en    = z_wr_en_e;
+            z_B_o_wr_en    = z_wr_en_o;
         end else if (flush_cache_sel == 1'b1 && flush_active) begin
             /* B is being flushed: flush reads. */
             fb_B_e_rd_addr = flush_maint_addr;
@@ -2370,6 +2753,19 @@ module voxel_gpu (
             commit_addr      <= 16'd0;
             commit_z         <= 16'd0;
             commit_color     <= 16'h0000;
+            pipe0_valid_o    <= 1'b0;
+            recip0_valid_o   <= 1'b0;
+            recip1_valid_o   <= 1'b0;
+            recip2_valid_o   <= 1'b0;
+            pipe1_valid_o    <= 1'b0;
+            tex0_valid_o     <= 1'b0;
+            pipe2_valid_o    <= 1'b0;
+            draw_pipe_valid_o <= 1'b0;
+            pal_rd_valid_o   <= 1'b0;
+            plr_valid_o      <= 1'b0;
+            fog0_valid_o     <= 1'b0;
+            fog1_valid_o     <= 1'b0;
+            commit_valid_o   <= 1'b0;
             scan_rgb565_r    <= 16'h0000;
             scan_line0_ready <= 1'b0;
             scan_line1_ready <= 1'b0;
@@ -2927,6 +3323,18 @@ module voxel_gpu (
             pal_rd_dst_rgb565  <= draw_pipe_dst_rgb565;
             pal_rd_w_q         <= draw_pipe_w_q;
             pal_rd_ray_scale_q16 <= draw_pipe_ray_scale_q16;
+            pal_rd_valid_o       <= draw_pipe_valid_o;
+            pal_rd_pass_o        <= draw_commit_pass_o;
+            pal_rd_ztest_o       <= draw_pipe_ztest_o;
+            pal_rd_alpha_o       <= draw_pipe_alpha_o;
+            pal_rd_fog_o         <= draw_pipe_fog_o;
+            pal_rd_addr_o        <= draw_pipe_addr_o;
+            pal_rd_z_o           <= draw_pipe_z_o;
+            pal_rd_src_addr_o    <= palette_src_addr_o;
+            pal_rd_fog_addr_o    <= fog_color;
+            pal_rd_dst_rgb565_o  <= draw_pipe_dst_rgb565_o;
+            pal_rd_w_q_o         <= draw_pipe_w_q_o;
+            pal_rd_ray_scale_q16_o <= draw_pipe_ray_scale_q16_o;
 
             /* plr stage: register the palette lookup output so every
              * fog0 input arrives on the same cycle. The combinational
@@ -2947,6 +3355,18 @@ module voxel_gpu (
             plr_fog_rgb        <= palette[pal_rd_fog_addr];
             plr_w_q            <= pal_rd_w_q;
             plr_ray_scale_q16  <= pal_rd_ray_scale_q16;
+            plr_valid_o          <= pal_rd_valid_o;
+            plr_pass_o           <= pal_rd_pass_o;
+            plr_ztest_o          <= pal_rd_ztest_o;
+            plr_alpha_o          <= pal_rd_alpha_o;
+            plr_fog_o            <= pal_rd_fog_o;
+            plr_addr_o           <= pal_rd_addr_o;
+            plr_z_o              <= pal_rd_z_o;
+            plr_src_rgb_o        <= palette[pal_rd_src_addr_o];
+            plr_dst_rgb565_o     <= pal_rd_dst_rgb565_o;
+            plr_fog_rgb_o        <= palette[pal_rd_fog_addr_o];
+            plr_w_q_o            <= pal_rd_w_q_o;
+            plr_ray_scale_q16_o  <= pal_rd_ray_scale_q16_o;
 
             fog0_valid <= plr_valid;
             fog0_pass <= plr_pass;
@@ -2960,6 +3380,18 @@ module voxel_gpu (
             fog0_fog_rgb565 <= plr_fog_rgb565;
             fog0_w_q <= plr_w_q;
             fog0_ray_scale_q16 <= plr_ray_scale_q16;
+            fog0_valid_o <= plr_valid_o;
+            fog0_pass_o <= plr_pass_o;
+            fog0_ztest_o <= plr_ztest_o;
+            fog0_alpha_o <= plr_alpha_o;
+            fog0_fog_o <= plr_fog_o;
+            fog0_addr_o <= plr_addr_o;
+            fog0_z_o <= plr_z_o;
+            fog0_src_rgb565_o <= plr_src_rgb565_o;
+            fog0_dst_rgb565_o <= plr_dst_rgb565_o;
+            fog0_fog_rgb565_o <= plr_fog_rgb565_o;
+            fog0_w_q_o <= plr_w_q_o;
+            fog0_ray_scale_q16_o <= plr_ray_scale_q16_o;
 
             fog1_valid <= fog0_valid;
             fog1_pass <= fog0_pass;
@@ -2972,6 +3404,17 @@ module voxel_gpu (
             fog1_dst_rgb565 <= fog0_dst_rgb565;
             fog1_fog_rgb565 <= fog0_fog_rgb565;
             fog1_radial_q8_8 <= fog0_radial_q8_8;
+            fog1_valid_o <= fog0_valid_o;
+            fog1_pass_o <= fog0_pass_o;
+            fog1_ztest_o <= fog0_ztest_o;
+            fog1_alpha_o <= fog0_alpha_o;
+            fog1_fog_o <= fog0_fog_o;
+            fog1_addr_o <= fog0_addr_o;
+            fog1_z_o <= fog0_z_o;
+            fog1_src_rgb565_o <= fog0_src_rgb565_o;
+            fog1_dst_rgb565_o <= fog0_dst_rgb565_o;
+            fog1_fog_rgb565_o <= fog0_fog_rgb565_o;
+            fog1_radial_q8_8_o <= fog0_radial_q8_8_o;
 
             commit_valid <= fog1_valid;
             commit_pass <= fog1_pass;
@@ -2979,8 +3422,15 @@ module voxel_gpu (
             commit_addr <= fog1_addr;
             commit_z <= fog1_z;
             commit_color <= fog1_out_rgb565;
+            commit_valid_o <= fog1_valid_o;
+            commit_pass_o <= fog1_pass_o;
+            commit_ztest_o <= fog1_ztest_o;
+            commit_addr_o <= fog1_addr_o;
+            commit_z_o <= fog1_z_o;
+            commit_color_o <= fog1_out_rgb565_o;
             if ((state == ST_DRAW || state == ST_DRAW_FLUSH) &&
-                commit_valid && commit_pass) begin
+                ((commit_valid && commit_pass) ||
+                 (commit_valid_o && commit_pass_o))) begin
                 cache_dirty <= 1'b1;
                 if (!draw_is_band_primer)
                     cache_draw_dirty <= 1'b1;
@@ -3003,6 +3453,19 @@ module voxel_gpu (
                     fog0_valid <= 1'b0;
                     fog1_valid <= 1'b0;
                     commit_valid <= 1'b0;
+                    pipe0_valid_o <= 1'b0;
+                    recip0_valid_o <= 1'b0;
+                    recip1_valid_o <= 1'b0;
+                    recip2_valid_o <= 1'b0;
+                    pipe1_valid_o <= 1'b0;
+                    tex0_valid_o <= 1'b0;
+                    pipe2_valid_o <= 1'b0;
+                    draw_pipe_valid_o <= 1'b0;
+                    pal_rd_valid_o <= 1'b0;
+                    plr_valid_o <= 1'b0;
+                    fog0_valid_o <= 1'b0;
+                    fog1_valid_o <= 1'b0;
+                    commit_valid_o <= 1'b0;
                     if (clear_pending) begin
                         state         <= ST_CLEAR;
                         clear_pending <= 1'b0;
@@ -3141,8 +3604,9 @@ module voxel_gpu (
                         draw_x_max <= desc_x_max;
                         draw_y_min <= desc_y_min;
                         draw_y_max <= desc_y_max;
-                        draw_row_base <= band_local_addr(desc_x_min, desc_y_min, cache_band_index);
-                        draw_x_cur <= desc_x_min;
+                        draw_row_base <= band_local_addr(desc_x_start_even, desc_y_min,
+                                                         cache_band_index);
+                        draw_x_cur <= desc_x_start_even;
                         draw_y_cur <= desc_y_min;
                         draw_row_inside <= 1'b0;
                         draw_tex_or_color <= desc_tex_or_color;
@@ -3185,6 +3649,19 @@ module voxel_gpu (
                         fog0_valid <= 1'b0;
                         fog1_valid <= 1'b0;
                         commit_valid <= 1'b0;
+                        pipe0_valid_o <= 1'b0;
+                        recip0_valid_o <= 1'b0;
+                        recip1_valid_o <= 1'b0;
+                        recip2_valid_o <= 1'b0;
+                        pipe1_valid_o <= 1'b0;
+                        tex0_valid_o <= 1'b0;
+                        pipe2_valid_o <= 1'b0;
+                        draw_pipe_valid_o <= 1'b0;
+                        pal_rd_valid_o <= 1'b0;
+                        plr_valid_o <= 1'b0;
+                        fog0_valid_o <= 1'b0;
+                        fog1_valid_o <= 1'b0;
+                        commit_valid_o <= 1'b0;
                         for (ei = 0; ei < 4; ei = ei + 1) begin
                             edge_A[ei] <= $signed(desc_words[2 + ei * 3]);
                             edge_B[ei] <= $signed(desc_words[3 + ei * 3]);
@@ -3211,14 +3688,14 @@ module voxel_gpu (
                     edge_row_val[3] <= edge_eval3;
                     edge_cur_val[3] <= edge_eval3;
 
-                    z_row_val <= $signed({32'd0, draw_z0});
-                    z_cur_val <= $signed({32'd0, draw_z0});
-                    uw_row_val <= $signed({{32{draw_uw_0[31]}}, draw_uw_0});
-                    uw_cur_val <= $signed({{32{draw_uw_0[31]}}, draw_uw_0});
-                    vw_row_val <= $signed({{32{draw_vw_0[31]}}, draw_vw_0});
-                    vw_cur_val <= $signed({{32{draw_vw_0[31]}}, draw_vw_0});
-                    iw_row_val <= $signed({{32{draw_iw_0[31]}}, draw_iw_0});
-                    iw_cur_val <= $signed({{32{draw_iw_0[31]}}, draw_iw_0});
+                    z_row_val <= draw_z_start_val;
+                    z_cur_val <= draw_z_start_val;
+                    uw_row_val <= draw_uw_start_val;
+                    uw_cur_val <= draw_uw_start_val;
+                    vw_row_val <= draw_vw_start_val;
+                    vw_cur_val <= draw_vw_start_val;
+                    iw_row_val <= draw_iw_start_val;
+                    iw_cur_val <= draw_iw_start_val;
 
                     state <= ST_DRAW;
                 end
@@ -3251,6 +3728,24 @@ module voxel_gpu (
                     recip0_iw_zero <= (pipe0_iw_q == 32'd0);
                     recip0_iw_msb <= pipe0_iw_msb;
                     recip0_iw_norm_q <= pipe0_iw_norm_q;
+                    recip0_valid_o <= pipe0_valid_o;
+                    recip0_inside_o <= pipe0_inside_o;
+                    recip0_ztest_o <= pipe0_ztest_o;
+                    recip0_textured_o <= pipe0_textured_o;
+                    recip0_alpha_key_o <= pipe0_alpha_key_o;
+                    recip0_alpha_o <= pipe0_alpha_o;
+                    recip0_fog_o <= pipe0_fog_o;
+                    recip0_light_bank_o <= pipe0_light_bank_o;
+                    recip0_tex_or_color_o <= pipe0_tex_or_color_o;
+                    recip0_addr_o <= pipe0_addr_o;
+                    recip0_z_o <= pipe0_z_o;
+                    recip0_x_o <= pipe0_x_o;
+                    recip0_y_o <= pipe0_y_o;
+                    recip0_uw_q_o <= pipe0_uw_q_o;
+                    recip0_vw_q_o <= pipe0_vw_q_o;
+                    recip0_iw_zero_o <= (pipe0_iw_q_o == 32'd0);
+                    recip0_iw_msb_o <= pipe0_iw_msb_o;
+                    recip0_iw_norm_q_o <= pipe0_iw_norm_q_o;
 
                     recip1_valid <= recip0_valid;
                     recip1_inside <= recip0_inside;
@@ -3263,8 +3758,8 @@ module voxel_gpu (
                     recip1_tex_or_color <= recip0_tex_or_color;
                     recip1_addr <= recip0_addr;
                     recip1_z <= recip0_z;
-                    recip1_z_ref <= z_rd_data;
-                    recip1_dst_rgb565 <= fb_back_rd_data;
+                    recip1_z_ref <= z_draw_rd_data_e;
+                    recip1_dst_rgb565 <= fb_draw_rd_data_e;
                     recip1_x <= recip0_x;
                     recip1_y <= recip0_y;
                     recip1_uw_q <= recip0_uw_q;
@@ -3274,6 +3769,28 @@ module voxel_gpu (
                     recip1_iw_lut_frac <= recip0_iw_lut_frac;
                     recip1_w_norm_lo <= recip_lut[recip0_iw_lut_idx];
                     recip1_w_norm_hi <= recip_lut[recip0_iw_lut_idx + 11'd1];
+                    recip1_valid_o <= recip0_valid_o;
+                    recip1_inside_o <= recip0_inside_o;
+                    recip1_ztest_o <= recip0_ztest_o;
+                    recip1_textured_o <= recip0_textured_o;
+                    recip1_alpha_key_o <= recip0_alpha_key_o;
+                    recip1_alpha_o <= recip0_alpha_o;
+                    recip1_fog_o <= recip0_fog_o;
+                    recip1_light_bank_o <= recip0_light_bank_o;
+                    recip1_tex_or_color_o <= recip0_tex_or_color_o;
+                    recip1_addr_o <= recip0_addr_o;
+                    recip1_z_o <= recip0_z_o;
+                    recip1_z_ref_o <= z_draw_rd_data_o;
+                    recip1_dst_rgb565_o <= fb_draw_rd_data_o;
+                    recip1_x_o <= recip0_x_o;
+                    recip1_y_o <= recip0_y_o;
+                    recip1_uw_q_o <= recip0_uw_q_o;
+                    recip1_vw_q_o <= recip0_vw_q_o;
+                    recip1_iw_zero_o <= recip0_iw_zero_o;
+                    recip1_iw_msb_o <= recip0_iw_msb_o;
+                    recip1_iw_lut_frac_o <= recip0_iw_lut_frac_o;
+                    recip1_w_norm_lo_o <= recip_lut[recip0_iw_lut_idx_o];
+                    recip1_w_norm_hi_o <= recip_lut[recip0_iw_lut_idx_o + 11'd1];
 
                     recip2_valid <= recip1_valid;
                     recip2_inside <= recip1_inside;
@@ -3295,6 +3812,26 @@ module voxel_gpu (
                     recip2_iw_zero <= recip1_iw_zero;
                     recip2_iw_msb <= recip1_iw_msb;
                     recip2_w_norm_q <= recip1_w_norm_q;
+                    recip2_valid_o <= recip1_valid_o;
+                    recip2_inside_o <= recip1_inside_o;
+                    recip2_ztest_o <= recip1_ztest_o;
+                    recip2_textured_o <= recip1_textured_o;
+                    recip2_alpha_key_o <= recip1_alpha_key_o;
+                    recip2_alpha_o <= recip1_alpha_o;
+                    recip2_fog_o <= recip1_fog_o;
+                    recip2_light_bank_o <= recip1_light_bank_o;
+                    recip2_tex_or_color_o <= recip1_tex_or_color_o;
+                    recip2_addr_o <= recip1_addr_o;
+                    recip2_z_o <= recip1_z_o;
+                    recip2_z_ref_o <= recip1_z_ref_o;
+                    recip2_dst_rgb565_o <= recip1_dst_rgb565_o;
+                    recip2_x_o <= recip1_x_o;
+                    recip2_y_o <= recip1_y_o;
+                    recip2_uw_q_o <= recip1_uw_q_o;
+                    recip2_vw_q_o <= recip1_vw_q_o;
+                    recip2_iw_zero_o <= recip1_iw_zero_o;
+                    recip2_iw_msb_o <= recip1_iw_msb_o;
+                    recip2_w_norm_q_o <= recip1_w_norm_q_o;
 
                     pipe1_valid <= recip2_valid;
                     pipe1_inside <= recip2_inside;
@@ -3314,6 +3851,24 @@ module voxel_gpu (
                     pipe1_uw_q <= recip2_uw_q;
                     pipe1_vw_q <= recip2_vw_q;
                     pipe1_w_q <= recip2_w_q;
+                    pipe1_valid_o <= recip2_valid_o;
+                    pipe1_inside_o <= recip2_inside_o;
+                    pipe1_ztest_o <= recip2_ztest_o;
+                    pipe1_textured_o <= recip2_textured_o;
+                    pipe1_alpha_key_o <= recip2_alpha_key_o;
+                    pipe1_alpha_o <= recip2_alpha_o;
+                    pipe1_fog_o <= recip2_fog_o;
+                    pipe1_light_bank_o <= recip2_light_bank_o;
+                    pipe1_tex_or_color_o <= recip2_tex_or_color_o;
+                    pipe1_addr_o <= recip2_addr_o;
+                    pipe1_z_o <= recip2_z_o;
+                    pipe1_z_ref_o <= recip2_z_ref_o;
+                    pipe1_dst_rgb565_o <= recip2_dst_rgb565_o;
+                    pipe1_x_o <= recip2_x_o;
+                    pipe1_y_o <= recip2_y_o;
+                    pipe1_uw_q_o <= recip2_uw_q_o;
+                    pipe1_vw_q_o <= recip2_vw_q_o;
+                    pipe1_w_q_o <= recip2_w_q_o;
 
                     tex0_valid <= pipe1_valid;
                     tex0_inside <= pipe1_inside;
@@ -3333,6 +3888,24 @@ module voxel_gpu (
                     tex0_w_q <= pipe1_w_q;
                     tex0_u_prod <= pipe1_u_prod;
                     tex0_v_prod <= pipe1_v_prod;
+                    tex0_valid_o <= pipe1_valid_o;
+                    tex0_inside_o <= pipe1_inside_o;
+                    tex0_ztest_o <= pipe1_ztest_o;
+                    tex0_textured_o <= pipe1_textured_o;
+                    tex0_alpha_key_o <= pipe1_alpha_key_o;
+                    tex0_alpha_o <= pipe1_alpha_o;
+                    tex0_fog_o <= pipe1_fog_o;
+                    tex0_light_bank_o <= pipe1_light_bank_o;
+                    tex0_tex_or_color_o <= pipe1_tex_or_color_o;
+                    tex0_addr_o <= pipe1_addr_o;
+                    tex0_z_o <= pipe1_z_o;
+                    tex0_z_ref_o <= pipe1_z_ref_o;
+                    tex0_dst_rgb565_o <= pipe1_dst_rgb565_o;
+                    tex0_x_o <= pipe1_x_o;
+                    tex0_y_o <= pipe1_y_o;
+                    tex0_w_q_o <= pipe1_w_q_o;
+                    tex0_u_prod_o <= pipe1_u_prod_o;
+                    tex0_v_prod_o <= pipe1_v_prod_o;
 
                     pipe2_valid <= tex0_valid;
                     pipe2_inside <= tex0_inside;
@@ -3351,6 +3924,23 @@ module voxel_gpu (
                     pipe2_y <= tex0_y;
                     pipe2_w_q <= tex0_w_q;
                     pipe2_tex_addr <= tex0_tex_addr;
+                    pipe2_valid_o <= tex0_valid_o;
+                    pipe2_inside_o <= tex0_inside_o;
+                    pipe2_ztest_o <= tex0_ztest_o;
+                    pipe2_textured_o <= tex0_textured_o;
+                    pipe2_alpha_key_o <= tex0_alpha_key_o;
+                    pipe2_alpha_o <= tex0_alpha_o;
+                    pipe2_fog_o <= tex0_fog_o;
+                    pipe2_light_bank_o <= tex0_light_bank_o;
+                    pipe2_tex_or_color_o <= tex0_tex_or_color_o;
+                    pipe2_addr_o <= tex0_addr_o;
+                    pipe2_z_o <= tex0_z_o;
+                    pipe2_z_ref_o <= tex0_z_ref_o;
+                    pipe2_dst_rgb565_o <= tex0_dst_rgb565_o;
+                    pipe2_x_o <= tex0_x_o;
+                    pipe2_y_o <= tex0_y_o;
+                    pipe2_w_q_o <= tex0_w_q_o;
+                    pipe2_tex_addr_o <= tex0_tex_addr_o;
 
                     draw_pipe_valid <= pipe2_valid;
                     draw_pipe_inside <= pipe2_inside;
@@ -3368,10 +3958,26 @@ module voxel_gpu (
                     draw_pipe_x <= pipe2_x;
                     draw_pipe_y <= pipe2_y;
                     draw_pipe_w_q <= pipe2_w_q;
+                    draw_pipe_valid_o <= pipe2_valid_o;
+                    draw_pipe_inside_o <= pipe2_inside_o;
+                    draw_pipe_ztest_o <= pipe2_ztest_o;
+                    draw_pipe_textured_o <= pipe2_textured_o;
+                    draw_pipe_alpha_key_o <= pipe2_alpha_key_o;
+                    draw_pipe_alpha_o <= pipe2_alpha_o;
+                    draw_pipe_fog_o <= pipe2_fog_o;
+                    draw_pipe_light_bank_o <= pipe2_light_bank_o;
+                    draw_pipe_tex_or_color_o <= pipe2_tex_or_color_o;
+                    draw_pipe_addr_o <= pipe2_addr_o;
+                    draw_pipe_z_o <= pipe2_z_o;
+                    draw_pipe_z_ref_o <= pipe2_z_ref_o;
+                    draw_pipe_dst_rgb565_o <= pipe2_dst_rgb565_o;
+                    draw_pipe_x_o <= pipe2_x_o;
+                    draw_pipe_y_o <= pipe2_y_o;
+                    draw_pipe_w_q_o <= pipe2_w_q_o;
 
                     if (state == ST_DRAW && draw_cache_hit) begin
                         pipe0_valid <= 1'b1;
-                        pipe0_inside <= draw_inside;
+                        pipe0_inside <= draw_inside_lane0;
                         pipe0_ztest <= draw_flags[FLAG_ZTEST_BIT];
                         pipe0_textured <= draw_flags[FLAG_TEX_BIT];
                         pipe0_alpha_key <= draw_flags[FLAG_ALPHA_KEY_BIT];
@@ -3386,23 +3992,38 @@ module voxel_gpu (
                         pipe0_uw_q <= draw_uw_q;
                         pipe0_vw_q <= draw_vw_q;
                         pipe0_iw_q <= draw_iw_q;
+                        pipe0_valid_o <= 1'b1;
+                        pipe0_inside_o <= draw_inside_lane1;
+                        pipe0_ztest_o <= draw_flags[FLAG_ZTEST_BIT];
+                        pipe0_textured_o <= draw_flags[FLAG_TEX_BIT];
+                        pipe0_alpha_key_o <= draw_flags[FLAG_ALPHA_KEY_BIT];
+                        pipe0_alpha_o <= draw_flags[FLAG_ALPHA_MSB:FLAG_ALPHA_LSB];
+                        pipe0_fog_o <= draw_flags[FLAG_FOG_BIT];
+                        pipe0_light_bank_o <= draw_flags[FLAG_LIGHT_MSB:FLAG_LIGHT_LSB];
+                        pipe0_tex_or_color_o <= draw_tex_or_color;
+                        pipe0_addr_o <= draw_addr_o;
+                        pipe0_z_o <= draw_z_value_o;
+                        pipe0_x_o <= draw_x_next;
+                        pipe0_y_o <= draw_y_cur;
+                        pipe0_uw_q_o <= draw_uw_q_o;
+                        pipe0_vw_q_o <= draw_vw_q_o;
+                        pipe0_iw_q_o <= draw_iw_q_o;
 
                         /* Track inside-to-outside transition for early row exit */
-                        if (draw_inside)
+                        if (draw_pair_edge_inside)
                             draw_row_inside <= 1'b1;
 
                         /* Early scanline exit: if we were inside the quad on
                          * this row and now we're outside, all remaining pixels
                          * on this row are also outside (convex quad property).
                          * Skip directly to the next row. */
-                        if (draw_x_cur == draw_x_max ||
-                            (draw_row_inside && !draw_inside)) begin
+                        if (draw_pair_last || draw_pair_exited) begin
                             if (draw_y_cur == draw_y_max) begin
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
                                 draw_row_base <= draw_row_base + 16'd640;
-                                draw_x_cur <= draw_x_min;
+                                draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
                                 edge_row_val[0] <= edge_row_val[0] + edge_B[0];
@@ -3423,18 +4044,19 @@ module voxel_gpu (
                                 iw_cur_val <= iw_row_val + draw_iw_dy;
                             end
                         end else begin
-                            draw_x_cur <= draw_x_cur + 10'd1;
-                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0];
-                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1];
-                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2];
-                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3];
-                            z_cur_val <= z_cur_val + draw_dz_dx;
-                            uw_cur_val <= uw_cur_val + draw_uw_dx;
-                            vw_cur_val <= vw_cur_val + draw_vw_dx;
-                            iw_cur_val <= iw_cur_val + draw_iw_dx;
+                            draw_x_cur <= draw_x_cur + 10'd2;
+                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0] + edge_A[0];
+                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1] + edge_A[1];
+                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2] + edge_A[2];
+                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3] + edge_A[3];
+                            z_cur_val <= z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
+                            uw_cur_val <= uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
+                            vw_cur_val <= vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
+                            iw_cur_val <= iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
                         end
                     end else if (state == ST_DRAW) begin
                         pipe0_valid <= 1'b0;
+                        pipe0_valid_o <= 1'b0;
                         /*
                          * Software has already binned this descriptor into each
                          * overlapping band pass. Pixels outside the resident
@@ -3442,17 +4064,16 @@ module voxel_gpu (
                          * own BEGIN_BAND/END_BAND pass.
                          */
                         /* Early scanline exit for cache-miss path too */
-                        if (draw_inside)
+                        if (draw_pair_edge_inside)
                             draw_row_inside <= 1'b1;
 
-                        if (draw_x_cur == draw_x_max ||
-                            (draw_row_inside && !draw_inside)) begin
+                        if (draw_pair_last || draw_pair_exited) begin
                             if (draw_y_cur == draw_y_max) begin
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
                                 draw_row_base <= draw_row_base + 16'd640;
-                                draw_x_cur <= draw_x_min;
+                                draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
                                 edge_row_val[0] <= edge_row_val[0] + edge_B[0];
@@ -3473,15 +4094,15 @@ module voxel_gpu (
                                 iw_cur_val <= iw_row_val + draw_iw_dy;
                             end
                         end else begin
-                            draw_x_cur <= draw_x_cur + 10'd1;
-                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0];
-                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1];
-                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2];
-                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3];
-                            z_cur_val <= z_cur_val + draw_dz_dx;
-                            uw_cur_val <= uw_cur_val + draw_uw_dx;
-                            vw_cur_val <= vw_cur_val + draw_vw_dx;
-                            iw_cur_val <= iw_cur_val + draw_iw_dx;
+                            draw_x_cur <= draw_x_cur + 10'd2;
+                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0] + edge_A[0];
+                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1] + edge_A[1];
+                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2] + edge_A[2];
+                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3] + edge_A[3];
+                            z_cur_val <= z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
+                            uw_cur_val <= uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
+                            vw_cur_val <= vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
+                            iw_cur_val <= iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
                         end
                     end else begin
                         pipe0_valid <= 1'b0;
@@ -3500,6 +4121,22 @@ module voxel_gpu (
                         pipe0_uw_q <= 32'sd0;
                         pipe0_vw_q <= 32'sd0;
                         pipe0_iw_q <= 32'd0;
+                        pipe0_valid_o <= 1'b0;
+                        pipe0_inside_o <= 1'b0;
+                        pipe0_ztest_o <= 1'b0;
+                        pipe0_textured_o <= 1'b0;
+                        pipe0_alpha_key_o <= 1'b0;
+                        pipe0_alpha_o <= 2'd0;
+                        pipe0_fog_o <= 1'b0;
+                        pipe0_light_bank_o <= 2'd0;
+                        pipe0_tex_or_color_o <= 8'd0;
+                        pipe0_addr_o <= 16'd0;
+                        pipe0_z_o <= 16'd0;
+                        pipe0_x_o <= 10'd0;
+                        pipe0_y_o <= 9'd0;
+                        pipe0_uw_q_o <= 32'sd0;
+                        pipe0_vw_q_o <= 32'sd0;
+                        pipe0_iw_q_o <= 32'd0;
 
                         if (draw_flush_count == 4'd1) begin
                             draw_flush_count <= 4'd0;
@@ -3783,6 +4420,19 @@ module voxel_gpu (
                 fog0_valid <= 1'b0;
                 fog1_valid <= 1'b0;
                 commit_valid <= 1'b0;
+                pipe0_valid_o <= 1'b0;
+                recip0_valid_o <= 1'b0;
+                recip1_valid_o <= 1'b0;
+                recip2_valid_o <= 1'b0;
+                pipe1_valid_o <= 1'b0;
+                tex0_valid_o <= 1'b0;
+                pipe2_valid_o <= 1'b0;
+                draw_pipe_valid_o <= 1'b0;
+                pal_rd_valid_o <= 1'b0;
+                plr_valid_o <= 1'b0;
+                fog0_valid_o <= 1'b0;
+                fog1_valid_o <= 1'b0;
+                commit_valid_o <= 1'b0;
             end
 
             extmem_dma_status <= {

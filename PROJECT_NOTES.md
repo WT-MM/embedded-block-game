@@ -1802,10 +1802,10 @@ Per-instance defparams keep `address_aclr_a = "NONE"`,
 the 1-cycle read-latency contract that prevents the chromatic-fringe bug
 is preserved on both ports.
 
-The module's external interface still gains `rd_addr_b` / `rd_data_b`.
+The module's external interface gained `rd_addr_b` / `rd_data_b`.
 Port A keeps its existing `rd_addr` / `rd_data` names so the rasterizer
-instantiation didn't need to rename anything; port B is tied off
-(`rd_addr_b = 14'd0`, `rd_data_b ` unconnected) until step 4.
+instantiation didn't need to rename anything; port B is now driven by the
+odd lane's `pipe2_tex_addr_o`.
 
 **M10K cost:** atlas is 64 tiles × 16 × 16 × 8 bits = 131 072 bits.
 Single-port ROM packs ~13 M10Ks; duplicating it doubles that to ~26
@@ -1813,46 +1813,33 @@ M10Ks. Pre-fit headroom was 51/397 unused, so we still have room, but
 this is a real cost (vs the "+3-4" we hoped for from BIDIR_DUAL_PORT).
 Will reconfirm after the next Quartus fit.
 
-**Risks:** none functional this step -- port B is unused until step 4.
-Both ROM copies hold byte-identical data because they share the same
-`.mif`, so an even/odd lane lookup at step 4 is guaranteed coherent.
+**Risks:** both ROM copies hold byte-identical data because they share the same
+`.mif`, so even/odd lane lookups are coherent. Port B is now used by the
+two-lane rasterizer described in step 4.
 
-### Step 4: Duplicate per-pixel datapath into even/odd lanes (planned, not applied)
+### Step 4: Duplicate per-pixel datapath into even/odd lanes
 
-The previous three steps cleared the way (banked cache RAM, true dual-port
-texture ROM, no SDRAM PLL surprises in the user `clk` domain). What
-remains is the big surgery: the 14-stage rasterizer pipeline in
-`voxel_gpu.sv` runs one pixel per cycle. To get to two pixels per cycle,
-every stage between `pipe0` and `commit` has to grow an even (lane0) and
-odd (lane1) twin, and the FSM's `ST_DRAW` must step `draw_x_cur` by 2
-instead of 1.
+May 5 2026 update: this step is now applied in `hw/voxel_gpu/rtl/voxel_gpu.sv`.
+The existing unsuffixed per-pixel registers remain lane0/even, and new `_o`
+registers carry lane1/odd through the same `pipe0` -> `commit` depth.
+`ST_DRAW` now advances `draw_x_cur` by two pixels. The draw start is aligned
+down to an even x so lane0 always targets the even cache bank and lane1 always
+targets the odd cache bank; if the descriptor's `x_min` is odd, lane0 for the
+first pair is simply masked out and lane1 draws the real first pixel.
 
-This step is **not applied** in this commit because:
+Texture ROM port B is now driven by `pipe2_tex_addr_o`, and the odd lane has
+its own texture, palette-address, palette-result, fog, blend, Z-test, and
+commit metadata. The palette table remains the small local array; both lanes
+read it in parallel from registered addresses.
 
-  * The previous five commits got the visuals to a known-correct state.
-    Lane duplication touches every per-pixel calculation including the
-    edge-function inclusion test and palette/fog handoff -- exactly the
-    code that produced the chromatic-fringe and palette-leak bugs
-    documented elsewhere in this file. Landing it together with the
-    foundational steps 1-3 risks losing the ability to bisect a
-    regression.
-  * It is the largest chunk of new RTL in this project, comparable in
-    risk to the original SDRAM band-pass migration. The right cadence
-    is: land steps 1-3 + the wrapper API, run a full Quartus fit + STA
-    + a real-board run, then apply step 4 against a known-good
-    foundation.
+**Foundation used by step 4:**
 
-**What's prepared for step 4 (already in this commit):**
-
-  * `voxel_banked_sdp_ram` (in `hw/voxel_gpu/rtl/voxel_sdp_ram.sv`) keeps
-    a unified 1R/1W external API today but internally already runs as
-    two independent SDP RAMs split by `addr[0]`. Step 4 will widen its
-    interface to expose per-bank ports (already enumerated below); the
-    backing M10Ks won't move.
+  * `voxel_banked_sdp_ram` (in `hw/voxel_gpu/rtl/voxel_sdp_ram.sv`) now
+    exposes per-bank read/write ports over two independent SDP RAMs split by
+    `addr[0]`.
   * `voxel_texture_rom` (in `hw/voxel_gpu/rtl/voxel_texture_rom.sv`)
-    already has `rd_addr_b` / `rd_data_b`, currently tied off in the
-    voxel_gpu.sv instantiation. Step 4 will route lane1's texel address
-    into `rd_addr_b` and consume `rd_data_b` in the lane1 pipeline.
+    has `rd_addr_b` / `rd_data_b`, and `voxel_gpu.sv` now routes lane1's texel
+    address into that second read port.
 
 **Sub-step 4a: widen `voxel_banked_sdp_ram`**
 
@@ -1877,24 +1864,23 @@ and lane1's feeds `wr_addr_o` directly.
 
 **Sub-step 4b: duplicate per-pixel state in `ST_DRAW`**
 
-Every register named `pipe0_*`, `recip0_*`, `recip1_*`, `recip2_*`,
-`pipe1_*`, `tex0_*`, `pipe2_*`, `draw_pipe_*`, `pal_rd_*`, `plr_*`,
-`fog0_*`, `fog1_*`, `commit_*` becomes a `_e` / `_o` pair. (Declared in
-`voxel_gpu.sv` lines 229-470, ~14 stages × ~15 fields = ~200 new
-registers.) The `_e` lane evaluates at `(x, y)` and the `_o` lane at
-`(x+1, y)`. Edge values, Z, UV/perspective increments, fog radial -- all
-the per-pixel state -- must arrive at the lane1 stage with the lane0
-+ dx_step adjustment.
+Every stage from `pipe0_*` through `commit_*` now has two lanes. The original
+unsuffixed registers are lane0/even; new `_o` registers are lane1/odd. The
+even lane evaluates at `(x, y)` and the odd lane at `(x+1, y)`. Edge values,
+Z, UV/perspective increments, and fog radial metadata arrive at lane1 with the
+lane0 + dx-step adjustment.
 
-Recommended diff order (each piece is bisectable on its own):
+Applied diff shape:
 
-  * 4b.1: rename-only pass that turns every `pipe0_X` into `pipe0_e_X`
-    (etc.) without adding `_o` yet. Single-pixel pipe still works.
-  * 4b.2: add `_o` clones, fed from the lane0 row-base values plus the
-    correct dx step. Cache writes still come only from lane0; lane1 just
-    runs through every stage and is dropped at commit.
-  * 4b.3: enable lane1 commits into `wr_addr_o` / `wr_data_o`. This is
-    the cycle the renderer actually goes 2 px/cycle.
+  * Kept the old unsuffixed pipe as lane0/even instead of doing a rename-only
+    pass.
+  * Added `_o` clones for lane1/odd.
+  * Lane1 receives edge/Z/UV/IW values equal to lane0 + the appropriate dx
+    step.
+  * Lane0 captures even-bank color/Z read data and lane1 captures odd-bank
+    color/Z read data.
+  * Both lanes can commit in the same cycle through `wr_addr_e`/`wr_data_e`
+    and `wr_addr_o`/`wr_data_o`.
 
 **Sub-step 4c: ST_DRAW FSM (`voxel_gpu.sv` ~lines 3240-3303)**
 
@@ -1934,6 +1920,12 @@ diff against the pre-4a build is a cheap regression check. After
 4b/4c, the renderer is at 2 px/cycle and frame timing should drop by
 ~40-50% on draw-bound workloads (sky/grass world view with hotbar ratio
 constant).
+
+May 5 2026 local verification after applying 4b/4c/4d:
+
+  * `git diff --check` passed.
+  * `verilator --lint-only --bbox-unsup ... voxel_gpu.sv ...` passed.
+  * Quartus/board validation still needs to be run on the build machine.
 
 **Resource budget estimate (Cyclone V, post-fit baseline 25,997/32,070
 ALMs at 81%, 346/397 M10Ks at 87%):**

@@ -703,8 +703,20 @@ module voxel_gpu (
                                           cache_init_state ||
                                           cache_load_state ||
                                           cache_flush_state;
+    /*
+     * The `!band_flush_pending` clause keeps cache_band_index from being
+     * clobbered while a previous band's END_BAND is still queued in
+     * band_flush_pending. Without it, when the prior flush is still
+     * draining (flush_active=1) and SW pipelines END_N → BEGIN_(N+1), the
+     * begin branch can fire first, overwrite cache_band_index with N+1,
+     * and then the leftover band_flush_pending fires for the wrong band —
+     * band N never lands in SDRAM. Hold BEGIN until the priority chain
+     * has had one cycle in ST_IDLE to commit the queued flush into its
+     * own flush_*_index registers; then BEGIN can pipeline freely.
+     */
     wire        band_begin_cache_available =
-        !flush_active || flush_generated_sky || ((~draw_cache_sel) != flush_cache_sel);
+        !band_flush_pending &&
+        (!flush_active || flush_generated_sky || ((~draw_cache_sel) != flush_cache_sel));
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
                                           (copy_complete_pending || display_valid);
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
@@ -2863,30 +2875,33 @@ module voxel_gpu (
                         state         <= ST_CLEAR;
                         clear_pending <= 1'b0;
                         clear_addr    <= 16'd0;
-                    end else if (band_begin_pending) begin
+                    end else if (band_begin_pending && band_begin_cache_available) begin
                         /*
                          * There are only two local caches. We can overlap one
                          * band's background flush with the next band's draw,
                          * but a second fast BEGIN_BAND would toggle back into
                          * the cache still being flushed. Sky/ground views hit
                          * this hard because bands complete almost immediately.
+                         *
+                         * The gate is in the outer else-if so that when it
+                         * fails, the chain falls through to the band_flush
+                         * branch below — otherwise a queued flush could be
+                         * stranded behind a begin we cannot service yet.
                          */
-                        if (band_begin_cache_available) begin
-                            band_begin_pending <= 1'b0;
-                            cache_target_band <= band_index_cfg;
-                            cache_band_index <= band_index_cfg;
-                            cache_pixels_total <= band_pixel_count(band_index_cfg);
-                            cache_maint_addr <= 16'd0;
-                            cache_init_x <= 10'd0;
-                            cache_init_sky_row_count <= sky_clear_start_row_count(band_index_cfg);
-                            cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
-                            cache_valid <= 1'b0;
-                            cache_dirty <= 1'b0;
-                            cache_draw_dirty <= 1'b0;
-                            /* Toggle cache selector: draw into the other cache */
-                            draw_cache_sel <= ~draw_cache_sel;
-                            state <= ST_CACHE_INIT;
-                        end
+                        band_begin_pending <= 1'b0;
+                        cache_target_band <= band_index_cfg;
+                        cache_band_index <= band_index_cfg;
+                        cache_pixels_total <= band_pixel_count(band_index_cfg);
+                        cache_maint_addr <= 16'd0;
+                        cache_init_x <= 10'd0;
+                        cache_init_sky_row_count <= sky_clear_start_row_count(band_index_cfg);
+                        cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
+                        cache_valid <= 1'b0;
+                        cache_dirty <= 1'b0;
+                        cache_draw_dirty <= 1'b0;
+                        /* Toggle cache selector: draw into the other cache */
+                        draw_cache_sel <= ~draw_cache_sel;
+                        state <= ST_CACHE_INIT;
                     end else if (band_flush_pending && !flush_active) begin
                         band_flush_pending <= 1'b0;
                         if (cache_valid && cache_dirty) begin

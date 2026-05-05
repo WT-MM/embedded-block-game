@@ -2902,23 +2902,23 @@ module voxel_gpu (
                         /* Toggle cache selector: draw into the other cache */
                         draw_cache_sel <= ~draw_cache_sel;
                         state <= ST_CACHE_INIT;
-                    end else if (band_flush_pending && !flush_active &&
-                                 (fifo_count == 12'd0)) begin
+                    end else if (band_flush_pending && !flush_active) begin
                         /*
-                         * Wait for the FIFO to fully drain before kicking the
-                         * flush. After cff6eba the kernel no longer polls BSY
-                         * in END_BAND, so SW pipelines BEGIN_N → descriptors →
-                         * END_N back-to-back. END_N can land while band-N
-                         * descriptors are still queued in the FIFO. Branch 3
-                         * has higher priority than the ST_FETCH branch below,
-                         * so without this gate the flush would fire before
-                         * the band's quads were drawn — cache_draw_dirty
-                         * stays 0, flush_generated_sky goes 1, and the band
-                         * gets painted sky over (some) blocks. fifo_count==0
-                         * means every descriptor has been pulled into ST_FETCH
-                         * already; ST_DRAW_FLUSH's 14-cycle drain window then
-                         * guarantees the last commit lands in the cache before
-                         * we re-enter ST_IDLE here.
+                         * end_band() polls FEM=1 before setting band_flush_pending,
+                         * so band-N's descriptors are guaranteed already drained
+                         * from the FIFO. Anything in the FIFO at this point
+                         * belongs to band N+1 (SW pipelined begin_band(N+1) and
+                         * started pushing descriptors while we were waiting on
+                         * the prior flush). Don't gate this branch on
+                         * fifo_count==0 — those next-band descriptors are
+                         * blocked from being fetched by the !band_flush_pending
+                         * gate on the ST_FETCH branch below, and they will
+                         * drain after this branch clears band_flush_pending and
+                         * branch 2 consumes BEGIN_(N+1) to advance
+                         * cache_band_index. Adding fifo_count==0 here would
+                         * deadlock: branch 5 can't drain (waiting on this branch
+                         * to clear band_flush_pending), and this branch can't
+                         * fire (waiting for the FIFO to drain).
                          */
                         band_flush_pending <= 1'b0;
                         if (cache_valid && cache_dirty) begin

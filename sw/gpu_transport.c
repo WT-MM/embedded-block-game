@@ -30,6 +30,8 @@ struct GPUTransport {
     int hw_flip_pending;
     int hw_async_flip_supported;
     int hw_sky_gradient_clear_enabled;
+    uint32_t hw_sky_epoch;
+    uint32_t hw_sky_band_epoch[2][VOXEL_BAND_COUNT];
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
@@ -102,6 +104,8 @@ static int g_diag_log_flip_next;
 enum {
     DIAG_SKY_GRADIENT_BASE = 40,
     DIAG_SKY_GRADIENT_LAST = 63,
+    DIAG_EXTMEM_COPY_TARGET_SHIFT = 11,
+    HW_SKY_EPOCH_INITIAL = 1,
     DIAG_NONSKIP_DESC_OVERHEAD_CYCLES = 17,
     DIAG_SKIP_DESC_OVERHEAD_CYCLES = 2,
     DIAG_COPY_DRAIN_CYCLES = 128,
@@ -114,6 +118,7 @@ struct diag_cost {
     uint64_t band_copies;
     uint64_t textured_band_copies;
     uint64_t skipped_sky_copies;
+    uint64_t cached_sky_band_reuses;
     uint64_t bbox_pixels_1px;
     uint64_t pair_cycles_2px;
     uint64_t fetch_words;
@@ -173,6 +178,12 @@ static int diag_desc_is_redundant_sky_clear(const struct quad_desc *desc)
            desc->tex_or_color <= DIAG_SKY_GRADIENT_LAST &&
            desc->x_min == 0 &&
            desc->x_max == (int16_t)(VOXEL_RENDER_WIDTH - 1);
+}
+
+static int palette_index_is_generated_sky(uint8_t index)
+{
+    return index >= DIAG_SKY_GRADIENT_BASE &&
+           index <= DIAG_SKY_GRADIENT_LAST;
 }
 
 static void diag_count_omitted_sky_clear(struct diag_cost *cost,
@@ -238,6 +249,57 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
     pixels = diag_band_pixels(band);
     cost->init_cycles[band] += (pixels + 1) / 2;
     cost->flush_words[band] += pixels;
+}
+
+static void diag_remove_cached_sky_band_cost(struct diag_cost *cost,
+                                             unsigned band)
+{
+    uint64_t pixels;
+    uint64_t init_cycles;
+    uint64_t primer_words;
+
+    if (!cost || band >= VOXEL_BAND_COUNT)
+        return;
+
+    pixels = diag_band_pixels(band);
+    init_cycles = (pixels + 1) / 2;
+    primer_words = sizeof(g_band_primers[band]) / sizeof(uint32_t);
+
+    if (cost->init_cycles[band] >= init_cycles)
+        cost->init_cycles[band] -= init_cycles;
+    else
+        cost->init_cycles[band] = 0;
+
+    if (cost->flush_words[band] >= pixels)
+        cost->flush_words[band] -= pixels;
+    else
+        cost->flush_words[band] = 0;
+
+    if (cost->band_copies > 0)
+        cost->band_copies--;
+    if (cost->bbox_pixels_1px > 0)
+        cost->bbox_pixels_1px--;
+    if (cost->pair_cycles_2px > 0)
+        cost->pair_cycles_2px--;
+
+    if (cost->fetch_words >= primer_words)
+        cost->fetch_words -= primer_words;
+    else
+        cost->fetch_words = 0;
+    if (cost->fetch_words_band[band] >= primer_words)
+        cost->fetch_words_band[band] -= primer_words;
+    else
+        cost->fetch_words_band[band] = 0;
+
+    if (cost->desc_overhead_cycles_band[band] >=
+        DIAG_NONSKIP_DESC_OVERHEAD_CYCLES) {
+        cost->desc_overhead_cycles_band[band] -=
+            DIAG_NONSKIP_DESC_OVERHEAD_CYCLES;
+    } else {
+        cost->desc_overhead_cycles_band[band] = 0;
+    }
+
+    cost->cached_sky_band_reuses++;
 }
 
 static uint64_t diag_sum_u64(const uint64_t *values, unsigned count)
@@ -331,6 +393,38 @@ static int transport_needs_hw(const GPUTransport *transport)
 static int transport_needs_socket(const GPUTransport *transport)
 {
     return transport->mode == GPU_BACKEND_SOCKET || transport->mode == GPU_BACKEND_TEE;
+}
+
+static void gpu_transport_note_generated_sky_palette_write(GPUTransport *transport,
+                                                           uint8_t index)
+{
+    if (!transport || !palette_index_is_generated_sky(index))
+        return;
+
+    transport->hw_sky_epoch++;
+    if (transport->hw_sky_epoch == 0) {
+        memset(transport->hw_sky_band_epoch, 0,
+               sizeof(transport->hw_sky_band_epoch));
+        transport->hw_sky_epoch = HW_SKY_EPOCH_INITIAL;
+    }
+}
+
+static int gpu_transport_read_copy_target_buffer(GPUTransport *transport)
+{
+    struct voxel_extmem_state ext;
+
+    if (!transport || !transport_needs_hw(transport))
+        return -1;
+
+    if (ioctl(transport->hw_fd, VOXEL_IOC_GET_EXTMEM, &ext) < 0)
+        return -1;
+
+    transport->hw_sky_gradient_clear_enabled =
+        !!(ext.ctrl & VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR);
+    if (!transport->hw_sky_gradient_clear_enabled)
+        return -1;
+
+    return (int)((ext.dma_status >> DIAG_EXTMEM_COPY_TARGET_SHIFT) & 1u);
 }
 
 static int write_all(int fd, const void *buf, size_t len)
@@ -520,6 +614,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
     struct diag_cost diag_cost = {0};
     struct diag_band_submit diag_bands[VOXEL_BAND_COUNT];
     int diag_log_frame = 0;
+    int copy_target_buffer = -1;
 
     struct timespec t_start = {0}, t_binned = {0}, t_submit = {0};
     int have_t_binned = 0;
@@ -529,6 +624,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         clock_gettime(CLOCK_MONOTONIC, &t_start);
     if (g_diag_bbox)
         diag_log_frame = ((g_diag_frame_count++ % 60) == 0);
+    memset(diag_bands, 0, sizeof(diag_bands));
 
     init_band_primers();
 
@@ -667,12 +763,31 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         have_t_binned = 1;
     }
 
+    if (transport->hw_sky_gradient_clear_enabled)
+        copy_target_buffer = gpu_transport_read_copy_target_buffer(transport);
+
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
+        const int primer_only =
+            g_bins[band].flat_used == sizeof(g_band_primers[band]);
+
+        if (primer_only && copy_target_buffer >= 0 &&
+            transport->hw_sky_band_epoch[copy_target_buffer][band] ==
+                transport->hw_sky_epoch) {
+            if (g_diag_bbox)
+                diag_remove_cached_sky_band_cost(&diag_cost, band);
+            continue;
+        }
+
         ret = submit_hw_band_flat(transport, band,
                                   g_bins[band].flat_buf, g_bins[band].flat_used,
                                   diag_log_frame ? &diag_bands[band] : NULL);
         if (ret < 0)
             goto done;
+
+        if (copy_target_buffer >= 0) {
+            transport->hw_sky_band_epoch[copy_target_buffer][band] =
+                primer_only ? transport->hw_sky_epoch : 0;
+        }
     }
 
     if (g_diag_bbox) {
@@ -744,6 +859,7 @@ done:
                 diag_bands[7].bytes);
         fprintf(stderr,
                 "renderer: calc desc=%llu copies=%llu tex=%llu sky_skip=%llu "
+                "sky_band_reuse=%llu "
                 "bbox1=%5.2fms bbox2=%5.2fms save=%5.2fms init=%5.2fms "
                 "fetch=%5.2fms overhead=%5.2fms flush_raw=%5.2fms "
                 "flush_slack=%5.2fms "
@@ -752,6 +868,7 @@ done:
                 (unsigned long long)diag_cost.band_copies,
                 (unsigned long long)diag_cost.textured_band_copies,
                 (unsigned long long)diag_cost.skipped_sky_copies,
+                (unsigned long long)diag_cost.cached_sky_band_reuses,
                 diag_cycles_ms(diag_cost.bbox_pixels_1px),
                 diag_cycles_ms(diag_cost.pair_cycles_2px),
                 diag_cycles_ms(diag_cost.bbox_pixels_1px -
@@ -953,6 +1070,7 @@ GPUTransport *gpu_transport_open(void)
     transport->hw_fd = -1;
     transport->socket_fd = -1;
     transport->hw_async_flip_supported = 1;
+    transport->hw_sky_epoch = HW_SKY_EPOCH_INITIAL;
 
     ret = parse_backend_mode(backend_env, &transport->mode);
     if (ret < 0) {
@@ -1120,11 +1238,15 @@ int gpu_transport_set_palette(GPUTransport *transport,
                               const struct voxel_palette_entry *entry)
 {
     int ret = 0;
+    int hw_written = 0;
 
-    if (transport_needs_hw(transport) &&
-        ioctl(transport->hw_fd, VOXEL_IOC_SET_PALETTE, entry) < 0) {
-        perror("ioctl(SET_PALETTE)");
-        ret = -errno;
+    if (transport_needs_hw(transport)) {
+        if (ioctl(transport->hw_fd, VOXEL_IOC_SET_PALETTE, entry) < 0) {
+            perror("ioctl(SET_PALETTE)");
+            ret = -errno;
+        } else {
+            hw_written = 1;
+        }
     }
 
     if (transport_needs_socket(transport)) {
@@ -1136,6 +1258,9 @@ int gpu_transport_set_palette(GPUTransport *transport,
             ret = sock_ret;
         }
     }
+
+    if (hw_written)
+        gpu_transport_note_generated_sky_palette_write(transport, entry->index);
 
     return ret;
 }

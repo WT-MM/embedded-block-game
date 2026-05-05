@@ -2370,3 +2370,45 @@ May 5 fitter result for two-pixel `ST_CACHE_INIT`:
       the FSM already guarantees even stepping.
   * Verilator lint/syntax still passes locally after the resource-shaving
     change. Quartus fitting still needs to be retried on the build machine.
+
+May 5 follow-up from async-present test logs:
+
+  * The async-present / sky-descriptor omission patch did reduce command bytes:
+    primer-only bands now show up as `64B` instead of carrying all full-width
+    sky-gradient descriptors. However, stable ground view was still stuck in
+    the 3-vsync bucket:
+    - `fps=19.8`
+    - `frame/work ~= 50.4ms`
+    - `draw ~= 13.1ms`
+    - `end ~= 37.1ms`
+    - `FLIP wait ~= 6.45ms`
+    - `bands ~= 29.7ms`
+  * The critical observation is that a primer-only band can still cost nearly
+    a millisecond, and in sky/ground views several primer-only bands had been
+    costing multiple milliseconds. That means the cheap path cannot only remove
+    descriptor bytes; it must avoid the whole `BEGIN_BAND` / `END_BAND` /
+    generated-sky flush transaction when the inactive SDRAM framebuffer already
+    contains the same sky-only band.
+  * Added a software-side safe band-reuse cache in `sw/gpu_transport.c`:
+    - Track a generated-sky palette epoch for palette entries 40..63.
+    - Track `sky_band_epoch[physical_buffer][band]` for the two SDRAM color
+      buffers.
+    - Decode `copy_target_sel` from `VOXEL_IOC_GET_EXTMEM.dma_status` bit 11
+      after `CLEAR_FRAME`, so the transport knows which physical SDRAM buffer
+      is being refreshed this frame.
+    - If a band is primer-only after redundant sky descriptors are omitted, and
+      the target buffer's band already has the current sky epoch, skip the whole
+      hardware band submit. Otherwise submit it normally, then mark that
+      physical buffer's band valid for the current epoch.
+    - Any real descriptor in a band invalidates that target buffer's sky-only
+      validity for that band.
+  * New diagnostic field: `sky_band_reuse=N` in the `renderer: calc ...` line.
+    A reused band should show `0B` and `0.00/0.00/0.00` in `band detail`.
+  * Expected impact:
+    - Stable block/ground view may still remain around 20 FPS because only one
+      band is primer-only in the latest pasted log.
+    - Looking mostly at sky/ground should improve more, because those views can
+      produce multiple primer-only bands after sky descriptor omission.
+    - This is a quality-preserving skip: it only reuses a band when the same
+      physical SDRAM buffer already holds the generated sky for the current
+      sky-palette epoch.

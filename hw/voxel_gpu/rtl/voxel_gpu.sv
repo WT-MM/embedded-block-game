@@ -2902,7 +2902,24 @@ module voxel_gpu (
                         /* Toggle cache selector: draw into the other cache */
                         draw_cache_sel <= ~draw_cache_sel;
                         state <= ST_CACHE_INIT;
-                    end else if (band_flush_pending && !flush_active) begin
+                    end else if (band_flush_pending && !flush_active &&
+                                 (fifo_count == 12'd0)) begin
+                        /*
+                         * Wait for the FIFO to fully drain before kicking the
+                         * flush. After cff6eba the kernel no longer polls BSY
+                         * in END_BAND, so SW pipelines BEGIN_N → descriptors →
+                         * END_N back-to-back. END_N can land while band-N
+                         * descriptors are still queued in the FIFO. Branch 3
+                         * has higher priority than the ST_FETCH branch below,
+                         * so without this gate the flush would fire before
+                         * the band's quads were drawn — cache_draw_dirty
+                         * stays 0, flush_generated_sky goes 1, and the band
+                         * gets painted sky over (some) blocks. fifo_count==0
+                         * means every descriptor has been pulled into ST_FETCH
+                         * already; ST_DRAW_FLUSH's 14-cycle drain window then
+                         * guarantees the last commit lands in the cache before
+                         * we re-enter ST_IDLE here.
+                         */
                         band_flush_pending <= 1'b0;
                         if (cache_valid && cache_dirty) begin
                             /* Kick background flush on the current active cache.
@@ -2940,7 +2957,25 @@ module voxel_gpu (
                                 !copy_complete_pending && !flush_active) begin
                         copy_complete_pending <= 1'b1;
                         cache_final_flush <= 1'b0;
-                    end else if (ctrl_en && (fifo_count >= 12'd16)) begin
+                    end else if (ctrl_en && (fifo_count >= 12'd16) &&
+                                 !band_flush_pending) begin
+                        /*
+                         * Don't pull descriptors while a band flush is queued.
+                         * end_band() polls FEM before setting band_flush_pending,
+                         * so the FIFO is supposed to be empty here — but
+                         * begin_band(N+1) only polls BSY=0 (which excludes
+                         * band_flush_pending after cff6eba). begin_band(N+1)
+                         * can therefore return while band_flush_pending=1 from
+                         * the prior end_band(N), and SW then pushes desc-(N+1)
+                         * into the FIFO. cache_band_index is still N at that
+                         * point (BEGIN_(N+1) is queued but blocked from
+                         * consuming by the !band_flush_pending gate on
+                         * branch 2), so without this gate ST_FETCH would draw
+                         * desc-(N+1) into cache N. Wait until branch 3 kicks
+                         * the band-N flush (clearing band_flush_pending) and
+                         * branch 2 consumes BEGIN_(N+1) (updating
+                         * cache_band_index to N+1) before fetching.
+                         */
                         state       <= ST_FETCH;
                         fetch_count <= 6'd0;
                     end

@@ -311,7 +311,7 @@ static long voxel_ioc_clear(void)
 	return ret;
 }
 
-static long voxel_ioc_flip(void)
+static long voxel_ioc_flip_common(bool wait_for_vsync)
 {
 	u32 ctrl;
 	int ret;
@@ -334,11 +334,35 @@ static long voxel_ioc_flip(void)
 	ctrl = voxel_rd(VOXEL_REG_CONTROL) | VOXEL_CTRL_EN | VOXEL_CTRL_FLP;
 	voxel_wr(VOXEL_REG_CONTROL, ctrl);
 
+	if (!wait_for_vsync)
+		goto out;
+
 	/* Block until the next vsync pulse latches. */
 	ret = voxel_poll_status(VOXEL_STAT_VSY, VOXEL_STAT_VSY,
 				VOXEL_POLL_TIMEOUT_MS);
 
 out:
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
+static long voxel_ioc_flip(void)
+{
+	return voxel_ioc_flip_common(true);
+}
+
+static long voxel_ioc_flip_async(void)
+{
+	return voxel_ioc_flip_common(false);
+}
+
+static long voxel_ioc_wait_flip(void)
+{
+	int ret;
+
+	mutex_lock(&voxdev.lock);
+	ret = voxel_poll_status(VOXEL_STAT_VSY, VOXEL_STAT_VSY,
+				VOXEL_POLL_TIMEOUT_MS);
 	mutex_unlock(&voxdev.lock);
 	return ret;
 }
@@ -520,6 +544,10 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_clear();
 	case VOXEL_IOC_FLIP:
 		return voxel_ioc_flip();
+	case VOXEL_IOC_FLIP_ASYNC:
+		return voxel_ioc_flip_async();
+	case VOXEL_IOC_WAIT_FLIP:
+		return voxel_ioc_wait_flip();
 	case VOXEL_IOC_SET_PALETTE:
 		return voxel_ioc_set_palette((void __user *)arg);
 	case VOXEL_IOC_GET_STATUS:

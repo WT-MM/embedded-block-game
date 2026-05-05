@@ -151,8 +151,10 @@ struct voxel_band_state {
 #define VOXEL_IOC_GET_EXTMEM       _IOR(VOXEL_IOC_MAGIC, 8, struct voxel_extmem_state)
 #define VOXEL_IOC_BEGIN_BAND       _IOW(VOXEL_IOC_MAGIC, 9, struct voxel_band_state)
 #define VOXEL_IOC_END_BAND         _IO(VOXEL_IOC_MAGIC, 10)
+#define VOXEL_IOC_FLIP_ASYNC       _IO(VOXEL_IOC_MAGIC, 11)
+#define VOXEL_IOC_WAIT_FLIP        _IO(VOXEL_IOC_MAGIC, 12)
 
-#define VOXEL_IOC_MAXNR            10
+#define VOXEL_IOC_MAXNR            12
 
 #define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
 #define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)

@@ -148,8 +148,12 @@ struct RenderContext {
     int lookup_capacity;
     uint16_t palette_cache[256];
     uint8_t palette_valid[256];
+    struct voxel_palette_entry palette_pending[256];
+    uint8_t palette_dirty[256];
     struct voxel_fog_state fog_cache;
+    struct voxel_fog_state fog_pending;
     uint8_t fog_valid;
+    uint8_t fog_dirty;
     uint8_t light_palette_key;
     uint8_t light_palette_key_valid;
     uint8_t face_light_flags[NUM_FACES];
@@ -280,18 +284,15 @@ static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 co
     if (ctx->palette_valid[index] && ctx->palette_cache[index] == packed)
         return true;
 
-    struct voxel_palette_entry entry = {
+    ctx->palette_valid[index] = 1;
+    ctx->palette_cache[index] = packed;
+    ctx->palette_pending[index] = (struct voxel_palette_entry){
         .index = index,
         .r = color.r,
         .g = color.g,
         .b = color.b,
     };
-
-    if (gpu_transport_set_palette(ctx->transport, &entry) < 0)
-        return false;
-
-    ctx->palette_valid[index] = 1;
-    ctx->palette_cache[index] = packed;
+    ctx->palette_dirty[index] = 1;
     return true;
 }
 
@@ -311,11 +312,30 @@ static bool renderer_set_fog_state(RenderContext *ctx,
     if (ctx->fog_valid && same_fog_state(&ctx->fog_cache, fog))
         return true;
 
-    if (gpu_transport_set_fog(ctx->transport, fog) < 0)
-        return false;
-
     ctx->fog_cache = *fog;
+    ctx->fog_pending = *fog;
     ctx->fog_valid = 1;
+    ctx->fog_dirty = 1;
+    return true;
+}
+
+static bool renderer_flush_gpu_state(RenderContext *ctx)
+{
+    for (int i = 0; i < 256; i++) {
+        if (!ctx->palette_dirty[i])
+            continue;
+        if (gpu_transport_set_palette(ctx->transport,
+                                      &ctx->palette_pending[i]) < 0)
+            return false;
+        ctx->palette_dirty[i] = 0;
+    }
+
+    if (ctx->fog_dirty) {
+        if (gpu_transport_set_fog(ctx->transport, &ctx->fog_pending) < 0)
+            return false;
+        ctx->fog_dirty = 0;
+    }
+
     return true;
 }
 
@@ -1686,11 +1706,15 @@ void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
     ctx->submit_bytes = 0;
-    gpu_transport_clear(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
 {
+    if (gpu_transport_clear(ctx->transport) < 0)
+        return;
+    if (!renderer_flush_gpu_state(ctx))
+        return;
+
     if (ctx->submit_bytes == 0) {
         gpu_transport_flip(ctx->transport);
         return;

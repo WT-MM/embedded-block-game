@@ -27,6 +27,9 @@ struct GPUTransport {
     GPUBackendMode mode;
     int hw_fd;
     int socket_fd;
+    int hw_flip_pending;
+    int hw_async_flip_supported;
+    int hw_sky_gradient_clear_enabled;
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
@@ -170,6 +173,16 @@ static int diag_desc_is_redundant_sky_clear(const struct quad_desc *desc)
            desc->tex_or_color <= DIAG_SKY_GRADIENT_LAST &&
            desc->x_min == 0 &&
            desc->x_max == (int16_t)(VOXEL_RENDER_WIDTH - 1);
+}
+
+static void diag_count_omitted_sky_clear(struct diag_cost *cost,
+                                         unsigned first_band,
+                                         unsigned last_band)
+{
+    if (!cost)
+        return;
+    for (unsigned band = first_band; band <= last_band; band++)
+        cost->skipped_sky_copies++;
 }
 
 static void diag_add_band_descriptor(struct diag_cost *cost,
@@ -593,6 +606,20 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         if (last_band >= VOXEL_BAND_COUNT)
             last_band = VOXEL_BAND_COUNT - 1;
 
+        /*
+         * Cheap path: the FPGA band init path already paints the sky gradient
+         * into the resident cache and marks it dirty for generated-sky flushes.
+         * Full-width sky-gradient quads are therefore redundant command traffic;
+         * omit them before they consume FIFO, fetch, and descriptor overhead.
+         */
+        if (transport->hw_sky_gradient_clear_enabled &&
+            diag_desc_is_redundant_sky_clear(desc)) {
+            if (g_diag_bbox)
+                diag_count_omitted_sky_clear(&diag_cost, first_band, last_band);
+            offset += desc_size;
+            continue;
+        }
+
         /* Fast path: descriptor fits inside one band and didn't need y-clipping. */
         if (first_band == last_band &&
             (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
@@ -742,14 +769,17 @@ done:
     return ret;
 }
 
-static void log_extmem_state(int hw_fd, int debug_enabled)
+static void log_extmem_state(GPUTransport *transport, int debug_enabled)
 {
     struct voxel_extmem_state ext;
 
-    if (ioctl(hw_fd, VOXEL_IOC_GET_EXTMEM, &ext) < 0) {
+    if (ioctl(transport->hw_fd, VOXEL_IOC_GET_EXTMEM, &ext) < 0) {
         perror("ioctl(GET_EXTMEM)");
         return;
     }
+
+    transport->hw_sky_gradient_clear_enabled =
+        !!(ext.ctrl & VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR);
 
     if (debug_enabled) {
         fprintf(stderr,
@@ -877,6 +907,38 @@ static int read_debug_enabled_local(void)
     return 1;
 }
 
+static int gpu_transport_wait_pending_flip(GPUTransport *transport)
+{
+    int ret = 0;
+
+    if (!transport_needs_hw(transport) || !transport->hw_flip_pending)
+        return 0;
+
+    {
+        struct timespec t0 = {0}, t1 = {0};
+
+        if (g_diag_bbox && g_diag_log_flip_next)
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+
+        if (ioctl(transport->hw_fd, VOXEL_IOC_WAIT_FLIP) < 0) {
+            perror("ioctl(WAIT_FLIP)");
+            ret = -errno;
+        } else {
+            transport->hw_flip_pending = 0;
+        }
+
+        if (g_diag_bbox && g_diag_log_flip_next) {
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double ms_wait = (t1.tv_sec - t0.tv_sec) * 1000.0 +
+                             (t1.tv_nsec - t0.tv_nsec) / 1e6;
+            fprintf(stderr, "renderer: FLIP wait=%5.2fms\n", ms_wait);
+            g_diag_log_flip_next = 0;
+        }
+    }
+
+    return ret;
+}
+
 GPUTransport *gpu_transport_open(void)
 {
     const char *backend_env = getenv("VOXEL_GPU_BACKEND");
@@ -890,6 +952,7 @@ GPUTransport *gpu_transport_open(void)
 
     transport->hw_fd = -1;
     transport->socket_fd = -1;
+    transport->hw_async_flip_supported = 1;
 
     ret = parse_backend_mode(backend_env, &transport->mode);
     if (ret < 0) {
@@ -938,7 +1001,7 @@ GPUTransport *gpu_transport_open(void)
     }
 
     if (transport_needs_hw(transport))
-        log_extmem_state(transport->hw_fd, debug_enabled);
+        log_extmem_state(transport, debug_enabled);
 
     {
         const char *diag = getenv("VOXEL_DIAG_BBOX");
@@ -954,6 +1017,8 @@ void gpu_transport_close(GPUTransport *transport)
 {
     if (!transport)
         return;
+
+    (void)gpu_transport_wait_pending_flip(transport);
 
     if (transport->socket_fd >= 0)
         close(transport->socket_fd);
@@ -971,7 +1036,10 @@ void gpu_transport_close(GPUTransport *transport)
 
 int gpu_transport_clear(GPUTransport *transport)
 {
-    int ret = 0;
+    int ret = gpu_transport_wait_pending_flip(transport);
+
+    if (ret < 0)
+        return ret;
 
     if (transport_needs_hw(transport) &&
         ioctl(transport->hw_fd, VOXEL_IOC_CLEAR_FRAME) < 0) {
@@ -997,13 +1065,34 @@ int gpu_transport_flip(GPUTransport *transport)
     struct timespec t0 = {0}, t1 = {0};
     int ret = 0;
 
+    if (transport_needs_hw(transport) && transport->hw_flip_pending) {
+        ret = gpu_transport_wait_pending_flip(transport);
+        if (ret < 0)
+            return ret;
+    }
+
     if (g_diag_bbox)
         clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    if (transport_needs_hw(transport) &&
-        ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
-        perror("ioctl(FLIP)");
-        ret = -errno;
+    if (transport_needs_hw(transport)) {
+        if (transport->hw_async_flip_supported) {
+            if (ioctl(transport->hw_fd, VOXEL_IOC_FLIP_ASYNC) < 0) {
+                if (errno == ENOTTY || errno == EINVAL) {
+                    transport->hw_async_flip_supported = 0;
+                } else {
+                    perror("ioctl(FLIP_ASYNC)");
+                    ret = -errno;
+                }
+            } else {
+                transport->hw_flip_pending = 1;
+            }
+        }
+
+        if (ret == 0 && !transport->hw_async_flip_supported &&
+            ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
+            perror("ioctl(FLIP)");
+            ret = -errno;
+        }
     }
 
     if (transport_needs_socket(transport)) {
@@ -1016,7 +1105,8 @@ int gpu_transport_flip(GPUTransport *transport)
         }
     }
 
-    if (g_diag_bbox && g_diag_log_flip_next) {
+    if (g_diag_bbox && g_diag_log_flip_next && ret == 0 &&
+        !transport->hw_flip_pending) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double ms_flip = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
         fprintf(stderr, "renderer: FLIP flip=%5.2fms\n", ms_flip);

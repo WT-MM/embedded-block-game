@@ -2314,6 +2314,45 @@ Concrete path to a reliable 30 FPS+ budget:
        diagnostics say it can only attack the ~3.8ms/frame MMIO portion in the
        stable capture, not the larger FIFO-wait/flush costs.
 
+May 5 async-present / cheap-sky software patch:
+
+  * The two-pixel cache-init RTL still failed to fit after minor logic shaving:
+    Quartus reported 3251 required LABs versus 3207 available. Park this path
+    unless we free area elsewhere.
+  * Added `VOXEL_IOC_FLIP_ASYNC` and `VOXEL_IOC_WAIT_FLIP` to the kernel ABI.
+    The old `VOXEL_IOC_FLIP` remains the blocking compatibility path.
+  * `gpu_transport_flip()` now requests a hardware flip asynchronously when the
+    new driver supports it, while `gpu_transport_clear()` waits for any pending
+    flip before clearing the newly inactive framebuffer. This moves the vsync
+    wait out of the previous frame's `end_frame()` and lets CPU descriptor
+    construction for the next frame overlap most/all of the present wait.
+  * `renderer_begin_frame()` no longer clears hardware. It only resets the CPU
+    staging buffer. `renderer_end_frame()` waits for the previous async flip,
+    clears the inactive frame, flushes deferred GPU state, submits descriptors,
+    then requests the next async flip.
+  * Dynamic palette/fog writes are now queued in `RenderContext` and flushed
+    only after the pending flip wait and clear. This preserves correctness for
+    generated-sky SDRAM flushes: the next frame no longer changes palette state
+    while the previous frame may still be finishing its present/flush path.
+  * Cheap-path improvement: the hardware already paints the sky gradient during
+    band init when `VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR` is enabled, so
+    full-width sky-gradient descriptors are omitted from the hardware FIFO
+    stream. This preserves the generated sky visual but avoids redundant
+    descriptor bytes/fetch/overhead on cheap sky bands. Socket/virtual output
+    still receives the original descriptor stream.
+  * Expected log changes:
+    - `renderer: FLIP flip=...` may become `renderer: FLIP wait=...`.
+    - If overlap works, `FLIP wait` should be near zero on steady frames
+      because the vsync completed while the CPU was drawing the next frame.
+    - `sky_skip` should still count omitted sky-gradient copies, while band
+      byte totals should drop by the omitted sky descriptors.
+  * Verification done locally:
+    - `git diff --check` passed.
+    - `cc -O2 -Wall -Wextra -I sw -fsyntax-only sw/gpu_transport.c
+      sw/renderer.c sw/chat.c sw/pause_menu.c sw/game.c` passed.
+    - Renderer test binaries build; only existing `world.c` warnings remain.
+    - Kernel module compile must be done on the DE1/Linux environment.
+
 May 5 fitter result for two-pixel `ST_CACHE_INIT`:
 
   * Quartus failed in fitter placement preparation:

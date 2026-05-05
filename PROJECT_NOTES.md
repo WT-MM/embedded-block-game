@@ -1,6 +1,337 @@
 Project Notes
 =============
 
+May 2026: SDRAM Banding Bring-Up Ledger
+---------------------------------------
+
+Summary
+-------
+This section consolidates the recent SDRAM-backed 640x480 bring-up work. The
+symptoms were frustrating because several different bugs produced similar
+"streaking/flashing" output:
+
+  * a solid-colored bottom band, initially described as the bottom row
+  * short one-pixel-tall horizontal streaks near the left edge
+  * a one-pixel bad column on the left, as if the rightmost column wrapped
+  * a right-edge/left-shift symptom where the FPS text and chat `M` were cut off
+  * rapid sky/ground flashing, while block-heavy views were much more stable
+  * frame rate falling from the software 30 FPS cap to roughly 5-20 FPS
+
+The important pattern from hardware testing was that views dominated by sky or
+ground are the dangerous case. Those views generate very little real raster
+work, so software reaches `END_BAND`, `FLIP`, and the next `CLEAR_FRAME` much
+faster. That fast-frame path stresses SDRAM scanout/flush ordering in ways that
+ordinary block views naturally hide by keeping the rasterizer busy.
+
+Current Architecture
+--------------------
+The current full-resolution path renders eight 64-line vertical bands:
+
+  * userspace still builds one frame descriptor stream in `sw/renderer.c`
+  * `sw/gpu_transport.c` bins descriptors by band and wraps each bin with
+    `BEGIN_BAND` / descriptor writes / `END_BAND`
+  * the RTL has two local color/Z band caches, so it can draw into one cache
+    while a previous band flushes from the other cache to SDRAM
+  * VGA scanout reads the visible SDRAM frame through three 640-word line
+    buffers
+  * the SDRAM controller is FIFO/burst based, so most bugs are ownership,
+    ordering, or stale-tail issues rather than simple address arithmetic
+
+Bottom Solid Band
+-----------------
+Symptom:
+
+  * The bottom of the display was a solid-colored band, not merely one bad row.
+  * The color changed with camera movement, which made it look like stale cache
+    data or a repeated pixel rather than a fixed VGA timing problem.
+
+Root cause:
+
+  * The final band has no follow-up `BEGIN_BAND` to toggle `draw_cache_sel` away
+    from the cache being flushed.
+  * The ping-pong cache port mux was still giving the rasterizer side priority
+    even after the rasterizer/cache-maintenance pipeline was idle.
+  * The flush controller therefore read through the wrong port/address and could
+    stream a repeated stale pixel into SDRAM for the whole final band.
+
+Fix:
+
+  * `cache_used_by_main` now means "the rasterizer, sky-skip patch, cache init,
+    cache load, or main cache flush is actually using the active cache port."
+  * Once the pipeline is idle, the background flush is allowed to own the cache
+    port even if `flush_cache_sel == draw_cache_sel`.
+  * `band_pixel_count()` also uses 10-bit row math so the final band is treated
+    as rows 448..479 instead of wrapping the row calculation in 9 bits.
+
+Status:
+
+  * The solid bottom band was fixed on hardware after the relevant band-pass
+    fixes were included.
+
+Left-Edge Streaks and Wrapped Column
+------------------------------------
+Symptoms:
+
+  * Early versions produced short one-pixel-tall horizontal streak fragments
+    from the left edge, often around the first 1/10 of the screen width.
+  * A later version reduced that to a one-pixel bad left column, visually like
+    the rightmost pixel of a line had wrapped to column 0.
+
+Root causes and fixes:
+
+  * The scanout line-fill path could pop the SDRAM read FIFO while
+    `scan_fill_armed` was still true. In that state a new RD_LOAD had just been
+    programmed, but the new burst had not produced data yet. Any non-empty FIFO
+    word was stale tail data from a previous burst. The fix gates scanout pops
+    with `!scan_fill_armed`.
+  * Cache color/Z loads can over-fetch because the SDRAM controller bursts in
+    64-word chunks. The explicit drain states pop residual read-FIFO words and
+    wait for `sdram_rd_empty` to be stable before the next read owner is allowed
+    to start.
+  * As a defense-in-depth display mask, when a scanline finishes filling,
+    `scan_linebufN[0]` is overwritten with `scan_linebufN[1]`. This does not
+    fix a corrupted framebuffer word; it masks the common stale first read word
+    in the linebuffer so the leftmost visible column does not show wrapped tail
+    data.
+
+Wrong turns:
+
+  * Waiting a fixed number of cycles before trusting `RD_EMPTY` did not solve
+    the issue; stale words can simply sit in the FIFO until the wait expires.
+  * Software-side "band primer" quads did not fix the original left-edge
+    streaking. They were useful as a diagnostic but were not the root cause.
+
+Status:
+
+  * The large left-edge streaks were fixed.
+  * The one-pixel left column has been mitigated by the linebuffer guard, but if
+    it reappears it should still be treated as a scanout read-FIFO first-word
+    problem before chasing world/texture code.
+
+Horizontal Shift / Cut-Off Text
+-------------------------------
+Symptoms:
+
+  * The FPS label looked shifted/cut so only `PS` was visible.
+  * Opening chat could show the `M` in a mode/status string partially cut off.
+  * Later testing reported that the gross horizontal shift was gone, but the
+    one-pixel left-column artifact remained.
+
+Fixes in the current RTL:
+
+  * Scanout uses a combinational visible predicate for `scan_visible_now` so the
+    RGB data and `VGA_BLANK_n` phase line up at the DAC instead of using a
+    stale registered visible bit.
+  * Scanline handoff only changes the active linebuffer in horizontal blank.
+  * The column-0 linebuffer guard described above masks the remaining first-word
+    FIFO-tail case without shifting the whole image.
+
+Status:
+
+  * The broad horizontal shift/cut-off symptom was reported fixed.
+  * Any remaining single-column issue is tracked under "Left-Edge Streaks and
+    Wrapped Column" above.
+
+Sky Gradient / Empty-Band Flushes
+---------------------------------
+Symptom:
+
+  * Sky and ground views were visually unstable and slow because they contain
+    many bands with little or no real raster work.
+  * The software sky gradient originally arrived as large flat quads; after
+    banding, those quads cost descriptor traffic and made empty-band behavior
+    harder to reason about.
+
+Fix:
+
+  * Hardware now has `VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR`.
+  * `ST_CACHE_INIT` can initialize each local band cache directly to the correct
+    24-row sky-gradient palette sequence (`PAL_SKY_GRADIENT_BASE..LAST`) while
+    also clearing Z to far.
+  * Redundant full-width sky-gradient descriptors are skipped in `ST_FETCH`.
+  * A one-pixel sky patch exists for skipped sky descriptors so a skipped
+    descriptor can still mark/patch the relevant cache location when needed.
+  * `cache_dirty` is set after sky-gradient initialization so sky-only bands
+    still flush meaningful pixels to SDRAM.
+
+Performance follow-up:
+
+  * `cache_draw_dirty` tracks whether a band had any real draw commits.
+  * The 1x1 band primer is explicitly excluded from `cache_draw_dirty`.
+  * If a band only contains generated sky/clear data, the background flush can
+    generate the sky-gradient RGB565 stream directly from palette entries
+    instead of reading from a local cache. This lets the next fast band reuse
+    either local cache without waiting for a generated-sky flush to release a
+    cache read port.
+
+Status:
+
+  * This improves the fast sky-only path and avoids treating primers as real
+    scene content.
+  * It was not the final visual fix for sky/ground flashing; the final fix was
+    preserving in-flight flush/scanout state across `CLEAR_FRAME` plus the
+    queued flush/begin ordering fixes below.
+
+Band Flush / Begin Ordering
+---------------------------
+Problem:
+
+  * Once `BEGIN_BAND` and `END_BAND` stopped waiting for every background flush,
+    userspace could pipeline commands much more aggressively.
+  * That exposed ordering races between `band_flush_pending`,
+    `band_begin_pending`, descriptor FIFO fetch, and `cache_band_index`.
+
+Fixes:
+
+  * `band_begin_cache_available` prevents a new begin from toggling into a cache
+    that is still being flushed.
+  * `band_begin_cache_available` also checks `!band_flush_pending`, because a
+    queued flush must be captured into its own `flush_*` registers before a
+    later begin is allowed to overwrite `cache_band_index`.
+  * The `ST_IDLE` priority chain now lets a blocked begin fall through so a
+    queued flush can run first.
+  * `ST_FETCH` is gated by `!band_flush_pending`, so descriptors for band N+1
+    cannot be fetched into the cache for band N while the old end-band flush is
+    still queued.
+  * A temporary `fifo_count == 0` gate on the flush branch caused a deadlock:
+    the flush was waiting for the FIFO to empty, while fetch was correctly
+    waiting for the flush to clear `band_flush_pending`. That gate was removed.
+    This is safe because `end_band()` polls FIFO-empty before setting
+    `band_flush_pending`; any later FIFO contents belong to the next band and
+    are blocked by the `ST_FETCH` gate.
+
+Status:
+
+  * These fixes address the "fast software outruns RTL bookkeeping" class of
+    bugs introduced by the performance work.
+
+Kernel/Driver Throughput Fixes
+------------------------------
+Problems:
+
+  * The driver used to push descriptor words in tiny increments when the FIFO
+    was nearly full.
+  * `BEGIN_BAND` waited for band cache init to finish before userspace could
+    stream descriptors.
+  * `END_BAND` waited for background flush completion, serializing every band.
+
+Fixes:
+
+  * `voxel_write()` waits for useful FIFO space and then pushes bursts with
+    `iowrite32_rep()`.
+  * `BEGIN_BAND` now writes `BAND_INDEX` / `BAND_CTRL_BEGIN`, performs a readback
+    for MMIO ordering, and returns without waiting for the whole cache init.
+    The descriptor FIFO can fill while the hardware initializes the band.
+  * `band_flush_pending` is intentionally excluded from `BSY`.
+  * `END_BAND` no longer waits for background flush completion. The RTL
+    priority chain and cache-availability gates own that ordering.
+
+Tradeoff:
+
+  * These changes are required for useful frame rate, but they expose any RTL
+    ordering bug immediately. Several of the fixes in "Band Flush / Begin
+    Ordering" were direct consequences of making the driver less conservative.
+
+Sky/Ground Flashing
+-------------------
+Final symptom before the fix:
+
+  * Hardware was stable when looking at blocks, but flashed or vertically
+    streaked when looking mostly at sky or ground.
+  * This was the key clue: block-heavy views naturally keep the rasterizer busy,
+    while sky/ground views finish bands extremely quickly and stress
+    `END_BAND`/`BEGIN_BAND`/`CLEAR_FRAME` ordering.
+
+What actually fixed it:
+
+  * **Preserve background flushes across `CLEAR_FRAME`.** The decisive fix was
+    to stop clearing `flush_active` and the associated `flush_*` state on
+    `CLEAR_FRAME`. Fast sky/ground frames can issue the next frame's clear while
+    the previous frame's background band flush is still draining. Killing that
+    flush mid-stream left a partially-written SDRAM frame, which scanout later
+    displayed as a flash.
+  * **Preserve the scanout read pipeline across `CLEAR_FRAME`.** The same clear
+    path also stopped resetting `sdram_rd_load_pulse`,
+    `sdram_rd_load_stretch_req`, `sdram_rd_load_hold`, `scan_rd_capture`, and
+    `scan_fill_load_pending`. `CLEAR_FRAME` is a software frame-begin command,
+    not a display reset; with the 30 FPS cap it can land during active display.
+    Resetting scanout RD/load state mid-line corrupts the current linebuffer
+    fill.
+  * **Order queued flushes before queued begins.** Once `END_BAND` stopped
+    waiting for every background flush, software could pipeline commands fast
+    enough to expose RTL bookkeeping races. `band_begin_cache_available` now
+    requires `!band_flush_pending`, and the `ST_IDLE` priority chain lets a
+    queued flush capture its own `flush_*` registers before a later begin can
+    overwrite `cache_band_index`.
+  * **Block next-band descriptor fetch while a prior flush is queued.**
+    `ST_FETCH` is gated by `!band_flush_pending`, so descriptors for band N+1
+    cannot be drawn into band N's cache while the previous `END_BAND` is still
+    queued.
+  * **Remove the false FIFO-empty flush gate.** A temporary
+    `fifo_count == 0` requirement on the flush branch deadlocked the correct
+    ordering: fetch was waiting for `band_flush_pending` to clear, while the
+    flush was waiting for the next band's FIFO contents to drain. Removing that
+    gate let the queued flush run; next-band descriptors remain protected by
+    the `ST_FETCH` gate.
+
+What did not fix it by itself:
+
+  * The generated-sky direct flush path was a performance optimization, not the
+    root visual fix.
+  * The sky-gradient hardware clear removed redundant sky descriptors and made
+    empty bands meaningful, but did not by itself eliminate flashing.
+  * Fixed delay guards around read-FIFO empty/stale data helped left-edge
+    residuals, but sky/ground flashing was mostly a frame-clear/background-flush
+    ordering problem.
+
+Status:
+
+  * Confirmed fixed on hardware after the `CLEAR_FRAME` preservation and
+    queued flush/begin ordering fixes were included.
+  * The remaining problem is throughput, not visual correctness.
+
+Frame Rate Status
+-----------------
+Observed behavior:
+
+  * The software cap is 30 FPS.
+  * After the early correctness fixes, measured frame rate moved through roughly
+    5 FPS, 15 FPS, and about 20 FPS depending on which RTL/driver changes were
+    included.
+  * `renderer_end_frame()` / kernel waiting was the dominant cost when the GPU
+    was slow; CPU descriptor work was not the only bottleneck.
+
+Main fixes:
+
+  * Kernel FIFO burst submission.
+  * Removing redundant driver waits around `BEGIN_BAND` and `END_BAND`.
+  * Ping-pong local band caches with background flush.
+  * Hardware sky-gradient clear and redundant sky-descriptor skip.
+  * Generated-sky direct flush for sky-only bands.
+
+Open performance risk:
+
+  * Visual correctness is now fixed on hardware. Further throughput work should
+    preserve the `CLEAR_FRAME` and queued flush/begin ordering rules above;
+    otherwise the old sky/ground flash can come back even if FPS improves.
+
+Validation Notes
+----------------
+Local validation that is safe on the development machine:
+
+  * `git diff --check`
+  * Verilator lint of `hw/voxel_gpu/rtl/voxel_gpu.sv` with the existing vendor
+    primitive warnings suppressed
+  * software renderer/unit test builds that do not require Linux-only headers
+
+Local validation limits:
+
+  * Do not rely on Quartus from this machine; it is not installed here.
+  * The `game` target does not build on the Mac because `linux/input.h` is not
+    available.
+  * Any future RTL change that touches scanout, flush, or band ordering still
+    requires flashing and visual testing on the DE1-SoC.
+
 May 2026: Frame-Rate Optimization Pass
 --------------------------------------
 
@@ -1320,3 +1651,289 @@ current architecture is also constrained by on-chip RAM ports, SDRAM flush
 bandwidth, and VGA scanout arbitration. Use DSPs aggressively where they remove
 the per-pixel critical path, but avoid a wider commit pipe until the memory-port
 story is clean.
+
+May 2026: Two-Pixel-Per-Cycle Pipeline Project
+----------------------------------------------
+
+Goal: lift FPS from ~15 to 30+ by widening the rasterizer to commit two
+adjacent pixels per cycle. With logging on, the `end` phase (raster + flush +
+vsync) takes ~56 ms; the dominant component is per-pixel evaluation at 1
+px/cycle (~2.5M pixel cycles at 50 MHz ≈ 50 ms). Doubling raster throughput
+should cut the visible portion of `end` roughly in half.
+
+### Step 1: SDRAM PLL setup violation (diagnosis only, no SDC change)
+
+Quartus reports `Slow 1100mV 85C` setup slack of **-2.734 ns** with
+TNS -82.4 ns on the clock
+`soc_system0|voxel_gpu_0|sdram_ctrl|sdram_pll0_inst|...|general[0].gpll~PLL_OUTPUT_COUNTER|divclk`.
+That clock is `outclk_0` of the PLL embedded inside the Terasic-style
+`Sdram_Control` (in `hw/sdram_local_test/`), driving `sdram_ctrl_clk` at 100
+MHz. The PLL's restricted Fmax for that output is 121.05 MHz, so the violation
+is not a Fmax-vs-target mismatch — it comes from cross-domain paths.
+
+Root cause: `Sdram_Control` instantiates `Sdram_WR_FIFO` and `Sdram_RD_FIFO`
+which are real Altera `dcfifo` async crossings (lpm_numwords=512, M10K-backed,
+rdsync/wrsync delaypipe=4) between `clk` (50 MHz, `clock_50_1`) and the
+internal `CLK` (100 MHz `sdram_ctrl_clk`). The project SDC
+(`hw/soc_system.sdc`) is minimal — only base `clock_50_*`/`clock_27_1`,
+`derive_pll_clocks -create_base_clocks`, and `derive_clock_uncertainty`. There
+is no `set_false_path`, `set_clock_groups -asynchronous`, or per-FIFO
+constraint, so Quartus times the gray-code pointer synchronizer paths through
+the FIFO as synchronous 50→100 MHz. The 4-stage synchronizer plus pointer
+comparators won't meet a 5 ns launch-to-latch window, which matches the
+~-2.7 ns slack and large negative TNS.
+
+The same FIFO usage pattern in any standard Altera reference design is
+covered by an IP-supplied `_constraints.sdc`/`.qip`-generated constraint
+file. This codebase imported `Sdram_WR_FIFO.v` / `Sdram_RD_FIFO.v` as
+hand-pasted dcfifo templates without their accompanying SDC, so the
+async pointer paths are timed.
+
+Fix options (not applied this pass):
+
+  1. Add to `hw/soc_system.sdc`:
+     `set_false_path -from [get_clocks {clock_50_1}] -to [get_clocks {*voxel_gpu_0|sdram_ctrl|sdram_pll0_inst*outclk_0*}]`
+     plus the reverse direction. Risk: also cuts WR_LOAD / RD_LOAD / WR_ADDR
+     handshake paths from `clk` into `CLK`, which are real ad-hoc syncs
+     (held stable for many cycles in practice but not synchronizer chains).
+     Functionally safe today because those signals are pulse-then-hold
+     much longer than any sane metastability window.
+
+  2. More surgical: `set_false_path` only on the dcfifo's
+     `*delayed_wraddr*` → `*rs_dgwp*` (and `*delayed_rdaddr*` → `*ws_dgrp*`)
+     register pairs. Correct in principle but fragile w.r.t. dcfifo internal
+     hierarchy/naming after Quartus elaboration.
+
+Decision: **document and defer.** The violation is on the Slow 1100mV 85C
+corner; Fast corner setup slack on the same domain is +1.85 ns (passing).
+The board currently runs functionally at 15 FPS with stable visuals, so the
+violation is not breaking real silicon. More importantly, the 2 px/cycle work
+in steps 2-4 modifies *only* the `clk` (50 MHz, voxel_gpu user) domain — the
+draw pipe, band caches, and edge/recip math. None of it adds combinational
+depth in `sdram_ctrl_clk`. So this preexisting violation is orthogonal to the
+project's goal and applying SDC fixes in the same pass risks masking real new
+violations introduced by steps 2-4. We will revisit after step 4 when post-fit
+timing is clearer.
+
+### Step 2: Bank fb_A/B and z_A/B caches via even/odd x
+
+**Decision:** rather than promoting `voxel_sdp_ram` to true dual-port (TDP)
+mode of altsyncram, **split each band cache into two half-depth simple-dual-
+port banks indexed by `addr[0]`** (= `x[0]`). This is M10K-neutral
+(40,960×16 → 2× 20,480×16, same bits per cache) and avoids the ~25% M10K
+overhead that TDP mode imposes on Cyclone V (TDP caps at 8 Kb/M10K vs
+10 Kb in SDP). M10K headroom matters: post-fit usage was 346/397 = 87%.
+
+Why bank by even/odd x instead of by row, by 16-pixel stripe, etc.:
+
+  * The 2 px/cycle commit pipeline always advances `draw_x_cur` by 2,
+    so lane0 commits even x and lane1 commits odd x. Banking the cache
+    on the same boundary means both lanes always touch disjoint banks
+    and never contend for a write port -- this is the whole point.
+  * Reads have the same property because the rasterizer reads
+    `pipe0_addr` ahead of the same x stride. The depth-test/blend reads
+    naturally split into one-per-bank.
+  * Sky/clear paths and SDRAM-driven cache init (linear addr increment)
+    just see writes alternating between banks cycle-by-cycle. No
+    correctness change at 1 px/cycle.
+
+**Implementation in this step:** new `voxel_banked_sdp_ram` wrapper in
+`hw/voxel_gpu/rtl/voxel_sdp_ram.sv` (same file so no qsys filelist
+change). External interface is *identical* to `voxel_sdp_ram` (1R/1W) --
+this is a drop-in replacement for `fb_back_ram_A/B` and `z_ram_A/B`. The
+wrapper:
+
+  * Strips `addr[0]` from rd_addr / wr_addr to form the bank-internal
+    address.
+  * Routes wr_en to the matching even/odd bank via `(addr[0] == 0)`.
+  * Latches `rd_addr[0]` into a 1-cycle register so the bank-select mux
+    aligns with the underlying altsyncram's 1-cycle read latency.
+  * Picks `rd_data` from `rd_data_even` or `rd_data_odd` accordingly.
+
+The `voxel_sdp_ram` module itself is unchanged -- the wrapper just
+instantiates two of them. M10K instance count stays the same per cache
+(Quartus packs the two halves into the same M10Ks it would have used for
+the unified array).
+
+The texture ROM (`voxel_texture_rom`) is **not** banked here because step
+3 promotes it to a true dual-port ROM (different goal: serve two reads
+per cycle for the two pixel lanes' UV lookups). The palette table stays
+single-port; per-quad it doesn't pay to widen.
+
+**Verification this step:**
+
+  * Verilator lint-only over the wrapper module against an `voxel_sdp_ram`
+    stub passes clean (vendor primitive itself remains unverilatable per
+    pre-existing project note).
+  * No FSM, addr-generator, or pipeline-stage changes anywhere else.
+    DRAW_FLUSH_CYCLES stays at 14. The bank-select latch adds zero
+    cycles to read latency.
+
+**Risks introduced this step:** none functional. The output mux on
+`fb_back_rd_data`/`z_rd_data` is one extra 16-bit 2:1 mux on the read
+path, ~0.2-0.4 ns -- negligible vs the 20 ns clock period and orthogonal
+to the existing -2.7 ns sdram_pll0 violation (different clock domain).
+
+### Step 3: Promote texture ROM to true dual-port
+
+**What changed:** `voxel_texture_rom.sv` switched the underlying altsyncram
+from `operation_mode = "ROM"` (single read port A) to
+`operation_mode = "BIDIR_DUAL_PORT"` with both `wren_a` and `wren_b` tied
+to `1'b0`. This is the standard Altera pattern for a true dual-read ROM:
+both ports take registered addresses on `clock0`, both expose unregistered
+output ports, both share the same `init_file` (still
+`voxel_gpu/assets/textures.mif`). Read latency stays at exactly 1 cycle on
+both ports -- so when step 4 wires lane1 into port B, the timing still
+matches the rest of the pipe2->draw_pipe handoff.
+
+The module's external interface gains `rd_addr_b` / `rd_data_b`. Port A
+keeps its existing `rd_addr` / `rd_data` names so the rasterizer
+instantiation didn't need to rename anything; port B is tied off
+(`rd_addr_b = 14'd0`, `rd_data_b ` unconnected) until step 4.
+
+**M10K cost:** atlas is 64 tiles × 16 × 16 × 8 bits = 131 072 bits.
+Unbanked SDP/ROM packs ~13 M10Ks. BIDIR_DUAL_PORT mode forces TDP packing
+which on Cyclone V can drop usable density per M10K, so expect a few extra
+M10Ks (estimate +3-4). Pre-fit headroom was 51/397 unused, so this is
+comfortable. Will reconfirm after the next Quartus fit.
+
+**Risks:** none functional this step -- port B is unused until step 4.
+The only behavioural change is that Quartus may now place the ROM in a
+different RAM block layout, but the synchronous-read latency contract is
+preserved by explicit `address_reg_b = "CLOCK0"` /
+`outdata_reg_b = "UNREGISTERED"`. The same rationale recorded for port A
+(prevent silent 2-cycle inference -> chromatic fringe bug) applies to
+port B.
+
+### Step 4: Duplicate per-pixel datapath into even/odd lanes (planned, not applied)
+
+The previous three steps cleared the way (banked cache RAM, true dual-port
+texture ROM, no SDRAM PLL surprises in the user `clk` domain). What
+remains is the big surgery: the 14-stage rasterizer pipeline in
+`voxel_gpu.sv` runs one pixel per cycle. To get to two pixels per cycle,
+every stage between `pipe0` and `commit` has to grow an even (lane0) and
+odd (lane1) twin, and the FSM's `ST_DRAW` must step `draw_x_cur` by 2
+instead of 1.
+
+This step is **not applied** in this commit because:
+
+  * The previous five commits got the visuals to a known-correct state.
+    Lane duplication touches every per-pixel calculation including the
+    edge-function inclusion test and palette/fog handoff -- exactly the
+    code that produced the chromatic-fringe and palette-leak bugs
+    documented elsewhere in this file. Landing it together with the
+    foundational steps 1-3 risks losing the ability to bisect a
+    regression.
+  * It is the largest chunk of new RTL in this project, comparable in
+    risk to the original SDRAM band-pass migration. The right cadence
+    is: land steps 1-3 + the wrapper API, run a full Quartus fit + STA
+    + a real-board run, then apply step 4 against a known-good
+    foundation.
+
+**What's prepared for step 4 (already in this commit):**
+
+  * `voxel_banked_sdp_ram` (in `hw/voxel_gpu/rtl/voxel_sdp_ram.sv`) keeps
+    a unified 1R/1W external API today but internally already runs as
+    two independent SDP RAMs split by `addr[0]`. Step 4 will widen its
+    interface to expose per-bank ports (already enumerated below); the
+    backing M10Ks won't move.
+  * `voxel_texture_rom` (in `hw/voxel_gpu/rtl/voxel_texture_rom.sv`)
+    already has `rd_addr_b` / `rd_data_b`, currently tied off in the
+    voxel_gpu.sv instantiation. Step 4 will route lane1's texel address
+    into `rd_addr_b` and consume `rd_data_b` in the lane1 pipeline.
+
+**Sub-step 4a: widen `voxel_banked_sdp_ram`**
+
+Replace the unified 1R/1W ports with per-bank 2R/2W:
+
+    rd_addr_e / rd_data_e   (even-x reads,  bank_even)
+    rd_addr_o / rd_data_o   (odd-x reads,   bank_odd)
+    wr_addr_e / wr_data_e / wr_en_e   (even-x writes, bank_even)
+    wr_addr_o / wr_data_o / wr_en_o   (odd-x writes,  bank_odd)
+
+Bank-internal address is `addr[ADDR_W-1:1]`; the caller guarantees
+`addr_e[0] == 0` and `addr_o[0] == 1`. Update each of the four cache
+instantiations in `voxel_gpu.sv` (the `fb_back_ram_A/B` and `z_ram_A/B`
+blocks following the comment "Ping-pong band caches A and B"). The cache
+port driver around lines 1846-1916 today produces a single triple
+(addr, data, en); rewrite it to produce a pair of (addr_e, data_e, en_e)
+and (addr_o, data_o, en_o). For single-pixel paths (`ST_CLEAR`,
+`ST_FETCH` sky prime, `ST_CACHE_INIT`, `ST_CACHE_LOAD_*`), drive both
+ports with the same address and value and qualify each `wr_en` by the
+linear address's LSB. For `ST_DRAW`, lane0's commit feeds `wr_addr_e`
+and lane1's feeds `wr_addr_o` directly.
+
+**Sub-step 4b: duplicate per-pixel state in `ST_DRAW`**
+
+Every register named `pipe0_*`, `recip0_*`, `recip1_*`, `recip2_*`,
+`pipe1_*`, `tex0_*`, `pipe2_*`, `draw_pipe_*`, `pal_rd_*`, `plr_*`,
+`fog0_*`, `fog1_*`, `commit_*` becomes a `_e` / `_o` pair. (Declared in
+`voxel_gpu.sv` lines 229-470, ~14 stages × ~15 fields = ~200 new
+registers.) The `_e` lane evaluates at `(x, y)` and the `_o` lane at
+`(x+1, y)`. Edge values, Z, UV/perspective increments, fog radial -- all
+the per-pixel state -- must arrive at the lane1 stage with the lane0
++ dx_step adjustment.
+
+Recommended diff order (each piece is bisectable on its own):
+
+  * 4b.1: rename-only pass that turns every `pipe0_X` into `pipe0_e_X`
+    (etc.) without adding `_o` yet. Single-pixel pipe still works.
+  * 4b.2: add `_o` clones, fed from the lane0 row-base values plus the
+    correct dx step. Cache writes still come only from lane0; lane1 just
+    runs through every stage and is dropped at commit.
+  * 4b.3: enable lane1 commits into `wr_addr_o` / `wr_data_o`. This is
+    the cycle the renderer actually goes 2 px/cycle.
+
+**Sub-step 4c: ST_DRAW FSM (`voxel_gpu.sv` ~lines 3240-3303)**
+
+  * `draw_x_cur <= draw_x_cur + 10'd2` instead of `+ 10'd1`.
+  * The end-of-row test `(draw_x_cur == draw_x_max)` becomes
+    `(draw_x_cur >= draw_x_max - 1)`. For odd-width quads (last pixel in
+    lane0 only, lane1 outside the bbox), gate lane1's `commit_valid` by
+    `(draw_x_cur + 1 <= draw_x_max)`; lane1 still walks the pipeline but
+    is masked out at commit, the same way `pipe0_inside` masks
+    outside-edge pixels today.
+  * The early-exit on inside-to-outside transition currently checks
+    `(draw_row_inside && !draw_inside)` (~line 3266). With two lanes we
+    examine `draw_inside_e` and `draw_inside_o`: row exits only when
+    BOTH lanes have left the triangle interior, since either lane could
+    be the trailing pixel of an odd-aligned quad.
+
+**Sub-step 4d: pipeline drain (`DRAW_FLUSH_CYCLES`, line 96)**
+
+The 14-cycle drain stays at 14 -- the lane1 pipeline shares depth with
+lane0. The `*_valid` flop in each stage just becomes a 2-bit pair
+{`*_valid_e`, `*_valid_o`}. End of `ST_DRAW` waits until both lanes have
+drained.
+
+**Cache writes during commit (depends on 4a + 4b.3):**
+
+When both lanes commit a pixel: lane0 writes `commit_addr_e` (always
+even) into the even bank's write port, lane1 writes `commit_addr_o` (=
+even+1, always odd) into the odd bank's port. Z bank: same pattern.
+Single-lane commit (last pixel of an odd-width row): only the lane0
+write port fires; the odd bank's `wr_en_o = 0`.
+
+**Verification gates between 4a and 4b/4c:**
+
+After 4a (wrapper widening + cache port rewrite, but still 1 px/cycle
+draw), the visuals should be unchanged. A board run plus a frame-hash
+diff against the pre-4a build is a cheap regression check. After
+4b/4c, the renderer is at 2 px/cycle and frame timing should drop by
+~40-50% on draw-bound workloads (sky/grass world view with hotbar ratio
+constant).
+
+**Resource budget estimate (Cyclone V, post-fit baseline 25,997/32,070
+ALMs at 81%, 346/397 M10Ks at 87%):**
+
+  * ALMs: +4-7k for the duplicated per-pixel datapath (edge eval, recip,
+    UV, fog math). Tight given 6,073 free.
+  * M10Ks: +0 from cache banking, +3-4 from texture ROM TDP. Comfortable.
+  * DSPs: +0 to +12 depending on whether Quartus shares multipliers
+    across lanes. Plenty of headroom (30/87 today).
+  * Fmax: same 50 MHz target. The added combinational load is wide but
+    shallow (more 32/64-bit adders in parallel, not a longer chain).
+
+If the post-4a fit shows the SDRAM PLL setup violation drifting
+(currently -2.7 ns), revisit the deferred SDC false-path fix from step 1
+before adding the lane1 pipeline.

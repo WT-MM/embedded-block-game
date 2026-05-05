@@ -1350,8 +1350,12 @@ module voxel_gpu (
 
     assign DRAM_CS_N = dram_cs_n_bus[0];
 
-    /* ── Ping-pong band caches A and B ───────────────────── */
-    voxel_sdp_ram #(
+    /* ── Ping-pong band caches A and B ───────────────────── *
+     * Banked by addr[0] (= x[0]) so even/odd x land in disjoint
+     * SDP RAMs. Step 2 of the 2 px/cycle project keeps the external
+     * 1R/1W interface; step 4 will widen the wrapper to expose one
+     * port per bank for true two-pixel commit. */
+    voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
@@ -1364,7 +1368,7 @@ module voxel_gpu (
         .wr_en   (fb_A_wr_en)
     );
 
-    voxel_sdp_ram #(
+    voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
@@ -1377,7 +1381,7 @@ module voxel_gpu (
         .wr_en   (fb_B_wr_en)
     );
 
-    voxel_sdp_ram #(
+    voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
@@ -1390,7 +1394,7 @@ module voxel_gpu (
         .wr_en   (z_A_wr_en)
     );
 
-    voxel_sdp_ram #(
+    voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
         .DEPTH(BAND_PIXELS)
@@ -1426,9 +1430,16 @@ module voxel_gpu (
          */
         .INIT_FILE("voxel_gpu/assets/textures.mif")
     ) texture_rom (
-        .clk     (clk),
-        .rd_addr (pipe2_tex_addr),
-        .rd_data (tex_rd_data)
+        .clk       (clk),
+        .rd_addr   (pipe2_tex_addr),
+        .rd_data   (tex_rd_data),
+        /*
+         * Port B is the second-lane texel read for 2 px/cycle. Tied
+         * off until step 4 wires up the odd-lane pipeline; the M10K
+         * cost is unchanged because the ROM is already TDP-shaped.
+         */
+        .rd_addr_b (14'd0),
+        .rd_data_b ()
     );
 
     integer i;

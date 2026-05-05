@@ -2307,17 +2307,17 @@ module voxel_gpu (
 
             ST_CACHE_INIT: begin
                 fb_wr_addr_e = {cache_maint_addr[15:1], 1'b0};
-                fb_wr_addr_o = {cache_maint_addr[15:1], 1'b0} + 16'd1;
+                fb_wr_addr_o = {cache_maint_addr[15:1], 1'b1};
                 fb_wr_data_e = cache_init_rgb565;
                 fb_wr_data_o = cache_init_rgb565;
                 fb_back_wr_en_e = 1'b1;
-                fb_back_wr_en_o = (cache_maint_addr + 16'd1) < cache_pixels_total;
+                fb_back_wr_en_o = 1'b1;
                 z_wr_addr_e = {cache_maint_addr[15:1], 1'b0};
-                z_wr_addr_o = {cache_maint_addr[15:1], 1'b0} + 16'd1;
+                z_wr_addr_o = {cache_maint_addr[15:1], 1'b1};
                 z_wr_data_e = 16'hFFFF;
                 z_wr_data_o = 16'hFFFF;
                 z_wr_en_e = 1'b1;
-                z_wr_en_o = (cache_maint_addr + 16'd1) < cache_pixels_total;
+                z_wr_en_o = 1'b1;
             end
 
             ST_CACHE_LOAD_COLOR: begin
@@ -4255,7 +4255,7 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_INIT: begin
-                    if (cache_maint_addr >= cache_pixels_total - 16'd2) begin
+                    if (cache_maint_addr == cache_pixels_total - 16'd2) begin
                         cache_valid <= 1'b1;
                         cache_dirty <= sky_gradient_clear_enabled;
                         cache_draw_dirty <= 1'b0;
@@ -4266,7 +4266,7 @@ module voxel_gpu (
                         state <= ST_IDLE;
                     end else begin
                         cache_maint_addr <= cache_maint_addr + 16'd2;
-                        if (cache_init_x >= 10'd638) begin
+                        if (cache_init_x == 10'd638) begin
                             cache_init_x <= 10'd0;
                             if (cache_init_sky_row_count == 5'd19) begin
                                 cache_init_sky_row_count <= 5'd0;

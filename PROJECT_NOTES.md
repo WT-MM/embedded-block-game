@@ -2181,6 +2181,100 @@ Bridge-blocker verification math:
     has no Linux kernel build tree under `/lib/modules/.../build`; compile this
     check on the DE1/Linux side.
 
+May 5 upload-diagnostic run, pasted game log:
+
+  * Stable ground/block-heavy view remains in the same 3-vsync bucket:
+    `fps=19.8`, `frame=50.40ms`, `work=50.31ms`.
+  * Breakdown:
+    - `draw=13.15ms`
+    - `end=37.12ms`
+    - `bin=0.89ms`
+    - `bands=28.21ms`
+    - `FLIP=7.73ms`
+  * Descriptor payload is 224192 B. Summed band `write` time is about
+    10.69 ms, so effective descriptor-upload-plus-backpressure rate is about
+    `224192 / 0.01069 = 21.0 MB/s`, essentially unchanged from the prior
+    capture.
+  * The largest descriptor pile is still band 5:
+    `169152B`, `write=8.48ms`.
+  * Summed band `END_BAND` wait time is about 17.46 ms, larger than the
+    descriptor write total. This continues to point at both descriptor traffic
+    and hardware/flush synchronization, not just raw bridge bandwidth.
+  * This pasted log did not include the new kernel `voxel_gpu: upload diag:`
+    lines, so it does not yet split `write` into FIFO-space wait versus actual
+    `iowrite32_rep()` MMIO time. Need the `dmesg` lines to decide whether the
+    lightweight bridge is the primary blocker.
+
+May 5 upload-diagnostic kernel split:
+
+    voxel_gpu: upload diag: calls=640 bytes=4483840 bursts=1460 wait=131575us(63%) mmio=74396us(36%) rate_total=21258KiB/s rate_mmio=58856KiB/s
+
+Steady-state readout:
+
+  * The actual MMIO/bridge push path is about 58-59 MiB/s.
+  * The total effective descriptor-write section is still about 21 MiB/s
+    because FIFO-space waiting dominates: roughly 63% wait versus 36% MMIO.
+  * At 19.8 FPS, this line is approximately:
+    - descriptor bytes per frame: `4483840 / 19.8 = 226 KB/frame`
+    - FIFO-space wait per frame: `131.6ms / 19.8 = 6.6ms/frame`
+    - MMIO push per frame: `74.4ms / 19.8 = 3.8ms/frame`
+    - upload section per frame: about 10.4ms/frame
+  * Therefore moving the GPU aperture to the full H2F bridge can at most attack
+    the ~3.8ms/frame MMIO piece in this stable capture. It cannot remove the
+    ~6.6ms/frame FIFO wait, and it still does not close the full ~16.7ms gap
+    from the 3-vsync bucket to the 2-vsync/30-FPS bucket.
+  * Conclusion: the lightweight bridge is a real secondary cost, but the
+    primary steady-state upload blocker is FPGA-side descriptor consumption /
+    command-FIFO backpressure. Prioritize reducing descriptor bytes, increasing
+    descriptor consume rate, or allowing descriptor upload to overlap more
+    non-consuming phases before spending the next risky hardware iteration on
+    bridge relocation alone.
+  * RTL reason: the command FIFO is only popped by `fifo_pop_req` in
+    `ST_FETCH`. It can pop at most one 32-bit word per 50 MHz cycle while that
+    state is active, which is already a 200 MB/s theoretical read rate. The
+    measured descriptor payload of ~224 KB/frame would take only ~1.1 ms to
+    read if `ST_FETCH` ran continuously. The FIFO fills because the main FSM
+    stops popping while it executes the fetched descriptor (`ST_DRAW` /
+    `ST_DRAW_FLUSH`) and while band/cache/SDRAM phases run (`ST_CACHE_INIT`,
+    load/drain, queued flush interactions, etc.).
+  * Therefore the immediate FPGA-side slowdown is not literal FIFO read
+    bandwidth. It is serialized descriptor execution and band maintenance:
+    fetch one descriptor, rasterize/skip it, flush its pipeline, then fetch the
+    next descriptor. `renderer: calc fetch=~1.12ms` versus `bbox2=~3.6ms`,
+    `init=~3.1ms`, `flush_raw=~6.1ms`, and `flush_slack=~7.5ms` matches this.
+  * Parallelizing descriptor *fetch* alone would mostly reduce the ~1.1 ms
+    fetch term. The more useful and feasible intermediate RTL idea is a small
+    decoded-descriptor prefetch queue: keep popping command FIFO words into one
+    or two decoded descriptor slots while `ST_DRAW` is busy, then start the
+    next descriptor without re-entering a long serial fetch phase. True
+    parallel descriptor *execution* is much bigger because two rasterizers
+    would contend for the same z/color cache writes and must preserve Z/alpha
+    ordering for overlapping quads.
+  * Why the 2-pixel raster lane did not move FPS much: it only attacks the
+    bbox/pixel-march term. In the stable log, the model says the old 1 px/cycle
+    bbox work would be ~7.07 ms and the new 2 px/cycle bbox work is ~3.60 ms,
+    a ~3.47 ms saving. But the frame is still stuck in the 50.4 ms / 3-vsync
+    bucket until total work drops below 33.6 ms. The remaining large terms are
+    CPU `draw` (~13 ms), FIFO/upload blocking (~10 ms split across wait+MMIO),
+    band flush/init/synchronization (~17 ms of `END_BAND` waits), and `FLIP`
+    (~7-8 ms).
+  * Rasterizer-side improvements that still make sense:
+    - reduce bbox area rather than adding more lanes: row-span rasterization or
+      per-row x-start/x-end would skip outside-left/outside-right bbox pixels
+      instead of walking each descriptor's full bounding box;
+    - add descriptor prefetch/decode queueing to hide the ~1.1 ms fetch phase
+      and reduce command-FIFO backpressure;
+    - create specialized fast paths for common opaque flat block faces that do
+      not need perspective texture setup, alpha, fog, or expensive per-pixel
+      work;
+    - reduce/overlap band maintenance (`ST_CACHE_INIT`, SDRAM flush/drain, and
+      scanout-safe slack), since those costs are now comparable to or larger
+      than the pixel march itself.
+  * Note: `renderer: calc init=3.07ms` reflects updated software diagnostic
+    math for the pending two-pixel cache-init RTL. If the matching RBF was not
+    rebuilt, this is an estimate only; the measured `band detail`/`perf` lines
+    are the authoritative data.
+
 Near-term best target:
 
   * Reduce descriptor byte volume and per-frame CPU descriptor setup. The
@@ -2189,3 +2283,51 @@ Near-term best target:
     world/face culling and/or more compact descriptor formats for common world
     faces, because that reduces CPU `draw=`, PIO `write=`, FIFO pressure, and
     hardware fetch overhead together.
+
+Concrete path to a reliable 30 FPS+ budget:
+
+  * Stable frame budget today is about `work=50.3ms`. To hit the software
+    30 FPS cap, work must land below the 2-vsync bucket (`33.6ms`); for margin,
+    target ~28-30ms. That means we need roughly 17ms of savings just to cross
+    the threshold and ~20ms+ to be comfortable.
+  * Do not expect one fix to carry this. The current largest stable-frame
+    contributors are:
+    - CPU `draw`: ~13ms
+    - descriptor upload section: ~10.4ms/frame, split ~6.6ms FIFO wait and
+      ~3.8ms MMIO push
+    - band `END_BAND` waits / flush synchronization: ~17.5ms
+    - `FLIP` wait: ~7-8ms
+  * Recommended order:
+    1. Build/test the existing two-pixel `ST_CACHE_INIT` RTL. If the current
+       RBF does not include it, this should recover about 3ms/frame.
+    2. Add a software-side “dirty band” / empty-band skip so bands with no
+       non-sky descriptors do not pay begin/init/end/flush work. This directly
+       attacks `END_BAND`, `FLIP`, and bad sky/ground cases.
+    3. Reduce descriptor bytes and CPU draw together: merge/specialize common
+       block-face descriptors or add stronger screen/band culling before
+       descriptor emission. Every descriptor removed saves CPU setup, MMIO
+       upload, FIFO wait, fetch, and raster work.
+    4. Add an RTL decoded-descriptor prefetch queue only after byte/empty-band
+       cleanup. It can hide the ~1.1ms fetch term and reduce FIFO fullness, but
+       it is not a 17ms fix by itself.
+    5. Treat full H2F bridge relocation as a secondary improvement. Current
+       diagnostics say it can only attack the ~3.8ms/frame MMIO portion in the
+       stable capture, not the larger FIFO-wait/flush costs.
+
+May 5 fitter result for two-pixel `ST_CACHE_INIT`:
+
+  * Quartus failed in fitter placement preparation:
+    - required LABs: 3250
+    - available LABs: 3207
+    - over by 43 LABs (~1.3%)
+  * This is a resource fit failure, not a timing failure. Because the design is
+    barely over, very small logic reductions can matter.
+  * The two-pixel init patch was tightened after this report:
+    - odd-bank init address now wires the low bit to 1 instead of using a
+      16-bit `+ 1` adder;
+    - odd-bank init write enables are unconditional because every band pixel
+      count is even and `cache_maint_addr` advances by 2;
+    - terminal checks use equality instead of broader `>=` comparisons where
+      the FSM already guarantees even stepping.
+  * Verilator lint/syntax still passes locally after the resource-shaving
+    change. Quartus fitting still needs to be retried on the build machine.

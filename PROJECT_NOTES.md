@@ -2053,3 +2053,139 @@ Current next hypotheses to test:
   * If `FLIP` remains >16.8 ms, investigate whether the final background flush
     is missing the current vsync and should be requested earlier or tracked
     separately from display flip.
+
+### May 5 2026: Updated 20 FPS logs and first RTL-side speedup
+
+New board logs after the text-row-run and software face-frustum changes:
+
+    perf: fps= 19.8 frame= 50.40ms work= 50.31ms update= 0.03ms begin= 0.01ms draw= 13.10ms end= 37.17ms sleep= 0.00ms max_work= 50.35ms quads=1521.0 sky=25.0 phys= 3.0
+    renderer: HW mode [flat buf, 3269 quads, bbox: (0,0)-(639,479)] bin= 0.85ms bands=28.10ms
+    renderer: band detail b0= 0.90( 0.01/ 0.13/ 0.77,6976B) b1= 0.83( 0.00/ 0.01/ 0.81,320B) b2= 2.75( 0.00/ 0.01/ 2.74,576B) b3= 2.81( 0.00/ 0.01/ 2.80,576B) b4= 5.65( 0.04/ 0.05/ 5.56,2624B) b5= 8.48( 0.00/ 8.36/ 0.11,169152B) b6= 2.49( 0.00/ 1.88/ 0.61,37952B) b7= 4.17( 0.00/ 0.10/ 4.06,5888B)
+    renderer: calc desc=1740 copies=1870 tex=1631 sky_skip=30 bbox1= 7.07ms bbox2= 3.60ms save= 3.47ms init= 6.14ms fetch= 1.12ms overhead= 0.63ms flush_raw= 6.14ms flush_slack= 7.52ms ideal_ready=12.41ms vsync_floor=16.80ms slots=1
+    renderer: FLIP flip= 7.90ms
+
+Current bottleneck:
+
+  * This is still exactly the 3-vsync bucket: `3 * 16.8ms = 50.4ms`.
+  * To reach the 30 FPS cap, total work must be under the 2-vsync bucket:
+    `33.6ms`. With `draw=13.10ms`, `update=0.03ms`, and `begin=0.01ms`,
+    `renderer_end_frame()` needs to be roughly <=20.45ms. It is currently
+    ~37.17ms, so we still need about 16.7ms of total frame savings.
+  * The latest `end` breaks down as roughly:
+    - `bin=0.85ms`
+    - `bands=28.10ms`
+    - `FLIP=7.90ms`
+  * Total descriptor payload across the eight bands in this diagnostic frame
+    is 224064 bytes. The measured write phases total about 10.55ms, only
+    ~21 MB/s effective userspace -> kernel -> FPGA FIFO throughput. That means
+    descriptor byte volume and PIO/MMIO bandwidth are now real bottlenecks.
+  * Band 5 is the smoking gun for bad camera angles: it contains 169152 bytes
+    of descriptors and spends 8.36ms in the write phase. Looking high/down can
+    concentrate projected terrain into one or two screen bands, creating exactly
+    this kind of descriptor pile. If it crosses the next vsync boundary, FPS
+    falls from 19.8 to ~14.9 (4-vsync bucket), or even ~11.9 (5-vsync bucket).
+
+RTL-side speedup applied:
+
+  * `ST_CACHE_INIT` now uses the even/odd banked local cache write ports to
+    initialize two pixels per 50 MHz cycle instead of one.
+  * This affects both color-cache init and z-cache clear for every band.
+  * Full-frame local cache init/clear estimate changes from:
+    - old: 307200 cycles = 6.144ms
+    - new: 153600 cycles = 3.072ms
+    - expected fixed saving: ~3.07ms/frame
+  * `sw/gpu_transport.c` diagnostic math was updated so future `init=...`
+    estimates match the two-pixel init path.
+  * This should reduce some of the small-payload band `END_BAND` waits, but it
+    is not enough alone to reach 30 FPS; the remaining target is still on the
+    order of 13ms+.
+
+RTL-side options considered next:
+
+  * Faster main GPU clock is not a simple switch. The current 50 MHz clock also
+    drives VGA timing expectations and the Avalon-facing control/FIFO logic.
+    Timing reports show theoretical Fmax above 50 MHz for this domain, but
+    running raster/cache at a faster independent clock would require careful
+    clock-domain crossings around the FIFO, scanout/cache arbitration, and
+    SDRAM paths. It is possible as a larger architecture change, not a quick
+    safe patch.
+  * Increasing the active-line SDRAM write window (`ACTIVE_WRITE_END_HCOUNT`)
+    could recover under ~1ms of flush slack, but it risks reintroducing scanout
+    starvation/flash artifacts. Treat as a cautious tuning knob only after
+    bigger descriptor-volume wins.
+  * Wider descriptor ingestion or DMA would attack the measured ~21 MB/s PIO
+    bottleneck, but this is a driver/RTL interface change. A deeper FIFO would
+    mostly move time from `write` to `END_BAND` unless the hardware also drains
+    descriptors faster.
+  * More raster lanes alone are not attractive now: `bbox2=3.60ms` says pixel
+    pair work is not the dominant term in this captured frame.
+
+HPS-to-FPGA bridge bandwidth note:
+
+  * `hw/soc_system.qsys` currently maps `fpga_sdram.s1` behind the full
+    `hps_0.h2f_axi_master`, but maps `voxel_gpu_0.avalon_slave_0` behind
+    `hps_0.h2f_lw_axi_master`.
+  * Therefore the descriptor FIFO/register aperture used by `/dev/voxel_gpu`
+    is still on the lightweight HPS-to-FPGA bridge, while the separate SDRAM
+    test window is on the full bridge.
+  * Moving the GPU slave to the full H2F bridge is possible and is probably the
+    lowest-risk bus-bandwidth experiment: reconnect the Platform Designer/Qsys
+    Avalon connection from `h2f_lw_axi_master` to `h2f_axi_master`, regenerate
+    the system/device tree, and make sure the device-tree `reg` points at the
+    new full-bridge physical aperture. The kernel driver already maps the OF
+    resource, so the userspace ABI and descriptor format should not need to
+    change.
+  * Caveat: the GPU slave itself is still a 32-bit PIO FIFO window. The full
+    bridge can remove lightweight-bridge bandwidth/transaction limits, but it
+    will not magically become a wide burst DMA path unless the RTL/driver
+    protocol is also widened or replaced with a DMA/ring-buffer style command
+    uploader. Treat this as a useful intermediate step, not the final maximum-
+    bandwidth architecture.
+
+Bridge-blocker verification math:
+
+  * The Avalon slave has no `waitrequest`; FIFO backpressure is implemented in
+    `sw/voxel_gpu.c` by polling `STATUS.FIFO_COUNT` before each
+    `iowrite32_rep()` burst. Therefore `band write` time must be split into:
+    - time waiting for FIFO space (`voxel_fifo_wait_space`)
+    - time actually issuing MMIO writes (`iowrite32_rep`)
+  * If `iowrite32_rep` dominates, the HPS bridge / Linux MMIO path is the
+    blocker. If FIFO-space wait dominates, the FPGA descriptor/raster pipeline
+    is the blocker and a faster bridge mostly helps only short bursts.
+  * Latest measured payload:
+    - total descriptor bytes: 224064 B
+    - summed band write time: about 10.55 ms
+    - effective upload rate: `224064 / 0.01055 = 21.2 MB/s`
+  * Ideal lower bound for the current 32-bit, 50 MHz slave if it accepted one
+    word every cycle:
+    - bandwidth: `4 B * 50 MHz = 200 MB/s`
+    - transfer time: `224064 / 200e6 = 1.12 ms`
+  * Therefore the absolute best same-width bus-side saving on that frame is
+    only about `10.55 - 1.12 = 9.43 ms`. Since the frame still needs roughly
+    16.7 ms of savings to move from the 3-vsync bucket (50.4 ms) to the
+    2-vsync bucket (33.6 ms), the bridge cannot be the only remaining 30 FPS
+    blocker in that captured frame.
+  * However, the bridge can explain whole-vsync drops on descriptor-heavy
+    camera angles. Approximate one-vsync saving threshold:
+    `bytes * (1/21.2e6 - 1/200e6) >= 16.8ms`, so bytes must be about
+    `400 KB` before an idealized bridge-speed fix can recover a full 60 Hz
+    vsync slot by itself.
+  * `sw/voxel_gpu.c` now has optional `diag_upload=1` module instrumentation
+    that accumulates one-second upload timing splits:
+    - FIFO-space wait time (`voxel_fifo_wait_space`)
+    - actual MMIO push time (`iowrite32_rep`)
+    - total bytes, bursts, total effective KiB/s, and MMIO-only KiB/s
+    Enable with `insmod voxel_gpu.ko diag_upload=1` or by writing `1` to the
+    module parameter in sysfs if the module is already loaded.
+  * The local Mac-side environment cannot compile the kernel module because it
+    has no Linux kernel build tree under `/lib/modules/.../build`; compile this
+    check on the DE1/Linux side.
+
+Near-term best target:
+
+  * Reduce descriptor byte volume and per-frame CPU descriptor setup. The
+    worst cases are the camera angles where one screen band receives a huge
+    textured-descriptor pile. The strongest quality-preserving path is better
+    world/face culling and/or more compact descriptor formats for common world
+    faces, because that reduces CPU `draw=`, PIO `write=`, FIFO pressure, and
+    hardware fetch overhead together.

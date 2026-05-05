@@ -32,6 +32,9 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
+#include <linux/string.h>
 #include <linux/version.h>
 
 #include "voxel_gpu.h"
@@ -56,6 +59,11 @@
 #define VOXEL_POLL_DELAY_US     1
 #define VOXEL_FIFO_MIN_BURST_WORDS 64
 
+static bool voxel_diag_upload;
+module_param_named(diag_upload, voxel_diag_upload, bool, 0644);
+MODULE_PARM_DESC(diag_upload,
+		 "Print descriptor upload timing split: FIFO-space wait vs MMIO writes");
+
 struct voxel_gpu_dev {
 	struct resource res;
 	void __iomem   *base;
@@ -64,6 +72,17 @@ struct voxel_gpu_dev {
 };
 
 static struct voxel_gpu_dev voxdev;
+
+struct voxel_upload_diag {
+	u64 bytes;
+	u64 calls;
+	u64 bursts;
+	u64 wait_ns;
+	u64 mmio_ns;
+};
+
+static struct voxel_upload_diag upload_diag_accum;
+static unsigned long upload_diag_next_report;
 
 /* ---------- low-level register helpers ---------- */
 
@@ -130,6 +149,59 @@ static int voxel_fifo_wait_space(size_t *space_words, size_t min_req)
 	}
 }
 
+static void voxel_diag_record_upload(size_t bytes, u64 wait_ns, u64 mmio_ns,
+				     u64 bursts)
+{
+	u64 total_ns;
+	u64 total_kib_s;
+	u64 mmio_kib_s;
+	u64 wait_pct;
+	u64 mmio_pct;
+
+	if (!voxel_diag_upload)
+		return;
+
+	upload_diag_accum.bytes += bytes;
+	upload_diag_accum.calls++;
+	upload_diag_accum.bursts += bursts;
+	upload_diag_accum.wait_ns += wait_ns;
+	upload_diag_accum.mmio_ns += mmio_ns;
+
+	if (!upload_diag_next_report ||
+	    time_after_eq(jiffies, upload_diag_next_report)) {
+		total_ns = upload_diag_accum.wait_ns + upload_diag_accum.mmio_ns;
+		total_kib_s = total_ns ?
+			div64_u64(upload_diag_accum.bytes * 1000000000ULL,
+				  total_ns * 1024ULL) : 0;
+		mmio_kib_s = upload_diag_accum.mmio_ns ?
+			div64_u64(upload_diag_accum.bytes * 1000000000ULL,
+				  upload_diag_accum.mmio_ns * 1024ULL) : 0;
+		wait_pct = total_ns ?
+			div64_u64(upload_diag_accum.wait_ns * 100ULL,
+				  total_ns) : 0;
+		mmio_pct = total_ns ?
+			div64_u64(upload_diag_accum.mmio_ns * 100ULL,
+				  total_ns) : 0;
+
+		pr_info(DRIVER_NAME
+			": upload diag: calls=%llu bytes=%llu bursts=%llu "
+			"wait=%lluus(%llu%%) mmio=%lluus(%llu%%) "
+			"rate_total=%lluKiB/s rate_mmio=%lluKiB/s\n",
+			upload_diag_accum.calls,
+			upload_diag_accum.bytes,
+			upload_diag_accum.bursts,
+			div64_u64(upload_diag_accum.wait_ns, 1000),
+			wait_pct,
+			div64_u64(upload_diag_accum.mmio_ns, 1000),
+			mmio_pct,
+			total_kib_s,
+			mmio_kib_s);
+
+		memset(&upload_diag_accum, 0, sizeof(upload_diag_accum));
+		upload_diag_next_report = jiffies + msecs_to_jiffies(1000);
+	}
+}
+
 /* ---------- file ops ---------- */
 
 static int voxel_open(struct inode *inode, struct file *filp)
@@ -173,6 +245,9 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 		size_t chunk = min_t(size_t, count - total, VOXEL_BOUNCE_BYTES);
 		size_t words;
 		size_t written_words = 0;
+		u64 write_wait_ns = 0;
+		u64 write_mmio_ns = 0;
+		u64 write_bursts = 0;
 
 		if (copy_from_user(bounce, buf + total, chunk)) {
 			ret = -EFAULT;
@@ -186,19 +261,27 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 			size_t rem_words = words - written_words;
 			size_t min_req = min_t(size_t, VOXEL_FIFO_MIN_BURST_WORDS,
 					       rem_words);
+			u64 t0;
 
+			t0 = ktime_get_ns();
 			ret = voxel_fifo_wait_space(&space_words, min_req);
+			write_wait_ns += ktime_get_ns() - t0;
 			if (ret)
 				goto out;
 
 			burst_words = min(space_words, rem_words);
+			t0 = ktime_get_ns();
 			iowrite32_rep(voxdev.base + VOXEL_FIFO_BASE,
 				      &bounce[written_words],
 				      burst_words);
+			write_mmio_ns += ktime_get_ns() - t0;
+			write_bursts++;
 
 			written_words += burst_words;
 		}
 		total += chunk;
+		voxel_diag_record_upload(chunk, write_wait_ns, write_mmio_ns,
+					 write_bursts);
 	}
 
 out:

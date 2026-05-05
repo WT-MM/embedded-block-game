@@ -223,7 +223,7 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
         return;
 
     pixels = diag_band_pixels(band);
-    cost->init_cycles[band] += pixels;
+    cost->init_cycles[band] += (pixels + 1) / 2;
     cost->flush_words[band] += pixels;
 }
 

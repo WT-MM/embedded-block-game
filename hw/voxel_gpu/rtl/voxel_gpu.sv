@@ -95,7 +95,6 @@ module voxel_gpu (
      * palette array as MLAB (async read) or M10K (sync read). */
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
     localparam logic [24:0] FB_WORDS_25 = 25'd307200;
-    localparam logic [24:0] LINE_WORDS_25 = 25'd640;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd64;
@@ -701,13 +700,9 @@ module voxel_gpu (
     logic  [8:0] scan_line0_row;
     logic  [8:0] scan_line1_row;
     logic  [8:0] scan_line2_row;
-    logic [24:0] scan_line0_base_words;
-    logic [24:0] scan_line1_base_words;
-    logic [24:0] scan_line2_base_words;
     logic  [1:0] scan_active_bank;
     logic        scan_active_valid;
     logic  [8:0] scan_active_row;
-    logic [24:0] scan_active_base_words;
     logic        scan_fill_active;
     logic        scan_fill_armed;
     logic        scan_fill_load_pending;
@@ -876,6 +871,7 @@ module voxel_gpu (
     wire        scan_hblank_window      = vcount_visible && (hcount >= 11'd1280);
     wire [8:0]  scan_target_row         = scan_hblank_window ?
                                           (scan_current_row + 9'd1) : scan_current_row;
+    wire        scan_target_valid       = scan_target_row < 9'd480;
     wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < 10'd640);
     wire [8:0]  scan_active_next_row    = scan_active_row + 9'd1;
@@ -885,30 +881,64 @@ module voxel_gpu (
     wire [8:0]  scan_active_bank_row    = (scan_active_bank == 2'd0) ? scan_line0_row :
                                           (scan_active_bank == 2'd1) ? scan_line1_row :
                                                                        scan_line2_row;
-    wire        scan_bank0_next_ready   = scan_line0_ready && (scan_line0_row == scan_active_next_row);
-    wire        scan_bank1_next_ready   = scan_line1_ready && (scan_line1_row == scan_active_next_row);
-    wire        scan_bank2_next_ready   = scan_line2_ready && (scan_line2_row == scan_active_next_row);
+    /*
+     * Drive scanout prefetch from the VGA row, not from the last active
+     * linebuffer row. If scanout ever falls behind, active-row-relative
+     * prefetch keeps chasing the stale row and the monitor repeats bands.
+     */
+    wire        scan_current_line_ready =
+        (scan_line0_ready && (scan_line0_row == scan_current_row)) ||
+        (scan_line1_ready && (scan_line1_row == scan_current_row)) ||
+        (scan_line2_ready && (scan_line2_row == scan_current_row));
+    wire        scan_target_line_ready =
+        !scan_target_valid ||
+        (scan_line0_ready && (scan_line0_row == scan_target_row)) ||
+        (scan_line1_ready && (scan_line1_row == scan_target_row)) ||
+        (scan_line2_ready && (scan_line2_row == scan_target_row));
     wire        scan_next_line_ready    = !scan_active_valid ||
-                                          scan_bank0_next_ready ||
-                                          scan_bank1_next_ready ||
-                                          scan_bank2_next_ready;
-    wire [8:0]  scan_prefetch_step      = scan_next_line_ready ? 9'd2 : 9'd1;
-    wire [8:0]  scan_prefetch_row       = scan_active_row + scan_prefetch_step;
+                                          scan_target_line_ready;
+    wire [8:0]  scan_lookahead_row      = scan_target_row + 9'd1;
+    wire        scan_lookahead_valid    = scan_target_row < 9'd479;
+    wire        scan_prefetch_recover_current =
+        vcount_visible && !scan_current_line_ready;
+    wire        scan_prefetch_need_target =
+        vcount_visible && scan_target_valid &&
+        scan_current_line_ready && !scan_target_line_ready;
+    wire [8:0]  scan_prefetch_row =
+        scan_prefetch_recover_current ? scan_current_row :
+        scan_prefetch_need_target     ? scan_target_row  :
+                                        scan_lookahead_row;
     wire [24:0] scan_prefetch_base_words =
-        scan_active_base_words + (scan_next_line_ready ? (LINE_WORDS_25 + LINE_WORDS_25) :
-                                                       LINE_WORDS_25);
-    wire        scan_prefetch_valid     = scan_active_valid &&
-                                          (scan_prefetch_row < 9'd480);
+        display_base_words +
+        {7'd0, scan_prefetch_row, 9'd0} +
+        {9'd0, scan_prefetch_row, 7'd0};
+    wire        scan_prefetch_valid     =
+        vcount_visible && scan_active_valid &&
+        (scan_prefetch_recover_current ||
+         scan_prefetch_need_target ||
+         scan_lookahead_valid);
     wire        scan_prefetch_ready     =
         (scan_line0_ready && (scan_line0_row == scan_prefetch_row)) ||
         (scan_line1_ready && (scan_line1_row == scan_prefetch_row)) ||
         (scan_line2_ready && (scan_line2_row == scan_prefetch_row));
+    wire        scan_bank0_protected    =
+        scan_line0_ready &&
+        ((scan_line0_row == scan_current_row) ||
+         (scan_line0_row == scan_target_row));
+    wire        scan_bank1_protected    =
+        scan_line1_ready &&
+        ((scan_line1_row == scan_current_row) ||
+         (scan_line1_row == scan_target_row));
+    wire        scan_bank2_protected    =
+        scan_line2_ready &&
+        ((scan_line2_row == scan_current_row) ||
+         (scan_line2_row == scan_target_row));
     wire        scan_bank0_free         = (scan_active_bank != 2'd0) &&
-                                          !(scan_line0_ready && (scan_line0_row == scan_active_next_row));
+                                          !scan_bank0_protected;
     wire        scan_bank1_free         = (scan_active_bank != 2'd1) &&
-                                          !(scan_line1_ready && (scan_line1_row == scan_active_next_row));
+                                          !scan_bank1_protected;
     wire        scan_bank2_free         = (scan_active_bank != 2'd2) &&
-                                          !(scan_line2_ready && (scan_line2_row == scan_active_next_row));
+                                          !scan_bank2_protected;
     wire [1:0]  scan_prefetch_bank      = scan_bank0_free ? 2'd0 :
                                           scan_bank1_free ? 2'd1 :
                                           scan_bank2_free ? 2'd2 : 2'd3;
@@ -968,8 +998,9 @@ module voxel_gpu (
                                           (copy_complete_pending || display_valid);
     wire        scan_next_read_req      = !cache_load_state && display_valid &&
                                           sdram_ready && scan_active_valid &&
-                                          (scan_active_row < 9'd479) &&
-                                          !scan_next_line_ready;
+                                          vcount_visible &&
+                                          (!scan_current_line_ready ||
+                                           !scan_target_line_ready);
     wire        scan_read_start_req     = scan_vsync_read_req || scan_next_read_req;
     /*
      * Defense-in-depth: never spawn a scan-fill burst while the SDRAM RD
@@ -2116,13 +2147,9 @@ module voxel_gpu (
         scan_line0_row   = 9'd0;
         scan_line1_row   = 9'd0;
         scan_line2_row   = 9'd0;
-        scan_line0_base_words = 25'd0;
-        scan_line1_base_words = 25'd0;
-        scan_line2_base_words = 25'd0;
         scan_active_bank = 2'd0;
         scan_active_valid = 1'b0;
         scan_active_row  = 9'd0;
-        scan_active_base_words = 25'd0;
         scan_fill_active = 1'b0;
         scan_fill_armed  = 1'b0;
         scan_fill_load_pending = 1'b0;
@@ -2779,13 +2806,9 @@ module voxel_gpu (
             scan_line0_row   <= 9'd0;
             scan_line1_row   <= 9'd0;
             scan_line2_row   <= 9'd0;
-            scan_line0_base_words <= 25'd0;
-            scan_line1_base_words <= 25'd0;
-            scan_line2_base_words <= 25'd0;
             scan_active_bank <= 2'd0;
             scan_active_valid <= 1'b0;
             scan_active_row  <= 9'd0;
-            scan_active_base_words <= 25'd0;
             scan_fill_active <= 1'b0;
             scan_fill_armed  <= 1'b0;
             scan_fill_load_pending <= 1'b0;
@@ -2920,13 +2943,9 @@ module voxel_gpu (
                 scan_line0_row <= 9'd0;
                 scan_line1_row <= 9'd0;
                 scan_line2_row <= 9'd0;
-                scan_line0_base_words <= 25'd0;
-                scan_line1_base_words <= 25'd0;
-                scan_line2_base_words <= 25'd0;
                 scan_active_bank <= 2'd0;
                 scan_active_valid <= 1'b0;
                 scan_active_row <= 9'd0;
-                scan_active_base_words <= 25'd0;
                 scan_fill_active <= 1'b0;
                 scan_fill_armed <= 1'b0;
                 scan_fill_load_pending <= 1'b0;
@@ -3080,17 +3099,14 @@ module voxel_gpu (
                             2'd0: begin
                                 scan_line0_ready <= 1'b1;
                                 scan_line0_row <= scan_fill_row;
-                                scan_line0_base_words <= scan_fill_base_words;
                             end
                             2'd1: begin
                                 scan_line1_ready <= 1'b1;
                                 scan_line1_row <= scan_fill_row;
-                                scan_line1_base_words <= scan_fill_base_words;
                             end
                             default: begin
                                 scan_line2_ready <= 1'b1;
                                 scan_line2_row <= scan_fill_row;
-                                scan_line2_base_words <= scan_fill_base_words;
                             end
                         endcase
 
@@ -3098,7 +3114,6 @@ module voxel_gpu (
                             scan_active_valid <= 1'b1;
                             scan_active_bank <= scan_fill_bank;
                             scan_active_row <= scan_fill_row;
-                            scan_active_base_words <= scan_fill_base_words;
                         end
                     end else begin
                         scan_fill_store_idx <= scan_fill_store_idx + 10'd1;
@@ -3117,42 +3132,33 @@ module voxel_gpu (
                     if (scan_line0_ready && (scan_line0_row == scan_target_row)) begin
                         scan_active_bank <= 2'd0;
                         scan_active_row <= scan_target_row;
-                        scan_active_base_words <= scan_line0_base_words;
                     end else if (scan_line1_ready && (scan_line1_row == scan_target_row)) begin
                         scan_active_bank <= 2'd1;
                         scan_active_row <= scan_target_row;
-                        scan_active_base_words <= scan_line1_base_words;
                     end else if (scan_line2_ready && (scan_line2_row == scan_target_row)) begin
                         scan_active_bank <= 2'd2;
                         scan_active_row <= scan_target_row;
-                        scan_active_base_words <= scan_line2_base_words;
                     end else if ((scan_active_row != scan_current_row) &&
                                  scan_line0_ready && (scan_line0_row == scan_current_row)) begin
                         scan_active_bank <= 2'd0;
                         scan_active_row <= scan_current_row;
-                        scan_active_base_words <= scan_line0_base_words;
                     end else if ((scan_active_row != scan_current_row) &&
                                  scan_line1_ready && (scan_line1_row == scan_current_row)) begin
                         scan_active_bank <= 2'd1;
                         scan_active_row <= scan_current_row;
-                        scan_active_base_words <= scan_line1_base_words;
                     end else if ((scan_active_row != scan_current_row) &&
                                  scan_line2_ready && (scan_line2_row == scan_current_row)) begin
                         scan_active_bank <= 2'd2;
                         scan_active_row <= scan_current_row;
-                        scan_active_base_words <= scan_line2_base_words;
                     end else if (scan_line0_ready && (scan_line0_row == scan_active_next_row)) begin
                         scan_active_bank <= 2'd0;
                         scan_active_row <= scan_active_next_row;
-                        scan_active_base_words <= scan_line0_base_words;
                     end else if (scan_line1_ready && (scan_line1_row == scan_active_next_row)) begin
                         scan_active_bank <= 2'd1;
                         scan_active_row <= scan_active_next_row;
-                        scan_active_base_words <= scan_line1_base_words;
                     end else if (scan_line2_ready && (scan_line2_row == scan_active_next_row)) begin
                         scan_active_bank <= 2'd2;
                         scan_active_row <= scan_active_next_row;
-                        scan_active_base_words <= scan_line2_base_words;
                     end
                 end
 

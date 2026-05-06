@@ -114,6 +114,7 @@ static void init_band_primers(void)
  * y_min/y_max ranges so we can confirm nothing is leaking off-screen on
  * the left/top edges (red-stripe investigation). */
 static int g_diag_bbox;
+static int g_diag_cache;
 static unsigned g_diag_frame_count;
 static int g_diag_log_flip_next;
 
@@ -483,14 +484,10 @@ static int gpu_transport_read_copy_target_buffer(GPUTransport *transport)
 
     transport->hw_sky_gradient_clear_enabled =
         !!(ext.ctrl & VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR);
-    /* BACKBUF_EN was historically the gate for double-buffered SDRAM
-     * rendering, but the current RTL never reads bit 2 of extmem_ctrl
-     * (grep voxel_gpu.sv: no extmem_ctrl[2] / BACKBUF references).
-     * copy_target_sel toggles unconditionally on every flip, so as long
-     * as the engine is enabled the bit-11 value is the live render
-     * target. Without dropping BACKBUF_EN here, both the sky-band reuse
-     * cache and the exact band cache key on a buffer index of -1 and
-     * never hit. */
+    /* Cache enabled (BACKBUF_EN gate dropped) so the band-cache reuse
+     * path runs and we can capture diagnostics on the visual-corruption
+     * bug. Toggle VOXEL_DIAG_CACHE=1 to dump per-band hit/miss + HW
+     * dma_status for each frame. */
     if (!(ext.ctrl & VOXEL_EXTMEM_CTRL_ENABLE))
         return -1;
 
@@ -692,7 +689,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
 
     if (g_diag_bbox)
         clock_gettime(CLOCK_MONOTONIC, &t_start);
-    if (g_diag_bbox)
+    if (g_diag_bbox || g_diag_cache)
         diag_log_frame = ((g_diag_frame_count++ % 60) == 0);
     memset(diag_bands, 0, sizeof(diag_bands));
 
@@ -835,6 +832,13 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
 
     copy_target_buffer = gpu_transport_read_copy_target_buffer(transport);
 
+    if (g_diag_cache) {
+        fprintf(stderr,
+                "DIAG_CACHE frame=%u ct=%d render_epoch=%u sky_epoch=%u\n",
+                g_diag_frame_count - 1, copy_target_buffer,
+                transport->hw_render_epoch, transport->hw_sky_epoch);
+    }
+
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         const int primer_only =
             g_bins[band].flat_used == sizeof(g_band_primers[band]);
@@ -852,6 +856,12 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                 diag_remove_cached_band_cost(&diag_cost, band);
                 diag_cost.cached_exact_band_reuses++;
             }
+            if (g_diag_cache) {
+                fprintf(stderr,
+                        "DIAG_CACHE   b%u=HIT  bytes=%zu hash=0x%016llx\n",
+                        band, g_bins[band].flat_used,
+                        (unsigned long long)band_hash);
+            }
             continue;
         }
 
@@ -866,6 +876,12 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                 band_cache->hash = band_hash;
                 band_cache->bytes = g_bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
+            }
+            if (g_diag_cache) {
+                fprintf(stderr,
+                        "DIAG_CACHE   b%u=SKY  bytes=%zu hash=0x%016llx\n",
+                        band, g_bins[band].flat_used,
+                        (unsigned long long)band_hash);
             }
             continue;
         }
@@ -886,6 +902,27 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                                   diag_log_frame ? &diag_bands[band] : NULL);
         if (ret < 0)
             goto done;
+
+        if (g_diag_cache) {
+            struct voxel_extmem_state ext_post;
+            unsigned ct_post = 0, fa_post = 0, cbi_post = 0,
+                     dv_post = 0, ccp_post = 0;
+            uint32_t dma_post = 0;
+            if (ioctl(transport->hw_fd, VOXEL_IOC_GET_EXTMEM, &ext_post) == 0) {
+                dma_post = ext_post.dma_status;
+                ct_post  = (dma_post >> 11) & 1u;
+                fa_post  = (dma_post >> 8)  & 1u;
+                ccp_post = (dma_post >> 10) & 1u;
+                dv_post  = (dma_post >> 6)  & 1u;
+                cbi_post = (dma_post >> 13) & 7u;
+            }
+            fprintf(stderr,
+                    "DIAG_CACHE   b%u=MISS bytes=%zu hash=0x%016llx primer=%d "
+                    "post: dma=0x%08x ct=%u fa=%u ccp=%u dv=%u cbi=%u\n",
+                    band, g_bins[band].flat_used,
+                    (unsigned long long)band_hash, primer_only,
+                    dma_post, ct_post, fa_post, ccp_post, dv_post, cbi_post);
+        }
 
         if (copy_target_buffer >= 0) {
             transport->hw_sky_band_epoch[copy_target_buffer][band] =
@@ -1267,6 +1304,13 @@ GPUTransport *gpu_transport_open(void)
         g_diag_bbox = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
         if (g_diag_bbox && debug_enabled)
             fprintf(stderr, "renderer: VOXEL_DIAG_BBOX enabled (per-60-frame quad bbox log)\n");
+    }
+
+    {
+        const char *diag = getenv("VOXEL_DIAG_CACHE");
+        g_diag_cache = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
+        if (g_diag_cache && debug_enabled)
+            fprintf(stderr, "renderer: VOXEL_DIAG_CACHE enabled (per-band hit/miss + HW dma_status log)\n");
     }
 
     return transport;

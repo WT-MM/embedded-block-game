@@ -283,7 +283,9 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
         return;
 
     pixels = diag_band_pixels(band);
-    cost->init_cycles[band] += (pixels + 1) / 2;
+    /* ST_CACHE_INIT runs 1 px/cycle (2 px/cycle variant cost 43 LABs we
+     * don't have, see PROJECT_NOTES May 5 fitter result). */
+    cost->init_cycles[band] += pixels;
     cost->flush_words[band] += pixels;
 }
 
@@ -296,7 +298,7 @@ static void diag_remove_cached_band_cost(struct diag_cost *cost, unsigned band)
         return;
 
     pixels = diag_band_pixels(band);
-    init_cycles = (pixels + 1) / 2;
+    init_cycles = pixels;
 
     if (cost->init_cycles[band] >= init_cycles)
         cost->init_cycles[band] -= init_cycles;
@@ -481,8 +483,15 @@ static int gpu_transport_read_copy_target_buffer(GPUTransport *transport)
 
     transport->hw_sky_gradient_clear_enabled =
         !!(ext.ctrl & VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR);
-    if (!(ext.ctrl & VOXEL_EXTMEM_CTRL_ENABLE) ||
-        !(ext.ctrl & VOXEL_EXTMEM_CTRL_BACKBUF_EN))
+    /* BACKBUF_EN was historically the gate for double-buffered SDRAM
+     * rendering, but the current RTL never reads bit 2 of extmem_ctrl
+     * (grep voxel_gpu.sv: no extmem_ctrl[2] / BACKBUF references).
+     * copy_target_sel toggles unconditionally on every flip, so as long
+     * as the engine is enabled the bit-11 value is the live render
+     * target. Without dropping BACKBUF_EN here, both the sky-band reuse
+     * cache and the exact band cache key on a buffer index of -1 and
+     * never hit. */
+    if (!(ext.ctrl & VOXEL_EXTMEM_CTRL_ENABLE))
         return -1;
 
     return (int)((ext.dma_status >> DIAG_EXTMEM_COPY_TARGET_SHIFT) & 1u);

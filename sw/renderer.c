@@ -165,6 +165,8 @@ struct RenderContext {
     uint8_t light_palette_key;
     uint8_t light_palette_key_valid;
     uint8_t face_light_flags[NUM_FACES];
+    Vec3 last_sun_dir;
+    uint8_t last_sun_dir_valid;
     int n_quads;
 
     /* Scratch buffer reused across frames to back-to-front sort translucent
@@ -510,15 +512,30 @@ static void update_world_light_from_sun(RenderContext *ctx, Vec3 sun_dir)
     if (!ctx)
         return;
 
+    if (ctx->last_sun_dir_valid &&
+        ctx->last_sun_dir.x == sun_dir.x &&
+        ctx->last_sun_dir.y == sun_dir.y &&
+        ctx->last_sun_dir.z == sun_dir.z)
+        return;
+
     ctx->world_daylight = daylight_strength_for_sun_direction(sun_dir);
     ctx->light_dir = terrain_light_direction_for_sun(sun_dir);
     update_face_light_flags(ctx);
     upload_light_palette_banks(ctx, ctx->world_daylight);
+    ctx->last_sun_dir = sun_dir;
+    ctx->last_sun_dir_valid = 1;
+}
+
+static float palette_time_for(float time_seconds)
+{
+    return floorf(time_seconds / SKY_PALETTE_TIME_STEP_SECONDS) *
+           SKY_PALETTE_TIME_STEP_SECONDS;
 }
 
 static void update_world_light_state(RenderContext *ctx, float time_seconds)
 {
-    update_world_light_from_sun(ctx, sun_direction_for_time(time_seconds));
+    update_world_light_from_sun(ctx,
+                                sun_direction_for_time(palette_time_for(time_seconds)));
 }
 
 static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
@@ -2313,9 +2330,10 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
 
     /* Continuous time drives sprite drift below; quantized time drives every
      * palette computation so hw_sky_epoch stays stable for ~15 frames at
-     * 30 FPS and sky_band_reuse can hit on primer-only bands. */
-    float palette_time = floorf(time_seconds / SKY_PALETTE_TIME_STEP_SECONDS) *
-                         SKY_PALETTE_TIME_STEP_SECONDS;
+     * 30 FPS and sky_band_reuse can hit on primer-only bands. Both this path
+     * and renderer_draw_world use palette_time_for() so they cannot disagree
+     * across a 32-step daylight_key boundary and re-flush the palette. */
+    float palette_time = palette_time_for(time_seconds);
     sun_dir = sun_direction_for_time(palette_time);
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
     update_world_light_from_sun(ctx, sun_dir);

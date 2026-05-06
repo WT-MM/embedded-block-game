@@ -42,6 +42,12 @@ struct GPUTransport {
     uint32_t hw_sky_epoch;
     uint32_t hw_sky_band_epoch[2][VOXEL_BAND_COUNT];
     struct hw_band_cache_entry hw_band_cache[2][VOXEL_BAND_COUNT];
+    /* Diag: epoch-bump counters since last frame log. Reset by
+     * submit_descriptors after the per-frame line is emitted. */
+    uint32_t hw_render_epoch_bumps;
+    uint32_t hw_sky_epoch_bumps;
+    uint8_t hw_sky_epoch_bump_indices[8];
+    uint32_t hw_sky_epoch_bump_count;
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
@@ -435,6 +441,7 @@ static void gpu_transport_note_render_state_write(GPUTransport *transport)
         return;
 
     transport->hw_render_epoch++;
+    transport->hw_render_epoch_bumps++;
     if (transport->hw_render_epoch == 0) {
         memset(transport->hw_band_cache, 0,
                sizeof(transport->hw_band_cache));
@@ -449,6 +456,12 @@ static void gpu_transport_note_generated_sky_palette_write(GPUTransport *transpo
         return;
 
     transport->hw_sky_epoch++;
+    transport->hw_sky_epoch_bumps++;
+    if (transport->hw_sky_epoch_bump_count <
+        sizeof(transport->hw_sky_epoch_bump_indices)) {
+        transport->hw_sky_epoch_bump_indices[
+            transport->hw_sky_epoch_bump_count++] = index;
+    }
     if (transport->hw_sky_epoch == 0) {
         memset(transport->hw_sky_band_epoch, 0,
                sizeof(transport->hw_sky_band_epoch));
@@ -968,8 +981,39 @@ done:
                 diag_cycles_ms(ready_cycles),
                 diag_cycles_ms(vsync_slots * DIAG_VGA_FRAME_CYCLES),
                 (unsigned long long)vsync_slots);
+        {
+            char idx_buf[64];
+            size_t off = 0;
+            uint32_t n = transport->hw_sky_epoch_bump_count;
+            if (n > sizeof(transport->hw_sky_epoch_bump_indices))
+                n = sizeof(transport->hw_sky_epoch_bump_indices);
+            for (uint32_t i = 0; i < n && off + 4 < sizeof(idx_buf); i++) {
+                int w = snprintf(idx_buf + off, sizeof(idx_buf) - off,
+                                 i ? ",%u" : "%u",
+                                 (unsigned)transport->hw_sky_epoch_bump_indices[i]);
+                if (w < 0)
+                    break;
+                off += (size_t)w;
+            }
+            if (off == 0) {
+                idx_buf[0] = '-';
+                idx_buf[1] = '\0';
+            }
+            fprintf(stderr,
+                    "renderer: epoch_bumps render=%u sky=%u sky_idx=[%s] "
+                    "copy_target=%d render_epoch=%u sky_epoch=%u\n",
+                    (unsigned)transport->hw_render_epoch_bumps,
+                    (unsigned)transport->hw_sky_epoch_bumps,
+                    idx_buf,
+                    copy_target_buffer,
+                    (unsigned)transport->hw_render_epoch,
+                    (unsigned)transport->hw_sky_epoch);
+        }
         g_diag_log_flip_next = 1;
     }
+    transport->hw_render_epoch_bumps = 0;
+    transport->hw_sky_epoch_bumps = 0;
+    transport->hw_sky_epoch_bump_count = 0;
     return ret;
 }
 

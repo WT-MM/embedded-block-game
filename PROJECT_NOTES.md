@@ -2412,3 +2412,246 @@ May 5 follow-up from async-present test logs:
     - This is a quality-preserving skip: it only reuses a band when the same
       physical SDRAM buffer already holds the generated sky for the current
       sky-palette epoch.
+
+May 5 follow-up from safe sky-band reuse test logs:
+
+  * The safe sky-band reuse patch worked but was too narrow for the stable
+    ground view:
+    - `sky_band_reuse=1`
+    - band 1 showed `0.00(...,0B)`
+    - steady `bands` improved from about `29.7ms` to about `26.9ms`
+    - kernel upload wait improved from about `131ms/s` to about `106ms/s`
+    - dmesg total upload rate improved from about `21.2MiB/s` to about
+      `24.1MiB/s`
+  * That still leaves the frame in the 3-vsync bucket (`~50.4ms`, `~19.8 FPS`)
+    because only one stable-view band is truly sky-only. The remaining cost is
+    real geometry and UI bands, especially:
+    - `b5 ~= 168896B`, with `write ~= 7.1ms`
+    - several small real bands still paying multi-ms `END_BAND` waits
+    - `FLIP wait ~= 9.1ms` because the frame still misses the 2-vsync deadline
+  * Added an exact per-band SDRAM reuse cache in `sw/gpu_transport.c`:
+    - hash each binned post-sky-omission band byte stream;
+    - track `{hash, bytes, render_epoch}` per physical SDRAM buffer and band;
+    - increment `render_epoch` on hardware palette/fog writes, since identical
+      descriptors can produce different pixels after a palette/fog change;
+    - if the target buffer already contains the same band for the current
+      render epoch, skip the whole hardware `BEGIN_BAND`/upload/`END_BAND`
+      transaction.
+  * New diagnostic field: `band_reuse=N` in addition to `sky_band_reuse=N`.
+    For a stationary camera, after both physical SDRAM buffers have been
+    populated, repeated geometry-heavy bands should start reporting
+    `band_reuse` and show `0B` in `band detail`.
+  * This is not a moving-camera cure; if descriptors change every frame, this
+    cache will miss. It is meant to stop wasting 20 FPS worth of work while the
+    view is static or nearly static, and to confirm how much of the remaining
+    problem is repeated identical band work versus unavoidable new geometry.
+
+May 5 moving-camera performance plan:
+
+  * The latest STA summary is:
+    - main voxel/VGA/user clock domain Fmax: `59.52MHz`
+    - SDRAM controller PLL domain Fmax: `117.86MHz`
+  * The main design currently runs at `50MHz`. In the stable geometry-heavy
+    logs, CPU `draw` is about `13.1ms` and hardware `end` is about `37.2ms`.
+    To hit the 30 FPS cap, total work must be below the 2-vsync bucket
+    (`33.6ms`), so `end` needs to be roughly `20ms` or less.
+  * Clocking the existing single-clock design faster is not enough:
+    - best-case 50 -> 59.52MHz only scales hardware work by `50/59.52 = 0.84`
+    - `37.2ms * 0.84 ~= 31.2ms`
+    - `13.1ms draw + 31.2ms end ~= 44.3ms`, still above the 2-vsync bucket
+  * It is also not a simple PLL tweak because `voxel_vga_counters` derives VGA
+    timing from the same `clk` and drives `VGA_CLK = ~hcount[0]`. Raising that
+    clock directly changes the VGA pixel clock and line/frame timing. A real
+    overclock path means separate clock domains: keep VGA/scanout timing at
+    50MHz and run raster/cache/SDRAM-facing work on a faster GPU clock with
+    explicit CDC around command FIFO, scanout line fill, and status/control.
+  * Concrete moving-camera improvements, in recommended order:
+    1. **Enable/test greedy merging for rendered chunks.** `world.c` uses
+       `NEAR_CHUNK_RADIUS=3`, and render distance is 3 chunks, so almost every
+       rendered chunk near the player bypasses greedy merging. Lowering this to
+       1 or making it runtime-configurable should drastically reduce world face
+       descriptors without changing textures or geometry; the known risk is
+       close-range T-junction/UV shimmer.
+    2. **Replace physical band clear/init with valid bits.** Instead of writing
+       every color/Z cache entry during `ST_CACHE_INIT`, clear a compact valid
+       bitmap for the band. Invalid pixels read as sky color and far Z; commit
+       sets valid. This attacks the current `init ~= 2.7-3.1ms` cost with a
+       much smaller clear and should be less area-hungry than the failed
+       two-pixel cache-init patch.
+    3. **Improve SDRAM flush arbitration / scanout buffering.** Full-frame band
+       flush is still effectively slack-limited (`flush_slack ~= 6.5-7.5ms`).
+       A deeper scanout prefetch/line buffer or watermark scheduler could let
+       background writes use more active-display cycles without starving VGA.
+    4. **Compact textured descriptors or add a decoded-descriptor prefetch
+       queue.** Fetch itself is only about `1.1ms`, but descriptor bytes create
+       FIFO backpressure. A compact textured descriptor or prefetch/decode queue
+       helps upload pressure; it is secondary to reducing the number of world
+       faces.
+    5. **Move the GPU aperture to full H2F.** This can reduce the `~3.7ms/frame`
+       MMIO portion, but current dmesg still shows FIFO-space wait dominating,
+       so it will not close the 30 FPS gap alone.
+
+May 5 follow-up — sky-band reuse skip cache wasn't hitting:
+
+  * Symptom: with sky-only/ground-only views the `sky_band_reuse=N` counter
+    stayed at 0, and per-band `init`/`flush` cost was being paid every frame
+    even when nothing visible had changed. CPU `draw` had also dropped from
+    `13.1ms` to about `5-7ms` after `NEAR_CHUNK_RADIUS=1`, but FPS stuck near
+    `19.8` (3-vsync) because the per-band hardware overhead × 8 bands forms a
+    floor that descriptor-count reductions can't break.
+  * Root cause: `gpu_transport.c` bumps `hw_sky_epoch` whenever any palette
+    index in the generated-sky range (40-63) changes its rgb565 value. The
+    sky palette is re-derived every frame from `world_time`, and even
+    sub-pixel time-of-day drift flips at least one of the 24 gradient indices
+    every frame. So `hw_sky_epoch` advanced every frame, and the
+    `hw_sky_band_epoch[buf][band] == hw_sky_epoch` skip check at
+    `gpu_transport.c:836-838` was always false.
+  * Patch 1 — sky-palette time quantization (`sw/renderer.c`):
+    - Added `SKY_PALETTE_TIME_STEP_SECONDS = 0.5f` near the other sky
+      constants.
+    - In `renderer_draw_sky`, compute `palette_time = floor(time / step) *
+      step` and use it for `sun_direction_for_time`, `make_sky_palette`,
+      `upload_sky_palette`, and `draw_sky_gradient`. Continuous `time_seconds`
+      is still used for cloud azimuth drift and wobble — those don't touch
+      the palette so they don't bump the epoch.
+    - Effect: `hw_sky_epoch` only advances every 0.5s of world time =
+      ~15 frames at 30 FPS. Within those 15 frames every primer-only band
+      hits the skip path on whichever physical SDRAM buffer was last
+      submitted with the current epoch.
+    - 0.5s steps over a 180s day cycle = 360 distinct sky palettes; the
+      gradient changes are visually smooth at that granularity.
+  * Patch 2 — drop the primer for primer-only cache-miss bands
+    (`sw/gpu_transport.c`):
+    - In the per-band loop in `gpu_transport_submit_descriptors`, when
+      `primer_only` is true and the sky-band-epoch skip check has already
+      missed, override the `submit_hw_band_flat` arguments to send `NULL, 0`
+      instead of the primer descriptor.
+    - The primer existed to absorb a first-pixel pipeline glitch for the
+      band's leading raster cycle (palette-pipeline staleness, see the
+      header comment around `g_band_primers`). With zero descriptors pushed,
+      there is no first pixel to glitch — the RTL `BEGIN_BAND` still fills
+      the cache via `VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR`, no descriptors
+      drain through the FIFO, and `END_BAND` flushes the sky-only cache to
+      SDRAM. Saves one descriptor's `write_all()` syscall + one descriptor's
+      FIFO traversal per primer-only cache miss.
+    - Cache bookkeeping is unchanged: `hw_sky_band_epoch[buf][band]` is still
+      stamped to `hw_sky_epoch` after the empty submit, so subsequent frames
+      hit the full skip path until the epoch advances again.
+  * Hardware pre-init during current band flush (RTL):
+    - `voxel_gpu.sv` already implements this via cache ping-pong. Lines
+      3527-3554 kick `flush_active=1` on `flush_cache_sel = draw_cache_sel`,
+      then the next `BEGIN_BAND` toggles `draw_cache_sel` so `ST_CACHE_INIT`
+      runs on the OPPOSITE M10K bank. The `band_begin_cache_available` gate
+      at lines 964-966 explicitly allows BEGIN to fire while a flush is in
+      flight as long as `(~draw_cache_sel) != flush_cache_sel`.
+    - `ST_CACHE_INIT` itself is already 2 px/cycle: `cache_maint_addr +=
+      16'd2` at line 4268 and dual-port writes at lines 2309-2316. The "two-
+      pixel ST_CACHE_INIT failed Quartus fit by 43 LABs" referenced in the
+      May 5 plan was a separate, more aggressive variant — see the
+      brainstorm section below for ideas on how to land that.
+    - No RTL change needed for this item; the existing parallelism is
+      already exploiting it.
+  * Second A9 core for parallel CPU descriptor work:
+    - Cyclone V SoC has dual-core Cortex-A9; we currently run the renderer
+      on a single core. Per-frame CPU breakdown after Patch 1+2 is roughly
+      `update + begin + draw ~= 6-8ms` of real CPU work, then `end ~= 30-37ms`
+      that is mostly blocked on FIFO backpressure (not real CPU work).
+    - Proposed pipeline: spawn one worker thread pinned to CPU 1 (via
+      `pthread_setaffinity_np`/`sched_setaffinity`). Double-buffer the
+      `RenderContext::submit_buffer` and `submit_bytes`. At frame N's
+      `renderer_end_frame`, hand the filled buffer to the worker and
+      immediately return; main thread then begins frame N+1's draw on
+      CPU 0. The worker calls `gpu_transport_submit_descriptors` + flip
+      on frame N's buffer, blocking on FIFO backpressure but freeing CPU 0.
+      Main thread waits on a "submit done" condvar before starting its
+      next `renderer_end_frame`.
+    - Net effect: hides the 5-7ms of CPU "draw" behind the 30+ms of HW-
+      bound "end". Adds 1 frame of input-to-display latency (acceptable
+      for a block game). Frame wall clock goes from
+      `(draw=6) + (end=37) = ~43ms` to `max(draw, end) = ~37ms`, putting us
+      into the 2-vsync (`33.6ms`) bucket once `end` drops below `33.6ms`
+      via Patches 1+2 hits.
+    - Synchronization concerns:
+      * `transport->hw_sky_epoch` etc. are mutated only inside
+        `gpu_transport_submit_descriptors` and palette/fog setters. Worker
+        owns submit; main owns palette/fog. Either serialize palette/fog
+        through the worker (queue) or hold a mutex around any
+        `gpu_transport_set_palette`/`gpu_transport_set_fog` call.
+      * `g_bins[]` is module-private to `gpu_transport.c` and only touched
+        from inside `submit_descriptors` — naturally single-threaded if
+        only the worker calls submit.
+      * `g_diag_bbox` / `g_diag_frame_count` / `g_diag_log_flip_next` are
+        thread-local-friendly (or guard with mutex).
+      * `ctx->submit_buffer` and `ctx->submit_bytes` need two slots and a
+        flip pointer; the worker reads slot A while main fills slot B.
+    - Implementation footprint estimate: ~150 lines across `renderer.c`,
+      `renderer.h`, `game.c`. Risk: pthread plumbing, kernel
+      `write()`/`ioctl()` interleaving, debugging timing on hardware.
+    - Status: design captured, implementation pending. Worth doing once
+      Patches 1+2 are validated on hardware so we know the remaining gap
+      we're trying to close.
+
+May 5 — two-pixel `ST_CACHE_INIT` fit brainstorm:
+
+  Context: a previous attempt at a more aggressive 2 px/cycle `ST_CACHE_INIT`
+  failed Quartus fit by 43 LABs (resource: `25,997 / 32,070` ALMs already
+  consumed, 81% utilization). The current `ST_CACHE_INIT` at lines 4257-4282
+  in `voxel_gpu.sv` already advances `cache_maint_addr += 2` and writes both
+  even/odd ports with the same `cache_init_rgb565` value, but the failed
+  variant presumably did something more — perhaps split the gradient lookup,
+  added a wider flat-clear path, or doubled the Z init port count.
+
+  Approaches to try in order of likelihood:
+
+  1. **Replace `ST_CACHE_INIT` with valid-bit clear (May 5 plan item 2).**
+     Clear a single 64×640 = 40960-bit valid bitmap (5120 bytes, ~5 M10K
+     RAMs at 1 R/W port) instead of writing 40960 pixels of color+Z.
+     Reads of invalid pixels return sky color from the gradient ROM and
+     `Z=0xFFFF`. Commit on draw sets the valid bit. The bitmap can be
+     cleared with a single `memset`-style FSM that writes one M10K row
+     per cycle (e.g., 32 bits cleared at once → 1280 cycles for the whole
+     band, vs 20480 cycles for full-pixel init).
+     - Pros: 16× cycle saving on init alone (~410us → ~25us). Frees ALMs
+       since we drop dual-port write logic from `ST_CACHE_INIT`.
+     - Cons: adds a second cache port with the gradient ROM read in the
+       commit-vs-init mux, plus a valid-bit RAM. May add area in a
+       different place than the failed patch did.
+
+  2. **Skip `ST_CACHE_INIT` when the cache already holds the target band's
+     sky-cleared template.** Track per-cache `cache_template_band` and
+     `cache_template_epoch` registers. After a flush completes, the cache
+     still holds the (now-flushed) band's content. If the next BEGIN_BAND
+     wants the same band index AND no draw mutated the cache between
+     init and flush, skip init entirely.
+     - Pros: zero new RAMs; just two small state regs per cache.
+     - Cons: needs a `cache_draw_dirty` style flag (already exists at line
+       4261), plus careful invalidation when the sky-palette epoch ticks.
+       Most useful for static views; overlapping with the SW
+       `hw_sky_band_epoch` skip diminishes the win.
+
+  3. **Pipeline the gradient-color computation with the address advance.**
+     The current `ST_CACHE_INIT` likely re-reads `cache_init_sky_palette`
+     and `palette[]` each cycle; a registered shadow could let two pixels
+     per cycle close timing without an extra port. Worth trying only if
+     STA shows the gradient-lookup → `fb_wr_data` path is the long path.
+
+  4. **Compress the sky gradient.** Today there are 24 distinct gradient
+     palette indices (40-63). If the gradient-band ROM stored
+     pre-converted RGB565 directly (with 1-cycle latency for the lookup),
+     `ST_CACHE_INIT` no longer needs the full palette LUT path during
+     init — it just streams from a tiny 24-entry RGB565 ROM keyed by
+     `cache_init_sky_palette`. Reduces routing pressure and palette-port
+     contention during init.
+
+  5. **Time-multiplex with `ST_CACHE_FLUSH_COLOR`.** Init and flush
+     never run in the same state, so could share a maintenance block
+     with internal sequencing. This is a refactor more than an
+     optimization, but if the LAB pressure is from duplicated address
+     generators, sharing them could save the 43 LABs without changing
+     functional behavior.
+
+  Recommended starting point: try (1) — valid-bit clear is the highest
+  cycle-saving and is conceptually orthogonal to the previous failed
+  variant, so likely lands in different pipeline stages. If it also
+  fails fit, try (5) to consolidate maintenance address generators
+  before reattempting (1).

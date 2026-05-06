@@ -24,6 +24,14 @@
 #define SKY_DOME_DISTANCE 512.0f
 #define SKY_GRADIENT_BANDS 24
 
+/* Quantization step for the sky-gradient palette computation. Continuous
+ * world_time would re-derive every frame; even sub-pixel color drift bumps
+ * gpu_transport's hw_sky_epoch, which invalidates the per-band SDRAM reuse
+ * cache (see PROJECT_NOTES.md "May 5 sky-band reuse epoch fix"). 0.5 s steps
+ * give 360 distinct sky states across a 180 s day cycle — visually smooth
+ * but stable for ~15 frames at 30 FPS, so sky_band_reuse can hit. */
+#define SKY_PALETTE_TIME_STEP_SECONDS 0.5f
+
 enum {
     PAL_SKY_HIGH = 25,
     PAL_SKY_MID = 26,
@@ -2303,7 +2311,12 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     if (!ctx)
         return 0;
 
-    sun_dir = sun_direction_for_time(time_seconds);
+    /* Continuous time drives sprite drift below; quantized time drives every
+     * palette computation so hw_sky_epoch stays stable for ~15 frames at
+     * 30 FPS and sky_band_reuse can hit on primer-only bands. */
+    float palette_time = floorf(time_seconds / SKY_PALETTE_TIME_STEP_SECONDS) *
+                         SKY_PALETTE_TIME_STEP_SECONDS;
+    sun_dir = sun_direction_for_time(palette_time);
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
     update_world_light_from_sun(ctx, sun_dir);
     daylight = ctx->world_daylight;

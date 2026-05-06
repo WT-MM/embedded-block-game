@@ -16,7 +16,7 @@
  * T-junction / UV-shimmer artifacts caused by merged quads stay out of
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
-#define NEAR_CHUNK_RADIUS 3
+#define NEAR_CHUNK_RADIUS 1
 #define WORLD_META_VERSION 1u
 #define WORLD_CHUNK_VERSION 1u
 

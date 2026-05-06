@@ -115,6 +115,7 @@ static void init_band_primers(void)
  * the left/top edges (red-stripe investigation). */
 static int g_diag_bbox;
 static int g_diag_cache;
+static int g_hw_band_reuse;
 static unsigned g_diag_frame_count;
 static int g_diag_log_flip_next;
 
@@ -484,10 +485,9 @@ static int gpu_transport_read_copy_target_buffer(GPUTransport *transport)
 
     transport->hw_sky_gradient_clear_enabled =
         !!(ext.ctrl & VOXEL_EXTMEM_CTRL_SKY_GRADIENT_CLEAR);
-    /* Cache enabled (BACKBUF_EN gate dropped) so the band-cache reuse
-     * path runs and we can capture diagnostics on the visual-corruption
-     * bug. Toggle VOXEL_DIAG_CACHE=1 to dump per-band hit/miss + HW
-     * dma_status for each frame. */
+    /* Require external memory before trusting the copy-target bit. The
+     * software band-reuse skips are opt-in; diagnostics still use this state
+     * to correlate software submissions with the hardware target buffer. */
     if (!(ext.ctrl & VOXEL_EXTMEM_CTRL_ENABLE))
         return -1;
 
@@ -834,8 +834,9 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
 
     if (g_diag_cache) {
         fprintf(stderr,
-                "DIAG_CACHE frame=%u ct=%d render_epoch=%u sky_epoch=%u\n",
+                "DIAG_CACHE frame=%u ct=%d reuse=%d render_epoch=%u sky_epoch=%u\n",
                 g_diag_frame_count - 1, copy_target_buffer,
+                g_hw_band_reuse,
                 transport->hw_render_epoch, transport->hw_sky_epoch);
     }
 
@@ -848,7 +849,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             (copy_target_buffer >= 0) ?
                 &transport->hw_band_cache[copy_target_buffer][band] : NULL;
 
-        if (band_cache &&
+        if (g_hw_band_reuse && band_cache &&
             band_cache->render_epoch == transport->hw_render_epoch &&
             band_cache->bytes == g_bins[band].flat_used &&
             band_cache->hash == band_hash) {
@@ -865,7 +866,8 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             continue;
         }
 
-        if (primer_only && copy_target_buffer >= 0 &&
+        if (g_hw_band_reuse &&
+            primer_only && copy_target_buffer >= 0 &&
             transport->hw_sky_band_epoch[copy_target_buffer][band] ==
                 transport->hw_sky_epoch) {
             if (g_diag_bbox) {
@@ -1311,6 +1313,15 @@ GPUTransport *gpu_transport_open(void)
         g_diag_cache = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
         if (g_diag_cache && debug_enabled)
             fprintf(stderr, "renderer: VOXEL_DIAG_CACHE enabled (per-band hit/miss + HW dma_status log)\n");
+    }
+
+    {
+        const char *reuse = getenv("VOXEL_HW_BAND_REUSE");
+        g_hw_band_reuse =
+            (reuse && reuse[0] && strcmp(reuse, "0") != 0) ? 1 : 0;
+        if (g_hw_band_reuse && debug_enabled)
+            fprintf(stderr,
+                    "renderer: VOXEL_HW_BAND_REUSE enabled (experimental full-band skip path)\n");
     }
 
     return transport;

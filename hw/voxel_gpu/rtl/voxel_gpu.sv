@@ -1555,13 +1555,17 @@ module voxel_gpu (
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            band_word_offset = band * 25'd40960;
+            /* band * 40960 = band*32768 + band*8192 = (band<<15) + (band<<13).
+             * Encoding as shift+add avoids a synthesized variable-width
+             * multiplier whose result mis-aliased on the Cyclone V build. */
+            band_word_offset = {7'd0, band, 15'd0} + {9'd0, band, 13'd0};
         end
     endfunction
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            band_base_row = band * 9'd64;
+            /* band * 64 == band << 6 */
+            band_base_row = {band, 6'd0};
         end
     endfunction
 

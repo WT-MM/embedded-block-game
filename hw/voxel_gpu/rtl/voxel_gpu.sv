@@ -946,27 +946,39 @@ module voxel_gpu (
         (scan_line0_ready && (scan_line0_row == scan_prefetch_row)) ||
         (scan_line1_ready && (scan_line1_row == scan_prefetch_row)) ||
         (scan_line2_ready && (scan_line2_row == scan_prefetch_row));
+    /* Protect any bank holding a row scanout will need before it can be
+     * legitimately reloaded: current (showing now), target (next at hblank),
+     * immediate_next (current+1), and far_next (current+2). Without far_next
+     * protection a 2-line prefetch could land in bank X and then be evicted
+     * by the next prefetch tick — wasting the SDRAM burst and increasing
+     * the chance scanout falls behind. */
     wire        scan_bank0_protected    =
         scan_line0_ready &&
         ((scan_line0_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line0_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line0_row == scan_immediate_next_row)));
+          (scan_line0_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line0_row == scan_far_next_row)));
     wire        scan_bank1_protected    =
         scan_line1_ready &&
         ((scan_line1_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line1_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line1_row == scan_immediate_next_row)));
+          (scan_line1_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line1_row == scan_far_next_row)));
     wire        scan_bank2_protected    =
         scan_line2_ready &&
         ((scan_line2_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line2_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line2_row == scan_immediate_next_row)));
+          (scan_line2_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line2_row == scan_far_next_row)));
     wire        scan_bank0_free         = (scan_active_bank != 2'd0) &&
                                           !scan_bank0_protected;
     wire        scan_bank1_free         = (scan_active_bank != 2'd1) &&

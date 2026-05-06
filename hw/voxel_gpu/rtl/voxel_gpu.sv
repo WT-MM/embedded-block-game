@@ -712,6 +712,7 @@ module voxel_gpu (
     logic  [9:0] scan_fill_store_idx;
     logic        scan_rd_capture;
     logic [15:0] scan_rgb565_now;
+    logic [15:0] scan_late_count;
     logic [24:0] sdram_rd_addr_cfg;
     logic [24:0] sdram_rd_max_addr_cfg;
     logic        sdram_rd_load_pulse;
@@ -869,9 +870,16 @@ module voxel_gpu (
     wire        vcount_visible          = (vcount < 10'd480);
     wire [8:0]  scan_current_row        = vcount_visible ? vcount[8:0] : 9'd0;
     wire        scan_hblank_window      = vcount_visible && (hcount >= 11'd1280);
+    wire        scan_hblank_start       = vcount_visible && (hcount == 11'd1280);
     wire [8:0]  scan_target_row         = scan_hblank_window ?
                                           (scan_current_row + 9'd1) : scan_current_row;
     wire        scan_target_valid       = scan_target_row < 9'd480;
+    wire [8:0]  scan_immediate_next_row = scan_current_row + 9'd1;
+    wire        scan_immediate_next_valid =
+        vcount_visible && (scan_current_row < 9'd479);
+    wire [8:0]  scan_far_next_row       = scan_current_row + 9'd2;
+    wire        scan_far_next_valid     =
+        vcount_visible && (scan_current_row < 9'd478);
     wire [9:0]  scan_current_x          = hcount[10:1];
     wire        scan_current_x_valid    = (scan_current_x < 10'd640);
     wire [8:0]  scan_active_next_row    = scan_active_row + 9'd1;
@@ -895,19 +903,35 @@ module voxel_gpu (
         (scan_line0_ready && (scan_line0_row == scan_target_row)) ||
         (scan_line1_ready && (scan_line1_row == scan_target_row)) ||
         (scan_line2_ready && (scan_line2_row == scan_target_row));
-    wire        scan_next_line_ready    = !scan_active_valid ||
-                                          scan_target_line_ready;
-    wire [8:0]  scan_lookahead_row      = scan_target_row + 9'd1;
-    wire        scan_lookahead_valid    = scan_target_row < 9'd479;
+    wire        scan_immediate_next_line_ready =
+        !scan_immediate_next_valid ||
+        (scan_line0_ready && (scan_line0_row == scan_immediate_next_row)) ||
+        (scan_line1_ready && (scan_line1_row == scan_immediate_next_row)) ||
+        (scan_line2_ready && (scan_line2_row == scan_immediate_next_row));
+    wire        scan_far_next_line_ready =
+        !scan_far_next_valid ||
+        (scan_line0_ready && (scan_line0_row == scan_far_next_row)) ||
+        (scan_line1_ready && (scan_line1_row == scan_far_next_row)) ||
+        (scan_line2_ready && (scan_line2_row == scan_far_next_row));
+    wire        scan_target_or_active_ready =
+        !scan_active_valid || scan_target_line_ready;
     wire        scan_prefetch_recover_current =
         vcount_visible && !scan_current_line_ready;
     wire        scan_prefetch_need_target =
         vcount_visible && scan_target_valid &&
         scan_current_line_ready && !scan_target_line_ready;
+    wire        scan_prefetch_need_next =
+        vcount_visible && scan_current_line_ready &&
+        scan_immediate_next_valid && !scan_immediate_next_line_ready;
+    wire        scan_prefetch_need_far =
+        vcount_visible && scan_current_line_ready &&
+        scan_immediate_next_line_ready &&
+        scan_far_next_valid && !scan_far_next_line_ready;
     wire [8:0]  scan_prefetch_row =
         scan_prefetch_recover_current ? scan_current_row :
         scan_prefetch_need_target     ? scan_target_row  :
-                                        scan_lookahead_row;
+        scan_prefetch_need_next       ? scan_immediate_next_row :
+                                        scan_far_next_row;
     wire [24:0] scan_prefetch_base_words =
         display_base_words +
         {7'd0, scan_prefetch_row, 9'd0} +
@@ -916,7 +940,8 @@ module voxel_gpu (
         vcount_visible && scan_active_valid &&
         (scan_prefetch_recover_current ||
          scan_prefetch_need_target ||
-         scan_lookahead_valid);
+         scan_prefetch_need_next ||
+         scan_prefetch_need_far);
     wire        scan_prefetch_ready     =
         (scan_line0_ready && (scan_line0_row == scan_prefetch_row)) ||
         (scan_line1_ready && (scan_line1_row == scan_prefetch_row)) ||
@@ -924,15 +949,24 @@ module voxel_gpu (
     wire        scan_bank0_protected    =
         scan_line0_ready &&
         ((scan_line0_row == scan_current_row) ||
-         (scan_line0_row == scan_target_row));
+         (scan_target_valid &&
+          (scan_line0_row == scan_target_row)) ||
+         (scan_immediate_next_valid &&
+          (scan_line0_row == scan_immediate_next_row)));
     wire        scan_bank1_protected    =
         scan_line1_ready &&
         ((scan_line1_row == scan_current_row) ||
-         (scan_line1_row == scan_target_row));
+         (scan_target_valid &&
+          (scan_line1_row == scan_target_row)) ||
+         (scan_immediate_next_valid &&
+          (scan_line1_row == scan_immediate_next_row)));
     wire        scan_bank2_protected    =
         scan_line2_ready &&
         ((scan_line2_row == scan_current_row) ||
-         (scan_line2_row == scan_target_row));
+         (scan_target_valid &&
+          (scan_line2_row == scan_target_row)) ||
+         (scan_immediate_next_valid &&
+          (scan_line2_row == scan_immediate_next_row)));
     wire        scan_bank0_free         = (scan_active_bank != 2'd0) &&
                                           !scan_bank0_protected;
     wire        scan_bank1_free         = (scan_active_bank != 2'd1) &&
@@ -1022,7 +1056,10 @@ module voxel_gpu (
      * risky path for RD FIFO tail data.
      */
     wire        scan_prefetch_margin_ready =
-        scan_next_line_ready && (!scan_prefetch_valid || scan_prefetch_ready);
+        scan_target_or_active_ready &&
+        scan_immediate_next_line_ready &&
+        scan_far_next_line_ready &&
+        (!scan_prefetch_valid || scan_prefetch_ready);
     wire        scan_active_write_window = vcount_visible &&
                                            (hcount < ACTIVE_WRITE_END_HCOUNT);
     wire        scanout_write_slack     = !display_valid ||
@@ -2817,6 +2854,7 @@ module voxel_gpu (
             scan_fill_base_words <= 25'd0;
             scan_fill_store_idx <= 10'd0;
             scan_rd_capture <= 1'b0;
+            scan_late_count <= 16'd0;
             sdram_rd_addr_cfg <= 25'd0;
             sdram_rd_max_addr_cfg <= 25'd0;
             sdram_rd_load_pulse <= 1'b0;
@@ -3059,6 +3097,11 @@ module voxel_gpu (
             endcase
 
             if (!vsync_pulse && !cache_load_state && !cache_drain_state) begin
+                if (scan_hblank_start && display_valid && scan_active_valid &&
+                    scan_target_valid && !scan_target_line_ready &&
+                    (scan_late_count != 16'hffff))
+                    scan_late_count <= scan_late_count + 16'd1;
+
                 if (scan_fill_load_pending) begin
                     scan_fill_load_pending <= 1'b0;
                     sdram_rd_addr_cfg <= scan_fill_base_words +
@@ -4407,6 +4450,7 @@ module voxel_gpu (
                 cache_flush_load_pending <= 1'b0;
                 cache_word_pending_valid <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
+                scan_late_count <= 16'd0;
                 /*
                  * Do not reset the scanout RD pipeline here. CLEAR_FRAME is
                  * issued at the start of every software frame, and with the
@@ -4448,7 +4492,7 @@ module voxel_gpu (
             end
 
             extmem_dma_status <= {
-                cache_words_done,
+                scan_late_count,
                 cache_band_index,
                 display_sel,
                 copy_target_sel,

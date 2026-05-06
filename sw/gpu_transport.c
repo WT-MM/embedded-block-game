@@ -908,10 +908,11 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
         if (g_diag_cache) {
             struct voxel_extmem_state ext_post;
             unsigned ct_post = 0, fa_post = 0, cbi_post = 0,
-                     dv_post = 0, ccp_post = 0;
+                     dv_post = 0, ccp_post = 0, late_post = 0;
             uint32_t dma_post = 0;
             if (ioctl(transport->hw_fd, VOXEL_IOC_GET_EXTMEM, &ext_post) == 0) {
                 dma_post = ext_post.dma_status;
+                late_post = dma_post >> 16;
                 ct_post  = (dma_post >> 11) & 1u;
                 fa_post  = (dma_post >> 8)  & 1u;
                 ccp_post = (dma_post >> 10) & 1u;
@@ -920,10 +921,11 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             }
             fprintf(stderr,
                     "DIAG_CACHE   b%u=MISS bytes=%zu hash=0x%016llx primer=%d "
-                    "post: dma=0x%08x ct=%u fa=%u ccp=%u dv=%u cbi=%u\n",
+                    "post: dma=0x%08x late=%u ct=%u fa=%u ccp=%u dv=%u cbi=%u\n",
                     band, g_bins[band].flat_used,
                     (unsigned long long)band_hash, primer_only,
-                    dma_post, ct_post, fa_post, ccp_post, dv_post, cbi_post);
+                    dma_post, late_post, ct_post, fa_post, ccp_post,
+                    dv_post, cbi_post);
         }
 
         if (copy_target_buffer >= 0) {

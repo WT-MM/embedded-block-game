@@ -114,6 +114,12 @@ static void format_stream_value(char *buf, size_t buf_size, int value)
         snprintf(buf, buf_size, "%d", value);
 }
 
+static void set_blank_line(char *line)
+{
+    if (line)
+        line[0] = '\0';
+}
+
 void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
                      const PauseMenuSettings *settings)
 {
@@ -141,16 +147,16 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
         snprintf(stream_value, sizeof(stream_value), "N/A");
 
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "GAME MENU");
-    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "");
+    set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c STREAM CHUNKS/FRAME  %s",
              pm->selected_setting == 0 ? '>' : ' ', stream_value);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c NEAR MESH RADIUS     %d",
              pm->selected_setting == 1 ? '>' : ' ',
              settings ? settings->near_chunk_radius : 0);
-    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "");
+    set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "W/S SELECT   A/D ADJUST");
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "ESC RESUME   Q QUIT");
-    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "");
+    set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "PREGENERATED WORLDS - PLANNED");
 
     int block_h = line_count * line_step;

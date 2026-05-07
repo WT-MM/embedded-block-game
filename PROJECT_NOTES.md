@@ -3351,6 +3351,9 @@ Follow-up:
   * Perf logs now split `stream` into `wait` and `body`. `wait` is time spent
     waiting for `world_mu`; `body` is actual stream work. Mesh/gen workers yield
     before taking `world_mu` while a foreground stream lock is pending.
+  * Startup/full-window streaming now ignores `VOXEL_MESH_REBUILDS_PER_FRAME`
+    for the initial synchronous mesh build. This avoids booting into a world
+    with only one chunk mesh when an old diagnostic env var is still set.
 
 Prefetch direction:
 

@@ -2085,15 +2085,16 @@ static int mesh_rebuild_chunks_per_pass(void)
     return (int)parsed;
 }
 
-static bool world_rebuild_dirty_meshes_locked(VoxelWorld *world)
+static bool world_rebuild_dirty_meshes_locked_with_limit(VoxelWorld *world,
+                                                         int limit)
 {
     bool ok = true;
-    int per_pass = mesh_rebuild_chunks_per_pass();
-    int limit = (per_pass <= 0) ? INT_MAX : per_pass;
     int rebuilt = 0;
 
     if (!world)
         return false;
+    if (limit <= 0)
+        limit = INT_MAX;
 
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
@@ -2125,6 +2126,14 @@ static bool world_rebuild_dirty_meshes_locked(VoxelWorld *world)
 
     world->meshes_dirty = world_has_dirty_meshes_locked(world);
     return ok;
+}
+
+static bool world_rebuild_dirty_meshes_locked(VoxelWorld *world)
+{
+    int per_pass = mesh_rebuild_chunks_per_pass();
+    int limit = (per_pass <= 0) ? INT_MAX : per_pass;
+
+    return world_rebuild_dirty_meshes_locked_with_limit(world, limit);
 }
 
 bool world_rebuild_dirty_meshes(VoxelWorld *world)
@@ -2468,6 +2477,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
 
     int old_origin_x = world->origin_chunk_x;
     int old_origin_z = world->origin_chunk_z;
+    bool initial_stream = world->chunk_count == 0;
 
     if (!persist_chunks_outside_window(world,
                                        origin_chunk_x, origin_chunk_z,
@@ -2485,7 +2495,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     if (!stream_fill_missing_chunks(world,
                                     center_chunk_x, center_chunk_z,
                                     origin_chunk_x, origin_chunk_z,
-                                    diameter, world->chunk_count == 0))
+                                    diameter, initial_stream))
         return false;
 
     if (had_light_emitters)
@@ -2505,6 +2515,8 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
         world->meshes_dirty = world_has_dirty_meshes_locked(world);
         return true;
     }
+    if (initial_stream)
+        return world_rebuild_dirty_meshes_locked_with_limit(world, INT_MAX);
     return world_rebuild_dirty_meshes_locked(world);
 }
 

@@ -3335,6 +3335,32 @@ Change:
     invisible while `CHUNK_FLAG_LOADING` is set. `block_light` is cleared at
     finalize because async results currently copy blocks + sky only.
 
+Follow-up:
+
+  * Field logs still showed boundary hitches with `stream=...` dominating
+    while `gen` and `mesh` stayed small. That means the cliff is still in the
+    foreground streaming path, not in terrain generation itself.
+  * `stream_world_to_chunk_center()` now treats "same center/window but not
+    full yet" as a continuation fill. It skips retention, persistence scans,
+    lookup rebuilds, perimeter dirty marking, and stream-epoch churn while
+    gradually adding the remaining async placeholders.
+  * Mesh worker queueing is now paced by `VOXEL_MESH_PUSHES_PER_FRAME`; unset
+    mirrors `VOXEL_CHUNKS_PER_FRAME`, and `0` means unlimited. The default is
+    now `1`, which prevents a single boundary crossing from dumping a large
+    mesh backlog onto the worker.
+  * Perf logs now split `stream` into `wait` and `body`. `wait` is time spent
+    waiting for `world_mu`; `body` is actual stream work. Mesh/gen workers yield
+    before taking `world_mu` while a foreground stream lock is pending.
+
+Prefetch direction:
+
+  * The cleaner long-term fix is a staging cache: predict the player's movement
+    direction, slowly generate/load the next edge outside the active 9x9 window,
+    then promote already-ready chunks when the center crosses a boundary. That
+    turns boundary crossing into pointer/index promotion instead of generation.
+    This is larger than the current smoothing patch because staged chunks need
+    separate lifetime, lookup, and persistence rules.
+
 Lighting direction:
 
   * Current streaming can still call `world_rebuild_lighting_locked()` when

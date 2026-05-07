@@ -105,6 +105,9 @@ typedef struct VoxelWorld {
     bool has_light_emitters;
     bool async_mesh_rebuilds_enabled;
     bool async_chunk_gen_enabled;
+    _Atomic int foreground_lock_requests;
+    uint64_t last_stream_lock_wait_ns;
+    uint64_t last_stream_body_ns;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting

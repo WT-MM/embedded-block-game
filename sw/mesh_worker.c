@@ -1,6 +1,7 @@
 #include "mesh_worker.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -59,6 +60,27 @@ static bool worker_enabled_from_env(void)
     if (value[0] == '0' && value[1] == '\0')
         return false;
     return true;
+}
+
+static int mesh_pushes_cap_from_env(void)
+{
+    static int cached = -1;
+    static bool initialized = false;
+
+    if (!initialized) {
+        const char *value = getenv("VOXEL_MESH_PUSHES_PER_FRAME");
+
+        if (value && value[0] != '\0') {
+            char *end = NULL;
+            long parsed = strtol(value, &end, 10);
+
+            if (end != value && *end == '\0' && parsed >= 0 && parsed < 4096)
+                cached = (int)parsed;
+        }
+        initialized = true;
+    }
+
+    return cached;
 }
 
 static unsigned queue_count_unlocked(void)
@@ -225,6 +247,13 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
 
     bool pushed_any = false;
     bool any_dirty = false;
+    int env_cap = mesh_pushes_cap_from_env();
+    int cap = (env_cap < 0) ? world->stream_chunks_per_frame : env_cap;
+    int pushed_count = 0;
+
+    if (cap <= 0)
+        cap = INT_MAX;
+
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
 
@@ -234,6 +263,8 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
         any_dirty = true;
         if (chunk->flags & CHUNK_FLAG_MESH_QUEUED)
             continue;
+        if (pushed_count >= cap)
+            break;
         /* Defer until neighbors are stable - otherwise async chunk-load
          * waves trigger O(neighbors) re-meshes per chunk. The last
          * neighbor's finalize will re-assert MESH_DIRTY on our chunk. */
@@ -254,6 +285,7 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
         }
         chunk->flags |= CHUNK_FLAG_MESH_QUEUED;
         pushed_any = true;
+        pushed_count++;
     }
 
     world->meshes_dirty = any_dirty;

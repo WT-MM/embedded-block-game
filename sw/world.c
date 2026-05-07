@@ -7,7 +7,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 #define CHUNK_LOOKUP_EMPTY (-1)
 
@@ -17,7 +22,7 @@
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
 #define DEFAULT_NEAR_CHUNK_RADIUS 1
-#define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
 #define STREAM_CHUNKS_PER_FRAME_MAX 64
 #define WORLD_META_VERSION 1u
 #define WORLD_CHUNK_VERSION 1u
@@ -69,6 +74,21 @@ static bool chunk_in_window(int chunk_x, int chunk_z,
                             int origin_chunk_x, int origin_chunk_z,
                             int diameter);
 static bool world_has_dirty_meshes_locked(const VoxelWorld *world);
+
+static uint64_t timespec_diff_u64_ns(const struct timespec *end,
+                                     const struct timespec *start)
+{
+    int64_t sec = (int64_t)end->tv_sec - (int64_t)start->tv_sec;
+    int64_t nsec = (int64_t)end->tv_nsec - (int64_t)start->tv_nsec;
+
+    if (nsec < 0) {
+        sec--;
+        nsec += 1000000000LL;
+    }
+    if (sec < 0)
+        return 0;
+    return (uint64_t)sec * 1000000000ULL + (uint64_t)nsec;
+}
 
 /* A slot is "present" once it has been allocated by stream_generate_chunk
  * and inserted into the lookup, regardless of whether the gen worker has
@@ -939,6 +959,17 @@ void world_unlock(VoxelWorld *world)
 {
     if (world && world->world_mu_initialized)
         pthread_mutex_unlock(&world->world_mu);
+}
+
+static void world_lock_for_worker(VoxelWorld *world)
+{
+#ifdef __linux__
+    while (world &&
+           atomic_load_explicit(&world->foreground_lock_requests,
+                                memory_order_acquire) > 0)
+        sched_yield();
+#endif
+    world_lock(world);
 }
 
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z)
@@ -1877,7 +1908,7 @@ bool world_run_mesh_job(VoxelWorld *world,
     uint32_t generation;
 
     /* Phase 1: snapshot under lock. */
-    world_lock(world);
+    world_lock_for_worker(world);
     Chunk *target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
     if (!target ||
         target->generation != expected_generation ||
@@ -1920,7 +1951,7 @@ bool world_run_mesh_job(VoxelWorld *world,
                                                     chunk_x, chunk_z,
                                                     is_near);
     if (!mesh) {
-        world_lock(world);
+        world_lock_for_worker(world);
         target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
         if (target)
             target->flags &= ~CHUNK_FLAG_MESH_QUEUED;
@@ -1931,7 +1962,7 @@ bool world_run_mesh_job(VoxelWorld *world,
     /* Phase 3: re-validate and publish under lock. Discard if the chunk
      * was evicted or its generation advanced (an edit landed mid-build). */
     bool published = false;
-    world_lock(world);
+    world_lock_for_worker(world);
     target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
     if (target &&
         target->generation == generation &&
@@ -2241,6 +2272,53 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     return true;
 }
 
+static bool stream_fill_missing_chunks(VoxelWorld *world,
+                                       int center_chunk_x,
+                                       int center_chunk_z,
+                                       int origin_chunk_x,
+                                       int origin_chunk_z,
+                                       int diameter,
+                                       bool initial_stream)
+{
+    int limit;
+    int generated = 0;
+
+    if (!world)
+        return false;
+
+    limit = (initial_stream || world->stream_chunks_per_frame <= 0) ?
+            INT_MAX : world->stream_chunks_per_frame;
+
+    for (int radius = 0;
+         radius <= world->load_radius_chunks && generated < limit;
+         radius++) {
+        for (int dz = -radius; dz <= radius && generated < limit; dz++) {
+            for (int dx = -radius; dx <= radius && generated < limit; dx++) {
+                int abs_dx = dx < 0 ? -dx : dx;
+                int abs_dz = dz < 0 ? -dz : dz;
+                int cx;
+                int cz;
+
+                if (abs_dx != radius && abs_dz != radius)
+                    continue;
+
+                cx = center_chunk_x + dx;
+                cz = center_chunk_z + dz;
+                if (!chunk_in_window(cx, cz, origin_chunk_x,
+                                     origin_chunk_z, diameter))
+                    continue;
+                if (chunk_lookup_find_index(world, cx, cz) >= 0)
+                    continue;
+                if (!stream_generate_chunk(world, cx, cz))
+                    return false;
+                generated++;
+            }
+        }
+    }
+
+    return true;
+}
+
 bool world_async_chunk_gen_offline(const VoxelWorld *world,
                                    int chunk_x, int chunk_z,
                                    ChunkGenResult *out)
@@ -2291,7 +2369,7 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
     if (!world || !result)
         return false;
 
-    world_lock(world);
+    world_lock_for_worker(world);
 
     int idx = chunk_lookup_find_index(world, chunk_x, chunk_z);
     if (idx >= 0) {
@@ -2346,13 +2424,15 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     if (!ensure_chunk_storage(world, diameter))
         return false;
 
-    if (world->chunk_count == world->chunk_capacity &&
+    bool same_window =
         world->center_chunk_x == center_chunk_x &&
         world->center_chunk_z == center_chunk_z &&
         world->origin_chunk_x == origin_chunk_x &&
         world->origin_chunk_z == origin_chunk_z &&
         world->chunks_x == diameter &&
-        world->chunks_z == diameter) {
+        world->chunks_z == diameter;
+
+    if (same_window) {
         if (world->chunk_count > 0 &&
             chunk_lookup_find_index(world,
                                     world->chunks[0].chunk_x,
@@ -2360,6 +2440,21 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
             !rebuild_chunk_lookup(world))
             return false;
         world->chunks_reused_last_stream = world->chunk_count;
+
+        if (world->chunk_count < world->chunk_capacity) {
+            if (!stream_fill_missing_chunks(world,
+                                            center_chunk_x, center_chunk_z,
+                                            origin_chunk_x, origin_chunk_z,
+                                            diameter, false))
+                return false;
+            if (had_light_emitters)
+                world_recompute_light_emitters_locked(world);
+            if (had_light_emitters || world->has_light_emitters) {
+                if (!world_rebuild_lighting_locked(world))
+                    return false;
+            }
+        }
+
         if (world->async_mesh_rebuilds_enabled) {
             world->meshes_dirty = world_has_dirty_meshes_locked(world);
             return true;
@@ -2387,39 +2482,11 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     world->center_chunk_x = center_chunk_x;
     world->center_chunk_z = center_chunk_z;
 
-    {
-        bool initial_stream = world->chunk_count == 0;
-        int limit = (initial_stream || world->stream_chunks_per_frame <= 0) ?
-                    INT_MAX : world->stream_chunks_per_frame;
-        int generated = 0;
-
-        for (int radius = 0;
-             radius <= world->load_radius_chunks && generated < limit;
-             radius++) {
-            for (int dz = -radius; dz <= radius && generated < limit; dz++) {
-                for (int dx = -radius; dx <= radius && generated < limit; dx++) {
-                    int abs_dx = dx < 0 ? -dx : dx;
-                    int abs_dz = dz < 0 ? -dz : dz;
-                    int cx;
-                    int cz;
-
-                    if (abs_dx != radius && abs_dz != radius)
-                        continue;
-
-                    cx = center_chunk_x + dx;
-                    cz = center_chunk_z + dz;
-                    if (!chunk_in_window(cx, cz, origin_chunk_x,
-                                         origin_chunk_z, diameter))
-                        continue;
-                    if (chunk_lookup_find_index(world, cx, cz) >= 0)
-                        continue;
-                    if (!stream_generate_chunk(world, cx, cz))
-                        return false;
-                    generated++;
-                }
-            }
-        }
-    }
+    if (!stream_fill_missing_chunks(world,
+                                    center_chunk_x, center_chunk_z,
+                                    origin_chunk_x, origin_chunk_z,
+                                    diameter, world->chunk_count == 0))
+        return false;
 
     if (had_light_emitters)
         world_recompute_light_emitters_locked(world);
@@ -2479,15 +2546,34 @@ bool world_init_infinite_procedural(VoxelWorld *world,
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z)
 {
     bool ok;
+    struct timespec lock_start;
+    struct timespec lock_end;
+    struct timespec body_end;
 
     if (!world)
         return false;
 
-    world_lock(world);
+    clock_gettime(CLOCK_MONOTONIC, &lock_start);
+    if (world->world_mu_initialized) {
+        atomic_fetch_add_explicit(&world->foreground_lock_requests, 1,
+                                  memory_order_acq_rel);
+        pthread_mutex_lock(&world->world_mu);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &lock_end);
+
     ok = stream_world_to_chunk_center(world,
                                       chunk_coord_from_world(world_x),
                                       chunk_coord_from_world(world_z));
     world_unlock(world);
+    if (world->world_mu_initialized) {
+        atomic_fetch_sub_explicit(&world->foreground_lock_requests, 1,
+                                  memory_order_acq_rel);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &body_end);
+    world->last_stream_lock_wait_ns =
+        timespec_diff_u64_ns(&lock_end, &lock_start);
+    world->last_stream_body_ns =
+        timespec_diff_u64_ns(&body_end, &lock_end);
     return ok;
 }
 

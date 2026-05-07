@@ -30,7 +30,7 @@
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
-#define DEFAULT_STREAM_CHUNKS_PER_FRAME 2
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
 #define MAX_STREAM_CHUNKS_PER_FRAME 64
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
@@ -518,6 +518,8 @@ int main(void)
     double perf_max_work_ns = 0.0;
     double perf_physics_ns = 0.0;
     double perf_stream_ns = 0.0;
+    double perf_stream_wait_ns = 0.0;
+    double perf_stream_body_ns = 0.0;
     double perf_lighting_ns = 0.0;
     double perf_gen_drain_ns = 0.0;
     double perf_mesh_drain_ns = 0.0;
@@ -784,6 +786,8 @@ int main(void)
         perf_work_ns += work_ns;
         perf_physics_ns += (double)ns_diff(&physics_end, &physics_start);
         perf_stream_ns += (double)ns_diff(&stream_end, &stream_start);
+        perf_stream_wait_ns += (double)world.last_stream_lock_wait_ns;
+        perf_stream_body_ns += (double)world.last_stream_body_ns;
         perf_lighting_ns += lighting_ns;
         perf_gen_drain_ns += gen_drain_ns;
         perf_mesh_drain_ns += mesh_drain_ns;
@@ -814,8 +818,8 @@ int main(void)
                         "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                         "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
                         "quads=%5.1f sky=%4.1f phys=%4.1f drop=%4.1f "
-                        "upd_phys=%5.2f stream=%5.2f light=%5.2f "
-                        "gen=%5.2f mesh=%5.2f\n",
+                        "upd_phys=%5.2f stream=%5.2f wait=%5.2f body=%5.2f "
+                        "light=%5.2f gen=%5.2f mesh=%5.2f\n",
                         fps,
                         ns_to_ms((double)perf_elapsed_ns / frame_div),
                         ns_to_ms(perf_work_ns / frame_div),
@@ -831,6 +835,8 @@ int main(void)
                         (double)perf_physics_dropped_steps / frame_div,
                         ns_to_ms(perf_physics_ns / frame_div),
                         ns_to_ms(perf_stream_ns / frame_div),
+                        ns_to_ms(perf_stream_wait_ns / frame_div),
+                        ns_to_ms(perf_stream_body_ns / frame_div),
                         ns_to_ms(perf_lighting_ns / frame_div),
                         ns_to_ms(perf_gen_drain_ns / frame_div),
                         ns_to_ms(perf_mesh_drain_ns / frame_div));
@@ -850,6 +856,8 @@ int main(void)
             perf_work_ns = 0.0;
             perf_physics_ns = 0.0;
             perf_stream_ns = 0.0;
+            perf_stream_wait_ns = 0.0;
+            perf_stream_body_ns = 0.0;
             perf_lighting_ns = 0.0;
             perf_gen_drain_ns = 0.0;
             perf_mesh_drain_ns = 0.0;

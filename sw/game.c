@@ -26,6 +26,8 @@
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 2
+#define MAX_STREAM_CHUNKS_PER_FRAME 64
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 #define HOTBAR_SLOT_COUNT 6
@@ -130,6 +132,25 @@ static int read_render_distance_chunks(void)
     if (end == value || (end && *end != '\0') ||
         parsed < 1 || parsed > MAX_WORLD_RENDER_DISTANCE_CHUNKS)
         return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
+
+    return (int)parsed;
+}
+
+static int read_stream_chunks_per_frame(void)
+{
+    const char *value = getenv("VOXEL_CHUNKS_PER_FRAME");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        value = getenv("VOXEL_CHUNK_PER_FRAME");
+    if (!value || value[0] == '\0')
+        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') ||
+        parsed < 0 || parsed > MAX_STREAM_CHUNKS_PER_FRAME)
+        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
 
     return (int)parsed;
 }
@@ -389,8 +410,10 @@ int main(void)
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
     int render_distance_chunks = read_render_distance_chunks();
+    int stream_chunks_per_frame = read_stream_chunks_per_frame();
     const char *world_save_dir = read_world_save_dir();
     int selected_hotbar_slot = 0;
+    PauseMenuSettings pause_settings = {0};
 
     /* Initialize Player */
     Player player;
@@ -417,6 +440,12 @@ int main(void)
         renderer_shutdown(ctx);
         return 1;
     }
+    world_set_stream_chunks_per_frame(&world, stream_chunks_per_frame);
+
+    pause_settings.stream_chunks_per_frame = world_stream_chunks_per_frame(&world);
+    pause_settings.stream_chunks_per_frame_max = MAX_STREAM_CHUNKS_PER_FRAME;
+    pause_settings.near_chunk_radius = world_near_chunk_radius(&world);
+    pause_settings.near_chunk_radius_max = world.render_distance_chunks;
 
     bool mesh_worker_running = mesh_worker_start(&world);
 
@@ -438,6 +467,9 @@ int main(void)
                world.meshes_rebuilt_last_stream);
         printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
                mouse_sens);
+        printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
+               world_stream_chunks_per_frame(&world),
+               world_near_chunk_radius(&world));
         printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");
     }
 
@@ -486,6 +518,16 @@ int main(void)
         }
 
         bool paused = pause_menu_is_open(&pause);
+        if (paused && pause_menu_update(&pause, &inp, &pause_settings)) {
+            world_set_stream_chunks_per_frame(&world,
+                                              pause_settings.stream_chunks_per_frame);
+            world_set_near_chunk_radius(&world,
+                                        pause_settings.near_chunk_radius);
+            pause_settings.stream_chunks_per_frame =
+                world_stream_chunks_per_frame(&world);
+            pause_settings.near_chunk_radius =
+                world_near_chunk_radius(&world);
+        }
 
         /* Chat toggle: ignored while paused — pause owns the overlay. */
         if (input_consume_chat_toggle(&inp) && !paused) {
@@ -627,7 +669,7 @@ int main(void)
         if (!paused && !chat_is_open(&chat))
             draw_hotbar(ctx, selected_hotbar_slot);
         renderer_draw_crosshair(ctx);
-        pause_menu_draw(&pause, ctx);
+        pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
             chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);
             chat_draw_text(ctx, fps_text, fps_text_len, 12.0f, 12.0f, 5);

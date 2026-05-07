@@ -80,6 +80,8 @@ typedef struct VoxelWorld {
     int center_chunk_z;
     int render_distance_chunks;
     int load_radius_chunks;
+    int stream_chunks_per_frame;
+    int near_chunk_radius;
     uint32_t procedural_seed;
     int stone_tries_per_chunk;
     int *chunk_lookup;
@@ -117,6 +119,10 @@ bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 bool world_flush(VoxelWorld *world);
 bool world_rebuild_dirty_meshes(VoxelWorld *world);
 bool world_rebuild_lighting(VoxelWorld *world);
+void world_set_stream_chunks_per_frame(VoxelWorld *world, int chunks_per_frame);
+int world_stream_chunks_per_frame(const VoxelWorld *world);
+void world_set_near_chunk_radius(VoxelWorld *world, int radius);
+int world_near_chunk_radius(const VoxelWorld *world);
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z);

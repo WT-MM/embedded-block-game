@@ -85,6 +85,7 @@ int main(void)
 {
     VoxelWorld world;
     VoxelWorld reloaded_world;
+    VoxelWorld capped_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
     char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
     char *world_dir;
@@ -92,6 +93,7 @@ int main(void)
     init_block_types();
     world_init(&world);
     world_init(&reloaded_world);
+    world_init(&capped_world);
     world_dir = mkdtemp(world_dir_template);
     if (!world_dir)
         return check_failed("mkdtemp failed");
@@ -259,6 +261,40 @@ int main(void)
     if (world_get_block(&reloaded_world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("saved block edit did not survive world reload");
     world_free(&reloaded_world);
+
+    if (!world_init_infinite_procedural(&capped_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        TEST_RENDER_DISTANCE,
+                                        0.0f,
+                                        0.0f,
+                                        NULL))
+        return check_failed("capped world init failed");
+    world_set_stream_chunks_per_frame(&capped_world, 2);
+    if (!world_stream_around(&capped_world,
+                             (float)WORLD_CHUNK_SIZE + 1.0f,
+                             1.0f))
+        return check_failed("capped one-chunk stream failed");
+    if (capped_world.chunks_generated_last_stream != 2)
+        return check_failed("capped stream did not limit new chunks");
+    if (capped_world.chunk_count >= expected_chunks)
+        return check_failed("capped stream unexpectedly filled whole window");
+    for (int guard = 0;
+         guard < expected_chunks && capped_world.chunk_count < expected_chunks;
+         guard++) {
+        if (!world_stream_around(&capped_world,
+                                 (float)WORLD_CHUNK_SIZE + 1.0f,
+                                 1.0f))
+            return check_failed("capped follow-up stream failed");
+    }
+    if (capped_world.chunk_count != expected_chunks)
+        return check_failed("capped stream did not eventually fill window");
+    world_set_near_chunk_radius(&capped_world, 0);
+    if (world_near_chunk_radius(&capped_world) != 0)
+        return check_failed("near chunk radius setter failed");
+    if (!capped_world.meshes_dirty)
+        return check_failed("near radius change did not dirty meshes");
+    world_free(&capped_world);
     cleanup_temp_world_dir(world_dir);
 
     printf("world_chunk_test: ok\n");

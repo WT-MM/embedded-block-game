@@ -3117,3 +3117,48 @@ Expected result:
   * No direct fix for `update=max_work` chunk-generation spikes; this
     only buys frame-budget headroom while software streaming work is
     still being reduced.
+
+May 7 2026: Runtime Streaming / Mesh Settings
+---------------------------------------------
+
+Motivation:
+
+  * Hardware headroom helped only a little. The remaining bad frames still
+    correlate with chunk crossings: `update` spikes into the 4-14 ms range
+    and `max_work` can jump well over 100 ms.
+  * The main-thread streamer still generated/loaded a whole new border
+    immediately when the loaded window shifted. With a 1-chunk hidden
+    border, those chunks usually do not need to appear in the same frame.
+
+Changes:
+
+  * Added `world->stream_chunks_per_frame`.
+    - `0` means unlimited / old behavior.
+    - Positive values cap new generated/loaded chunks per
+      `world_stream_around()` call after the initial full world load.
+    - Missing chunks are filled nearest-to-center first over subsequent
+      frames.
+    - Environment: `VOXEL_CHUNKS_PER_FRAME` (also accepts the singular
+      `VOXEL_CHUNK_PER_FRAME`). The game default is `2`.
+  * Added `world->near_chunk_radius` to replace the compile-time
+    `NEAR_CHUNK_RADIUS`. Lower values apply greedy meshing to more visible
+    chunks, trading possible close-up T-junction shimmer for fewer
+    descriptors.
+    - Environment: `VOXEL_NEAR_CHUNK_RADIUS`. Default is `1` (matches the
+      prior compile-time value), clamped to
+      `[0, render_distance_chunks]`. `0` means every visible chunk uses
+      greedy meshing.
+    - Changing it at runtime marks near/far transition chunks mesh-dirty;
+      the mesh worker rebuilds them asynchronously.
+  * The ESC pause overlay now has a small settings panel:
+    - `STREAM CHUNKS/FRAME`
+    - `NEAR MESH RADIUS`
+    - `W/S` selects a row, `A/D` adjusts.
+
+World storage note:
+
+  * Current persistence stores only modified chunk snapshots over the
+    deterministic procedural world.
+  * A future pregenerated-world mode should promote chunk snapshots to a
+    first-class world database/cache so terrain generation and snapshot
+    load can move fully off the foreground frame path.

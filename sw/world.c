@@ -16,7 +16,9 @@
  * T-junction / UV-shimmer artifacts caused by merged quads stay out of
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
-#define NEAR_CHUNK_RADIUS 1
+#define DEFAULT_NEAR_CHUNK_RADIUS 1
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
+#define STREAM_CHUNKS_PER_FRAME_MAX 64
 #define WORLD_META_VERSION 1u
 #define WORLD_CHUNK_VERSION 1u
 
@@ -66,6 +68,7 @@ typedef struct {
 static bool chunk_in_window(int chunk_x, int chunk_z,
                             int origin_chunk_x, int origin_chunk_z,
                             int diameter);
+static bool world_has_dirty_meshes_locked(const VoxelWorld *world);
 static const int FACE_NX[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
 static const int FACE_NY[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
 static const int FACE_NZ[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
@@ -74,13 +77,16 @@ static bool chunk_is_near(const VoxelWorld *world, const Chunk *chunk)
 {
     int dx = chunk->chunk_x - world->center_chunk_x;
     int dz = chunk->chunk_z - world->center_chunk_z;
+    int near_radius = world->near_chunk_radius;
 
     if (dx < 0)
         dx = -dx;
     if (dz < 0)
         dz = -dz;
+    if (near_radius < 0)
+        near_radius = DEFAULT_NEAR_CHUNK_RADIUS;
 
-    return (dx <= NEAR_CHUNK_RADIUS) && (dz <= NEAR_CHUNK_RADIUS);
+    return (dx <= near_radius) && (dz <= near_radius);
 }
 
 static uint32_t rng_next(uint32_t *state)
@@ -138,6 +144,32 @@ static int positive_mod(int value, int divisor)
 static int chunk_coord_from_world(float world_pos)
 {
     return (int)floorf(world_pos / (float)WORLD_CHUNK_SIZE);
+}
+
+static int env_int_clamped(const char *primary,
+                           const char *fallback_name,
+                           int default_value,
+                           int min_value,
+                           int max_value)
+{
+    const char *value = getenv(primary);
+    char *end = NULL;
+    long parsed;
+
+    if ((!value || value[0] == '\0') && fallback_name)
+        value = getenv(fallback_name);
+    if (!value || value[0] == '\0')
+        return default_value;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0'))
+        return default_value;
+    if (parsed < min_value)
+        return min_value;
+    if (parsed > max_value)
+        return max_value;
+
+    return (int)parsed;
 }
 
 static size_t chunk_block_count(void)
@@ -828,6 +860,8 @@ static bool face_should_render(BlockID current, BlockID neighbor)
 void world_init(VoxelWorld *world)
 {
     memset(world, 0, sizeof(*world));
+    world->near_chunk_radius = DEFAULT_NEAR_CHUNK_RADIUS;
+    world->stream_chunks_per_frame = DEFAULT_STREAM_CHUNKS_PER_FRAME;
     if (pthread_mutex_init(&world->world_mu, NULL) == 0)
         world->world_mu_initialized = true;
 }
@@ -1730,6 +1764,57 @@ static void mark_near_far_transitions_dirty(VoxelWorld *world)
     }
 }
 
+void world_set_stream_chunks_per_frame(VoxelWorld *world, int chunks_per_frame)
+{
+    if (!world)
+        return;
+
+    if (chunks_per_frame < 0)
+        chunks_per_frame = 0;
+    if (chunks_per_frame > STREAM_CHUNKS_PER_FRAME_MAX)
+        chunks_per_frame = STREAM_CHUNKS_PER_FRAME_MAX;
+
+    world_lock(world);
+    world->stream_chunks_per_frame = chunks_per_frame;
+    world_unlock(world);
+}
+
+int world_stream_chunks_per_frame(const VoxelWorld *world)
+{
+    if (!world)
+        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
+    return world->stream_chunks_per_frame;
+}
+
+void world_set_near_chunk_radius(VoxelWorld *world, int radius)
+{
+    if (!world)
+        return;
+
+    if (radius < 0)
+        radius = 0;
+    if (radius > world->render_distance_chunks)
+        radius = world->render_distance_chunks;
+
+    world_lock(world);
+    if (world->near_chunk_radius == radius) {
+        world_unlock(world);
+        return;
+    }
+
+    world->near_chunk_radius = radius;
+    mark_near_far_transitions_dirty(world);
+    world->meshes_dirty = world_has_dirty_meshes_locked(world);
+    world_unlock(world);
+}
+
+int world_near_chunk_radius(const VoxelWorld *world)
+{
+    if (!world)
+        return DEFAULT_NEAR_CHUNK_RADIUS;
+    return world->near_chunk_radius;
+}
+
 static bool world_has_dirty_meshes_locked(const VoxelWorld *world)
 {
     if (!world)
@@ -1873,6 +1958,33 @@ static void retain_chunks_in_window(VoxelWorld *world,
     world->chunk_count = out;
 }
 
+static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    if (chunk_lookup_find_index(world, chunk_x, chunk_z) >= 0)
+        return true;
+    if (world->chunk_count >= world->chunk_capacity)
+        return false;
+
+    Chunk *chunk = &world->chunks[world->chunk_count];
+    initialize_chunk_slot(chunk, chunk_x, chunk_z, world->stream_epoch);
+    generate_chunk_terrain(chunk,
+                           world->procedural_seed,
+                           world->stone_tries_per_chunk);
+    if (!load_chunk_snapshot(world, chunk))
+        return false;
+    rebuild_chunk_sky_lighting(chunk);
+    if (chunk_has_light_emitters(chunk))
+        world->has_light_emitters = true;
+
+    world->chunk_count++;
+    if (!chunk_lookup_insert(world, world->chunk_count - 1))
+        return false;
+
+    world->chunks_generated_last_stream++;
+    mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
+    return true;
+}
+
 static bool stream_world_to_chunk_center(VoxelWorld *world,
                                          int center_chunk_x,
                                          int center_chunk_z)
@@ -1937,30 +2049,37 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     world->center_chunk_x = center_chunk_x;
     world->center_chunk_z = center_chunk_z;
 
-    for (int cz = origin_chunk_z; cz < origin_chunk_z + diameter; cz++) {
-        for (int cx = origin_chunk_x; cx < origin_chunk_x + diameter; cx++) {
-            if (chunk_lookup_find_index(world, cx, cz) >= 0)
-                continue;
-            if (world->chunk_count >= world->chunk_capacity)
-                return false;
+    {
+        bool initial_stream = world->chunk_count == 0;
+        int limit = (initial_stream || world->stream_chunks_per_frame <= 0) ?
+                    INT_MAX : world->stream_chunks_per_frame;
+        int generated = 0;
 
-            Chunk *chunk = &world->chunks[world->chunk_count];
-            initialize_chunk_slot(chunk, cx, cz, world->stream_epoch);
-            generate_chunk_terrain(chunk,
-                                   world->procedural_seed,
-                                   world->stone_tries_per_chunk);
-            if (!load_chunk_snapshot(world, chunk))
-                return false;
-            rebuild_chunk_sky_lighting(chunk);
-            if (chunk_has_light_emitters(chunk))
-                world->has_light_emitters = true;
+        for (int radius = 0;
+             radius <= world->load_radius_chunks && generated < limit;
+             radius++) {
+            for (int dz = -radius; dz <= radius && generated < limit; dz++) {
+                for (int dx = -radius; dx <= radius && generated < limit; dx++) {
+                    int abs_dx = dx < 0 ? -dx : dx;
+                    int abs_dz = dz < 0 ? -dz : dz;
+                    int cx;
+                    int cz;
 
-            world->chunk_count++;
-            if (!chunk_lookup_insert(world, world->chunk_count - 1))
-                return false;
+                    if (abs_dx != radius && abs_dz != radius)
+                        continue;
 
-            world->chunks_generated_last_stream++;
-            mark_chunk_and_neighbors_dirty(world, cx, cz);
+                    cx = center_chunk_x + dx;
+                    cz = center_chunk_z + dz;
+                    if (!chunk_in_window(cx, cz, origin_chunk_x,
+                                         origin_chunk_z, diameter))
+                        continue;
+                    if (chunk_lookup_find_index(world, cx, cz) >= 0)
+                        continue;
+                    if (!stream_generate_chunk(world, cx, cz))
+                        return false;
+                    generated++;
+                }
+            }
         }
     }
 
@@ -2000,6 +2119,14 @@ bool world_init_infinite_procedural(VoxelWorld *world,
     world->procedural_seed = seed;
     world->stone_tries_per_chunk = stone_tries_per_chunk;
     world->render_distance_chunks = render_distance_chunks;
+    world->near_chunk_radius =
+        env_int_clamped("VOXEL_NEAR_CHUNK_RADIUS", NULL,
+                        DEFAULT_NEAR_CHUNK_RADIUS, 0,
+                        render_distance_chunks);
+    world->stream_chunks_per_frame =
+        env_int_clamped("VOXEL_CHUNKS_PER_FRAME", "VOXEL_CHUNK_PER_FRAME",
+                        DEFAULT_STREAM_CHUNKS_PER_FRAME, 0,
+                        STREAM_CHUNKS_PER_FRAME_MAX);
     /* Keep a one-chunk procedural border around the visible radius so
      * exposed-face caches stay correct at the render edge. */
     world->load_radius_chunks = render_distance_chunks + 1;

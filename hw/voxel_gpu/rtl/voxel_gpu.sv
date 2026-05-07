@@ -2453,8 +2453,16 @@ module voxel_gpu (
             default: ;
         endcase
 
-        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH ||
-              state == ST_CACHE_INIT)) begin
+        /* ST_DRAW / ST_DRAW_FLUSH already drive the _e/_o write ports directly
+         * inside the case above (lines 2426-2451). Every other state — including
+         * ST_CACHE_INIT — only drives the unsuffixed fb_wr_addr / z_wr_en /
+         * cache_maint_addr signals and relies on this block to fan them out to
+         * the banked BRAM ports. Excluding ST_CACHE_INIT here previously left
+         * its writes stranded on dead defaults: the Z-buffer never reset to
+         * 0xFFFF (so depth-tested terrain failed the test against 0x0000) and
+         * the color BRAM kept stale band content across frames (visible as
+         * vertically-replicated HUD/sky strips). */
+        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH)) begin
             fb_wr_addr_e = fb_wr_addr;
             fb_wr_data_e = fb_wr_data;
             fb_back_wr_en_e = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
@@ -4101,16 +4109,7 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
-                                /* Only tick the local cache pointer once we've
-                                 * reached the active band. Before that, the
-                                 * pointer must stay at its initial x_start so
-                                 * that the first in-band row writes to local
-                                 * cache row 0. Without this gate, draw_row_base
-                                 * accumulates rows above the band and overflows
-                                 * its 16-bit width (480*640 > 65535), causing
-                                 * wrong cache offsets and visible 3x ghosting. */
-                                if (draw_band_index >= cache_band_index)
-                                    draw_row_base <= draw_row_base + 16'd640;
+                                draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
@@ -4160,13 +4159,7 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
-                                /* See ST_DRAW (cache-hit) variant above for
-                                 * the rationale: gate the local cache pointer
-                                 * tick on draw_band_index >= cache_band_index
-                                 * to avoid 16-bit overflow of draw_row_base
-                                 * when iterating rows above the active band. */
-                                if (draw_band_index >= cache_band_index)
-                                    draw_row_base <= draw_row_base + 16'd640;
+                                draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;

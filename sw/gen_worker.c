@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "thread_affinity.h"
+
 /*
  * SPSC ring buffer of pending chunk-gen jobs. Push from the main thread
  * (gen_worker_drain_pending), pop on the worker. Capacity is power-of-two
@@ -115,6 +117,8 @@ static bool queue_pop_unlocked(GenJob *out)
 static void *gen_worker_thread(void *arg)
 {
     VoxelWorld *world = (VoxelWorld *)arg;
+
+    thread_affinity_pin_current("gen_worker", "VOXEL_GEN_CPU", 1);
 
     for (;;) {
         GenJob job;

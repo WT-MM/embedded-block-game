@@ -12,6 +12,7 @@
 #include "world.h"
 #include "mesh_worker.h"
 #include "gen_worker.h"
+#include "thread_affinity.h"
 #include "player_physics.h" /* Added physics integration */
 #include "chat.h"
 #include "pause_menu.h"
@@ -24,6 +25,8 @@
 #define PHYSICS_HZ   60
 #define PHYSICS_DT   (1.0f / (float)PHYSICS_HZ)
 #define MAX_FRAME_DT 0.25f
+#define DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME 4
+#define MAX_PHYSICS_STEPS_PER_FRAME 16
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
@@ -153,6 +156,23 @@ static int read_stream_chunks_per_frame(void)
         parsed < 0 || parsed > MAX_STREAM_CHUNKS_PER_FRAME)
         return DEFAULT_STREAM_CHUNKS_PER_FRAME;
 
+    return (int)parsed;
+}
+
+static int read_max_physics_steps_per_frame(void)
+{
+    const char *value = getenv("VOXEL_MAX_PHYSICS_STEPS_PER_FRAME");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') || parsed < 0)
+        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
+    if (parsed > MAX_PHYSICS_STEPS_PER_FRAME)
+        return MAX_PHYSICS_STEPS_PER_FRAME;
     return (int)parsed;
 }
 
@@ -391,6 +411,9 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
 
 int main(void)
 {
+    int debug_enabled = read_debug_enabled();
+    thread_affinity_pin_current("main", "VOXEL_MAIN_CPU", 0);
+
     RenderContext *ctx = renderer_init();
     VoxelWorld world;
     if (!ctx) {
@@ -412,6 +435,7 @@ int main(void)
     float mouse_sens = read_mouse_sensitivity();
     int render_distance_chunks = read_render_distance_chunks();
     int stream_chunks_per_frame = read_stream_chunks_per_frame();
+    int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
     const char *world_save_dir = read_world_save_dir();
     int selected_hotbar_slot = 0;
     PauseMenuSettings pause_settings = {0};
@@ -451,7 +475,6 @@ int main(void)
     bool mesh_worker_running = mesh_worker_start(&world);
     bool gen_worker_running = gen_worker_start(&world);
 
-    int debug_enabled = read_debug_enabled();
     if (debug_enabled) {
         printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
         printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
@@ -472,6 +495,8 @@ int main(void)
         printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
                world_stream_chunks_per_frame(&world),
                world_near_chunk_radius(&world));
+        printf("Physics: max_steps_per_frame=%d (0=unlimited, env VOXEL_MAX_PHYSICS_STEPS_PER_FRAME)\n",
+               max_physics_steps_per_frame);
         printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");
         printf("Gen worker: %s\n", gen_worker_running ? "on" : "off");
     }
@@ -491,6 +516,12 @@ int main(void)
     double perf_sleep_ns = 0.0;
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
+    double perf_physics_ns = 0.0;
+    double perf_stream_ns = 0.0;
+    double perf_lighting_ns = 0.0;
+    double perf_gen_drain_ns = 0.0;
+    double perf_mesh_drain_ns = 0.0;
+    int perf_physics_dropped_steps = 0;
     int status_log_enabled = read_status_log_enabled(debug_enabled);
     char fps_text[16] = "fps --";
     int fps_text_len = (int)strlen(fps_text);
@@ -611,7 +642,11 @@ int main(void)
         bool down_input  = paused ? false : inp.down;
         bool sprint_input = paused ? false : inp.sprint;
 
-        while (physics_accumulator >= PHYSICS_DT) {
+        struct timespec physics_start, physics_end;
+        clock_gettime(CLOCK_MONOTONIC, &physics_start);
+        while (physics_accumulator >= PHYSICS_DT &&
+               (max_physics_steps_per_frame <= 0 ||
+                physics_steps < max_physics_steps_per_frame)) {
             bool jump_input = flying ? up_input : jump_pressed;
             player_update(&player, &world, wish_x, wish_z,
                           jump_input, down_input, sprint_input, PHYSICS_DT);
@@ -619,16 +654,26 @@ int main(void)
             physics_accumulator -= PHYSICS_DT;
             physics_steps++;
         }
+        int dropped_physics_steps = 0;
+        if (max_physics_steps_per_frame > 0 &&
+            physics_accumulator >= PHYSICS_DT) {
+            dropped_physics_steps = (int)(physics_accumulator / PHYSICS_DT);
+            physics_accumulator = 0.0f;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &physics_end);
 
         /* Sync Camera to Player's updated physical position */
         cam.position.x = player.x;
         cam.position.y = player_get_eye_height(&player);
         cam.position.z = player.z;
 
+        struct timespec stream_start, stream_end;
+        clock_gettime(CLOCK_MONOTONIC, &stream_start);
         if (!world_stream_around(&world, player.x, player.z)) {
             fprintf(stderr, "\nchunk streaming failed\n");
             break;
         }
+        clock_gettime(CLOCK_MONOTONIC, &stream_end);
 
         if (!paused && !chat_is_open(&chat)) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
@@ -653,13 +698,28 @@ int main(void)
             (void)input_consume_place(&inp);
         }
 
+        double lighting_ns = 0.0;
+        double gen_drain_ns = 0.0;
+        double mesh_drain_ns = 0.0;
         if (world.lighting_dirty) {
+            struct timespec lighting_start, lighting_end;
+            clock_gettime(CLOCK_MONOTONIC, &lighting_start);
             world_rebuild_lighting(&world);
             world.lighting_dirty = false;
+            clock_gettime(CLOCK_MONOTONIC, &lighting_end);
+            lighting_ns = (double)ns_diff(&lighting_end, &lighting_start);
         }
+        struct timespec gen_start, gen_end;
+        clock_gettime(CLOCK_MONOTONIC, &gen_start);
         gen_worker_drain_pending(&world);
+        clock_gettime(CLOCK_MONOTONIC, &gen_end);
+        gen_drain_ns = (double)ns_diff(&gen_end, &gen_start);
         if (world.meshes_dirty) {
+            struct timespec mesh_start, mesh_end;
+            clock_gettime(CLOCK_MONOTONIC, &mesh_start);
             mesh_worker_drain_dirty(&world);
+            clock_gettime(CLOCK_MONOTONIC, &mesh_end);
+            mesh_drain_ns = (double)ns_diff(&mesh_end, &mesh_start);
         }
 
         struct timespec render_start, begin_end, draw_end, end_end;
@@ -715,12 +775,18 @@ int main(void)
         perf_quads += quads;
         perf_sky_quads += sky_quads;
         perf_physics_steps += physics_steps;
+        perf_physics_dropped_steps += dropped_physics_steps;
         perf_update_ns += update_ns;
         perf_begin_ns += begin_ns;
         perf_draw_ns += draw_ns;
         perf_end_ns += end_ns;
         perf_sleep_ns += sleep_ns;
         perf_work_ns += work_ns;
+        perf_physics_ns += (double)ns_diff(&physics_end, &physics_start);
+        perf_stream_ns += (double)ns_diff(&stream_end, &stream_start);
+        perf_lighting_ns += lighting_ns;
+        perf_gen_drain_ns += gen_drain_ns;
+        perf_mesh_drain_ns += mesh_drain_ns;
         if (work_ns > perf_max_work_ns)
             perf_max_work_ns = work_ns;
 
@@ -747,7 +813,9 @@ int main(void)
                         "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
                         "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                         "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
-                        "quads=%5.1f sky=%4.1f phys=%4.1f\n",
+                        "quads=%5.1f sky=%4.1f phys=%4.1f drop=%4.1f "
+                        "upd_phys=%5.2f stream=%5.2f light=%5.2f "
+                        "gen=%5.2f mesh=%5.2f\n",
                         fps,
                         ns_to_ms((double)perf_elapsed_ns / frame_div),
                         ns_to_ms(perf_work_ns / frame_div),
@@ -759,7 +827,13 @@ int main(void)
                         ns_to_ms(perf_max_work_ns),
                         (double)perf_quads / frame_div,
                         (double)perf_sky_quads / frame_div,
-                        (double)perf_physics_steps / frame_div);
+                        (double)perf_physics_steps / frame_div,
+                        (double)perf_physics_dropped_steps / frame_div,
+                        ns_to_ms(perf_physics_ns / frame_div),
+                        ns_to_ms(perf_stream_ns / frame_div),
+                        ns_to_ms(perf_lighting_ns / frame_div),
+                        ns_to_ms(perf_gen_drain_ns / frame_div),
+                        ns_to_ms(perf_mesh_drain_ns / frame_div));
             }
 
             perf_window_start = perf_now;
@@ -767,12 +841,18 @@ int main(void)
             perf_quads = 0;
             perf_sky_quads = 0;
             perf_physics_steps = 0;
+            perf_physics_dropped_steps = 0;
             perf_update_ns = 0.0;
             perf_begin_ns = 0.0;
             perf_draw_ns = 0.0;
             perf_end_ns = 0.0;
             perf_sleep_ns = 0.0;
             perf_work_ns = 0.0;
+            perf_physics_ns = 0.0;
+            perf_stream_ns = 0.0;
+            perf_lighting_ns = 0.0;
+            perf_gen_drain_ns = 0.0;
+            perf_mesh_drain_ns = 0.0;
             perf_max_work_ns = 0.0;
         }
     }

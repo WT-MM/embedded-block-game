@@ -3278,3 +3278,48 @@ Fix:
     whose z-boundary face is occluded by a neighboring chunk must not expose
     that hidden face. This catches future partial-copy attempts that miss
     `BlockID` element sizing or border orientation.
+
+May 7 2026: Affinity + Update Spike Guardrails
+----------------------------------------------
+
+Why:
+
+  * After async chunk generation, the hardest FPS drops still show up as
+    `update` spikes. Some frames report many physics catch-up steps after a
+    stall, which turns one hitch into a visible spiral.
+  * DE1-SoC has two Cortex-A9 cores, so pinning the foreground thread away
+    from generation/mesh workers is worth testing.
+
+Changes:
+
+  * Added Linux-only CPU affinity helpers:
+    - `VOXEL_PIN_THREADS=0` disables all pinning.
+    - `VOXEL_MAIN_CPU` defaults to `0`.
+    - `VOXEL_MESH_CPU` defaults to `1`.
+    - `VOXEL_GEN_CPU` defaults to `1`.
+    - `VOXEL_AFFINITY_LOG=1` logs decisions; `DEBUG=1` also logs.
+  * Added a physics catch-up cap:
+    - `VOXEL_MAX_PHYSICS_STEPS_PER_FRAME`, default `4`.
+    - `0` disables the cap.
+    - Dropped catch-up steps are reported as `drop=` in the perf line.
+  * Expanded perf diagnostics with update breakdown fields:
+    - `upd_phys`
+    - `stream`
+    - `light`
+    - `gen`
+    - `mesh`
+
+Lighting direction:
+
+  * Current streaming can still call `world_rebuild_lighting_locked()` when
+    any loaded chunk has block-light emitters. That is a full loaded-window
+    relight and can explain large boundary-crossing `update` spikes in a
+    saved world that contains lamps.
+  * A better model is an incremental light job queue:
+    - Sky light stays chunk-local and is already rebuilt per generated chunk.
+    - Persist/load `block_light` with chunk snapshots or rebuild only the
+      newly loaded chunk plus a one-chunk neighbor shell.
+    - For block edits or streamed-in emitters, enqueue add/remove BFS work
+      from affected emitters and cap light nodes per frame.
+    - Render old light until the queued light update finishes, same as old
+      meshes stay visible until a worker publishes a new mesh.

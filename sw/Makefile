@@ -51,8 +51,8 @@ tests/fpga_sdram_test: tests/fpga_sdram_test.c
 tests/fpga_band_offset_test: tests/fpga_band_offset_test.c voxel_gpu.h
 	${CC} ${CFLAGS} -I. -o $@ tests/fpga_band_offset_test.c
 
-game: game.c player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h chat.c chat.h pause_menu.c pause_menu.h
-	${CC} ${CFLAGS} ${THREAD_FLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c mesh_worker.c gen_worker.c player_physics.c chat.c pause_menu.c -lm
+game: game.c player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c world.c world.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h thread_affinity.c thread_affinity.h chat.c chat.h pause_menu.c pause_menu.h
+	${CC} ${CFLAGS} ${THREAD_FLAGS} -o $@ game.c input.c renderer.c gpu_transport.c block_types.c world.c mesh_worker.c gen_worker.c thread_affinity.c player_physics.c chat.c pause_menu.c -lm
 
 laptop_run:
 	VOXEL_GPU_BACKEND=socket ./game
@@ -65,7 +65,7 @@ clean_laptop:
 	${MAKE} -C ${KERNEL_SOURCE_LAPTOP} M=${PWD} clean
 	${RM} tests/voxel_test tests/world_chunk_test tests/renderer_scene_test tests/renderer_static_test tests/renderer_quad_test tests/renderer_edge_test tests/renderer_fog_test tests/fpga_sdram_test tests/fpga_band_offset_test game
 
-TARFILES = Makefile README voxel_gpu.h voxel_gpu.c virtual_gpu_protocol.h gpu_transport.h gpu_transport.c tests/voxel_test.c tests/world_chunk_test.c tests/renderer_scene_test.c tests/renderer_static_test.c tests/renderer_quad_test.c tests/renderer_edge_test.c tests/renderer_fog_test.c tests/fpga_sdram_test.c renderer.c renderer.h block_types.c block_types.h world.c world.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h
+TARFILES = Makefile README voxel_gpu.h voxel_gpu.c virtual_gpu_protocol.h gpu_transport.h gpu_transport.c tests/voxel_test.c tests/world_chunk_test.c tests/renderer_scene_test.c tests/renderer_static_test.c tests/renderer_quad_test.c tests/renderer_edge_test.c tests/renderer_fog_test.c tests/fpga_sdram_test.c renderer.c renderer.h block_types.c block_types.h world.c world.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h thread_affinity.c thread_affinity.h
 TARFILE  = sw.tar.gz
 .PHONY: tar
 tar: $(TARFILE)

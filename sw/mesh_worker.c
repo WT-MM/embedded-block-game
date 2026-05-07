@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "thread_affinity.h"
+
 /*
  * SPSC ring buffer of pending mesh-rebuild jobs. Push happens on the
  * main thread (mesh_worker_drain_dirty); pop happens on the worker.
@@ -85,6 +87,8 @@ static bool queue_pop_unlocked(MeshJob *out)
 static void *mesh_worker_thread(void *arg)
 {
     VoxelWorld *world = (VoxelWorld *)arg;
+
+    thread_affinity_pin_current("mesh_worker", "VOXEL_MESH_CPU", 1);
 
     for (;;) {
         MeshJob job;

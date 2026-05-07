@@ -3070,3 +3070,47 @@ Verification:
   * Renderer test targets compile with the new atomic mesh path.
   * A local worker smoke test starts the worker, edits a block, drains
     dirty mesh work, stops the worker, and exits cleanly.
+
+May 7 2026: Hardware Headroom Tier 2 / Tier 3 Patch Plan
+--------------------------------------------------------
+
+Why revisit hardware:
+
+  * After async meshing and the no-emitter streaming-lighting fast path,
+    chunk-boundary dips are smaller but still visible.
+  * The GPU side is not the dominant root cause of those dips, but
+    `hw_perf` still commonly reports `flush_act ~= 5.4ms` and
+    `flush_stall ~= 9.1-9.6ms` (`flush_busy ~= 36-38%`). Reducing that
+    stall gives the software update path more headroom before it misses
+    the 33.6ms 30-FPS bucket.
+
+Tier 2 change:
+
+  * Increase `ACTIVE_WRITE_END_HCOUNT` from `960` to `1120`.
+  * This lets the SDRAM write side continue launching background flush
+    bursts deeper into the visible scanline. It still leaves the last
+    160 50-MHz cycles of active video plus the horizontal blank interval
+    for scanout recovery before the next line.
+  * This is intentionally cautious: `1200+` might be possible, but the
+    first hardware pass should measure scanout safety and `flush_stall`
+    before pushing closer to the visible-line edge.
+
+Tier 3 change:
+
+  * Add a fourth scanout line buffer/bank.
+  * The existing scheduler protects current, target, immediate-next, and
+    far-next rows, but only has three physical line buffers. Adding bank
+    3 lets scanout hold that protected set without immediately evicting
+    useful prefetched rows.
+  * Keep the prefetch depth and priority policy otherwise unchanged for
+    this patch. A later patch can make far-next/deeper prefetch genuinely
+    best-effort if `flush_stall` remains high after this safer buffer
+    runway increase.
+
+Expected result:
+
+  * Lower `flush_stall` and slightly shorter `renderer_end_frame()` on
+    block-heavy views.
+  * No direct fix for `update=max_work` chunk-generation spikes; this
+    only buys frame-budget headroom while software streaming work is
+    still being reduced.

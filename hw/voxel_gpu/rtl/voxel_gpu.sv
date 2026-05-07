@@ -88,7 +88,17 @@ module voxel_gpu (
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int READ_BURST_WORDS = 64;
-    localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd64;
+    /*
+     * Tier-1 SDRAM-arbitration plan: bg flush stages words into the WR FIFO
+     * during scanout-read windows, then drains them via WR_LENGTH bursts the
+     * moment scanout_write_slack opens. The Sdram_WR_FIFO IP is 512 deep
+     * (sdram_local_test/Sdram_WR_FIFO.v: lpm_numwords = 512); 224 leaves
+     * 288 words of headroom for in-flight pushes after !sdram_wr_full
+     * deasserts. flush_active stays high until sdram_wr_use==0 + post-empty
+     * settling (COPY_DRAIN_CYCLES), so the back-buffer flip cannot race
+     * with words still queued in the FIFO regardless of the high-water.
+     */
+    localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd224;
     localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
     localparam int SDRAM_ADDR_W    = 25;
     /* Flush cycles required to drain the rasterizer pipeline before
@@ -1130,9 +1140,18 @@ module voxel_gpu (
     /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
     wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
                                      !sdram_wr_full && scanout_write_slack;
+    /*
+     * Tier-1 arbitration: bg flush pushes into the WR FIFO independent of
+     * scanout_write_slack. The FIFO push is internal (M10K) and uses no
+     * external SDRAM bus cycles — the bus only sees writes when WR_LENGTH
+     * fires below, and that signal is still gated by scanout_write_slack.
+     * !sdram_wr_full is the hard backpressure gate; combined with the
+     * raised COPY_WR_FIFO_HIGH_WATER, this lets bg flush stage during
+     * scanout reads and drain in burst-ready chunks during write windows.
+     */
     wire        bg_flush_wr_push   = bg_flush_stream_active && flush_word_pending_valid &&
                                      !cache_flush_state &&
-                                     !sdram_wr_full && scanout_write_slack;
+                                     !sdram_wr_full;
     wire        sdram_wr_push      = main_flush_wr_push || bg_flush_wr_push;
 
     wire [15:0] cache_load_words_requested =
@@ -1169,14 +1188,16 @@ module voxel_gpu (
         (!cache_word_pending_valid || main_flush_wr_push);
     wire        cache_issue_read = cache_can_issue_read;
 
-    /* Background flush controller can issue a read from the inactive cache */
+    /* Background flush controller can issue a read from the inactive cache.
+     * Tier-1 arbitration: dropped scanout_write_slack from issue gate so the
+     * cache→FIFO pipeline keeps moving during scanout reads. Backpressure is
+     * preserved by sdram_wr_use < COPY_WR_FIFO_HIGH_WATER. */
     wire        flush_can_issue_read =
         bg_flush_stream_active &&
         !flush_generated_sky &&
         !cache_flush_state &&
         (flush_words_issued < flush_pixels_total) &&
         !flush_fetch_inflight &&
-        scanout_write_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
     wire        flush_can_issue_sky =
@@ -1184,7 +1205,6 @@ module voxel_gpu (
         flush_generated_sky &&
         !cache_flush_state &&
         (flush_words_issued < flush_pixels_total) &&
-        scanout_write_slack &&
         (sdram_wr_use[8:0] < COPY_WR_FIFO_HIGH_WATER) &&
         (!flush_word_pending_valid || bg_flush_wr_push);
 

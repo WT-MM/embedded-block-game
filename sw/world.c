@@ -1509,6 +1509,22 @@ static bool world_rebuild_lighting_locked(VoxelWorld *world)
     return true;
 }
 
+static bool world_handle_stream_lighting_locked(VoxelWorld *world,
+                                                bool initial_stream,
+                                                bool window_changed_or_filled)
+{
+    if (!world || !world->has_light_emitters)
+        return true;
+
+    if (initial_stream)
+        return world_rebuild_lighting_locked(world);
+
+    if (window_changed_or_filled)
+        world->lighting_dirty = true;
+
+    return true;
+}
+
 bool world_rebuild_lighting(VoxelWorld *world)
 {
     bool ok;
@@ -2387,6 +2403,9 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
         if (chunk->generation == generation &&
             (chunk->flags & CHUNK_FLAG_LOADING) &&
             !(chunk->flags & CHUNK_FLAG_LOADED)) {
+            bool needs_light_rebuild =
+                world->has_light_emitters || result->has_light_emitters;
+
             memcpy(chunk->blocks, result->blocks, sizeof(chunk->blocks));
             memcpy(chunk->sky_light, result->sky_light,
                    sizeof(chunk->sky_light));
@@ -2395,6 +2414,8 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
             if (result->has_light_emitters)
                 world->has_light_emitters = true;
+            if (needs_light_rebuild)
+                world->lighting_dirty = true;
             mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
             world->meshes_dirty = true;
             finalized = true;
@@ -2424,8 +2445,6 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
     diameter = world->load_radius_chunks * 2 + 1;
     origin_chunk_x = center_chunk_x - world->load_radius_chunks;
     origin_chunk_z = center_chunk_z - world->load_radius_chunks;
-    bool had_light_emitters = world->has_light_emitters;
-
     world->chunks_generated_last_stream = 0;
     world->chunks_reused_last_stream = 0;
     world->meshes_rebuilt_last_stream = 0;
@@ -2456,12 +2475,9 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
                                             origin_chunk_x, origin_chunk_z,
                                             diameter, false))
                 return false;
-            if (had_light_emitters)
-                world_recompute_light_emitters_locked(world);
-            if (had_light_emitters || world->has_light_emitters) {
-                if (!world_rebuild_lighting_locked(world))
-                    return false;
-            }
+            if (!world_handle_stream_lighting_locked(
+                    world, false, world->chunks_generated_last_stream > 0))
+                return false;
         }
 
         if (world->async_mesh_rebuilds_enabled) {
@@ -2498,13 +2514,8 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
                                     diameter, initial_stream))
         return false;
 
-    if (had_light_emitters)
-        world_recompute_light_emitters_locked(world);
-
-    if (had_light_emitters || world->has_light_emitters) {
-        if (!world_rebuild_lighting_locked(world))
-            return false;
-    }
+    if (!world_handle_stream_lighting_locked(world, initial_stream, true))
+        return false;
 
     mark_trailing_perimeter_dirty(world,
                                   old_origin_x, old_origin_z,

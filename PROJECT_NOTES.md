@@ -3366,10 +3366,11 @@ Prefetch direction:
 
 Lighting direction:
 
-  * Current streaming can still call `world_rebuild_lighting_locked()` when
-    any loaded chunk has block-light emitters. That is a full loaded-window
-    relight and can explain large boundary-crossing `update` spikes in a
-    saved world that contains lamps.
+  * Streaming no longer performs non-initial full-window block-light rebuilds
+    inline. If loaded/generated chunks require a relight, streaming marks
+    `lighting_dirty`; the game loop rebuilds it only after chunk streaming is
+    quiet and the player is not moving horizontally. This keeps saved lamps
+    from turning boundary crossings into hidden `stream body` spikes.
   * A better model is an incremental light job queue:
     - Sky light stays chunk-local and is already rebuilt per generated chunk.
     - Persist/load `block_light` with chunk snapshots or rebuild only the

@@ -32,6 +32,8 @@
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
 #define MAX_STREAM_CHUNKS_PER_FRAME 64
+#define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
+#define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 #define HOTBAR_SLOT_COUNT 6
@@ -76,6 +78,22 @@ static long ns_diff(const struct timespec *a, const struct timespec *b)
 static double ns_to_ms(double ns)
 {
     return ns / 1000000.0;
+}
+
+static bool can_rebuild_deferred_lighting(const VoxelWorld *world,
+                                          const Player *player)
+{
+    float horizontal_speed_sq;
+
+    if (!world || !player)
+        return false;
+    if (world->chunks_generated_last_stream > 0)
+        return false;
+    if (world->last_stream_body_ns > DEFERRED_LIGHTING_MAX_STREAM_BODY_NS)
+        return false;
+
+    horizontal_speed_sq = player->vx * player->vx + player->vz * player->vz;
+    return horizontal_speed_sq <= DEFERRED_LIGHTING_MAX_SPEED_SQ;
 }
 
 static float read_mouse_sensitivity(void)
@@ -703,7 +721,8 @@ int main(void)
         double lighting_ns = 0.0;
         double gen_drain_ns = 0.0;
         double mesh_drain_ns = 0.0;
-        if (world.lighting_dirty) {
+        if (world.lighting_dirty &&
+            can_rebuild_deferred_lighting(&world, &player)) {
             struct timespec lighting_start, lighting_end;
             clock_gettime(CLOCK_MONOTONIC, &lighting_start);
             world_rebuild_lighting(&world);

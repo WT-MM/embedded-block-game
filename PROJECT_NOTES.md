@@ -3095,22 +3095,25 @@ Tier 2 change:
     first hardware pass should measure scanout safety and `flush_stall`
     before pushing closer to the visible-line edge.
 
-Tier 3 change:
+Tier 3 attempt / fitter follow-up:
 
-  * Add a fourth scanout line buffer/bank.
-  * The existing scheduler protects current, target, immediate-next, and
-    far-next rows, but only has three physical line buffers. Adding bank
-    3 lets scanout hold that protected set without immediately evicting
-    useful prefetched rows.
-  * Keep the prefetch depth and priority policy otherwise unchanged for
-    this patch. A later patch can make far-next/deeper prefetch genuinely
-    best-effort if `flush_stall` remains high after this safer buffer
-    runway increase.
+  * First attempt: add a fourth scanout line buffer/bank so the scheduler
+    can protect current, target, immediate-next, and far-next rows at the
+    same time.
+  * Board build rejected that version: Quartus reported `3790` LABs
+    required for a `3207`-LAB device. The scanline buffers are async-read
+    MLAB/LUT-memory structures, so the extra bank spent scarce LAB fabric
+    instead of cheap block RAM.
+  * Backed out the fourth physical bank and kept the three-buffer design.
+  * Replacement low-LAB Tier 3 change: split scanout prefetch into
+    critical rows (current, target, immediate-next) and best-effort
+    far-next. Far-next prefetch now backs off while cache flush / SDRAM
+    write pressure exists; critical prefetch still blocks writes.
 
 Expected result:
 
   * Lower `flush_stall` and slightly shorter `renderer_end_frame()` on
-    block-heavy views.
+    block-heavy views, without increasing LAB pressure.
   * No direct fix for `update=max_work` chunk-generation spikes; this
     only buys frame-budget headroom while software streaming work is
     still being reduced.

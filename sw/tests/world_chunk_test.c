@@ -297,6 +297,84 @@ int main(void)
     world_free(&capped_world);
     cleanup_temp_world_dir(world_dir);
 
+    /* Async-gen smoke test: simulate the gen worker without actually
+     * spawning a thread. Flip async_chunk_gen_enabled, stream past the
+     * initial fill so new slots come in as LOADING, then run the
+     * offline + finalize halves by hand and confirm the result matches
+     * what the synchronous path would have produced. */
+    VoxelWorld async_world;
+    char async_world_dir_template[] = "/tmp/voxel-world-async-XXXXXX";
+    char *async_world_dir = mkdtemp(async_world_dir_template);
+    if (!async_world_dir)
+        return check_failed("async mkdtemp failed");
+    world_init(&async_world);
+    if (!world_init_infinite_procedural(&async_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        TEST_RENDER_DISTANCE,
+                                        0.0f,
+                                        0.0f,
+                                        async_world_dir))
+        return check_failed("async world init failed");
+
+    /* Initial stream is sync; turn on async only for follow-up streams. */
+    async_world.async_chunk_gen_enabled = true;
+    if (!world_stream_around(&async_world,
+                             (float)WORLD_CHUNK_SIZE + 1.0f,
+                             1.0f))
+        return check_failed("async follow-up stream failed");
+    if (async_world.chunks_generated_last_stream <= 0)
+        return check_failed("async stream did not allocate new slots");
+
+    int loading_count = 0;
+    int loading_x = 0, loading_z = 0;
+    uint32_t loading_gen = 0;
+    for (int i = 0; i < async_world.chunk_count; i++) {
+        const Chunk *c = &async_world.chunks[i];
+        if ((c->flags & CHUNK_FLAG_LOADING) &&
+            !(c->flags & CHUNK_FLAG_LOADED)) {
+            loading_count++;
+            loading_x = c->chunk_x;
+            loading_z = c->chunk_z;
+            loading_gen = c->generation;
+        }
+    }
+    if (loading_count == 0)
+        return check_failed("async stream did not produce LOADING slots");
+    /* LOADING chunks must be transparent to world_get_block. */
+    if (world_get_block(&async_world,
+                        loading_x * WORLD_CHUNK_SIZE,
+                        0,
+                        loading_z * WORLD_CHUNK_SIZE) != BLOCK_AIR)
+        return check_failed("LOADING chunk leaked block data to world_get_block");
+
+    ChunkGenResult result;
+    if (!world_async_chunk_gen_offline(&async_world,
+                                       loading_x, loading_z, &result))
+        return check_failed("offline gen failed");
+    if (!world_finalize_async_chunk_load(&async_world,
+                                         loading_x, loading_z,
+                                         loading_gen, &result))
+        return check_failed("finalize did not integrate async chunk");
+    const Chunk *finalized = world_get_chunk(&async_world, loading_x, loading_z);
+    if (!finalized || !(finalized->flags & CHUNK_FLAG_LOADED) ||
+        (finalized->flags & CHUNK_FLAG_LOADING))
+        return check_failed("finalize did not flip LOADING -> LOADED");
+    if (world_get_block(&async_world,
+                        loading_x * WORLD_CHUNK_SIZE,
+                        0,
+                        loading_z * WORLD_CHUNK_SIZE) == BLOCK_AIR)
+        return check_failed("finalized chunk has no block data");
+
+    /* Stale generation must drop. */
+    if (world_finalize_async_chunk_load(&async_world,
+                                        loading_x, loading_z,
+                                        loading_gen + 999u, &result))
+        return check_failed("finalize accepted stale generation");
+
+    world_free(&async_world);
+    cleanup_temp_world_dir(async_world_dir);
+
     printf("world_chunk_test: ok\n");
     return 0;
 }

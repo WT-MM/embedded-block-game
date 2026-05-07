@@ -42,6 +42,14 @@ typedef enum {
     CHUNK_FLAG_MODIFIED     = 1u << 3,
     CHUNK_FLAG_MESHED_NEAR  = 1u << 4,
     CHUNK_FLAG_MESH_QUEUED  = 1u << 5,
+    /* Slot is allocated and findable by chunk_lookup, but its block /
+     * lighting buffers are still being filled by the gen worker. Block
+     * queries treat LOADING-only chunks as AIR. Cleared and replaced by
+     * CHUNK_FLAG_LOADED once the worker integrates the result. */
+    CHUNK_FLAG_LOADING      = 1u << 6,
+    /* Set on a LOADING chunk after gen_worker_drain_pending pushes it
+     * to the queue, so the next drain pass does not re-enqueue it. */
+    CHUNK_FLAG_GEN_QUEUED   = 1u << 7,
 } ChunkFlags;
 
 typedef struct {
@@ -96,6 +104,7 @@ typedef struct VoxelWorld {
     bool meshes_dirty;
     bool has_light_emitters;
     bool async_mesh_rebuilds_enabled;
+    bool async_chunk_gen_enabled;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting
@@ -149,5 +158,32 @@ void chunk_mesh_free_retired(Chunk *chunk);
  * the VoxelWorld internals. */
 void world_lock(VoxelWorld *world);
 void world_unlock(VoxelWorld *world);
+
+/* Result buffer for off-thread chunk generation. Sized to a single chunk
+ * - the worker fills this without holding world->world_mu, then hands it
+ * to world_finalize_async_chunk_load for integration. */
+typedef struct ChunkGenResult {
+    BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    bool has_light_emitters;
+} ChunkGenResult;
+
+/* Run terrain generation, snapshot load, and per-chunk sky lighting into
+ * `out`. Reads world->procedural_seed, ->stone_tries_per_chunk,
+ * ->persistence_enabled, ->save_root - all immutable post-init. Does NOT
+ * take world->world_mu. Safe to call from the gen worker thread. */
+bool world_async_chunk_gen_offline(const VoxelWorld *world,
+                                   int chunk_x, int chunk_z,
+                                   ChunkGenResult *out);
+
+/* Integrate a generated chunk under world->world_mu. Looks up the slot
+ * by (chunk_x, chunk_z); discards if the slot is missing or its
+ * generation no longer matches the one the job was enqueued with.
+ * Returns true if the slot was finalized. Marks self+neighbors mesh
+ * dirty. Caller must NOT already hold world->world_mu. */
+bool world_finalize_async_chunk_load(VoxelWorld *world,
+                                     int chunk_x, int chunk_z,
+                                     uint32_t generation,
+                                     const ChunkGenResult *result);
 
 #endif

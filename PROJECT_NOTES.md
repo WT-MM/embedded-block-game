@@ -3162,3 +3162,94 @@ World storage note:
   * A future pregenerated-world mode should promote chunk snapshots to a
     first-class world database/cache so terrain generation and snapshot
     load can move fully off the foreground frame path.
+
+May 7 2026: Async Chunk Generation (Minecraft-style)
+----------------------------------------------------
+
+Motivation:
+
+  * The streaming cap helped, but the underlying generation work
+    (terrain noise, snapshot disk I/O, sky-light rebuild) still ran on
+    the main thread when slots were allocated. Spreading it over frames
+    only delayed the spikes.
+  * We already match Minecraft's data model: deterministic seed +
+    snapshot deltas. The missing piece was running gen on a worker
+    thread, the way Minecraft does, so chunk-boundary crossings never
+    block the render thread.
+
+Changes:
+
+  * New `CHUNK_FLAG_LOADING`: a chunk slot can be present (allocated +
+    findable via `chunk_lookup`) before its blocks/lighting are filled.
+    `world_get_block` + the mesh worker treat LOADING-only slots as
+    AIR. Slot-presence checks (`chunk_slot_is_present`) use
+    `LOADED | LOADING` so streaming/eviction handles both.
+  * New `CHUNK_FLAG_GEN_QUEUED`: marks a LOADING chunk that is already
+    in the gen worker queue, so `gen_worker_drain_pending` does not
+    double-enqueue.
+  * New file pair `gen_worker.{c,h}`: SPSC ring buffer + dedicated
+    pthread, mirrored on `mesh_worker.c`. Job is
+    `(chunk_x, chunk_z, generation)`. Worker:
+      1. Pops the job.
+      2. Calls `world_async_chunk_gen_offline` which heap-allocates a
+         scratch `Chunk`, runs `generate_chunk_terrain`,
+         `load_chunk_snapshot`, `rebuild_chunk_sky_lighting`, and
+         copies blocks/sky-light/has-emitters into a `ChunkGenResult`.
+         No locks held during this work - it only reads
+         `procedural_seed`, `stone_tries_per_chunk`,
+         `persistence_enabled`, and `save_root`, all immutable
+         post-init.
+      3. Calls `world_finalize_async_chunk_load` which takes
+         `world_mu` briefly, finds the slot by coords, checks the
+         generation matches, copies the buffer in, flips
+         `LOADING -> LOADED | MESH_DIRTY`, and dirties the four
+         neighbors so the mesh worker rebuilds them.
+  * `stream_generate_chunk` now branches on
+    `world->async_chunk_gen_enabled`. Async path allocates a LOADING
+    slot, inserts into the lookup, and returns immediately - the main
+    thread never runs gen on a chunk-cross. The synchronous path is
+    kept as a fallback for `VOXEL_GEN_WORKER=0` and for the very first
+    streaming call inside `world_init_infinite_procedural`, which runs
+    before the gen worker is started so the player spawns on solid
+    ground.
+  * `retain_chunks_in_window` now keeps both LOADED and LOADING slots,
+    so a chunk-window shift while a gen job is in flight doesn't
+    silently drop the slot.
+  * Stale jobs (chunk evicted then re-streamed before the worker ran,
+    new generation) are detected on the finalize path and dropped -
+    same pattern as the mesh worker.
+  * `gen_worker_drain_pending` is called once per frame in `game.c`
+    before `mesh_worker_drain_dirty`, so finalized chunks land in the
+    mesh queue the same frame.
+
+Lock discipline:
+
+  * Generation work runs lock-free on the worker.
+  * `world_finalize_async_chunk_load` is the only point where the
+    worker takes `world_mu`, and it does so briefly (one
+    `chunk_lookup_find_index` + two `memcpy`s the size of one chunk
+    buffer).
+  * Drain takes `world_mu` first, then `queue_mu` - the worker never
+    holds both, so no deadlock.
+
+Trade-offs / known v1 limits:
+
+  * Block-light BFS still rebuilds globally on next stream when a
+    finalized chunk has emitters. For default-procedural (no emitters)
+    this is a no-op; player-placed lamps trigger an existing
+    synchronous path. Acceptable until torch-heavy worlds become a
+    problem.
+  * On-thread mesh rebuild can run before all neighboring LOADING
+    chunks have finalized, so a chunk's mesh may be built up to twice
+    (once with neighbors-as-AIR, once after each neighbor finalizes).
+    Bounded by `MESH_QUEUED` so the cost is at most a handful of
+    extra rebuilds per chunk crossing.
+  * If `world_async_chunk_gen_offline` fails (snapshot I/O error /
+    OOM), the slot stays LOADING|GEN_QUEUED until the player walks
+    away and `retain_chunks_in_window` evicts it. Logged via stderr.
+
+Env / runtime knobs:
+
+  * `VOXEL_GEN_WORKER=0` disables the worker (start returns false,
+    streaming runs synchronously - same code path as before this
+    patch).

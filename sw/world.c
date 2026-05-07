@@ -69,6 +69,17 @@ static bool chunk_in_window(int chunk_x, int chunk_z,
                             int origin_chunk_x, int origin_chunk_z,
                             int diameter);
 static bool world_has_dirty_meshes_locked(const VoxelWorld *world);
+
+/* A slot is "present" once it has been allocated by stream_generate_chunk
+ * and inserted into the lookup, regardless of whether the gen worker has
+ * finished filling its blocks. LOADING-only slots are findable so that a
+ * second stream pass for the same coords does not double-allocate, but
+ * they appear as AIR to world_get_block until they finalize. */
+static inline bool chunk_slot_is_present(const Chunk *chunk)
+{
+    return chunk &&
+           (chunk->flags & (CHUNK_FLAG_LOADED | CHUNK_FLAG_LOADING)) != 0u;
+}
 static const int FACE_NX[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
 static const int FACE_NY[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
 static const int FACE_NZ[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
@@ -509,7 +520,7 @@ static int chunk_lookup_find_index(const VoxelWorld *world, int chunk_x, int chu
     if (!world->chunk_lookup || world->chunk_lookup_capacity <= 0) {
         for (int i = 0; i < world->chunk_count; i++) {
             const Chunk *chunk = &world->chunks[i];
-            if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            if (chunk_slot_is_present(chunk) &&
                 chunk->chunk_x == chunk_x &&
                 chunk->chunk_z == chunk_z)
                 return i;
@@ -526,7 +537,7 @@ static int chunk_lookup_find_index(const VoxelWorld *world, int chunk_x, int chu
             return -1;
         if (index >= 0 && index < world->chunk_count) {
             const Chunk *chunk = &world->chunks[index];
-            if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            if (chunk_slot_is_present(chunk) &&
                 chunk->chunk_x == chunk_x &&
                 chunk->chunk_z == chunk_z)
                 return index;
@@ -577,7 +588,7 @@ static bool rebuild_chunk_lookup(VoxelWorld *world)
 
     clear_chunk_lookup(world);
     for (int i = 0; i < world->chunk_count; i++) {
-        if ((world->chunks[i].flags & CHUNK_FLAG_LOADED) &&
+        if (chunk_slot_is_present(&world->chunks[i]) &&
             !chunk_lookup_insert(world, i))
             return false;
     }
@@ -731,6 +742,26 @@ static void initialize_chunk_slot(Chunk *chunk, int chunk_x, int chunk_z,
     chunk->chunk_x = chunk_x;
     chunk->chunk_z = chunk_z;
     chunk->flags = CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
+    chunk->generation = generation ? generation : 1u;
+    chunk->last_used_epoch = stream_epoch;
+    chunk->face_count = 0;
+}
+
+/* Async-gen variant of initialize_chunk_slot: marks the slot LOADING (no
+ * LOADED, no MESH_DIRTY) so the gen worker can fill it later. blocks /
+ * lighting are zeroed; world_get_block + the mesh worker treat the slot
+ * as AIR until finalize sets LOADED. */
+static void initialize_chunk_slot_pending(Chunk *chunk,
+                                          int chunk_x, int chunk_z,
+                                          uint32_t stream_epoch)
+{
+    uint32_t generation = chunk->generation + 1u;
+
+    clear_chunk_blocks(chunk);
+    clear_chunk_lighting(chunk);
+    chunk->chunk_x = chunk_x;
+    chunk->chunk_z = chunk_z;
+    chunk->flags = CHUNK_FLAG_LOADING;
     chunk->generation = generation ? generation : 1u;
     chunk->last_used_epoch = stream_epoch;
     chunk->face_count = 0;
@@ -1932,7 +1963,11 @@ static void retain_chunks_in_window(VoxelWorld *world,
 
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk chunk = world->chunks[i];
-        bool keep = (chunk.flags & CHUNK_FLAG_LOADED) &&
+        /* Keep both LOADED and LOADING slots: a LOADING slot still has a
+         * pending gen-worker job tied to its (coords, generation), and
+         * dropping it would leak that job and let a follow-up stream
+         * pass double-allocate. */
+        bool keep = chunk_slot_is_present(&chunk) &&
                     chunk_in_window(chunk.chunk_x, chunk.chunk_z,
                                     origin_chunk_x, origin_chunk_z,
                                     diameter);
@@ -1966,6 +2001,24 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
         return false;
 
     Chunk *chunk = &world->chunks[world->chunk_count];
+
+    if (world->async_chunk_gen_enabled) {
+        /* Allocate a placeholder slot only. The gen worker will run
+         * terrain gen + snapshot load + sky lighting off the main
+         * thread, then call world_finalize_async_chunk_load to install
+         * the result and flip LOADING -> LOADED. */
+        initialize_chunk_slot_pending(chunk, chunk_x, chunk_z,
+                                      world->stream_epoch);
+        world->chunk_count++;
+        if (!chunk_lookup_insert(world, world->chunk_count - 1)) {
+            world->chunk_count--;
+            memset(chunk, 0, sizeof(*chunk));
+            return false;
+        }
+        world->chunks_generated_last_stream++;
+        return true;
+    }
+
     initialize_chunk_slot(chunk, chunk_x, chunk_z, world->stream_epoch);
     generate_chunk_terrain(chunk,
                            world->procedural_seed,
@@ -1983,6 +2036,87 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     world->chunks_generated_last_stream++;
     mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
     return true;
+}
+
+bool world_async_chunk_gen_offline(const VoxelWorld *world,
+                                   int chunk_x, int chunk_z,
+                                   ChunkGenResult *out)
+{
+    if (!world || !out)
+        return false;
+
+    /* Heap-allocate scratch: the Chunk struct is large (>24 KB with
+     * blocks + lighting + atomics) and this function may run on a
+     * worker thread with a smaller default stack. */
+    Chunk *scratch = calloc(1, sizeof(*scratch));
+    if (!scratch)
+        return false;
+
+    scratch->chunk_x = chunk_x;
+    scratch->chunk_z = chunk_z;
+    /* Set LOADED so rebuild_chunk_sky_lighting / chunk_has_light_emitters
+     * accept the scratch buffer. The flag is local to this Chunk and
+     * never published anywhere. */
+    scratch->flags = CHUNK_FLAG_LOADED;
+
+    generate_chunk_terrain(scratch,
+                           world->procedural_seed,
+                           world->stone_tries_per_chunk);
+    /* load_chunk_snapshot only reads world->persistence_enabled and
+     * world->save_root, both immutable post-init, so no lock needed. */
+    if (!load_chunk_snapshot(world, scratch)) {
+        free(scratch);
+        return false;
+    }
+    rebuild_chunk_sky_lighting(scratch);
+
+    memcpy(out->blocks, scratch->blocks, sizeof(out->blocks));
+    memcpy(out->sky_light, scratch->sky_light, sizeof(out->sky_light));
+    out->has_light_emitters = chunk_has_light_emitters(scratch);
+
+    free(scratch);
+    return true;
+}
+
+bool world_finalize_async_chunk_load(VoxelWorld *world,
+                                     int chunk_x, int chunk_z,
+                                     uint32_t generation,
+                                     const ChunkGenResult *result)
+{
+    bool finalized = false;
+
+    if (!world || !result)
+        return false;
+
+    world_lock(world);
+
+    int idx = chunk_lookup_find_index(world, chunk_x, chunk_z);
+    if (idx >= 0) {
+        Chunk *chunk = &world->chunks[idx];
+
+        if (chunk->generation == generation &&
+            (chunk->flags & CHUNK_FLAG_LOADING) &&
+            !(chunk->flags & CHUNK_FLAG_LOADED)) {
+            memcpy(chunk->blocks, result->blocks, sizeof(chunk->blocks));
+            memcpy(chunk->sky_light, result->sky_light,
+                   sizeof(chunk->sky_light));
+            chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
+            chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
+            if (result->has_light_emitters)
+                world->has_light_emitters = true;
+            mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
+            world->meshes_dirty = true;
+            finalized = true;
+        } else if (chunk->generation == generation &&
+                   (chunk->flags & CHUNK_FLAG_GEN_QUEUED)) {
+            /* Stale: slot was finalized through some other path. Just
+             * clear the in-flight bit so a future re-stream can re-queue. */
+            chunk->flags &= ~CHUNK_FLAG_GEN_QUEUED;
+        }
+    }
+
+    world_unlock(world);
+    return finalized;
 }
 
 static bool stream_world_to_chunk_center(VoxelWorld *world,
@@ -2195,7 +2329,11 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
     lx = positive_mod(wx, WORLD_CHUNK_SIZE);
     lz = positive_mod(wz, WORLD_CHUNK_SIZE);
     chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
-    if (!chunk)
+    /* world_get_chunk_mut now also returns LOADING slots (so streaming
+     * does not double-allocate). Block edits must only land on a fully
+     * LOADED chunk - editing a LOADING slot would race with the gen
+     * worker's pending finalize copy. */
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
         return false;
 
     old_type = chunk->blocks[wy][lz][lx];

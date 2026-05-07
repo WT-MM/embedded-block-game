@@ -11,6 +11,7 @@
 #include "block_types.h"
 #include "world.h"
 #include "mesh_worker.h"
+#include "gen_worker.h"
 #include "player_physics.h" /* Added physics integration */
 #include "chat.h"
 #include "pause_menu.h"
@@ -448,6 +449,7 @@ int main(void)
     pause_settings.near_chunk_radius_max = world.render_distance_chunks;
 
     bool mesh_worker_running = mesh_worker_start(&world);
+    bool gen_worker_running = gen_worker_start(&world);
 
     int debug_enabled = read_debug_enabled();
     if (debug_enabled) {
@@ -471,6 +473,7 @@ int main(void)
                world_stream_chunks_per_frame(&world),
                world_near_chunk_radius(&world));
         printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");
+        printf("Gen worker: %s\n", gen_worker_running ? "on" : "off");
     }
 
     struct timespec prev, now, frame_end;
@@ -654,6 +657,7 @@ int main(void)
             world_rebuild_lighting(&world);
             world.lighting_dirty = false;
         }
+        gen_worker_drain_pending(&world);
         if (world.meshes_dirty) {
             mesh_worker_drain_dirty(&world);
         }
@@ -776,6 +780,10 @@ int main(void)
     if (status_log_enabled)
         printf("\n");
     input_shutdown(&inp);
+    /* Stop gen worker first: it can enqueue mesh-dirty work via finalize,
+     * so quiescing it before the mesh worker avoids a final partial mesh
+     * round that would just be discarded on shutdown. */
+    gen_worker_stop();
     mesh_worker_stop();
     if (!world_flush(&world))
         fprintf(stderr, "world: failed to flush modified chunks on shutdown\n");

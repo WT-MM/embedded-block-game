@@ -3045,6 +3045,25 @@ Scope / remaining bottlenecks:
   * If hardware still shows `update` spikes after this, the next target
     is chunk generation / persistence streaming, not the renderer.
 
+Follow-up from first hardware run:
+
+  * Hardware logs with `mesh_worker: on` still showed chunk-boundary
+    dips, but the `update` averages had fallen into the ~3-5 ms range
+    while `max_work` stayed high. That pointed away from synchronous
+    meshing and back toward streaming work still performed on the main
+    thread.
+  * The streamer was still calling a full-world lighting rebuild after
+    every window shift. In worlds with no loaded light emitters this is
+    unnecessary: sky light is per-column/per-chunk and terrain
+    generation contains no lamps.
+  * The no-emitter path now rebuilds sky light only for newly loaded
+    chunks, skips the global lighting rebuild, and avoids dirtying every
+    loaded chunk. A maintained `world->has_light_emitters` flag keeps
+    the common no-lamps case from scanning the whole world on every
+    boundary crossing. If a lamp exists or one was just evicted, the old
+    full rebuild path is preserved to keep block-light propagation
+    correct.
+
 Verification:
 
   * `make tests/world_chunk_test` and `./tests/world_chunk_test` pass.

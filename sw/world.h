@@ -92,6 +92,7 @@ typedef struct VoxelWorld {
     char save_root[WORLD_SAVE_PATH_MAX];
     bool lighting_dirty;
     bool meshes_dirty;
+    bool has_light_emitters;
     bool async_mesh_rebuilds_enabled;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates

@@ -943,13 +943,6 @@ void world_unlock(VoxelWorld *world)
         pthread_mutex_unlock(&world->world_mu);
 }
 
-bool world_trylock(VoxelWorld *world)
-{
-    if (!world || !world->world_mu_initialized)
-        return true; /* no mutex = always succeeds */
-    return pthread_mutex_trylock(&world->world_mu) == 0;
-}
-
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z)
 {
     int index;
@@ -1827,8 +1820,9 @@ bool world_rebuild_and_publish_mesh(VoxelWorld *world, Chunk *chunk)
  * Lets the mesh worker do the heavy greedy-meshing work without holding
  * world_mu. Lock discipline:
  *   1. Lock world, copy self + 4 cardinal neighbor block/light arrays into
- *      a worker-owned scratch (5 mini-Chunks). Capture is_near + generation.
- *      Unlock. Hold time: ~one chunk + four 4 KB-ish memcpys ~= sub-ms.
+ *      a worker-owned scratch. Capture is_near + generation. Unlock.
+ *      We keep full neighbor snapshots for correctness; a border-only copy
+ *      attempt produced seam artifacts and no measurable FPS win.
  *   2. Build the mesh from the scratch with no lock held. This is the
  *      expensive part (5-15 ms on the SoC).
  *   3. Re-lock briefly to publish via atomic_exchange and flag-update,
@@ -1862,7 +1856,7 @@ void chunk_mesh_worker_scratch_destroy(ChunkMeshWorkerScratch *scratch)
     free(scratch);
 }
 
-static void copy_chunk_full_to_scratch(Chunk *dest, const Chunk *src)
+static void copy_chunk_data_to_scratch(Chunk *dest, const Chunk *src)
 {
     memcpy(dest->blocks, src->blocks, sizeof(dest->blocks));
     memcpy(dest->sky_light, src->sky_light, sizeof(dest->sky_light));
@@ -1871,68 +1865,6 @@ static void copy_chunk_full_to_scratch(Chunk *dest, const Chunk *src)
     dest->chunk_z = src->chunk_z;
     dest->generation = src->generation;
     dest->flags = CHUNK_FLAG_LOADED;
-}
-
-/* Copy only the single border slice of a neighbor that faces the self
- * chunk. The mesher only reads one block outside the chunk boundary
- * (via FACE_NX/NZ offsets), so interior neighbor blocks are never
- * queried. Uncopied slots stay zeroed (== BLOCK_AIR). This copies
- * ~768 bytes per neighbor instead of ~12 KB.
- *
- * direction: 0 = left  (-X, need src x=15)
- *            1 = right (+X, need src x=0)
- *            2 = front (-Z, need src z=15)
- *            3 = back  (+Z, need src z=0)  */
-static void copy_chunk_border_to_scratch(Chunk *dest, const Chunk *src,
-                                         int direction)
-{
-    dest->chunk_x = src->chunk_x;
-    dest->chunk_z = src->chunk_z;
-    dest->generation = src->generation;
-    dest->flags = CHUNK_FLAG_LOADED;
-
-    switch (direction) {
-    case 0: /* left neighbor: copy x=CHUNK_SIZE-1 slice */
-        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++)
-            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-                dest->blocks[y][z][WORLD_CHUNK_SIZE - 1] =
-                    src->blocks[y][z][WORLD_CHUNK_SIZE - 1];
-                dest->sky_light[y][z][WORLD_CHUNK_SIZE - 1] =
-                    src->sky_light[y][z][WORLD_CHUNK_SIZE - 1];
-                dest->block_light[y][z][WORLD_CHUNK_SIZE - 1] =
-                    src->block_light[y][z][WORLD_CHUNK_SIZE - 1];
-            }
-        break;
-    case 1: /* right neighbor: copy x=0 slice */
-        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++)
-            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-                dest->blocks[y][z][0] = src->blocks[y][z][0];
-                dest->sky_light[y][z][0] = src->sky_light[y][z][0];
-                dest->block_light[y][z][0] = src->block_light[y][z][0];
-            }
-        break;
-    case 2: /* front neighbor: copy z=CHUNK_SIZE-1 slice */
-        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++)
-            memcpy(&dest->blocks[y][WORLD_CHUNK_SIZE - 1][0],
-                   &src->blocks[y][WORLD_CHUNK_SIZE - 1][0],
-                   WORLD_CHUNK_SIZE),
-            memcpy(&dest->sky_light[y][WORLD_CHUNK_SIZE - 1][0],
-                   &src->sky_light[y][WORLD_CHUNK_SIZE - 1][0],
-                   WORLD_CHUNK_SIZE),
-            memcpy(&dest->block_light[y][WORLD_CHUNK_SIZE - 1][0],
-                   &src->block_light[y][WORLD_CHUNK_SIZE - 1][0],
-                   WORLD_CHUNK_SIZE);
-        break;
-    case 3: /* back neighbor: copy z=0 slice */
-        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++)
-            memcpy(&dest->blocks[y][0][0], &src->blocks[y][0][0],
-                   WORLD_CHUNK_SIZE),
-            memcpy(&dest->sky_light[y][0][0], &src->sky_light[y][0][0],
-                   WORLD_CHUNK_SIZE),
-            memcpy(&dest->block_light[y][0][0], &src->block_light[y][0][0],
-                   WORLD_CHUNK_SIZE);
-        break;
-    }
 }
 
 bool world_run_mesh_job(VoxelWorld *world,
@@ -1946,13 +1878,8 @@ bool world_run_mesh_job(VoxelWorld *world,
     bool is_near;
     uint32_t generation;
 
-    /* Phase 1: snapshot under trylock.  If the main thread holds
-     * world_mu (streaming, block edits, lighting), we return -1 so
-     * the caller can yield and retry instead of blocking the main
-     * thread on the next lock acquisition. */
-    if (!world_trylock(world))
-        return false;  /* caller should retry after a short sleep */
-
+    /* Phase 1: snapshot under lock. */
+    world_lock(world);
     Chunk *target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
     if (!target ||
         target->generation != expected_generation ||
@@ -1963,21 +1890,16 @@ bool world_run_mesh_job(VoxelWorld *world,
         return false;
     }
 
-    /* Full copy of the self chunk (~12 KB). */
-    copy_chunk_full_to_scratch(&scratch->self, target);
-
-    /* Border-slice copies for cardinal neighbors (~768 bytes each).
-     * Zero each neighbor first so interior reads return AIR. */
+    copy_chunk_data_to_scratch(&scratch->self, target);
     for (int i = 0; i < 4; i++) {
-        memset(&scratch->neighbors[i], 0, sizeof(scratch->neighbors[i]));
         Chunk *nb_chunk = world_get_chunk_mut_locked(world,
                                                      chunk_x + NB_DX[i],
                                                      chunk_z + NB_DZ[i]);
         if (nb_chunk && (nb_chunk->flags & CHUNK_FLAG_LOADED)) {
-            copy_chunk_border_to_scratch(&scratch->neighbors[i],
-                                          nb_chunk, i);
+            copy_chunk_data_to_scratch(&scratch->neighbors[i], nb_chunk);
             scratch->nb_present[i] = true;
         } else {
+            scratch->neighbors[i].flags = 0;
             scratch->nb_present[i] = false;
         }
     }

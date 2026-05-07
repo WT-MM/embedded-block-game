@@ -158,7 +158,6 @@ void chunk_mesh_free_retired(Chunk *chunk);
  * the VoxelWorld internals. */
 void world_lock(VoxelWorld *world);
 void world_unlock(VoxelWorld *world);
-bool world_trylock(VoxelWorld *world);
 
 /* True if any in-array neighbor of (chunk_x, chunk_z) has CHUNK_FLAG_LOADING
  * set (and not yet CHUNK_FLAG_LOADED). Used by the mesh-rebuild path to
@@ -170,8 +169,8 @@ bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
                                              int chunk_x, int chunk_z);
 
 /* Worker-owned snapshot scratch used by world_run_mesh_job. Holds a self
- * + 4 cardinal neighbor mini-Chunks plus a face scratch buffer. Allocate
- * once per worker thread (~70 KB) and reuse for every job. */
+ * + 4 cardinal neighbor Chunks plus a face scratch buffer. Allocate once
+ * per worker thread and reuse for every job. */
 typedef struct ChunkMeshWorkerScratch ChunkMeshWorkerScratch;
 
 ChunkMeshWorkerScratch *chunk_mesh_worker_scratch_create(void);

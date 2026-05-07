@@ -119,6 +119,8 @@ int main(void)
         return check_failed("initial world has no cached blocks/faces");
     if (!world_get_chunk(&world, 0, 0))
         return check_failed("center chunk missing after initial load");
+    if (world_near_chunk_radius(&world) != 1)
+        return check_failed("default near chunk radius changed");
     if (block_emission_level(BLOCK_LAMP) != 15 || !block_is_self_lit(BLOCK_LAMP))
         return check_failed("lamp metadata missing");
 
@@ -222,6 +224,36 @@ int main(void)
         return check_failed("unchanged neighbor content generation changed");
     if (world.meshes_rebuilt_last_stream < 2)
         return check_failed("boundary edit did not rebuild multiple meshes");
+
+    const int seam_x = WORLD_CHUNK_SIZE + 8;
+    const int seam_y = 10;
+    const int seam_z = WORLD_CHUNK_SIZE - 1;
+    if (!world_set_block(&world, seam_x, seam_y, seam_z, BLOCK_WOOD))
+        return check_failed("seam self block edit failed");
+    if (!world_set_block(&world, seam_x, seam_y, seam_z + 1, BLOCK_WOOD))
+        return check_failed("seam neighbor block edit failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("seam sync mesh rebuild failed");
+
+    const Chunk *seam_chunk = world_get_chunk(&world, 1, 0);
+    if (!seam_chunk)
+        return check_failed("seam chunk missing");
+    if (find_chunk_face(seam_chunk, 8, seam_y, WORLD_CHUNK_SIZE - 1,
+                        FACE_BACK, BLOCK_WOOD))
+        return check_failed("sync mesh exposed occluded z-boundary face");
+
+    ChunkMeshWorkerScratch *mesh_scratch = chunk_mesh_worker_scratch_create();
+    if (!mesh_scratch)
+        return check_failed("mesh worker scratch alloc failed");
+    if (!world_run_mesh_job(&world, mesh_scratch,
+                            1, 0, seam_chunk->generation))
+        return check_failed("mesh worker seam rebuild failed");
+    chunk_mesh_worker_scratch_destroy(mesh_scratch);
+    seam_chunk = world_get_chunk(&world, 1, 0);
+    if (!seam_chunk ||
+        find_chunk_face(seam_chunk, 8, seam_y, WORLD_CHUNK_SIZE - 1,
+                        FACE_BACK, BLOCK_WOOD))
+        return check_failed("mesh worker exposed occluded z-boundary face");
 
     if (!world_stream_around(&world,
                              (float)(5 * WORLD_CHUNK_SIZE + 1),

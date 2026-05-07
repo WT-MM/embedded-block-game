@@ -3253,3 +3253,28 @@ Env / runtime knobs:
   * `VOXEL_GEN_WORKER=0` disables the worker (start returns false,
     streaming runs synchronously - same code path as before this
     patch).
+
+May 7 2026: Mesh Snapshot Regression Fix
+----------------------------------------
+
+Context:
+
+  * Commit `b749cfd` tried to reduce mesh-worker lock time by copying only
+    the one neighbor border slice needed for face exposure. Hardware logs
+    showed no useful FPS improvement, and playtesting showed visual
+    aberrations.
+
+Fix:
+
+  * Rolled the mesh-worker snapshot back to full self + cardinal-neighbor
+    chunk copies. The risky border-slice optimization is not worth keeping
+    without a clear frame-time win.
+  * Removed the trylock/requeue behavior from the mesh worker. It conflated
+    "world lock busy, retry later" with "stale/evicted job, drop it", which
+    could keep requeueing dead jobs.
+  * Restored `VOXEL_GEN_PUSHES_PER_FRAME` as an optional override on top of
+    the runtime stream chunk cap.
+  * Added a regression in `world_chunk_test`: a worker rebuild of a chunk
+    whose z-boundary face is occluded by a neighboring chunk must not expose
+    that hidden face. This catches future partial-copy attempts that miss
+    `BlockID` element sizing or border orientation.

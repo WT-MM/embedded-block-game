@@ -31,8 +31,8 @@ from .protocol import (
 )
 from .raster import VirtualGPU, load_texture_mif
 
-SCREEN_WIDTH = 320
-SCREEN_HEIGHT = 240
+SCREEN_WIDTH = 640
+SCREEN_HEIGHT = 480
 POLL_TIMEOUT = 1.0 / 60.0
 DEFAULT_TEXTURE_PATH = (
     Path(__file__).resolve().parents[2]
@@ -169,6 +169,8 @@ class Monitor:
         self._pygame = pygame
         self._window = pygame.display.set_mode((width * scale, height * scale))
         pygame.display.set_caption("Virtual Voxel GPU")
+        self._window.fill((0, 0, 0))
+        pygame.display.flip()
 
     def close(self) -> None:
         if self._pygame is not None:

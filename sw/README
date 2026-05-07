@@ -109,6 +109,8 @@ Environment variables:
     VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
     VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 1, keep abs-tablet fallback active
     VOXEL_WORLD_DIR=/path/to/world       # default: ../worlds/default
+    VOXEL_FOV_DEG=30..150                # horizontal FOV in degrees; default 86.5
+    VOXEL_DIAG_BBOX=0|1                  # log per-frame quad bbox (red-stripe debug)
 
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
 same command stream to both backends.
@@ -128,19 +130,29 @@ write(fd, buf, n)              Stream `n` bytes (must be a multiple of 4)
                                into the FIFO. Blocks while FIFO_FULL,
                                returns -ETIMEDOUT if the GPU is wedged.
 
-ioctl(fd, VOXEL_IOC_CLEAR_FRAME)         Clears Z + framebuffer.
-ioctl(fd, VOXEL_IOC_FLIP)                Drains FIFO, then flips on vsync.
+ioctl(fd, VOXEL_IOC_CLEAR_FRAME)         Starts a new inactive SDRAM frame.
+ioctl(fd, VOXEL_IOC_FLIP)                Swaps the completed SDRAM frame on vsync.
 ioctl(fd, VOXEL_IOC_SET_PALETTE, &e)     Upload one palette entry.
 ioctl(fd, VOXEL_IOC_GET_STATUS, &s)      Snapshot of STATUS register.
 ioctl(fd, VOXEL_IOC_GET_FRAME_COUNT, &n) Read free-running frame counter.
 ioctl(fd, VOXEL_IOC_SET_EXTMEM, &x)      Program future SDRAM color-path regs.
 ioctl(fd, VOXEL_IOC_GET_EXTMEM, &x)      Read back SDRAM color-path regs.
+ioctl(fd, VOXEL_IOC_BEGIN_BAND, &b)      Clear/select one 96-line render band.
+ioctl(fd, VOXEL_IOC_END_BAND)            Drain and flush that band to SDRAM.
 
 The MVP render loop is therefore:
 
     ioctl(CLEAR_FRAME);
-    write(quad_descriptors, n_bytes);
+    for each 96-line band:
+        ioctl(BEGIN_BAND, band_index);
+        write(quad_descriptors_for_that_band, n_bytes);
+        ioctl(END_BAND);
     ioctl(FLIP);
+
+Normal game code does not hand-write that loop. renderer.c still emits one
+packed whole-frame descriptor stream, and gpu_transport.c bins it into the
+hardware band loop above. The socket/virtual backend still receives the original
+whole-frame stream.
 
 `voxel_test` currently submits four focused z-buffer cases per frame:
 a z-tested different-depth overlap whose submission order swaps by phase,

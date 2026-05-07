@@ -150,8 +150,8 @@ class RasterBehaviorTest(unittest.TestCase):
         gpu.submit_quads(
             [
                 one_pixel_quad(
-                    160,
-                    120,
+                    320,
+                    240,
                     tex_or_color=0,
                     flags=QUAD_FLAG_TEX | QUAD_FLAG_FOG,
                     uv=uv,
@@ -162,7 +162,7 @@ class RasterBehaviorTest(unittest.TestCase):
         src = rgb888_to_rgb565((0xFF, 0x00, 0x00))
         fog = rgb888_to_rgb565((0x00, 0x00, 0xFF))
         self.assertEqual(
-            gpu.back_buffer[120 * 320 + 160],
+            gpu.back_buffer[240 * gpu.width + 320],
             blend_rgb565(src, fog, 1),
         )
 

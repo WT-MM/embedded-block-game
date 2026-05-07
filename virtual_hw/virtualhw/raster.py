@@ -224,8 +224,8 @@ def _k_apply_fog_rgb565(
     if fog_enabled == 0 or (flags & 0x8) == 0 or fog_end <= fog_start or w_q16_16 <= 0:
         return src_rgb565
 
-    dx = x - 160
-    dy = 120 - y
+    dx = x - 320
+    dy = 240 - y
     radial_sq = dx * dx + dy * dy
     radial_sq_q16 = (radial_sq * fog_inv_proj_sq) & 0xFFFF_FFFF
     ray_scale_q16 = 65536 + ((radial_sq_q16 * 3) >> 3)
@@ -277,8 +277,8 @@ def _k_rasterize_quad(
     has_uv: int,
     uv,  # shape (9,), int64; ignored when has_uv == 0
 ) -> None:
-    fb_x_limit = width - 1 if width - 1 < 319 else 319
-    fb_y_limit = height - 1 if height - 1 < 239 else 239
+    fb_x_limit = width - 1
+    fb_y_limit = height - 1
 
     if x_min < 0:
         x_min = 0
@@ -581,7 +581,7 @@ _EMPTY_UV_NP = np.zeros(9, dtype=np.int64)
 
 class VirtualGPU:
     def __init__(
-        self, width: int = 320, height: int = 240, textures: bytes | None = None
+        self, width: int = 640, height: int = 480, textures: bytes | None = None
     ) -> None:
         self.width = width
         self.height = height

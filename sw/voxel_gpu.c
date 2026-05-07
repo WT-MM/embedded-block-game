@@ -6,7 +6,8 @@
  *   (B) Expose /dev/voxel_gpu via the misc subsystem.
  *   (C) Stream user-space command bytes into the on-chip FIFO via write().
  *   (D) Provide the control ioctls: CLEAR_FRAME, FLIP, SET_PALETTE,
- *       GET_STATUS, GET_FRAME_COUNT, SET_FOG, SET_EXTMEM, GET_EXTMEM.
+ *       GET_STATUS, GET_FRAME_COUNT, SET_FOG, SET_EXTMEM, GET_EXTMEM,
+ *       BEGIN_BAND, END_BAND.
  *   (E) Use polling on STATUS for synchronization (no interrupts).
  *
  * The driver is intentionally thin: it does not parse, validate, or
@@ -31,6 +32,9 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
+#include <linux/string.h>
 #include <linux/version.h>
 
 #include "voxel_gpu.h"
@@ -42,7 +46,7 @@
  * chunk into the FIFO in bursts sized by STATUS.FIFO_COUNT. Keep it under
  * the 8 KB FIFO so each copied chunk can drain without unbounded buffering.
  */
-#define VOXEL_BOUNCE_WORDS  512                       /* 2 KB per chunk */
+#define VOXEL_BOUNCE_WORDS  2048                      /* 8 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
 /*
@@ -52,7 +56,13 @@
  * is wedged".
  */
 #define VOXEL_POLL_TIMEOUT_MS   250
-#define VOXEL_POLL_DELAY_US     10
+#define VOXEL_POLL_DELAY_US     1
+#define VOXEL_FIFO_MIN_BURST_WORDS 64
+
+static bool voxel_diag_upload;
+module_param_named(diag_upload, voxel_diag_upload, bool, 0644);
+MODULE_PARM_DESC(diag_upload,
+		 "Print descriptor upload timing split: FIFO-space wait vs MMIO writes");
 
 struct voxel_gpu_dev {
 	struct resource res;
@@ -62,6 +72,17 @@ struct voxel_gpu_dev {
 };
 
 static struct voxel_gpu_dev voxdev;
+
+struct voxel_upload_diag {
+	u64 bytes;
+	u64 calls;
+	u64 bursts;
+	u64 wait_ns;
+	u64 mmio_ns;
+};
+
+static struct voxel_upload_diag upload_diag_accum;
+static unsigned long upload_diag_next_report;
 
 /* ---------- low-level register helpers ---------- */
 
@@ -105,21 +126,79 @@ static int voxel_poll_status(u32 mask, u32 expect, unsigned int timeout_ms)
 
 /* ---------- FIFO streaming ---------- */
 
-static int voxel_fifo_wait_space(size_t *space_words)
+static int voxel_fifo_wait_space(size_t *space_words, size_t min_req)
 {
 	unsigned long deadline = jiffies + msecs_to_jiffies(VOXEL_POLL_TIMEOUT_MS);
+	unsigned int short_waits = 0;
 
 	for (;;) {
 		u32 used = voxel_fifo_count();
+		u32 space = used < VOXEL_FIFO_WORDS ? VOXEL_FIFO_WORDS - used : 0;
 
-		if (used < VOXEL_FIFO_WORDS) {
-			*space_words = VOXEL_FIFO_WORDS - used;
+		if (space >= min_req) {
+			*space_words = space;
+			return 0;
+		}
+		if (space > 0 && ++short_waits >= 8) {
+			*space_words = space;
 			return 0;
 		}
 		if (time_after(jiffies, deadline))
 			return -ETIMEDOUT;
-		udelay(VOXEL_POLL_DELAY_US);
-		cond_resched();
+		usleep_range(10, 50);
+	}
+}
+
+static void voxel_diag_record_upload(size_t bytes, u64 wait_ns, u64 mmio_ns,
+				     u64 bursts)
+{
+	u64 total_ns;
+	u64 total_kib_s;
+	u64 mmio_kib_s;
+	u64 wait_pct;
+	u64 mmio_pct;
+
+	if (!voxel_diag_upload)
+		return;
+
+	upload_diag_accum.bytes += bytes;
+	upload_diag_accum.calls++;
+	upload_diag_accum.bursts += bursts;
+	upload_diag_accum.wait_ns += wait_ns;
+	upload_diag_accum.mmio_ns += mmio_ns;
+
+	if (!upload_diag_next_report ||
+	    time_after_eq(jiffies, upload_diag_next_report)) {
+		total_ns = upload_diag_accum.wait_ns + upload_diag_accum.mmio_ns;
+		total_kib_s = total_ns ?
+			div64_u64(upload_diag_accum.bytes * 1000000000ULL,
+				  total_ns * 1024ULL) : 0;
+		mmio_kib_s = upload_diag_accum.mmio_ns ?
+			div64_u64(upload_diag_accum.bytes * 1000000000ULL,
+				  upload_diag_accum.mmio_ns * 1024ULL) : 0;
+		wait_pct = total_ns ?
+			div64_u64(upload_diag_accum.wait_ns * 100ULL,
+				  total_ns) : 0;
+		mmio_pct = total_ns ?
+			div64_u64(upload_diag_accum.mmio_ns * 100ULL,
+				  total_ns) : 0;
+
+		pr_info(DRIVER_NAME
+			": upload diag: calls=%llu bytes=%llu bursts=%llu "
+			"wait=%lluus(%llu%%) mmio=%lluus(%llu%%) "
+			"rate_total=%lluKiB/s rate_mmio=%lluKiB/s\n",
+			upload_diag_accum.calls,
+			upload_diag_accum.bytes,
+			upload_diag_accum.bursts,
+			div64_u64(upload_diag_accum.wait_ns, 1000),
+			wait_pct,
+			div64_u64(upload_diag_accum.mmio_ns, 1000),
+			mmio_pct,
+			total_kib_s,
+			mmio_kib_s);
+
+		memset(&upload_diag_accum, 0, sizeof(upload_diag_accum));
+		upload_diag_next_report = jiffies + msecs_to_jiffies(1000);
 	}
 }
 
@@ -166,6 +245,9 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 		size_t chunk = min_t(size_t, count - total, VOXEL_BOUNCE_BYTES);
 		size_t words;
 		size_t written_words = 0;
+		u64 write_wait_ns = 0;
+		u64 write_mmio_ns = 0;
+		u64 write_bursts = 0;
 
 		if (copy_from_user(bounce, buf + total, chunk)) {
 			ret = -EFAULT;
@@ -176,19 +258,30 @@ static ssize_t voxel_write(struct file *filp, const char __user *buf,
 		while (written_words < words) {
 			size_t space_words;
 			size_t burst_words;
+			size_t rem_words = words - written_words;
+			size_t min_req = min_t(size_t, VOXEL_FIFO_MIN_BURST_WORDS,
+					       rem_words);
+			u64 t0;
 
-			ret = voxel_fifo_wait_space(&space_words);
+			t0 = ktime_get_ns();
+			ret = voxel_fifo_wait_space(&space_words, min_req);
+			write_wait_ns += ktime_get_ns() - t0;
 			if (ret)
 				goto out;
 
-			burst_words = min(space_words, words - written_words);
+			burst_words = min(space_words, rem_words);
+			t0 = ktime_get_ns();
 			iowrite32_rep(voxdev.base + VOXEL_FIFO_BASE,
 				      &bounce[written_words],
 				      burst_words);
+			write_mmio_ns += ktime_get_ns() - t0;
+			write_bursts++;
 
 			written_words += burst_words;
 		}
 		total += chunk;
+		voxel_diag_record_upload(chunk, write_wait_ns, write_mmio_ns,
+					 write_bursts);
 	}
 
 out:
@@ -218,7 +311,7 @@ static long voxel_ioc_clear(void)
 	return ret;
 }
 
-static long voxel_ioc_flip(void)
+static long voxel_ioc_flip_common(bool wait_for_vsync)
 {
 	u32 ctrl;
 	int ret;
@@ -241,9 +334,96 @@ static long voxel_ioc_flip(void)
 	ctrl = voxel_rd(VOXEL_REG_CONTROL) | VOXEL_CTRL_EN | VOXEL_CTRL_FLP;
 	voxel_wr(VOXEL_REG_CONTROL, ctrl);
 
+	if (!wait_for_vsync)
+		goto out;
+
 	/* Block until the next vsync pulse latches. */
 	ret = voxel_poll_status(VOXEL_STAT_VSY, VOXEL_STAT_VSY,
 				VOXEL_POLL_TIMEOUT_MS);
+
+out:
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
+static long voxel_ioc_flip(void)
+{
+	return voxel_ioc_flip_common(true);
+}
+
+static long voxel_ioc_flip_async(void)
+{
+	return voxel_ioc_flip_common(false);
+}
+
+static long voxel_ioc_wait_flip(void)
+{
+	int ret;
+
+	mutex_lock(&voxdev.lock);
+	ret = voxel_poll_status(VOXEL_STAT_VSY, VOXEL_STAT_VSY,
+				VOXEL_POLL_TIMEOUT_MS);
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
+static long voxel_ioc_begin_band(void __user *uarg)
+{
+	struct voxel_band_state band;
+	int ret;
+
+	if (copy_from_user(&band, uarg, sizeof(band)))
+		return -EFAULT;
+	if (band.band_index > 7)
+		return -EINVAL;
+
+	mutex_lock(&voxdev.lock);
+
+	ret = voxel_poll_status(VOXEL_STAT_FEM, VOXEL_STAT_FEM,
+				VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+
+	voxel_wr(VOXEL_REG_BAND_INDEX, band.band_index);
+	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_BEGIN);
+	/*
+	 * Do not wait for the band cache init here. The command FIFO can be
+	 * filled while hardware clears/initializes the resident band; END_BAND
+	 * still waits for FIFO-empty + idle before it requests the flush. The
+	 * readback keeps the BAND_INDEX/BAND_CTRL writes ordered before the
+	 * userspace write() that streams descriptors immediately after this ioctl.
+	 */
+	voxel_rd(VOXEL_REG_BAND_CTRL);
+
+out:
+	mutex_unlock(&voxdev.lock);
+	return ret;
+}
+
+static long voxel_ioc_end_band(void)
+{
+	int ret;
+
+	mutex_lock(&voxdev.lock);
+
+	ret = voxel_poll_status(VOXEL_STAT_FEM, VOXEL_STAT_FEM,
+				VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+	ret = voxel_poll_status(VOXEL_STAT_BSY, 0, VOXEL_POLL_TIMEOUT_MS);
+	if (ret)
+		goto out;
+
+	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_FLUSH);
+	/*
+	 * Do not poll BSY here. The background flush runs independently
+	 * via flush_active; band_flush_pending is no longer in engine_busy
+	 * so BSY clears immediately. The FSM priority chain ensures the
+	 * flush completes before the next BEGIN_BAND starts drawing.
+	 */
 
 out:
 	mutex_unlock(&voxdev.lock);
@@ -352,6 +532,24 @@ static long voxel_ioc_get_extmem(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_get_perf(void __user *uarg)
+{
+	struct voxel_perf_counters p;
+
+	mutex_lock(&voxdev.lock);
+	p.draw_active  = voxel_rd(VOXEL_REG_PERF_DRAW_ACT);
+	p.draw_idle    = voxel_rd(VOXEL_REG_PERF_DRAW_IDLE);
+	p.flush_active = voxel_rd(VOXEL_REG_PERF_FLUSH_ACT);
+	p.flush_stall  = voxel_rd(VOXEL_REG_PERF_FLUSH_STL);
+	p.init         = voxel_rd(VOXEL_REG_PERF_INIT);
+	p.load         = voxel_rd(VOXEL_REG_PERF_LOAD);
+	mutex_unlock(&voxdev.lock);
+
+	if (copy_to_user(uarg, &p, sizeof(p)))
+		return -EFAULT;
+	return 0;
+}
+
 static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (_IOC_TYPE(cmd) != VOXEL_IOC_MAGIC)
@@ -364,6 +562,10 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_clear();
 	case VOXEL_IOC_FLIP:
 		return voxel_ioc_flip();
+	case VOXEL_IOC_FLIP_ASYNC:
+		return voxel_ioc_flip_async();
+	case VOXEL_IOC_WAIT_FLIP:
+		return voxel_ioc_wait_flip();
 	case VOXEL_IOC_SET_PALETTE:
 		return voxel_ioc_set_palette((void __user *)arg);
 	case VOXEL_IOC_GET_STATUS:
@@ -376,6 +578,12 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_set_extmem((void __user *)arg);
 	case VOXEL_IOC_GET_EXTMEM:
 		return voxel_ioc_get_extmem((void __user *)arg);
+	case VOXEL_IOC_BEGIN_BAND:
+		return voxel_ioc_begin_band((void __user *)arg);
+	case VOXEL_IOC_END_BAND:
+		return voxel_ioc_end_band();
+	case VOXEL_IOC_GET_PERF:
+		return voxel_ioc_get_perf((void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

@@ -10,6 +10,9 @@
 #include "input.h"
 #include "block_types.h"
 #include "world.h"
+#include "mesh_worker.h"
+#include "gen_worker.h"
+#include "thread_affinity.h"
 #include "player_physics.h" /* Added physics integration */
 #include "chat.h"
 #include "pause_menu.h"
@@ -22,9 +25,15 @@
 #define PHYSICS_HZ   60
 #define PHYSICS_DT   (1.0f / (float)PHYSICS_HZ)
 #define MAX_FRAME_DT 0.25f
+#define DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME 4
+#define MAX_PHYSICS_STEPS_PER_FRAME 16
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
+#define MAX_STREAM_CHUNKS_PER_FRAME 64
+#define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
+#define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 #define HOTBAR_SLOT_COUNT 6
@@ -71,6 +80,22 @@ static double ns_to_ms(double ns)
     return ns / 1000000.0;
 }
 
+static bool can_rebuild_deferred_lighting(const VoxelWorld *world,
+                                          const Player *player)
+{
+    float horizontal_speed_sq;
+
+    if (!world || !player)
+        return false;
+    if (world->chunks_generated_last_stream > 0)
+        return false;
+    if (world->last_stream_body_ns > DEFERRED_LIGHTING_MAX_STREAM_BODY_NS)
+        return false;
+
+    horizontal_speed_sq = player->vx * player->vx + player->vz * player->vz;
+    return horizontal_speed_sq <= DEFERRED_LIGHTING_MAX_SPEED_SQ;
+}
+
 static float read_mouse_sensitivity(void)
 {
     const char *value = getenv("VOXEL_MOUSE_SENS");
@@ -87,12 +112,26 @@ static float read_mouse_sensitivity(void)
     return parsed;
 }
 
-static int read_status_log_enabled(void)
+static int read_debug_enabled(void)
+{
+    const char *value = getenv("DEBUG");
+
+    if (!value || value[0] == '\0')
+        return 0;
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "false") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "no") == 0)
+        return 0;
+    return 1;
+}
+
+static int read_status_log_enabled(int debug_enabled)
 {
     const char *value = getenv("VOXEL_STATUS_LOG");
 
     if (!value || value[0] == '\0' || strcmp(value, "auto") == 0)
-        return isatty(STDOUT_FILENO);
+        return debug_enabled;
     if (strcmp(value, "0") == 0 ||
         strcmp(value, "false") == 0 ||
         strcmp(value, "off") == 0 ||
@@ -119,6 +158,42 @@ static int read_render_distance_chunks(void)
     return (int)parsed;
 }
 
+static int read_stream_chunks_per_frame(void)
+{
+    const char *value = getenv("VOXEL_CHUNKS_PER_FRAME");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        value = getenv("VOXEL_CHUNK_PER_FRAME");
+    if (!value || value[0] == '\0')
+        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') ||
+        parsed < 0 || parsed > MAX_STREAM_CHUNKS_PER_FRAME)
+        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
+
+    return (int)parsed;
+}
+
+static int read_max_physics_steps_per_frame(void)
+{
+    const char *value = getenv("VOXEL_MAX_PHYSICS_STEPS_PER_FRAME");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') || parsed < 0)
+        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
+    if (parsed > MAX_PHYSICS_STEPS_PER_FRAME)
+        return MAX_PHYSICS_STEPS_PER_FRAME;
+    return (int)parsed;
+}
+
 static const char *read_world_save_dir(void)
 {
     const char *value = getenv("VOXEL_WORLD_DIR");
@@ -127,6 +202,29 @@ static const char *read_world_save_dir(void)
         return DEFAULT_WORLD_SAVE_DIR;
 
     return value;
+}
+
+/* Camera focal length is stored in screen pixels, so the FOV scales with the
+ * render resolution unless we compensate. The pre-SDRAM 320x240 build used
+ * focal=170 → horizontal FOV ≈ 86.5°. This computes a focal that preserves
+ * that FOV at any resolution, with VOXEL_FOV_DEG to override. */
+static float compute_camera_focal_px(void)
+{
+    const float default_fov_deg = 86.5f;
+    const char *value = getenv("VOXEL_FOV_DEG");
+    float fov_deg = default_fov_deg;
+
+    if (value && value[0] != '\0') {
+        char *end = NULL;
+        float parsed = strtof(value, &end);
+        if (end != value && (!end || *end == '\0') &&
+            parsed >= 30.0f && parsed <= 150.0f) {
+            fov_deg = parsed;
+        }
+    }
+
+    float fov_rad = fov_deg * (float)M_PI / 180.0f;
+    return (SCREEN_WIDTH * 0.5f) / tanf(fov_rad * 0.5f);
 }
 
 static Vec3 camera_forward(const Camera *cam)
@@ -230,9 +328,16 @@ static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
 
-    return world_set_block(world,
-                           target.hit_x, target.hit_y, target.hit_z,
-                           BLOCK_AIR);
+    if (!world_set_block(world,
+                         target.hit_x, target.hit_y, target.hit_z,
+                         BLOCK_AIR))
+        return false;
+
+    /* Route the edited chunk through the mesh worker's priority lane so
+     * the broken-block visual lands on the next frame even if the main
+     * queue carries a backlog. */
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    return true;
 }
 
 static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
@@ -250,9 +355,13 @@ static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
     if (player_intersects_block(player, target.place_x, target.place_y, target.place_z))
         return false;
 
-    return world_set_block(world,
-                           target.place_x, target.place_y, target.place_z,
-                           type);
+    if (!world_set_block(world,
+                         target.place_x, target.place_y, target.place_z,
+                         type))
+        return false;
+
+    world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
+    return true;
 }
 
 static void draw_hotbar_digit(RenderContext *ctx, int digit,
@@ -262,15 +371,16 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
         return;
 
     const uint8_t *rows = HOTBAR_DIGITS[digit - 1];
+    const float px = HUD_SCALE;
 
     for (int row = 0; row < 5; row++) {
         for (int col = 0; col < 3; col++) {
             if (rows[row] & (1u << (2 - col))) {
                 renderer_fill_rect(ctx,
-                                   x + (float)col,
-                                   y + (float)row,
-                                   x + (float)col + 1.0f,
-                                   y + (float)row + 1.0f,
+                                   x + (float)col * px,
+                                   y + (float)row * px,
+                                   x + (float)(col + 1) * px,
+                                   y + (float)(row + 1) * px,
                                    palette_index,
                                    0);
             }
@@ -280,20 +390,23 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
 
 static void draw_hotbar(RenderContext *ctx, int selected_slot)
 {
-    const float slot_size = 20.0f;
-    const float gap = 4.0f;
-    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f;
+    const float s = HUD_SCALE;
+    const float slot_size = 20.0f * s;
+    const float gap = 4.0f * s;
+    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f * s;
     const float total_width =
         HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
     const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
 
     renderer_fill_rect(ctx,
-                       slot_left - 4.0f, slot_top - 4.0f,
-                       slot_left + total_width + 4.0f, slot_top + slot_size + 4.0f,
+                       slot_left - 4.0f * s, slot_top - 4.0f * s,
+                       slot_left + total_width + 4.0f * s,
+                       slot_top + slot_size + 4.0f * s,
                        14, 0);
     renderer_fill_rect(ctx,
-                       slot_left - 3.0f, slot_top - 3.0f,
-                       slot_left + total_width + 3.0f, slot_top + slot_size + 3.0f,
+                       slot_left - 3.0f * s, slot_top - 3.0f * s,
+                       slot_left + total_width + 3.0f * s,
+                       slot_top + slot_size + 3.0f * s,
                        0, 0);
 
     for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
@@ -305,19 +418,21 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
         uint8_t number = (i == selected_slot) ? 8 : 5;
 
         renderer_fill_rect(ctx, x0, y0, x1, y1, border, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x1 - 1.0f, y1 - 1.0f, 0, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x1 - 1.0f * s, y1 - 1.0f * s, 0, 0);
         renderer_draw_screen_tile(ctx,
-                                  x0 + 2.0f, y0 + 2.0f,
-                                  x1 - 2.0f, y1 - 2.0f,
+                                  x0 + 2.0f * s, y0 + 2.0f * s,
+                                  x1 - 2.0f * s, y1 - 2.0f * s,
                                   block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
                                   0);
-        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f, x0 + 5.0f, y0 + 7.0f, 0, 0);
-        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f, y0 + 2.0f, number);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x0 + 5.0f * s, y0 + 7.0f * s, 0, 0);
+        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f * s, y0 + 2.0f * s, number);
 
         if (i == selected_slot) {
             renderer_fill_rect(ctx,
-                               x0 + 2.0f, y1 - 3.0f,
-                               x1 - 2.0f, y1 - 1.0f,
+                               x0 + 2.0f * s, y1 - 3.0f * s,
+                               x1 - 2.0f * s, y1 - 1.0f * s,
                                8, 0);
         }
     }
@@ -325,6 +440,9 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
 
 int main(void)
 {
+    int debug_enabled = read_debug_enabled();
+    thread_affinity_pin_current("main", "VOXEL_MAIN_CPU", 0);
+
     RenderContext *ctx = renderer_init();
     VoxelWorld world;
     if (!ctx) {
@@ -345,8 +463,11 @@ int main(void)
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
     int render_distance_chunks = read_render_distance_chunks();
+    int stream_chunks_per_frame = read_stream_chunks_per_frame();
+    int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
     const char *world_save_dir = read_world_save_dir();
     int selected_hotbar_slot = 0;
+    PauseMenuSettings pause_settings = {0};
 
     /* Initialize Player */
     Player player;
@@ -357,7 +478,7 @@ int main(void)
         .position = { player.x, player_get_eye_height(&player), player.z },
         .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
-        .depth    = 170.0f,
+        .depth    = compute_camera_focal_px(),
     };
 
     if (!world_init_infinite_procedural(&world,
@@ -369,26 +490,45 @@ int main(void)
                                         world_save_dir)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
+        world_free(&world);
         renderer_shutdown(ctx);
         return 1;
     }
+    world_set_stream_chunks_per_frame(&world, stream_chunks_per_frame);
 
-    printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
-    printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
-           player_mode_name(player.mode));
-    printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
-           WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
-    printf("World save dir: %s\n", world_save_dir);
-    printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
-           world.chunks_x, world.chunks_z, world.render_distance_chunks,
-           world_chunk_capacity(&world));
-    printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
-           world_loaded_chunk_count(&world),
-           world_total_blocks(&world), world_total_faces(&world),
-           world.chunks_generated_last_stream,
-           world.meshes_rebuilt_last_stream);
-    printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
-           mouse_sens);
+    pause_settings.stream_chunks_per_frame = world_stream_chunks_per_frame(&world);
+    pause_settings.stream_chunks_per_frame_max = MAX_STREAM_CHUNKS_PER_FRAME;
+    pause_settings.near_chunk_radius = world_near_chunk_radius(&world);
+    pause_settings.near_chunk_radius_max = world.render_distance_chunks;
+
+    bool mesh_worker_running = mesh_worker_start(&world);
+    bool gen_worker_running = gen_worker_start(&world);
+
+    if (debug_enabled) {
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
+               player_mode_name(player.mode));
+        printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
+               WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
+        printf("World save dir: %s\n", world_save_dir);
+        printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
+               world.chunks_x, world.chunks_z, world.render_distance_chunks,
+               world_chunk_capacity(&world));
+        printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
+               world_loaded_chunk_count(&world),
+               world_total_blocks(&world), world_total_faces(&world),
+               world.chunks_generated_last_stream,
+               world.meshes_rebuilt_last_stream);
+        printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
+               mouse_sens);
+        printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
+               world_stream_chunks_per_frame(&world),
+               world_near_chunk_radius(&world));
+        printf("Physics: max_steps_per_frame=%d (0=unlimited, env VOXEL_MAX_PHYSICS_STEPS_PER_FRAME)\n",
+               max_physics_steps_per_frame);
+        printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");
+        printf("Gen worker: %s\n", gen_worker_running ? "on" : "off");
+    }
 
     struct timespec prev, now, frame_end;
     struct timespec perf_window_start;
@@ -405,7 +545,17 @@ int main(void)
     double perf_sleep_ns = 0.0;
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
-    int status_log_enabled = read_status_log_enabled();
+    double perf_physics_ns = 0.0;
+    double perf_stream_ns = 0.0;
+    double perf_stream_wait_ns = 0.0;
+    double perf_stream_body_ns = 0.0;
+    double perf_lighting_ns = 0.0;
+    double perf_gen_drain_ns = 0.0;
+    double perf_mesh_drain_ns = 0.0;
+    int perf_physics_dropped_steps = 0;
+    int status_log_enabled = read_status_log_enabled(debug_enabled);
+    char fps_text[16] = "fps --";
+    int fps_text_len = (int)strlen(fps_text);
     clock_gettime(CLOCK_MONOTONIC, &prev);
     perf_window_start = prev;
 
@@ -433,6 +583,16 @@ int main(void)
         }
 
         bool paused = pause_menu_is_open(&pause);
+        if (paused && pause_menu_update(&pause, &inp, &pause_settings)) {
+            world_set_stream_chunks_per_frame(&world,
+                                              pause_settings.stream_chunks_per_frame);
+            world_set_near_chunk_radius(&world,
+                                        pause_settings.near_chunk_radius);
+            pause_settings.stream_chunks_per_frame =
+                world_stream_chunks_per_frame(&world);
+            pause_settings.near_chunk_radius =
+                world_near_chunk_radius(&world);
+        }
 
         /* Chat toggle: ignored while paused — pause owns the overlay. */
         if (input_consume_chat_toggle(&inp) && !paused) {
@@ -513,7 +673,11 @@ int main(void)
         bool down_input  = paused ? false : inp.down;
         bool sprint_input = paused ? false : inp.sprint;
 
-        while (physics_accumulator >= PHYSICS_DT) {
+        struct timespec physics_start, physics_end;
+        clock_gettime(CLOCK_MONOTONIC, &physics_start);
+        while (physics_accumulator >= PHYSICS_DT &&
+               (max_physics_steps_per_frame <= 0 ||
+                physics_steps < max_physics_steps_per_frame)) {
             bool jump_input = flying ? up_input : jump_pressed;
             player_update(&player, &world, wish_x, wish_z,
                           jump_input, down_input, sprint_input, PHYSICS_DT);
@@ -521,16 +685,26 @@ int main(void)
             physics_accumulator -= PHYSICS_DT;
             physics_steps++;
         }
+        int dropped_physics_steps = 0;
+        if (max_physics_steps_per_frame > 0 &&
+            physics_accumulator >= PHYSICS_DT) {
+            dropped_physics_steps = (int)(physics_accumulator / PHYSICS_DT);
+            physics_accumulator = 0.0f;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &physics_end);
 
         /* Sync Camera to Player's updated physical position */
         cam.position.x = player.x;
         cam.position.y = player_get_eye_height(&player);
         cam.position.z = player.z;
 
+        struct timespec stream_start, stream_end;
+        clock_gettime(CLOCK_MONOTONIC, &stream_start);
         if (!world_stream_around(&world, player.x, player.z)) {
             fprintf(stderr, "\nchunk streaming failed\n");
             break;
         }
+        clock_gettime(CLOCK_MONOTONIC, &stream_end);
 
         if (!paused && !chat_is_open(&chat)) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
@@ -555,27 +729,51 @@ int main(void)
             (void)input_consume_place(&inp);
         }
 
-        if (world.lighting_dirty) {
+        double lighting_ns = 0.0;
+        double gen_drain_ns = 0.0;
+        double mesh_drain_ns = 0.0;
+        if (world.lighting_dirty &&
+            can_rebuild_deferred_lighting(&world, &player)) {
+            struct timespec lighting_start, lighting_end;
+            clock_gettime(CLOCK_MONOTONIC, &lighting_start);
             world_rebuild_lighting(&world);
             world.lighting_dirty = false;
+            clock_gettime(CLOCK_MONOTONIC, &lighting_end);
+            lighting_ns = (double)ns_diff(&lighting_end, &lighting_start);
         }
+        struct timespec gen_start, gen_end;
+        clock_gettime(CLOCK_MONOTONIC, &gen_start);
+        gen_worker_drain_pending(&world);
+        clock_gettime(CLOCK_MONOTONIC, &gen_end);
+        gen_drain_ns = (double)ns_diff(&gen_end, &gen_start);
         if (world.meshes_dirty) {
-            world_rebuild_dirty_meshes(&world);
-            world.meshes_dirty = false;
-        }
-
-
-        if (world.lighting_dirty) {
-            world_rebuild_lighting(&world);
-            world.lighting_dirty = false;
-        }
-        if (world.meshes_dirty) {
-            world_rebuild_dirty_meshes(&world);
-            world.meshes_dirty = false;
+            struct timespec mesh_start, mesh_end;
+            clock_gettime(CLOCK_MONOTONIC, &mesh_start);
+            mesh_worker_drain_dirty(&world);
+            clock_gettime(CLOCK_MONOTONIC, &mesh_end);
+            mesh_drain_ns = (double)ns_diff(&mesh_end, &mesh_start);
         }
 
         struct timespec render_start, begin_end, draw_end, end_end;
         clock_gettime(CLOCK_MONOTONIC, &render_start);
+
+        /* Late mouse re-sample: pull any motion that arrived during the
+         * stream/lighting/mesh phases and fold it into the camera before
+         * we hand it to the renderer. The early apply at the top of the
+         * loop still feeds physics direction; this just closes the
+         * input-to-display gap (~5-15 ms on the FPGA target) on the
+         * frames where update work isn't trivial. Keys are not consumed
+         * here - any edge events the second poll picks up roll into the
+         * next frame's normal input handling. */
+        if (!paused) {
+            input_update(&inp);
+            cam.yaw   += inp.mouse_dx * mouse_sens;
+            cam.pitch -= inp.mouse_dy * mouse_sens;
+            if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
+            if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
+            input_clear_mouse(&inp);
+        }
+
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
@@ -585,10 +783,15 @@ int main(void)
         if (!paused && !chat_is_open(&chat))
             draw_hotbar(ctx, selected_hotbar_slot);
         renderer_draw_crosshair(ctx);
-        pause_menu_draw(&pause, ctx);
+        pause_menu_draw(&pause, ctx, &pause_settings);
+        if (fps_text_len > 0) {
+            chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);
+            chat_draw_text(ctx, fps_text, fps_text_len, 12.0f, 12.0f, 5);
+        }
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);
+        mesh_worker_reap_retired(&world);
 
         double update_ns = (double)ns_diff(&render_start, &loop_start);
         double begin_ns = (double)ns_diff(&begin_end, &render_start);
@@ -622,12 +825,20 @@ int main(void)
         perf_quads += quads;
         perf_sky_quads += sky_quads;
         perf_physics_steps += physics_steps;
+        perf_physics_dropped_steps += dropped_physics_steps;
         perf_update_ns += update_ns;
         perf_begin_ns += begin_ns;
         perf_draw_ns += draw_ns;
         perf_end_ns += end_ns;
         perf_sleep_ns += sleep_ns;
         perf_work_ns += work_ns;
+        perf_physics_ns += (double)ns_diff(&physics_end, &physics_start);
+        perf_stream_ns += (double)ns_diff(&stream_end, &stream_start);
+        perf_stream_wait_ns += (double)world.last_stream_lock_wait_ns;
+        perf_stream_body_ns += (double)world.last_stream_body_ns;
+        perf_lighting_ns += lighting_ns;
+        perf_gen_drain_ns += gen_drain_ns;
+        perf_mesh_drain_ns += mesh_drain_ns;
         if (work_ns > perf_max_work_ns)
             perf_max_work_ns = work_ns;
 
@@ -637,41 +848,67 @@ int main(void)
         if (perf_elapsed_ns >= PERF_LOG_NS && perf_frames > 0) {
             double elapsed_s = (double)perf_elapsed_ns / 1e9;
             double frame_div = (double)perf_frames;
+            double fps = frame_div / elapsed_s;
 
-            if (status_log_enabled) {
-                printf("\n");
-                fflush(stdout);
+            int n = snprintf(fps_text, sizeof(fps_text), "fps %.1f", fps);
+            if (n < 0) n = 0;
+            if (n > (int)sizeof(fps_text) - 1) n = (int)sizeof(fps_text) - 1;
+            fps_text_len = n;
+
+            if (debug_enabled) {
+                if (status_log_enabled) {
+                    printf("\n");
+                    fflush(stdout);
+                }
+
+                fprintf(stderr,
+                        "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
+                        "update=%5.2fms begin=%5.2fms draw=%6.2fms "
+                        "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
+                        "quads=%5.1f sky=%4.1f phys=%4.1f drop=%4.1f "
+                        "upd_phys=%5.2f stream=%5.2f wait=%5.2f body=%5.2f "
+                        "light=%5.2f gen=%5.2f mesh=%5.2f\n",
+                        fps,
+                        ns_to_ms((double)perf_elapsed_ns / frame_div),
+                        ns_to_ms(perf_work_ns / frame_div),
+                        ns_to_ms(perf_update_ns / frame_div),
+                        ns_to_ms(perf_begin_ns / frame_div),
+                        ns_to_ms(perf_draw_ns / frame_div),
+                        ns_to_ms(perf_end_ns / frame_div),
+                        ns_to_ms(perf_sleep_ns / frame_div),
+                        ns_to_ms(perf_max_work_ns),
+                        (double)perf_quads / frame_div,
+                        (double)perf_sky_quads / frame_div,
+                        (double)perf_physics_steps / frame_div,
+                        (double)perf_physics_dropped_steps / frame_div,
+                        ns_to_ms(perf_physics_ns / frame_div),
+                        ns_to_ms(perf_stream_ns / frame_div),
+                        ns_to_ms(perf_stream_wait_ns / frame_div),
+                        ns_to_ms(perf_stream_body_ns / frame_div),
+                        ns_to_ms(perf_lighting_ns / frame_div),
+                        ns_to_ms(perf_gen_drain_ns / frame_div),
+                        ns_to_ms(perf_mesh_drain_ns / frame_div));
             }
-
-            fprintf(stderr,
-                    "perf: fps=%5.1f frame=%6.2fms work=%6.2fms "
-                    "update=%5.2fms begin=%5.2fms draw=%6.2fms "
-                    "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
-                    "quads=%5.1f sky=%4.1f phys=%4.1f\n",
-                    frame_div / elapsed_s,
-                    ns_to_ms((double)perf_elapsed_ns / frame_div),
-                    ns_to_ms(perf_work_ns / frame_div),
-                    ns_to_ms(perf_update_ns / frame_div),
-                    ns_to_ms(perf_begin_ns / frame_div),
-                    ns_to_ms(perf_draw_ns / frame_div),
-                    ns_to_ms(perf_end_ns / frame_div),
-                    ns_to_ms(perf_sleep_ns / frame_div),
-                    ns_to_ms(perf_max_work_ns),
-                    (double)perf_quads / frame_div,
-                    (double)perf_sky_quads / frame_div,
-                    (double)perf_physics_steps / frame_div);
 
             perf_window_start = perf_now;
             perf_frames = 0;
             perf_quads = 0;
             perf_sky_quads = 0;
             perf_physics_steps = 0;
+            perf_physics_dropped_steps = 0;
             perf_update_ns = 0.0;
             perf_begin_ns = 0.0;
             perf_draw_ns = 0.0;
             perf_end_ns = 0.0;
             perf_sleep_ns = 0.0;
             perf_work_ns = 0.0;
+            perf_physics_ns = 0.0;
+            perf_stream_ns = 0.0;
+            perf_stream_wait_ns = 0.0;
+            perf_stream_body_ns = 0.0;
+            perf_lighting_ns = 0.0;
+            perf_gen_drain_ns = 0.0;
+            perf_mesh_drain_ns = 0.0;
             perf_max_work_ns = 0.0;
         }
     }
@@ -679,6 +916,11 @@ int main(void)
     if (status_log_enabled)
         printf("\n");
     input_shutdown(&inp);
+    /* Stop gen worker first: it can enqueue mesh-dirty work via finalize,
+     * so quiescing it before the mesh worker avoids a final partial mesh
+     * round that would just be discarded on shutdown. */
+    gen_worker_stop();
+    mesh_worker_stop();
     if (!world_flush(&world))
         fprintf(stderr, "world: failed to flush modified chunks on shutdown\n");
     world_free(&world);

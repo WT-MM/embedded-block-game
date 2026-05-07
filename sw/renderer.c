@@ -24,6 +24,14 @@
 #define SKY_DOME_DISTANCE 512.0f
 #define SKY_GRADIENT_BANDS 24
 
+/* Quantization step for the sky-gradient palette computation. Continuous
+ * world_time would re-derive every frame; even sub-pixel color drift bumps
+ * gpu_transport's hw_sky_epoch, which invalidates the per-band SDRAM reuse
+ * cache (see PROJECT_NOTES.md "May 5 sky-band reuse epoch fix"). 0.5 s steps
+ * give 360 distinct sky states across a 180 s day cycle — visually smooth
+ * but stable for ~15 frames at 30 FPS, so sky_band_reuse can hit. */
+#define SKY_PALETTE_TIME_STEP_SECONDS 0.5f
+
 enum {
     PAL_SKY_HIGH = 25,
     PAL_SKY_MID = 26,
@@ -148,11 +156,17 @@ struct RenderContext {
     int lookup_capacity;
     uint16_t palette_cache[256];
     uint8_t palette_valid[256];
+    struct voxel_palette_entry palette_pending[256];
+    uint8_t palette_dirty[256];
     struct voxel_fog_state fog_cache;
+    struct voxel_fog_state fog_pending;
     uint8_t fog_valid;
+    uint8_t fog_dirty;
     uint8_t light_palette_key;
     uint8_t light_palette_key_valid;
     uint8_t face_light_flags[NUM_FACES];
+    Vec3 last_sun_dir;
+    uint8_t last_sun_dir_valid;
     int n_quads;
 
     /* Scratch buffer reused across frames to back-to-front sort translucent
@@ -160,6 +174,7 @@ struct RenderContext {
      * than it has before. */
     TranslucentFaceRef *translucent_scratch;
     int translucent_scratch_capacity;
+
 };
 
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad);
@@ -279,18 +294,15 @@ static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 co
     if (ctx->palette_valid[index] && ctx->palette_cache[index] == packed)
         return true;
 
-    struct voxel_palette_entry entry = {
+    ctx->palette_valid[index] = 1;
+    ctx->palette_cache[index] = packed;
+    ctx->palette_pending[index] = (struct voxel_palette_entry){
         .index = index,
         .r = color.r,
         .g = color.g,
         .b = color.b,
     };
-
-    if (gpu_transport_set_palette(ctx->transport, &entry) < 0)
-        return false;
-
-    ctx->palette_valid[index] = 1;
-    ctx->palette_cache[index] = packed;
+    ctx->palette_dirty[index] = 1;
     return true;
 }
 
@@ -310,11 +322,30 @@ static bool renderer_set_fog_state(RenderContext *ctx,
     if (ctx->fog_valid && same_fog_state(&ctx->fog_cache, fog))
         return true;
 
-    if (gpu_transport_set_fog(ctx->transport, fog) < 0)
-        return false;
-
     ctx->fog_cache = *fog;
+    ctx->fog_pending = *fog;
     ctx->fog_valid = 1;
+    ctx->fog_dirty = 1;
+    return true;
+}
+
+static bool renderer_flush_gpu_state(RenderContext *ctx)
+{
+    for (int i = 0; i < 256; i++) {
+        if (!ctx->palette_dirty[i])
+            continue;
+        if (gpu_transport_set_palette(ctx->transport,
+                                      &ctx->palette_pending[i]) < 0)
+            return false;
+        ctx->palette_dirty[i] = 0;
+    }
+
+    if (ctx->fog_dirty) {
+        if (gpu_transport_set_fog(ctx->transport, &ctx->fog_pending) < 0)
+            return false;
+        ctx->fog_dirty = 0;
+    }
+
     return true;
 }
 
@@ -481,15 +512,30 @@ static void update_world_light_from_sun(RenderContext *ctx, Vec3 sun_dir)
     if (!ctx)
         return;
 
+    if (ctx->last_sun_dir_valid &&
+        ctx->last_sun_dir.x == sun_dir.x &&
+        ctx->last_sun_dir.y == sun_dir.y &&
+        ctx->last_sun_dir.z == sun_dir.z)
+        return;
+
     ctx->world_daylight = daylight_strength_for_sun_direction(sun_dir);
     ctx->light_dir = terrain_light_direction_for_sun(sun_dir);
     update_face_light_flags(ctx);
     upload_light_palette_banks(ctx, ctx->world_daylight);
+    ctx->last_sun_dir = sun_dir;
+    ctx->last_sun_dir_valid = 1;
+}
+
+static float palette_time_for(float time_seconds)
+{
+    return floorf(time_seconds / SKY_PALETTE_TIME_STEP_SECONDS) *
+           SKY_PALETTE_TIME_STEP_SECONDS;
 }
 
 static void update_world_light_state(RenderContext *ctx, float time_seconds)
 {
-    update_world_light_from_sun(ctx, sun_direction_for_time(time_seconds));
+    update_world_light_from_sun(ctx,
+                                sun_direction_for_time(palette_time_for(time_seconds)));
 }
 
 static void world_to_camera(RenderContext *ctx, Vec3 world, CameraVertex *out)
@@ -535,6 +581,38 @@ static bool project_camera_vertex(RenderContext *ctx, const CameraVertex *in, Ve
     out->v_over_w   = in->v * inv_w;
     out->one_over_w = inv_w;
     return true;
+}
+
+static bool camera_quad_outside_view(RenderContext *ctx, const CameraVertex v[4])
+{
+    float x_slope = (SCREEN_WIDTH * 0.5f) / ctx->current_camera.depth;
+    float y_slope = (SCREEN_HEIGHT * 0.5f) / ctx->current_camera.depth;
+    bool outside_near = true;
+    bool outside_left = true;
+    bool outside_right = true;
+    bool outside_top = true;
+    bool outside_bottom = true;
+
+    /*
+     * The side-plane tests (x + x_slope*z < 0, etc.) are valid only for
+     * vertices in front of the near plane. For z <= 0, x_slope*z is non-positive,
+     * so the test can flip sign and false-positive — a vertex behind the camera
+     * with any x looks "to the left of left" by this math, which used to cull
+     * any face that had a vertex behind the player. Gate side-plane votes on
+     * z >= NEAR_PLANE; a partially-behind face only gets culled if every vertex
+     * is behind the near plane.
+     */
+    for (int i = 0; i < 4; i++) {
+        bool z_in_front = (v[i].z >= NEAR_PLANE);
+        outside_near &= !z_in_front;
+        outside_left &= z_in_front && (v[i].x + x_slope * v[i].z < 0.0f);
+        outside_right &= z_in_front && (-v[i].x + x_slope * v[i].z < 0.0f);
+        outside_top &= z_in_front && (y_slope * v[i].z - v[i].y < 0.0f);
+        outside_bottom &= z_in_front && (v[i].y + y_slope * v[i].z < 0.0f);
+    }
+
+    return outside_near || outside_left || outside_right ||
+           outside_top || outside_bottom;
 }
 
 /* Dot-product backface cull: skip face if normal points away from camera. */
@@ -826,12 +904,29 @@ static bool is_face_exposed(const Block *block, BlockFace face,
 /* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */
 static inline int32_t to_q24_8(float v)
 {
-    return (int32_t)roundf(v * 256.0f);
+    float scaled = v * 256.0f;
+    return (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
 }
 
 static inline float snap_q24_8(float v)
 {
     return (float)to_q24_8(v) / 256.0f;
+}
+
+static inline int floor_div_256_i32(int32_t v)
+{
+    int q = v / 256;
+    int r = v % 256;
+
+    return (r && v < 0) ? q - 1 : q;
+}
+
+static inline int ceil_div_256_i32(int32_t v)
+{
+    int q = v / 256;
+    int r = v % 256;
+
+    return (r && v > 0) ? q + 1 : q;
 }
 
 static bool same_screen_xy(const Vertex2D *a, const Vertex2D *b)
@@ -902,7 +997,7 @@ static inline uint16_t to_q1_15u(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.99f) v = 1.99f;
-    return (uint16_t)lroundf(v * 32768.0f);
+    return (uint16_t)(v * 32768.0f + 0.5f);
 }
 
 /* Pack a float depth gradient into Q1.15 signed (clamp to [-1,1)). */
@@ -910,26 +1005,30 @@ static inline int16_t to_q1_15s(float v)
 {
     if (v < -1.0f) v = -1.0f;
     if (v >  0.999f) v = 0.999f;
-    return (int16_t)lroundf(v * 32768.0f);
+    {
+        float scaled = v * 32768.0f;
+        return (int16_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    }
 }
 
 static inline uint16_t to_q8_8u(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 255.996f) v = 255.996f;
-    return (uint16_t)lroundf(v * 256.0f);
+    return (uint16_t)(v * 256.0f + 0.5f);
 }
 
 static inline uint16_t to_q0_16u(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 0.9999847f) v = 0.9999847f;
-    return (uint16_t)lroundf(v * 65536.0f);
+    return (uint16_t)(v * 65536.0f + 0.5f);
 }
 
 static inline int32_t to_q16_16(float v)
 {
-    return (int32_t)lroundf(v * 65536.0f);
+    float scaled = v * 65536.0f;
+    return (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
 }
 
 static float quad_signed_area(const Vertex2D v[4])
@@ -1382,6 +1481,8 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
          */
         face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span * (float)v_size;
     }
+    if (camera_quad_outside_view(ctx, face_cam))
+        return;
 
     base_tile = block_face_texture_id(type, face);
     texture_id = choose_face_texture_lod(ctx, base_tile, face_cam);
@@ -1572,6 +1673,12 @@ static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
 
 typedef struct {
     const Chunk *chunk;
+    /* Cached at the start of draw_world so the entire frame iterates a
+     * stable mesh pointer even if a future worker thread publishes a new
+     * one mid-draw. Lifetime guarantee: with single-slot retired_mesh
+     * and at-most-one publish per chunk per frame, the pointer survives
+     * until the next frame's drain sweep. */
+    const ChunkMesh *mesh;
     float distance_sq;
 } ChunkDrawCandidate;
 
@@ -1640,11 +1747,15 @@ void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
     ctx->submit_bytes = 0;
-    gpu_transport_clear(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
 {
+    if (gpu_transport_clear(ctx->transport) < 0)
+        return;
+    if (!renderer_flush_gpu_state(ctx))
+        return;
+
     if (ctx->submit_bytes == 0) {
         gpu_transport_flip(ctx->transport);
         return;
@@ -1694,18 +1805,25 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     PlaneBasis basis = choose_plane_basis(v);
 
     /* Inclusive integer bbox over pixel-center samples. */
-    float fxmin = v[0].x, fxmax = v[0].x;
-    float fymin = v[0].y, fymax = v[0].y;
+    int32_t qxmin = to_q24_8(v[0].x), qxmax = qxmin;
+    int32_t qymin = to_q24_8(v[0].y), qymax = qymin;
     for (int i = 1; i < 4; i++) {
-        if (v[i].x < fxmin) fxmin = v[i].x;
-        if (v[i].x > fxmax) fxmax = v[i].x;
-        if (v[i].y < fymin) fymin = v[i].y;
-        if (v[i].y > fymax) fymax = v[i].y;
+        int32_t qx = to_q24_8(v[i].x);
+        int32_t qy = to_q24_8(v[i].y);
+
+        if (qx < qxmin) qxmin = qx;
+        if (qx > qxmax) qxmax = qx;
+        if (qy < qymin) qymin = qy;
+        if (qy > qymax) qymax = qy;
     }
-    int x_min = (int)ceilf(fxmin - 0.5f);  if (x_min <   0) x_min =   0;
-    int y_min = (int)ceilf(fymin - 0.5f);  if (y_min <   0) y_min =   0;
-    int x_max = (int)floorf(fxmax - 0.5f); if (x_max > 319) x_max = 319;
-    int y_max = (int)floorf(fymax - 0.5f); if (y_max > 239) y_max = 239;
+    int x_min = ceil_div_256_i32(qxmin - 128);  if (x_min <   0) x_min =   0;
+    int y_min = ceil_div_256_i32(qymin - 128);  if (y_min <   0) y_min =   0;
+    int x_max = floor_div_256_i32(qxmax - 128);
+    int y_max = floor_div_256_i32(qymax - 128);
+    if (x_max > (int)VOXEL_RENDER_WIDTH - 1)
+        x_max = (int)VOXEL_RENDER_WIDTH - 1;
+    if (y_max > (int)VOXEL_RENDER_HEIGHT - 1)
+        y_max = (int)VOXEL_RENDER_HEIGHT - 1;
 
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
@@ -1867,11 +1985,12 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
+        const ChunkMesh *mesh;
 
-        if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
-            !(chunk->flags & CHUNK_FLAG_MESH_READY))
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
-        if (!chunk->faces || chunk->face_count <= 0)
+        mesh = atomic_load_explicit(&chunk->live_mesh, memory_order_acquire);
+        if (!mesh || mesh->face_count <= 0)
             continue;
         if (!chunk_within_render_distance(ctx, world, chunk))
             continue;
@@ -1880,6 +1999,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
         candidates[candidate_count++] = (ChunkDrawCandidate){
             .chunk = chunk,
+            .mesh = mesh,
             .distance_sq = chunk_distance_sq_to_camera(ctx, chunk),
         };
     }
@@ -1906,9 +2026,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      */
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
+        const ChunkMesh *mesh = candidates[i].mesh;
 
-        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-            const ChunkFace *face = &chunk->faces[face_index];
+        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+            const ChunkFace *face = &mesh->faces[face_index];
             BlockID id = (BlockID)face->type;
 
             if (block_is_translucent(id))
@@ -1945,10 +2066,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      */
     int n_translucent_candidates = 0;
     for (int i = 0; i < candidate_count; i++) {
-        const Chunk *chunk = candidates[i].chunk;
+        const ChunkMesh *mesh = candidates[i].mesh;
 
-        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-            if (block_is_translucent((BlockID)chunk->faces[face_index].type))
+        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+            if (block_is_translucent((BlockID)mesh->faces[face_index].type))
                 n_translucent_candidates++;
         }
     }
@@ -1959,9 +2080,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
         for (int i = 0; i < candidate_count; i++) {
             const Chunk *chunk = candidates[i].chunk;
+            const ChunkMesh *mesh = candidates[i].mesh;
 
-            for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-                const ChunkFace *face = &chunk->faces[face_index];
+            for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+                const ChunkFace *face = &mesh->faces[face_index];
                 if (!block_is_translucent((BlockID)face->type))
                     continue;
 
@@ -2226,7 +2348,13 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     if (!ctx)
         return 0;
 
-    sun_dir = sun_direction_for_time(time_seconds);
+    /* Continuous time drives sprite drift below; quantized time drives every
+     * palette computation so hw_sky_epoch stays stable for ~15 frames at
+     * 30 FPS and sky_band_reuse can hit on primer-only bands. Both this path
+     * and renderer_draw_world use palette_time_for() so they cannot disagree
+     * across a 32-step daylight_key boundary and re-flush the palette. */
+    float palette_time = palette_time_for(time_seconds);
+    sun_dir = sun_direction_for_time(palette_time);
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
     update_world_light_from_sun(ctx, sun_dir);
     daylight = ctx->world_daylight;
@@ -2268,7 +2396,7 @@ bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    const float half = 8.0f;
+    const float half = 8.0f * HUD_SCALE;
     const float x0 = cx - half, y0 = cy - half;
     const float x1 = cx + half, y1 = cy + half;
 

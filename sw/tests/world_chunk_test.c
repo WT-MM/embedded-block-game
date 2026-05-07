@@ -59,11 +59,16 @@ static const ChunkFace *find_chunk_face(const Chunk *chunk,
                                         int x, int y, int z,
                                         BlockFace face, BlockID type)
 {
-    if (!chunk || !chunk->faces)
+    const ChunkMesh *mesh;
+
+    if (!chunk)
+        return NULL;
+    mesh = atomic_load_explicit(&chunk->live_mesh, memory_order_acquire);
+    if (!mesh)
         return NULL;
 
-    for (int i = 0; i < chunk->face_count; i++) {
-        const ChunkFace *candidate = &chunk->faces[i];
+    for (int i = 0; i < mesh->face_count; i++) {
+        const ChunkFace *candidate = &mesh->faces[i];
 
         if ((int)candidate->x == x &&
             (int)candidate->y == y &&
@@ -80,6 +85,7 @@ int main(void)
 {
     VoxelWorld world;
     VoxelWorld reloaded_world;
+    VoxelWorld capped_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
     char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
     char *world_dir;
@@ -87,6 +93,7 @@ int main(void)
     init_block_types();
     world_init(&world);
     world_init(&reloaded_world);
+    world_init(&capped_world);
     world_dir = mkdtemp(world_dir_template);
     if (!world_dir)
         return check_failed("mkdtemp failed");
@@ -112,6 +119,13 @@ int main(void)
         return check_failed("initial world has no cached blocks/faces");
     if (!world_get_chunk(&world, 0, 0))
         return check_failed("center chunk missing after initial load");
+    if (world_near_chunk_radius(&world) != 1)
+        return check_failed("default near chunk radius changed");
+    if (world_stream_chunks_per_frame(&world) != 1)
+        return check_failed("default stream chunk cap changed");
+    /* Most of this test validates full-window synchronous streaming behavior;
+     * opt out of the runtime smoothing default for those checks. */
+    world_set_stream_chunks_per_frame(&world, 0);
     if (block_emission_level(BLOCK_LAMP) != 15 || !block_is_self_lit(BLOCK_LAMP))
         return check_failed("lamp metadata missing");
 
@@ -126,6 +140,8 @@ int main(void)
         return check_failed("lamp placement failed");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_STONE))
         return check_failed("stone placement near lamp failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-edit mesh rebuild failed");
 
     const Chunk *lighting_chunk = world_get_chunk(&world, 0, 0);
     const ChunkFace *lamp_top = find_chunk_face(lighting_chunk,
@@ -141,6 +157,8 @@ int main(void)
 
     if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("lamp removal failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-removal mesh rebuild failed");
     lighting_chunk = world_get_chunk(&world, 0, 0);
     stone_left = find_chunk_face(lighting_chunk,
                                  stone_x, lamp_y, lamp_z,
@@ -149,6 +167,8 @@ int main(void)
         return check_failed("lamp light did not clear after removal");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("stone cleanup failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-cleanup mesh rebuild failed");
 
     if (!world_stream_around(&world, 1.0f, 1.0f))
         return check_failed("same-center stream failed");
@@ -187,6 +207,9 @@ int main(void)
         return check_failed("boundary block edit failed");
     if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("boundary block edit did not persist in loaded chunk");
+    world.meshes_rebuilt_last_stream = 0;
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-boundary-edit mesh rebuild failed");
 
     edited = world_get_chunk(&world, 1, 0);
     neighbor = world_get_chunk(&world, 0, 0);
@@ -206,6 +229,36 @@ int main(void)
         return check_failed("unchanged neighbor content generation changed");
     if (world.meshes_rebuilt_last_stream < 2)
         return check_failed("boundary edit did not rebuild multiple meshes");
+
+    const int seam_x = WORLD_CHUNK_SIZE + 8;
+    const int seam_y = 10;
+    const int seam_z = WORLD_CHUNK_SIZE - 1;
+    if (!world_set_block(&world, seam_x, seam_y, seam_z, BLOCK_WOOD))
+        return check_failed("seam self block edit failed");
+    if (!world_set_block(&world, seam_x, seam_y, seam_z + 1, BLOCK_WOOD))
+        return check_failed("seam neighbor block edit failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("seam sync mesh rebuild failed");
+
+    const Chunk *seam_chunk = world_get_chunk(&world, 1, 0);
+    if (!seam_chunk)
+        return check_failed("seam chunk missing");
+    if (find_chunk_face(seam_chunk, 8, seam_y, WORLD_CHUNK_SIZE - 1,
+                        FACE_BACK, BLOCK_WOOD))
+        return check_failed("sync mesh exposed occluded z-boundary face");
+
+    ChunkMeshWorkerScratch *mesh_scratch = chunk_mesh_worker_scratch_create();
+    if (!mesh_scratch)
+        return check_failed("mesh worker scratch alloc failed");
+    if (!world_run_mesh_job(&world, mesh_scratch,
+                            1, 0, seam_chunk->generation))
+        return check_failed("mesh worker seam rebuild failed");
+    chunk_mesh_worker_scratch_destroy(mesh_scratch);
+    seam_chunk = world_get_chunk(&world, 1, 0);
+    if (!seam_chunk ||
+        find_chunk_face(seam_chunk, 8, seam_y, WORLD_CHUNK_SIZE - 1,
+                        FACE_BACK, BLOCK_WOOD))
+        return check_failed("mesh worker exposed occluded z-boundary face");
 
     if (!world_stream_around(&world,
                              (float)(5 * WORLD_CHUNK_SIZE + 1),
@@ -245,7 +298,119 @@ int main(void)
     if (world_get_block(&reloaded_world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("saved block edit did not survive world reload");
     world_free(&reloaded_world);
+
+    if (!world_init_infinite_procedural(&capped_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        TEST_RENDER_DISTANCE,
+                                        0.0f,
+                                        0.0f,
+                                        NULL))
+        return check_failed("capped world init failed");
+    world_set_stream_chunks_per_frame(&capped_world, 2);
+    if (!world_stream_around(&capped_world,
+                             (float)WORLD_CHUNK_SIZE + 1.0f,
+                             1.0f))
+        return check_failed("capped one-chunk stream failed");
+    if (capped_world.chunks_generated_last_stream != 2)
+        return check_failed("capped stream did not limit new chunks");
+    if (capped_world.chunk_count >= expected_chunks)
+        return check_failed("capped stream unexpectedly filled whole window");
+    for (int guard = 0;
+         guard < expected_chunks && capped_world.chunk_count < expected_chunks;
+         guard++) {
+        if (!world_stream_around(&capped_world,
+                                 (float)WORLD_CHUNK_SIZE + 1.0f,
+                                 1.0f))
+            return check_failed("capped follow-up stream failed");
+    }
+    if (capped_world.chunk_count != expected_chunks)
+        return check_failed("capped stream did not eventually fill window");
+    world_set_near_chunk_radius(&capped_world, 0);
+    if (world_near_chunk_radius(&capped_world) != 0)
+        return check_failed("near chunk radius setter failed");
+    if (!capped_world.meshes_dirty)
+        return check_failed("near radius change did not dirty meshes");
+    world_free(&capped_world);
     cleanup_temp_world_dir(world_dir);
+
+    /* Async-gen smoke test: simulate the gen worker without actually
+     * spawning a thread. Flip async_chunk_gen_enabled, stream past the
+     * initial fill so new slots come in as LOADING, then run the
+     * offline + finalize halves by hand and confirm the result matches
+     * what the synchronous path would have produced. */
+    VoxelWorld async_world;
+    char async_world_dir_template[] = "/tmp/voxel-world-async-XXXXXX";
+    char *async_world_dir = mkdtemp(async_world_dir_template);
+    if (!async_world_dir)
+        return check_failed("async mkdtemp failed");
+    world_init(&async_world);
+    if (!world_init_infinite_procedural(&async_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        TEST_RENDER_DISTANCE,
+                                        0.0f,
+                                        0.0f,
+                                        async_world_dir))
+        return check_failed("async world init failed");
+
+    /* Initial stream is sync; turn on async only for follow-up streams. */
+    async_world.async_chunk_gen_enabled = true;
+    if (!world_stream_around(&async_world,
+                             (float)WORLD_CHUNK_SIZE + 1.0f,
+                             1.0f))
+        return check_failed("async follow-up stream failed");
+    if (async_world.chunks_generated_last_stream <= 0)
+        return check_failed("async stream did not allocate new slots");
+
+    int loading_count = 0;
+    int loading_x = 0, loading_z = 0;
+    uint32_t loading_gen = 0;
+    for (int i = 0; i < async_world.chunk_count; i++) {
+        const Chunk *c = &async_world.chunks[i];
+        if ((c->flags & CHUNK_FLAG_LOADING) &&
+            !(c->flags & CHUNK_FLAG_LOADED)) {
+            loading_count++;
+            loading_x = c->chunk_x;
+            loading_z = c->chunk_z;
+            loading_gen = c->generation;
+        }
+    }
+    if (loading_count == 0)
+        return check_failed("async stream did not produce LOADING slots");
+    /* LOADING chunks must be transparent to world_get_block. */
+    if (world_get_block(&async_world,
+                        loading_x * WORLD_CHUNK_SIZE,
+                        0,
+                        loading_z * WORLD_CHUNK_SIZE) != BLOCK_AIR)
+        return check_failed("LOADING chunk leaked block data to world_get_block");
+
+    ChunkGenResult result;
+    if (!world_async_chunk_gen_offline(&async_world,
+                                       loading_x, loading_z, &result))
+        return check_failed("offline gen failed");
+    if (!world_finalize_async_chunk_load(&async_world,
+                                         loading_x, loading_z,
+                                         loading_gen, &result))
+        return check_failed("finalize did not integrate async chunk");
+    const Chunk *finalized = world_get_chunk(&async_world, loading_x, loading_z);
+    if (!finalized || !(finalized->flags & CHUNK_FLAG_LOADED) ||
+        (finalized->flags & CHUNK_FLAG_LOADING))
+        return check_failed("finalize did not flip LOADING -> LOADED");
+    if (world_get_block(&async_world,
+                        loading_x * WORLD_CHUNK_SIZE,
+                        0,
+                        loading_z * WORLD_CHUNK_SIZE) == BLOCK_AIR)
+        return check_failed("finalized chunk has no block data");
+
+    /* Stale generation must drop. */
+    if (world_finalize_async_chunk_load(&async_world,
+                                        loading_x, loading_z,
+                                        loading_gen + 999u, &result))
+        return check_failed("finalize accepted stale generation");
+
+    world_free(&async_world);
+    cleanup_temp_world_dir(async_world_dir);
 
     printf("world_chunk_test: ok\n");
     return 0;

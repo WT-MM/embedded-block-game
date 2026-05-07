@@ -59,11 +59,16 @@ static const ChunkFace *find_chunk_face(const Chunk *chunk,
                                         int x, int y, int z,
                                         BlockFace face, BlockID type)
 {
-    if (!chunk || !chunk->faces)
+    const ChunkMesh *mesh;
+
+    if (!chunk)
+        return NULL;
+    mesh = atomic_load_explicit(&chunk->live_mesh, memory_order_acquire);
+    if (!mesh)
         return NULL;
 
-    for (int i = 0; i < chunk->face_count; i++) {
-        const ChunkFace *candidate = &chunk->faces[i];
+    for (int i = 0; i < mesh->face_count; i++) {
+        const ChunkFace *candidate = &mesh->faces[i];
 
         if ((int)candidate->x == x &&
             (int)candidate->y == y &&
@@ -126,6 +131,8 @@ int main(void)
         return check_failed("lamp placement failed");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_STONE))
         return check_failed("stone placement near lamp failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-edit mesh rebuild failed");
 
     const Chunk *lighting_chunk = world_get_chunk(&world, 0, 0);
     const ChunkFace *lamp_top = find_chunk_face(lighting_chunk,
@@ -141,6 +148,8 @@ int main(void)
 
     if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("lamp removal failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-removal mesh rebuild failed");
     lighting_chunk = world_get_chunk(&world, 0, 0);
     stone_left = find_chunk_face(lighting_chunk,
                                  stone_x, lamp_y, lamp_z,
@@ -149,6 +158,8 @@ int main(void)
         return check_failed("lamp light did not clear after removal");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("stone cleanup failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-cleanup mesh rebuild failed");
 
     if (!world_stream_around(&world, 1.0f, 1.0f))
         return check_failed("same-center stream failed");
@@ -187,6 +198,9 @@ int main(void)
         return check_failed("boundary block edit failed");
     if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("boundary block edit did not persist in loaded chunk");
+    world.meshes_rebuilt_last_stream = 0;
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-boundary-edit mesh rebuild failed");
 
     edited = world_get_chunk(&world, 1, 0);
     neighbor = world_get_chunk(&world, 0, 0);

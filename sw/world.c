@@ -555,10 +555,31 @@ static bool rebuild_chunk_lookup(VoxelWorld *world)
 
 static void release_chunk(Chunk *chunk)
 {
+    ChunkMesh *live;
+    ChunkMesh *retired;
+
     if (!chunk)
         return;
 
     free(chunk->faces);
+
+    /* Free both published mesh slots before zeroing the struct. The
+     * renderer must NOT be holding a chunk pointer through this path -
+     * release_chunk is only called from world_free / retain_chunks_in_window
+     * which run on the main thread between frames. */
+    live = atomic_exchange_explicit(&chunk->live_mesh, NULL,
+                                    memory_order_acq_rel);
+    if (live) {
+        free(live->faces);
+        free(live);
+    }
+    retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
+                                       memory_order_acq_rel);
+    if (retired) {
+        free(retired->faces);
+        free(retired);
+    }
+
     memset(chunk, 0, sizeof(*chunk));
 }
 
@@ -750,6 +771,8 @@ static bool face_should_render(BlockID current, BlockID neighbor)
 void world_init(VoxelWorld *world)
 {
     memset(world, 0, sizeof(*world));
+    if (pthread_mutex_init(&world->world_mu, NULL) == 0)
+        world->world_mu_initialized = true;
 }
 
 void world_free(VoxelWorld *world)
@@ -758,7 +781,92 @@ void world_free(VoxelWorld *world)
         return;
 
     free_chunk_storage(world);
+    if (world->world_mu_initialized) {
+        pthread_mutex_destroy(&world->world_mu);
+        world->world_mu_initialized = false;
+    }
     memset(world, 0, sizeof(*world));
+}
+
+void world_lock(VoxelWorld *world)
+{
+    if (world && world->world_mu_initialized)
+        pthread_mutex_lock(&world->world_mu);
+}
+
+void world_unlock(VoxelWorld *world)
+{
+    if (world && world->world_mu_initialized)
+        pthread_mutex_unlock(&world->world_mu);
+}
+
+Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z)
+{
+    int index;
+
+    if (!world)
+        return NULL;
+    index = chunk_lookup_find_index(world, chunk_x, chunk_z);
+    if (index < 0 || index >= world->chunk_count)
+        return NULL;
+    if (!(world->chunks[index].flags & CHUNK_FLAG_LOADED))
+        return NULL;
+    return &world->chunks[index];
+}
+
+void chunk_mesh_free_retired(Chunk *chunk)
+{
+    ChunkMesh *retired;
+
+    if (!chunk)
+        return;
+
+    retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
+                                       memory_order_acq_rel);
+    if (!retired)
+        return;
+
+    free(retired->faces);
+    free(retired);
+}
+
+static ChunkMesh *chunk_mesh_alloc(int face_count)
+{
+    ChunkMesh *mesh = calloc(1, sizeof(*mesh));
+    if (!mesh)
+        return NULL;
+
+    if (face_count > 0) {
+        mesh->faces = malloc((size_t)face_count * sizeof(*mesh->faces));
+        if (!mesh->faces) {
+            free(mesh);
+            return NULL;
+        }
+    }
+    mesh->face_count = face_count;
+    return mesh;
+}
+
+/* Atomically publish a freshly-built ChunkMesh as the chunk's live_mesh.
+ * Old live_mesh moves into retired_mesh; any prior retired_mesh is freed
+ * here under the assumption that no reader still holds it (renderer reads
+ * are bounded to a single frame's draw pass). */
+static void chunk_publish_mesh(Chunk *chunk, ChunkMesh *new_mesh)
+{
+    ChunkMesh *prev_retired;
+    ChunkMesh *prev_live;
+
+    prev_retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
+                                            memory_order_acq_rel);
+    if (prev_retired) {
+        free(prev_retired->faces);
+        free(prev_retired);
+    }
+
+    prev_live = atomic_exchange_explicit(&chunk->live_mesh, new_mesh,
+                                         memory_order_acq_rel);
+    atomic_store_explicit(&chunk->retired_mesh, prev_live,
+                          memory_order_release);
 }
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z)
@@ -1157,7 +1265,7 @@ static void update_column_sky_light(VoxelWorld *world, int wx, int wz)
     }
 }
 
-bool world_rebuild_lighting(VoxelWorld *world)
+static bool world_rebuild_lighting_locked(VoxelWorld *world)
 {
     LightNode *queue = NULL;
     size_t queue_head = 0;
@@ -1237,7 +1345,21 @@ bool world_rebuild_lighting(VoxelWorld *world)
 
     free(queue);
     mark_all_loaded_chunks_mesh_dirty(world);
+    world->meshes_dirty = true;
     return true;
+}
+
+bool world_rebuild_lighting(VoxelWorld *world)
+{
+    bool ok;
+
+    if (!world)
+        return false;
+
+    world_lock(world);
+    ok = world_rebuild_lighting_locked(world);
+    world_unlock(world);
+    return ok;
 }
 
 static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk *chunk,
@@ -1384,6 +1506,13 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
 
     max_face_count = count_exposed_faces_for_chunk_nb(world, chunk, nb);
     if (max_face_count == 0) {
+        ChunkMesh *empty = chunk_mesh_alloc(0);
+        if (!empty)
+            return false;
+        empty->generation = chunk->generation;
+        empty->meshed_near = is_near;
+        chunk_publish_mesh(chunk, empty);
+
         chunk->face_count = 0;
         chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
         chunk->flags |= CHUNK_FLAG_MESH_READY;
@@ -1509,6 +1638,23 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
     }
 
     chunk->face_count = out;
+
+    /* Publish an immutable snapshot for the renderer. Must be done after
+     * face_count is final but before clearing MESH_DIRTY so a concurrent
+     * world_drain_dirty pass cannot re-queue this chunk between
+     * publication and the dirty-bit clear. */
+    {
+        ChunkMesh *snapshot = chunk_mesh_alloc(out);
+        if (!snapshot)
+            return false;
+        if (out > 0)
+            memcpy(snapshot->faces, chunk->faces,
+                   (size_t)out * sizeof(ChunkFace));
+        snapshot->generation = chunk->generation;
+        snapshot->meshed_near = is_near;
+        chunk_publish_mesh(chunk, snapshot);
+    }
+
     chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
     chunk->flags |= CHUNK_FLAG_MESH_READY;
     if (is_near)
@@ -1516,6 +1662,11 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
     else
         chunk->flags &= ~CHUNK_FLAG_MESHED_NEAR;
     return true;
+}
+
+bool world_rebuild_and_publish_mesh(VoxelWorld *world, Chunk *chunk)
+{
+    return rebuild_chunk_faces(world, chunk);
 }
 
 static void mark_near_far_transitions_dirty(VoxelWorld *world)
@@ -1532,6 +1683,22 @@ static void mark_near_far_transitions_dirty(VoxelWorld *world)
         if (is_near != was_near)
             chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
     }
+}
+
+static bool world_has_dirty_meshes_locked(const VoxelWorld *world)
+{
+    if (!world)
+        return false;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            (chunk->flags & CHUNK_FLAG_MESH_DIRTY))
+            return true;
+    }
+
+    return false;
 }
 
 /* 0 or unset: rebuild every dirty chunk in one pass (desktop default).
@@ -1555,7 +1722,7 @@ static int mesh_rebuild_chunks_per_pass(void)
     return (int)parsed;
 }
 
-bool world_rebuild_dirty_meshes(VoxelWorld *world)
+static bool world_rebuild_dirty_meshes_locked(VoxelWorld *world)
 {
     bool ok = true;
     int per_pass = mesh_rebuild_chunks_per_pass();
@@ -1569,7 +1736,8 @@ bool world_rebuild_dirty_meshes(VoxelWorld *world)
         Chunk *chunk = &world->chunks[i];
 
         if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
-            !(chunk->flags & CHUNK_FLAG_MESH_DIRTY))
+            !(chunk->flags & CHUNK_FLAG_MESH_DIRTY) ||
+            (chunk->flags & CHUNK_FLAG_MESH_QUEUED))
             continue;
 
         if (rebuild_chunk_faces(world, chunk)) {
@@ -1583,6 +1751,20 @@ bool world_rebuild_dirty_meshes(VoxelWorld *world)
             break;
     }
 
+    world->meshes_dirty = world_has_dirty_meshes_locked(world);
+    return ok;
+}
+
+bool world_rebuild_dirty_meshes(VoxelWorld *world)
+{
+    bool ok;
+
+    if (!world)
+        return false;
+
+    world_lock(world);
+    ok = world_rebuild_dirty_meshes_locked(world);
+    world_unlock(world);
     return ok;
 }
 
@@ -1682,7 +1864,11 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
             !rebuild_chunk_lookup(world))
             return false;
         world->chunks_reused_last_stream = world->chunk_count;
-        return world_rebuild_dirty_meshes(world);
+        if (world->async_mesh_rebuilds_enabled) {
+            world->meshes_dirty = world_has_dirty_meshes_locked(world);
+            return true;
+        }
+        return world_rebuild_dirty_meshes_locked(world);
     }
 
     world->stream_epoch++;
@@ -1729,7 +1915,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
         }
     }
 
-    if (!world_rebuild_lighting(world))
+    if (!world_rebuild_lighting_locked(world))
         return false;
 
     mark_trailing_perimeter_dirty(world,
@@ -1737,7 +1923,11 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
                                   origin_chunk_x, origin_chunk_z,
                                   diameter);
     mark_near_far_transitions_dirty(world);
-    return world_rebuild_dirty_meshes(world);
+    if (world->async_mesh_rebuilds_enabled) {
+        world->meshes_dirty = world_has_dirty_meshes_locked(world);
+        return true;
+    }
+    return world_rebuild_dirty_meshes_locked(world);
 }
 
 bool world_init_infinite_procedural(VoxelWorld *world,
@@ -1769,12 +1959,17 @@ bool world_init_infinite_procedural(VoxelWorld *world,
 
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z)
 {
+    bool ok;
+
     if (!world)
         return false;
 
-    return stream_world_to_chunk_center(world,
-                                        chunk_coord_from_world(world_x),
-                                        chunk_coord_from_world(world_z));
+    world_lock(world);
+    ok = stream_world_to_chunk_center(world,
+                                      chunk_coord_from_world(world_x),
+                                      chunk_coord_from_world(world_z));
+    world_unlock(world);
+    return ok;
 }
 
 bool world_flush(VoxelWorld *world)
@@ -1793,7 +1988,7 @@ bool world_flush(VoxelWorld *world)
     return true;
 }
 
-bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
+static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
 {
     int chunk_x;
     int chunk_z;
@@ -1881,6 +2076,19 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
     return success;
 }
 
+bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
+{
+    bool ok;
+
+    if (!world)
+        return false;
+
+    world_lock(world);
+    ok = world_set_block_locked(world, wx, wy, wz, type);
+    world_unlock(world);
+    return ok;
+}
+
 int world_total_faces(const VoxelWorld *world)
 {
     int total = 0;
@@ -1890,9 +2098,13 @@ int world_total_faces(const VoxelWorld *world)
 
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
-        if ((chunk->flags & CHUNK_FLAG_LOADED) &&
-            (chunk->flags & CHUNK_FLAG_MESH_READY))
-            total += chunk->face_count;
+        const ChunkMesh *mesh;
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        mesh = atomic_load_explicit(&chunk->live_mesh, memory_order_acquire);
+        if (mesh)
+            total += mesh->face_count;
     }
 
     return total;

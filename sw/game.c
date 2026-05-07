@@ -10,6 +10,7 @@
 #include "input.h"
 #include "block_types.h"
 #include "world.h"
+#include "mesh_worker.h"
 #include "player_physics.h" /* Added physics integration */
 #include "chat.h"
 #include "pause_menu.h"
@@ -412,9 +413,12 @@ int main(void)
                                         world_save_dir)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
+        world_free(&world);
         renderer_shutdown(ctx);
         return 1;
     }
+
+    bool mesh_worker_running = mesh_worker_start(&world);
 
     int debug_enabled = read_debug_enabled();
     if (debug_enabled) {
@@ -434,6 +438,7 @@ int main(void)
                world.meshes_rebuilt_last_stream);
         printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
                mouse_sens);
+        printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");
     }
 
     struct timespec prev, now, frame_end;
@@ -608,8 +613,7 @@ int main(void)
             world.lighting_dirty = false;
         }
         if (world.meshes_dirty) {
-            world_rebuild_dirty_meshes(&world);
-            world.meshes_dirty = false;
+            mesh_worker_drain_dirty(&world);
         }
 
         struct timespec render_start, begin_end, draw_end, end_end;
@@ -631,6 +635,7 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);
+        mesh_worker_reap_retired(&world);
 
         double update_ns = (double)ns_diff(&render_start, &loop_start);
         double begin_ns = (double)ns_diff(&begin_end, &render_start);
@@ -729,6 +734,7 @@ int main(void)
     if (status_log_enabled)
         printf("\n");
     input_shutdown(&inp);
+    mesh_worker_stop();
     if (!world_flush(&world))
         fprintf(stderr, "world: failed to flush modified chunks on shutdown\n");
     world_free(&world);

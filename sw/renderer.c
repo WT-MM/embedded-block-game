@@ -1673,6 +1673,12 @@ static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
 
 typedef struct {
     const Chunk *chunk;
+    /* Cached at the start of draw_world so the entire frame iterates a
+     * stable mesh pointer even if a future worker thread publishes a new
+     * one mid-draw. Lifetime guarantee: with single-slot retired_mesh
+     * and at-most-one publish per chunk per frame, the pointer survives
+     * until the next frame's drain sweep. */
+    const ChunkMesh *mesh;
     float distance_sq;
 } ChunkDrawCandidate;
 
@@ -1979,11 +1985,12 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
     for (int i = 0; i < world->chunk_count; i++) {
         const Chunk *chunk = &world->chunks[i];
+        const ChunkMesh *mesh;
 
-        if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
-            !(chunk->flags & CHUNK_FLAG_MESH_READY))
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
-        if (!chunk->faces || chunk->face_count <= 0)
+        mesh = atomic_load_explicit(&chunk->live_mesh, memory_order_acquire);
+        if (!mesh || mesh->face_count <= 0)
             continue;
         if (!chunk_within_render_distance(ctx, world, chunk))
             continue;
@@ -1992,6 +1999,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
         candidates[candidate_count++] = (ChunkDrawCandidate){
             .chunk = chunk,
+            .mesh = mesh,
             .distance_sq = chunk_distance_sq_to_camera(ctx, chunk),
         };
     }
@@ -2018,9 +2026,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      */
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
+        const ChunkMesh *mesh = candidates[i].mesh;
 
-        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-            const ChunkFace *face = &chunk->faces[face_index];
+        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+            const ChunkFace *face = &mesh->faces[face_index];
             BlockID id = (BlockID)face->type;
 
             if (block_is_translucent(id))
@@ -2057,10 +2066,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      */
     int n_translucent_candidates = 0;
     for (int i = 0; i < candidate_count; i++) {
-        const Chunk *chunk = candidates[i].chunk;
+        const ChunkMesh *mesh = candidates[i].mesh;
 
-        for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-            if (block_is_translucent((BlockID)chunk->faces[face_index].type))
+        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+            if (block_is_translucent((BlockID)mesh->faces[face_index].type))
                 n_translucent_candidates++;
         }
     }
@@ -2071,9 +2080,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
         for (int i = 0; i < candidate_count; i++) {
             const Chunk *chunk = candidates[i].chunk;
+            const ChunkMesh *mesh = candidates[i].mesh;
 
-            for (int face_index = 0; face_index < chunk->face_count; face_index++) {
-                const ChunkFace *face = &chunk->faces[face_index];
+            for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+                const ChunkFace *face = &mesh->faces[face_index];
                 if (!block_is_translucent((BlockID)face->type))
                     continue;
 

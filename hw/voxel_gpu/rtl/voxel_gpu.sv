@@ -1067,10 +1067,18 @@ module voxel_gpu (
      * Keep SDRAM read-side cache loads restricted to blanking; those are the
      * risky path for RD FIFO tail data.
      */
+    /*
+     * Gates background band-cache flushes (writes to SDRAM) on scanout having
+     * enough headroom. We require target + immediate_next resident, but NOT
+     * far_next: the 2-line prefetch is best-effort and is now bank-protected
+     * once it lands, so it doesn't need to also block writes. Including
+     * far_next here starved world-block flushes whenever scanout was 2 lines
+     * behind — sky and HUD bands snuck through during vsync, but the bulk of
+     * world geometry never made it back to SDRAM, so ground/blocks vanished.
+     */
     wire        scan_prefetch_margin_ready =
         scan_target_or_active_ready &&
         scan_immediate_next_line_ready &&
-        scan_far_next_line_ready &&
         (!scan_prefetch_valid || scan_prefetch_ready);
     wire        scan_active_write_window = vcount_visible &&
                                            (hcount < ACTIVE_WRITE_END_HCOUNT);

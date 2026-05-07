@@ -593,12 +593,22 @@ static bool camera_quad_outside_view(RenderContext *ctx, const CameraVertex v[4]
     bool outside_top = true;
     bool outside_bottom = true;
 
+    /*
+     * The side-plane tests (x + x_slope*z < 0, etc.) are valid only for
+     * vertices in front of the near plane. For z <= 0, x_slope*z is non-positive,
+     * so the test can flip sign and false-positive — a vertex behind the camera
+     * with any x looks "to the left of left" by this math, which used to cull
+     * any face that had a vertex behind the player. Gate side-plane votes on
+     * z >= NEAR_PLANE; a partially-behind face only gets culled if every vertex
+     * is behind the near plane.
+     */
     for (int i = 0; i < 4; i++) {
-        outside_near &= (v[i].z < NEAR_PLANE);
-        outside_left &= (v[i].x + x_slope * v[i].z < 0.0f);
-        outside_right &= (-v[i].x + x_slope * v[i].z < 0.0f);
-        outside_top &= (y_slope * v[i].z - v[i].y < 0.0f);
-        outside_bottom &= (v[i].y + y_slope * v[i].z < 0.0f);
+        bool z_in_front = (v[i].z >= NEAR_PLANE);
+        outside_near &= !z_in_front;
+        outside_left &= z_in_front && (v[i].x + x_slope * v[i].z < 0.0f);
+        outside_right &= z_in_front && (-v[i].x + x_slope * v[i].z < 0.0f);
+        outside_top &= z_in_front && (y_slope * v[i].z - v[i].y < 0.0f);
+        outside_bottom &= z_in_front && (v[i].y + y_slope * v[i].z < 0.0f);
     }
 
     return outside_near || outside_left || outside_right ||

@@ -946,27 +946,39 @@ module voxel_gpu (
         (scan_line0_ready && (scan_line0_row == scan_prefetch_row)) ||
         (scan_line1_ready && (scan_line1_row == scan_prefetch_row)) ||
         (scan_line2_ready && (scan_line2_row == scan_prefetch_row));
+    /* Protect any bank holding a row scanout will need before it can be
+     * legitimately reloaded: current (showing now), target (next at hblank),
+     * immediate_next (current+1), and far_next (current+2). Without far_next
+     * protection a 2-line prefetch could land in bank X and then be evicted
+     * by the next prefetch tick — wasting the SDRAM burst and increasing
+     * the chance scanout falls behind. */
     wire        scan_bank0_protected    =
         scan_line0_ready &&
         ((scan_line0_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line0_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line0_row == scan_immediate_next_row)));
+          (scan_line0_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line0_row == scan_far_next_row)));
     wire        scan_bank1_protected    =
         scan_line1_ready &&
         ((scan_line1_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line1_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line1_row == scan_immediate_next_row)));
+          (scan_line1_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line1_row == scan_far_next_row)));
     wire        scan_bank2_protected    =
         scan_line2_ready &&
         ((scan_line2_row == scan_current_row) ||
          (scan_target_valid &&
           (scan_line2_row == scan_target_row)) ||
          (scan_immediate_next_valid &&
-          (scan_line2_row == scan_immediate_next_row)));
+          (scan_line2_row == scan_immediate_next_row)) ||
+         (scan_far_next_valid &&
+          (scan_line2_row == scan_far_next_row)));
     wire        scan_bank0_free         = (scan_active_bank != 2'd0) &&
                                           !scan_bank0_protected;
     wire        scan_bank1_free         = (scan_active_bank != 2'd1) &&
@@ -1055,10 +1067,18 @@ module voxel_gpu (
      * Keep SDRAM read-side cache loads restricted to blanking; those are the
      * risky path for RD FIFO tail data.
      */
+    /*
+     * Gates background band-cache flushes (writes to SDRAM) on scanout having
+     * enough headroom. We require target + immediate_next resident, but NOT
+     * far_next: the 2-line prefetch is best-effort and is now bank-protected
+     * once it lands, so it doesn't need to also block writes. Including
+     * far_next here starved world-block flushes whenever scanout was 2 lines
+     * behind — sky and HUD bands snuck through during vsync, but the bulk of
+     * world geometry never made it back to SDRAM, so ground/blocks vanished.
+     */
     wire        scan_prefetch_margin_ready =
         scan_target_or_active_ready &&
         scan_immediate_next_line_ready &&
-        scan_far_next_line_ready &&
         (!scan_prefetch_valid || scan_prefetch_ready);
     wire        scan_active_write_window = vcount_visible &&
                                            (hcount < ACTIVE_WRITE_END_HCOUNT);
@@ -1555,13 +1575,17 @@ module voxel_gpu (
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            band_word_offset = band * 25'd40960;
+            /* band * 40960 = band*32768 + band*8192 = (band<<15) + (band<<13).
+             * Encoding as shift+add avoids a synthesized variable-width
+             * multiplier whose result mis-aliased on the Cyclone V build. */
+            band_word_offset = {7'd0, band, 15'd0} + {9'd0, band, 13'd0};
         end
     endfunction
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            band_base_row = band * 9'd64;
+            /* band * 64 == band << 6 */
+            band_base_row = {band, 6'd0};
         end
     endfunction
 

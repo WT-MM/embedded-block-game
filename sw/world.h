@@ -159,6 +159,15 @@ void chunk_mesh_free_retired(Chunk *chunk);
 void world_lock(VoxelWorld *world);
 void world_unlock(VoxelWorld *world);
 
+/* True if any in-array neighbor of (chunk_x, chunk_z) has CHUNK_FLAG_LOADING
+ * set (and not yet CHUNK_FLAG_LOADED). Used by the mesh-rebuild path to
+ * defer a chunk's mesh until all its neighbors are stable, avoiding
+ * O(neighbors) re-meshes during async chunk load waves. Neighbors that
+ * are not in chunks[] (outside the load radius) do not count.
+ * Caller must hold world->world_mu. */
+bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
+                                             int chunk_x, int chunk_z);
+
 /* Result buffer for off-thread chunk generation. Sized to a single chunk
  * - the worker fills this without holding world->world_mu, then hands it
  * to world_finalize_async_chunk_load for integration. */

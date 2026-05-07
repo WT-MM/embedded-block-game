@@ -222,6 +222,13 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
         any_dirty = true;
         if (chunk->flags & CHUNK_FLAG_MESH_QUEUED)
             continue;
+        /* Defer until neighbors are stable - otherwise async chunk-load
+         * waves trigger O(neighbors) re-meshes per chunk. The last
+         * neighbor's finalize will re-assert MESH_DIRTY on our chunk. */
+        if (world_chunk_has_loading_neighbor_locked(world,
+                                                    chunk->chunk_x,
+                                                    chunk->chunk_z))
+            continue;
 
         MeshJob job = {
             .chunk_x = chunk->chunk_x,

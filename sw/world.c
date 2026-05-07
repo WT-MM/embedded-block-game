@@ -792,6 +792,27 @@ static void mark_chunk_and_neighbors_dirty(VoxelWorld *world, int chunk_x, int c
     mark_chunk_coord_dirty(world, chunk_x, chunk_z + 1);
 }
 
+static bool neighbor_is_loading_locked(const VoxelWorld *world,
+                                       int chunk_x, int chunk_z)
+{
+    int idx = chunk_lookup_find_index(world, chunk_x, chunk_z);
+    if (idx < 0)
+        return false;
+    const Chunk *n = &world->chunks[idx];
+    return (n->flags & CHUNK_FLAG_LOADING) && !(n->flags & CHUNK_FLAG_LOADED);
+}
+
+bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
+                                             int chunk_x, int chunk_z)
+{
+    if (!world)
+        return false;
+    return neighbor_is_loading_locked(world, chunk_x - 1, chunk_z) ||
+           neighbor_is_loading_locked(world, chunk_x + 1, chunk_z) ||
+           neighbor_is_loading_locked(world, chunk_x, chunk_z - 1) ||
+           neighbor_is_loading_locked(world, chunk_x, chunk_z + 1);
+}
+
 /*
  * A chunk needs re-meshing when one of its neighbors has been added or removed
  * since its last mesh, because an unloaded neighbor shows up as AIR in
@@ -1899,6 +1920,15 @@ static bool world_rebuild_dirty_meshes_locked(VoxelWorld *world)
         if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
             !(chunk->flags & CHUNK_FLAG_MESH_DIRTY) ||
             (chunk->flags & CHUNK_FLAG_MESH_QUEUED))
+            continue;
+        /* Defer if any neighbor is still LOADING - meshing now would
+         * see those neighbors as AIR (per world_get_block) and require
+         * a re-mesh as soon as the neighbor finalizes, which is the
+         * O(neighbors) amplification that crushed FPS during async
+         * chunk-load waves. The neighbor's finalize re-marks us dirty. */
+        if (world_chunk_has_loading_neighbor_locked(world,
+                                                    chunk->chunk_x,
+                                                    chunk->chunk_z))
             continue;
 
         if (rebuild_chunk_faces(world, chunk)) {

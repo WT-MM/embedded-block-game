@@ -39,8 +39,8 @@ static bool affinity_enabled(void)
     const char *value = getenv("VOXEL_PIN_THREADS");
 
     if (!value || value[0] == '\0')
-        return true;
-    return !env_value_is_false(value);
+        return false;
+    return env_value_is_true(value);
 }
 #endif
 

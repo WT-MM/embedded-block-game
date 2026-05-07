@@ -3293,7 +3293,9 @@ Why:
 Changes:
 
   * Added Linux-only CPU affinity helpers:
-    - `VOXEL_PIN_THREADS=0` disables all pinning.
+    - `VOXEL_PIN_THREADS=1` enables pinning. It defaults off after field
+      testing showed forced pinning could make boundary-crossing FPS worse
+      on the DE1-SoC image.
     - `VOXEL_MAIN_CPU` defaults to `0`.
     - `VOXEL_MESH_CPU` defaults to `1`.
     - `VOXEL_GEN_CPU` defaults to `1`.
@@ -3308,6 +3310,30 @@ Changes:
     - `light`
     - `gen`
     - `mesh`
+
+May 7 2026: Faster Stream Window Retention
+------------------------------------------
+
+Finding:
+
+  * The granular perf log showed the async-era FPS drops were dominated by
+    `stream=...`, often tens of milliseconds. Lighting, gen-drain, and
+    mesh-drain were usually near zero.
+  * `retain_chunks_in_window()` compacted the active chunk array by copying
+    almost every retained `Chunk` after the first eviction. A `Chunk` owns
+    block arrays, light arrays, mesh atomics, and face scratch pointers, so
+    this was a large foreground memcpy on every chunk-boundary crossing.
+
+Change:
+
+  * Retention now fills holes from the right edge of the active range,
+    copying at most roughly the number of evicted slots instead of all
+    retained slots after the first hole. Chunk order is no longer stable,
+    but all readers already go through `chunk_lookup`, which is rebuilt
+    after retention.
+  * Async placeholder allocation no longer clears block/sky arrays that are
+    invisible while `CHUNK_FLAG_LOADING` is set. `block_light` is cleared at
+    finalize because async results currently copy blocks + sky only.
 
 Lighting direction:
 

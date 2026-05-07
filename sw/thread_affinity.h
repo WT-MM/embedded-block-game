@@ -2,12 +2,12 @@
 #define THREAD_AFFINITY_H
 
 /*
- * Runtime CPU affinity helpers. On Linux, VOXEL_PIN_THREADS defaults on and
+ * Runtime CPU affinity helpers. On Linux, VOXEL_PIN_THREADS defaults off and
  * each caller may choose a default CPU plus an env override. On non-Linux
  * hosts these functions are no-ops so laptop builds keep working.
  *
  * Env:
- *   VOXEL_PIN_THREADS=0       disables all pinning
+ *   VOXEL_PIN_THREADS=1       enables pinning
  *   VOXEL_MAIN_CPU=N          main/render thread CPU, default 0
  *   VOXEL_MESH_CPU=N          mesh worker CPU, default 1
  *   VOXEL_GEN_CPU=N           chunk-gen worker CPU, default 1

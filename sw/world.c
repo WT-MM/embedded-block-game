@@ -757,8 +757,6 @@ static void initialize_chunk_slot_pending(Chunk *chunk,
 {
     uint32_t generation = chunk->generation + 1u;
 
-    clear_chunk_blocks(chunk);
-    clear_chunk_lighting(chunk);
     chunk->chunk_x = chunk_x;
     chunk->chunk_z = chunk_z;
     chunk->flags = CHUNK_FLAG_LOADING;
@@ -2141,38 +2139,61 @@ static void retain_chunks_in_window(VoxelWorld *world,
                                     int origin_chunk_z,
                                     int diameter)
 {
-    int out = 0;
+    int left = 0;
+    int right;
+    int old_count;
 
-    for (int i = 0; i < world->chunk_count; i++) {
-        Chunk chunk = world->chunks[i];
-        /* Keep both LOADED and LOADING slots: a LOADING slot still has a
-         * pending gen-worker job tied to its (coords, generation), and
-         * dropping it would leak that job and let a follow-up stream
-         * pass double-allocate. */
-        bool keep = chunk_slot_is_present(&chunk) &&
-                    chunk_in_window(chunk.chunk_x, chunk.chunk_z,
+    if (!world || world->chunk_count <= 0)
+        return;
+
+    old_count = world->chunk_count;
+    right = old_count - 1;
+
+    while (left <= right) {
+        Chunk *chunk = &world->chunks[left];
+        bool keep = chunk_slot_is_present(chunk) &&
+                    chunk_in_window(chunk->chunk_x, chunk->chunk_z,
                                     origin_chunk_x, origin_chunk_z,
                                     diameter);
 
         if (keep) {
-            if (out != i) {
-                world->chunks[out] = chunk;
-                memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
-            }
-            world->chunks[out].last_used_epoch = world->stream_epoch;
+            chunk->last_used_epoch = world->stream_epoch;
             world->chunks_reused_last_stream++;
-            out++;
+            left++;
+            continue;
+        }
+
+        release_chunk(chunk);
+
+        while (left < right) {
+            Chunk *tail = &world->chunks[right];
+            bool tail_keep = chunk_slot_is_present(tail) &&
+                             chunk_in_window(tail->chunk_x, tail->chunk_z,
+                                             origin_chunk_x, origin_chunk_z,
+                                             diameter);
+
+            if (tail_keep)
+                break;
+            release_chunk(tail);
+            right--;
+        }
+
+        if (left < right) {
+            world->chunks[left] = world->chunks[right];
+            memset(&world->chunks[right], 0, sizeof(world->chunks[right]));
+            world->chunks[left].last_used_epoch = world->stream_epoch;
+            world->chunks_reused_last_stream++;
+            left++;
+            right--;
         } else {
-            release_chunk(&world->chunks[i]);
+            right--;
         }
     }
 
-    for (int i = out; i < world->chunk_capacity; i++) {
-        if (i >= world->chunk_count)
-            memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
-    }
+    for (int i = left; i < old_count; i++)
+        memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
 
-    world->chunk_count = out;
+    world->chunk_count = left;
 }
 
 static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
@@ -2282,6 +2303,7 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             memcpy(chunk->blocks, result->blocks, sizeof(chunk->blocks));
             memcpy(chunk->sky_light, result->sky_light,
                    sizeof(chunk->sky_light));
+            memset(chunk->block_light, 0, sizeof(chunk->block_light));
             chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
             chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
             if (result->has_light_emitters)

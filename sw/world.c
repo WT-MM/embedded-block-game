@@ -831,6 +831,21 @@ bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
            neighbor_is_loading_locked(world, chunk_x, chunk_z + 1);
 }
 
+void world_mark_chunk_mesh_edit_priority(VoxelWorld *world, int wx, int wz)
+{
+    if (!world)
+        return;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+
+    world_lock(world);
+    Chunk *chunk = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
+    if (chunk && (chunk->flags & CHUNK_FLAG_LOADED))
+        chunk->flags |= CHUNK_FLAG_MESH_EDIT_PRIORITY;
+    world_unlock(world);
+}
+
 /*
  * A chunk needs re-meshing when one of its neighbors has been added or removed
  * since its last mesh, because an unloaded neighbor shows up as AIR in
@@ -1437,17 +1452,65 @@ static void update_column_sky_light(VoxelWorld *world, int wx, int wz)
     }
 }
 
+/*
+ * Per-chunk snapshot used by world_rebuild_lighting_locked to detect which
+ * chunks actually had a lighting delta after a full rebuild. Without this,
+ * every rebuild marks the entire 9x9 window mesh-dirty, causing ~17 frames
+ * of mesh-worker churn even when nothing actually changed (stable world,
+ * stationary lights). With it, an idle rebuild marks zero chunks.
+ */
+typedef struct {
+    uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    uint8_t block_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    bool prior_dirty;
+    bool changed;
+} LightRebuildSnap;
+
 static bool world_rebuild_lighting_locked(VoxelWorld *world)
 {
     LightNode *queue = NULL;
     size_t queue_head = 0;
     size_t queue_tail = 0;
     size_t queue_capacity = 0;
+    LightRebuildSnap *snaps = NULL;
+    bool diff_dirty_marking = false;
 
     if (!world)
         return false;
     if (world->chunk_count <= 0)
         return true;
+
+    /*
+     * Snapshot light arrays + prior MESH_DIRTY before clearing/rebuilding.
+     * We then clear MESH_DIRTY on loaded chunks so any in-BFS calls to
+     * mark_chunk_and_adjacent_dirty_for_block don't leak through - those
+     * fire on every cell write from clear -> rebuilt and would mark most
+     * of the window dirty regardless of whether the *final* light values
+     * actually differ. Post-rebuild we re-mark dirty only where memcmp
+     * shows an actual delta (or a cardinal neighbor's lighting moved,
+     * since face shading samples across chunk boundaries).
+     *
+     * On allocation failure we fall back to the old "mark everything
+     * dirty" behavior so a low-memory state never silently drops mesh
+     * updates.
+     */
+    snaps = malloc((size_t)world->chunk_count * sizeof(*snaps));
+    if (snaps) {
+        diff_dirty_marking = true;
+        for (int i = 0; i < world->chunk_count; i++) {
+            Chunk *chunk = &world->chunks[i];
+
+            snaps[i].prior_dirty = !!(chunk->flags & CHUNK_FLAG_MESH_DIRTY);
+            snaps[i].changed = false;
+            if (chunk->flags & CHUNK_FLAG_LOADED) {
+                memcpy(snaps[i].sky_light, chunk->sky_light,
+                       sizeof(snaps[i].sky_light));
+                memcpy(snaps[i].block_light, chunk->block_light,
+                       sizeof(snaps[i].block_light));
+                chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
+            }
+        }
+    }
 
     clear_world_lighting(world);
 
@@ -1491,6 +1554,7 @@ static bool world_rebuild_lighting_locked(VoxelWorld *world)
                                               .wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z,
                                           })) {
                         free(queue);
+                        free(snaps);
                         return false;
                     }
                 }
@@ -1500,12 +1564,58 @@ static bool world_rebuild_lighting_locked(VoxelWorld *world)
 
     if (!propagate_block_light(world, &queue, &queue_capacity, queue_head, &queue_tail)) {
         free(queue);
+        free(snaps);
         return false;
     }
 
     free(queue);
-    mark_all_loaded_chunks_mesh_dirty(world);
-    world->meshes_dirty = true;
+
+    if (diff_dirty_marking) {
+        for (int i = 0; i < world->chunk_count; i++) {
+            Chunk *chunk = &world->chunks[i];
+
+            if (!(chunk->flags & CHUNK_FLAG_LOADED))
+                continue;
+            if (memcmp(chunk->sky_light, snaps[i].sky_light,
+                       sizeof(snaps[i].sky_light)) != 0 ||
+                memcmp(chunk->block_light, snaps[i].block_light,
+                       sizeof(snaps[i].block_light)) != 0) {
+                snaps[i].changed = true;
+            }
+        }
+
+        bool any_dirty = false;
+        static const int dx[4] = { -1, 1, 0, 0 };
+        static const int dz[4] = { 0, 0, -1, 1 };
+        for (int i = 0; i < world->chunk_count; i++) {
+            Chunk *chunk = &world->chunks[i];
+
+            if (!(chunk->flags & CHUNK_FLAG_LOADED))
+                continue;
+
+            bool dirty = snaps[i].prior_dirty || snaps[i].changed;
+            if (!dirty) {
+                for (int d = 0; d < 4; d++) {
+                    int nidx = chunk_lookup_find_index(world,
+                                                       chunk->chunk_x + dx[d],
+                                                       chunk->chunk_z + dz[d]);
+                    if (nidx >= 0 && snaps[nidx].changed) {
+                        dirty = true;
+                        break;
+                    }
+                }
+            }
+            if (dirty) {
+                chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+                any_dirty = true;
+            }
+        }
+        free(snaps);
+        world->meshes_dirty = any_dirty;
+    } else {
+        mark_all_loaded_chunks_mesh_dirty(world);
+        world->meshes_dirty = true;
+    }
     return true;
 }
 

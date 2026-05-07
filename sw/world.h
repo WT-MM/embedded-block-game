@@ -50,6 +50,12 @@ typedef enum {
     /* Set on a LOADING chunk after gen_worker_drain_pending pushes it
      * to the queue, so the next drain pass does not re-enqueue it. */
     CHUNK_FLAG_GEN_QUEUED   = 1u << 7,
+    /* Set by the main thread after a player edit so the next
+     * mesh_worker_drain_dirty pass routes this chunk through the
+     * worker's priority lane (head-of-line) instead of the back of
+     * the main FIFO. Cleared by drain when the chunk is pushed onto
+     * the priority queue. */
+    CHUNK_FLAG_MESH_EDIT_PRIORITY = 1u << 8,
 } ChunkFlags;
 
 typedef struct {
@@ -170,6 +176,13 @@ void world_unlock(VoxelWorld *world);
  * Caller must hold world->world_mu. */
 bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
                                              int chunk_x, int chunk_z);
+
+/* Mark the chunk containing (wx, wz) with CHUNK_FLAG_MESH_EDIT_PRIORITY
+ * so mesh_worker_drain_dirty routes it through the worker's priority
+ * lane on its next pass. Use after a player edit to get sub-frame mesh
+ * response even when the main mesh queue is backlogged. Caller must
+ * NOT hold world->world_mu. */
+void world_mark_chunk_mesh_edit_priority(VoxelWorld *world, int wx, int wz);
 
 /* Worker-owned snapshot scratch used by world_run_mesh_job. Holds a self
  * + 4 cardinal neighbor Chunks plus a face scratch buffer. Allocate once

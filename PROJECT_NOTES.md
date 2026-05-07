@@ -3379,3 +3379,71 @@ Lighting direction:
       from affected emitters and cap light nodes per frame.
     - Render old light until the queued light update finishes, same as old
       meshes stay visible until a worker publishes a new mesh.
+
+May 7 2026: Three Latency Trims (Light Diff, Late Mouse, Edit Priority)
+-----------------------------------------------------------------------
+
+Context:
+
+  * After deferred lighting landed, perf logs showed solid 30 FPS with
+    `mesh=1.7ms` for ~17 frames after each `light=2.7-3.6ms` rebuild. Three
+    distinct opportunities remained: a post-light mesh wave that re-meshed
+    chunks whose lighting did not actually change, a 5-15 ms input-to-display
+    gap on heavy frames, and slow click response when the mesh queue carried
+    a backlog.
+
+Light-rebuild diff:
+
+  * `world_rebuild_lighting_locked()` previously ended with
+    `mark_all_loaded_chunks_mesh_dirty()`. On a stable world (no edits, no
+    new chunks, lights unchanged) the rebuild produces identical light
+    arrays, but the worker still chewed through the entire 9x9 window.
+  * It now snapshots `sky_light` and `block_light` per loaded chunk before
+    `clear_world_lighting()`, clears `MESH_DIRTY` (so BFS-time
+    `mark_chunk_and_adjacent_dirty_for_block` calls do not leak through),
+    then post-rebuild memcmps against the snapshot. A chunk re-enters dirty
+    only if its own lighting changed, its prior dirty state was set, or any
+    cardinal neighbor's lighting changed (face shading samples across).
+  * On allocation failure it falls back to the old "mark all" path.
+  * Net: an idle relight is now zero post-rebuild mesh work.
+
+Late mouse re-sample:
+
+  * `game.c` now calls `input_update()` a second time right before
+    `renderer_set_camera()` and folds the accumulated mouse delta into the
+    camera there. The early apply at the top of the loop still feeds physics
+    direction, which is what `wish_x/wish_z` depend on.
+  * Edge events (jump, break, place) the late poll picks up are not
+    consumed in the late phase - they roll into the next frame's normal
+    handling, so we never lose a press.
+  * Closes the input-to-display gap from "frame top" to "render start"
+    (typically 5-15 ms on the FPGA target on busy frames).
+
+Mesh worker priority lane:
+
+  * Added a small (32-slot) priority FIFO to `mesh_worker.c` alongside the
+    existing 1024-slot main queue. The worker pops priority first, falls
+    back to main queue.
+  * New `CHUNK_FLAG_MESH_EDIT_PRIORITY` flag and
+    `world_mark_chunk_mesh_edit_priority(world, wx, wz)` API.
+    `try_break_targeted_block` and `try_place_targeted_block` set the flag
+    on the edited chunk after `world_set_block` returns true.
+  * `mesh_worker_drain_dirty` now branches on the flag: priority chunks
+    bypass the per-frame push cap and route to the priority queue. If a
+    chunk is already in the main queue and the priority flag is set, drain
+    pushes a fresh job (current generation) onto the priority queue; the
+    older main-queue copy is discarded by `world_run_mesh_job`'s generation
+    check when it eventually pops.
+  * Priority queue full -> leave `MESH_EDIT_PRIORITY` set, retry next
+    frame; no fallback to main queue (we want head-of-line semantics).
+  * Net: click-to-mesh stays sub-frame even when the main queue carries a
+    streaming backlog.
+
+Files touched:
+
+  * `sw/world.c`, `sw/world.h` - light-rebuild diff, new `MESH_EDIT_PRIORITY`
+    flag, `world_mark_chunk_mesh_edit_priority` implementation.
+  * `sw/mesh_worker.c` - priority queue ring, dual-pop worker logic, drain
+    routing.
+  * `sw/game.c` - late mouse re-sample before `renderer_set_camera`,
+    priority-flag calls in the break/place handlers.

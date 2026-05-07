@@ -328,9 +328,16 @@ static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
 
-    return world_set_block(world,
-                           target.hit_x, target.hit_y, target.hit_z,
-                           BLOCK_AIR);
+    if (!world_set_block(world,
+                         target.hit_x, target.hit_y, target.hit_z,
+                         BLOCK_AIR))
+        return false;
+
+    /* Route the edited chunk through the mesh worker's priority lane so
+     * the broken-block visual lands on the next frame even if the main
+     * queue carries a backlog. */
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    return true;
 }
 
 static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
@@ -348,9 +355,13 @@ static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
     if (player_intersects_block(player, target.place_x, target.place_y, target.place_z))
         return false;
 
-    return world_set_block(world,
-                           target.place_x, target.place_y, target.place_z,
-                           type);
+    if (!world_set_block(world,
+                         target.place_x, target.place_y, target.place_z,
+                         type))
+        return false;
+
+    world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
+    return true;
 }
 
 static void draw_hotbar_digit(RenderContext *ctx, int digit,
@@ -745,6 +756,24 @@ int main(void)
 
         struct timespec render_start, begin_end, draw_end, end_end;
         clock_gettime(CLOCK_MONOTONIC, &render_start);
+
+        /* Late mouse re-sample: pull any motion that arrived during the
+         * stream/lighting/mesh phases and fold it into the camera before
+         * we hand it to the renderer. The early apply at the top of the
+         * loop still feeds physics direction; this just closes the
+         * input-to-display gap (~5-15 ms on the FPGA target) on the
+         * frames where update work isn't trivial. Keys are not consumed
+         * here - any edge events the second poll picks up roll into the
+         * next frame's normal input handling. */
+        if (!paused) {
+            input_update(&inp);
+            cam.yaw   += inp.mouse_dx * mouse_sens;
+            cam.pitch -= inp.mouse_dy * mouse_sens;
+            if (cam.pitch >  PITCH_LIMIT) cam.pitch =  PITCH_LIMIT;
+            if (cam.pitch < -PITCH_LIMIT) cam.pitch = -PITCH_LIMIT;
+            input_clear_mouse(&inp);
+        }
+
         renderer_set_camera(ctx, &cam);
         renderer_begin_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &begin_end);

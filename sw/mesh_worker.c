@@ -25,6 +25,13 @@
  * re-streamed before the worker got to it).
  */
 #define MESH_JOB_QUEUE_CAPACITY 1024u
+/* Small head-of-line lane for player-edit driven rebuilds. The worker
+ * pops from here first, so a click-to-mesh path stays sub-frame even
+ * when the main queue carries a backlog from streaming or a lighting
+ * rebuild. Sized for "many simultaneous edits" (e.g. a sweep of
+ * placements); overflow falls back to leaving CHUNK_FLAG_MESH_EDIT_PRIORITY
+ * set so the next drain pass retries. */
+#define MESH_PRIORITY_QUEUE_CAPACITY 32u
 
 typedef struct {
     int chunk_x;
@@ -42,6 +49,9 @@ static struct {
     MeshJob queue[MESH_JOB_QUEUE_CAPACITY];
     unsigned head;          /* next pop index */
     unsigned tail;          /* next push index */
+    MeshJob priority_queue[MESH_PRIORITY_QUEUE_CAPACITY];
+    unsigned priority_head;
+    unsigned priority_tail;
     _Atomic bool stop;
     bool running;
 
@@ -106,6 +116,29 @@ static bool queue_pop_unlocked(MeshJob *out)
     return true;
 }
 
+static unsigned priority_count_unlocked(void)
+{
+    return g_worker.priority_tail - g_worker.priority_head;
+}
+
+static bool priority_push_unlocked(const MeshJob *job)
+{
+    if (priority_count_unlocked() >= MESH_PRIORITY_QUEUE_CAPACITY)
+        return false;
+    g_worker.priority_queue[g_worker.priority_tail & (MESH_PRIORITY_QUEUE_CAPACITY - 1u)] = *job;
+    g_worker.priority_tail++;
+    return true;
+}
+
+static bool priority_pop_unlocked(MeshJob *out)
+{
+    if (priority_count_unlocked() == 0)
+        return false;
+    *out = g_worker.priority_queue[g_worker.priority_head & (MESH_PRIORITY_QUEUE_CAPACITY - 1u)];
+    g_worker.priority_head++;
+    return true;
+}
+
 static void *mesh_worker_thread(void *arg)
 {
     VoxelWorld *world = (VoxelWorld *)arg;
@@ -118,15 +151,20 @@ static void *mesh_worker_thread(void *arg)
 
         pthread_mutex_lock(&g_worker.queue_mu);
         while (!atomic_load_explicit(&g_worker.stop, memory_order_acquire) &&
+               priority_count_unlocked() == 0 &&
                queue_count_unlocked() == 0) {
             pthread_cond_wait(&g_worker.queue_cv, &g_worker.queue_mu);
         }
         if (atomic_load_explicit(&g_worker.stop, memory_order_acquire) &&
+            priority_count_unlocked() == 0 &&
             queue_count_unlocked() == 0) {
             pthread_mutex_unlock(&g_worker.queue_mu);
             break;
         }
-        got_job = queue_pop_unlocked(&job);
+        /* Priority lane drains first: head-of-line for player edits. */
+        got_job = priority_pop_unlocked(&job);
+        if (!got_job)
+            got_job = queue_pop_unlocked(&job);
         pthread_mutex_unlock(&g_worker.queue_mu);
 
         if (!got_job)
@@ -261,16 +299,27 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
             !(chunk->flags & CHUNK_FLAG_MESH_DIRTY))
             continue;
         any_dirty = true;
-        if (chunk->flags & CHUNK_FLAG_MESH_QUEUED)
+
+        bool is_priority = !!(chunk->flags & CHUNK_FLAG_MESH_EDIT_PRIORITY);
+        bool already_queued = !!(chunk->flags & CHUNK_FLAG_MESH_QUEUED);
+
+        /* Already in main queue and not flagged for priority routing -
+         * the existing job will run when its turn comes up. */
+        if (already_queued && !is_priority)
             continue;
-        if (pushed_count >= cap)
-            break;
         /* Defer until neighbors are stable - otherwise async chunk-load
          * waves trigger O(neighbors) re-meshes per chunk. The last
-         * neighbor's finalize will re-assert MESH_DIRTY on our chunk. */
+         * neighbor's finalize will re-assert MESH_DIRTY on our chunk.
+         * Priority chunks defer too: meshing now would just produce a
+         * stale snapshot we'd have to redo when the neighbor lands. */
         if (world_chunk_has_loading_neighbor_locked(world,
                                                     chunk->chunk_x,
                                                     chunk->chunk_z))
+            continue;
+        /* Per-frame cap is for streaming/light-driven dirties. Priority
+         * pushes bypass it - they are sourced from player edits, which
+         * are naturally rate-limited by the human at the controls. */
+        if (!is_priority && pushed_count >= cap)
             continue;
 
         MeshJob job = {
@@ -279,13 +328,31 @@ void mesh_worker_drain_dirty(VoxelWorld *world)
             .generation = chunk->generation,
         };
 
-        if (!queue_push_unlocked(&job)) {
-            /* Queue full - leave dirty bit set, retry next frame. */
-            break;
+        bool pushed;
+        if (is_priority) {
+            pushed = priority_push_unlocked(&job);
+            if (pushed)
+                chunk->flags &= ~CHUNK_FLAG_MESH_EDIT_PRIORITY;
+            /* Priority queue full: leave EDIT_PRIORITY+MESH_DIRTY set,
+             * retry next frame. Don't fall back to main queue - we
+             * specifically want head-of-line semantics for edits. */
+        } else {
+            pushed = queue_push_unlocked(&job);
         }
+
+        if (!pushed) {
+            if (is_priority)
+                continue;     /* try other priority/normal candidates */
+            break;            /* main queue full - retry next frame */
+        }
+
+        /* When already_queued && is_priority: there is now a stale
+         * generation copy in the main queue. world_run_mesh_job's
+         * generation check will discard it when it eventually pops. */
         chunk->flags |= CHUNK_FLAG_MESH_QUEUED;
         pushed_any = true;
-        pushed_count++;
+        if (!is_priority)
+            pushed_count++;
     }
 
     world->meshes_dirty = any_dirty;

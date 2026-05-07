@@ -4101,7 +4101,16 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
-                                draw_row_base <= draw_row_base + 16'd640;
+                                /* Only tick the local cache pointer once we've
+                                 * reached the active band. Before that, the
+                                 * pointer must stay at its initial x_start so
+                                 * that the first in-band row writes to local
+                                 * cache row 0. Without this gate, draw_row_base
+                                 * accumulates rows above the band and overflows
+                                 * its 16-bit width (480*640 > 65535), causing
+                                 * wrong cache offsets and visible 3x ghosting. */
+                                if (draw_band_index >= cache_band_index)
+                                    draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
@@ -4151,7 +4160,13 @@ module voxel_gpu (
                                 state <= ST_DRAW_FLUSH;
                                 draw_flush_count <= DRAW_FLUSH_CYCLES;
                             end else begin
-                                draw_row_base <= draw_row_base + 16'd640;
+                                /* See ST_DRAW (cache-hit) variant above for
+                                 * the rationale: gate the local cache pointer
+                                 * tick on draw_band_index >= cache_band_index
+                                 * to avoid 16-bit overflow of draw_row_base
+                                 * when iterating rows above the active band. */
+                                if (draw_band_index >= cache_band_index)
+                                    draw_row_base <= draw_row_base + 16'd640;
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;

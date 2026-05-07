@@ -158,6 +158,7 @@ void chunk_mesh_free_retired(Chunk *chunk);
  * the VoxelWorld internals. */
 void world_lock(VoxelWorld *world);
 void world_unlock(VoxelWorld *world);
+bool world_trylock(VoxelWorld *world);
 
 /* True if any in-array neighbor of (chunk_x, chunk_z) has CHUNK_FLAG_LOADING
  * set (and not yet CHUNK_FLAG_LOADED). Used by the mesh-rebuild path to

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /*
  * SPSC ring buffer of pending mesh-rebuild jobs. Push happens on the
@@ -106,12 +107,26 @@ static void *mesh_worker_thread(void *arg)
         if (!got_job)
             continue;
 
-        /* world_run_mesh_job handles the lock-snapshot-build-publish dance
-         * internally: world_mu is held only during the snapshot copy and
-         * the publish, not during the (much longer) greedy meshing. It
-         * also clears MESH_QUEUED on every exit path. */
-        (void)world_run_mesh_job(world, g_worker.scratch,
-                                 job.chunk_x, job.chunk_z, job.generation);
+        /* world_run_mesh_job uses trylock for Phase 1 (snapshot).
+         * If the main thread holds world_mu, it returns false without
+         * blocking. In that case we re-push the job and sleep briefly
+         * so the main thread gets the CPU and finishes its critical
+         * section. This prevents the mesh worker from ever stalling
+         * the main thread's world_stream_around / drain passes. */
+        if (!world_run_mesh_job(world, g_worker.scratch,
+                                 job.chunk_x, job.chunk_z,
+                                 job.generation)) {
+            /* Check if this was a trylock failure (job is still valid)
+             * vs a stale/evicted chunk (job should be dropped).
+             * Re-push and yield: if the chunk was truly stale, the
+             * re-pushed job will be discarded on the next attempt
+             * when generation doesn't match. */
+            pthread_mutex_lock(&g_worker.queue_mu);
+            if (!atomic_load_explicit(&g_worker.stop, memory_order_acquire))
+                queue_push_unlocked(&job);
+            pthread_mutex_unlock(&g_worker.queue_mu);
+            usleep(500);  /* 0.5 ms yield to main thread */
+        }
     }
 
     return NULL;

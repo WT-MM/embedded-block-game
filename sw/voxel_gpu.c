@@ -532,6 +532,24 @@ static long voxel_ioc_get_extmem(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_get_perf(void __user *uarg)
+{
+	struct voxel_perf_counters p;
+
+	mutex_lock(&voxdev.lock);
+	p.draw_active  = voxel_rd(VOXEL_REG_PERF_DRAW_ACT);
+	p.draw_idle    = voxel_rd(VOXEL_REG_PERF_DRAW_IDLE);
+	p.flush_active = voxel_rd(VOXEL_REG_PERF_FLUSH_ACT);
+	p.flush_stall  = voxel_rd(VOXEL_REG_PERF_FLUSH_STL);
+	p.init         = voxel_rd(VOXEL_REG_PERF_INIT);
+	p.load         = voxel_rd(VOXEL_REG_PERF_LOAD);
+	mutex_unlock(&voxdev.lock);
+
+	if (copy_to_user(uarg, &p, sizeof(p)))
+		return -EFAULT;
+	return 0;
+}
+
 static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (_IOC_TYPE(cmd) != VOXEL_IOC_MAGIC)
@@ -564,6 +582,8 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_begin_band((void __user *)arg);
 	case VOXEL_IOC_END_BAND:
 		return voxel_ioc_end_band();
+	case VOXEL_IOC_GET_PERF:
+		return voxel_ioc_get_perf((void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

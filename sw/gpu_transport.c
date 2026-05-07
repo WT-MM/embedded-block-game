@@ -1031,6 +1031,35 @@ done:
                 diag_cycles_ms(ready_cycles),
                 diag_cycles_ms(vsync_slots * DIAG_VGA_FRAME_CYCLES),
                 (unsigned long long)vsync_slots);
+        if (transport->hw_fd >= 0) {
+            /* HW perf counters reset on the next FLIP (writedata[1] to
+             * ADDR_CONTROL), so read them BEFORE gpu_transport_flip(). At
+             * 50 MHz, 50000 cycles = 1 ms. Counters can overlap (bg flush
+             * runs in parallel with raster + ping-pong init), so columns
+             * don't sum to wall-clock — they reveal the breakdown of what
+             * was happening during the frame. See PROJECT_NOTES.md. */
+            struct voxel_perf_counters perf;
+            if (ioctl(transport->hw_fd, VOXEL_IOC_GET_PERF, &perf) == 0) {
+                const double cyc_per_ms = 50000.0;
+                fprintf(stderr,
+                        "renderer: hw_perf draw_act=%5.2fms draw_idle=%5.2fms "
+                        "flush_act=%5.2fms flush_stall=%5.2fms "
+                        "init=%5.2fms load=%5.2fms "
+                        "(draw_busy=%.0f%% flush_busy=%.0f%%)\n",
+                        perf.draw_active  / cyc_per_ms,
+                        perf.draw_idle    / cyc_per_ms,
+                        perf.flush_active / cyc_per_ms,
+                        perf.flush_stall  / cyc_per_ms,
+                        perf.init         / cyc_per_ms,
+                        perf.load         / cyc_per_ms,
+                        (perf.draw_active + perf.draw_idle) ?
+                            100.0 * perf.draw_active /
+                                (double)(perf.draw_active + perf.draw_idle) : 0.0,
+                        (perf.flush_active + perf.flush_stall) ?
+                            100.0 * perf.flush_active /
+                                (double)(perf.flush_active + perf.flush_stall) : 0.0);
+            }
+        }
         {
             char idx_buf[64];
             size_t off = 0;
@@ -1319,11 +1348,10 @@ GPUTransport *gpu_transport_open(void)
 
     {
         const char *reuse = getenv("VOXEL_HW_BAND_REUSE");
-        g_hw_band_reuse =
-            (reuse && reuse[0] && strcmp(reuse, "0") != 0) ? 1 : 0;
+        g_hw_band_reuse = (reuse && reuse[0] && strcmp(reuse, "0") == 0) ? 0 : 1;
         if (g_hw_band_reuse && debug_enabled)
             fprintf(stderr,
-                    "renderer: VOXEL_HW_BAND_REUSE enabled (experimental full-band skip path)\n");
+                    "renderer: VOXEL_HW_BAND_REUSE enabled (full-band skip path; set =0 to disable)\n");
     }
 
     return transport;

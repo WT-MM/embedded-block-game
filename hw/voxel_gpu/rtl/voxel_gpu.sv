@@ -65,6 +65,12 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_EXTMEM_STAT = 13'h00C;
     localparam logic [12:0] ADDR_BAND_INDEX = 13'h00D;
     localparam logic [12:0] ADDR_BAND_CTRL = 13'h00E;
+    localparam logic [12:0] ADDR_PERF_DRAW_ACT  = 13'h010;
+    localparam logic [12:0] ADDR_PERF_DRAW_IDLE = 13'h011;
+    localparam logic [12:0] ADDR_PERF_FLUSH_ACT = 13'h012;
+    localparam logic [12:0] ADDR_PERF_FLUSH_STL = 13'h013;
+    localparam logic [12:0] ADDR_PERF_INIT      = 13'h014;
+    localparam logic [12:0] ADDR_PERF_LOAD      = 13'h015;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
@@ -164,6 +170,17 @@ module voxel_gpu (
     logic        display_valid;
     logic        copy_target_sel;         // inactive SDRAM color frame rendered this frame
     logic        copy_complete_pending;   // completed render frame waits for vsync display swap
+
+    // Per-frame perf counters (free-running, reset on FLIP write).
+    // Software reads via ADDR_PERF_* before issuing the FLIP that ends
+    // the frame, so the values reflect the just-completed frame.
+    // 50 MHz × 50000 cycles = 1 ms.
+    logic [31:0] perf_draw_active;   // ST_DRAW/ST_DRAW_FLUSH committing pixel
+    logic [31:0] perf_draw_idle;     // ST_DRAW/ST_DRAW_FLUSH no commit (starved)
+    logic [31:0] perf_flush_active;  // bg flush running AND word pushed this cyc
+    logic [31:0] perf_flush_stall;   // bg flush running AND no push (SDRAM stall)
+    logic [31:0] perf_init;          // ST_CACHE_INIT
+    logic [31:0] perf_load;          // ST_CACHE_LOAD_*/ST_CACHE_DRAIN_*
 
     // Palette lookup path: draw_pipe_color -> apply_light_bank ->
     // pal_rd_src_addr (registered) -> palette[] -> plr_src_rgb
@@ -4543,6 +4560,53 @@ module voxel_gpu (
         end
     end
 
+    /*
+     * Per-frame perf counters — accumulate while a frame is in flight,
+     * reset on the FLIP write that ends the frame. Software reads them
+     * just before issuing FLIP, so the values reflect the just-completed
+     * frame's activity. Kept in a separate always_ff so the main FSM
+     * stays untouched and these can be ifdef'd out cleanly later.
+     *
+     * Note: counters CAN overlap. Background flush runs in parallel with
+     * the rasterizer (perf_flush_active + perf_draw_active in the same
+     * cycle) and ST_CACHE_INIT runs on the opposite cache while a flush
+     * is in flight (perf_init + perf_flush_active). Sums therefore exceed
+     * wall-clock cycles by design.
+     */
+    wire perf_flip_write = wr && (address == ADDR_CONTROL) && writedata[1];
+    wire perf_in_draw    = (state == ST_DRAW) || (state == ST_DRAW_FLUSH);
+    wire perf_draw_commit = commit_valid || commit_valid_o;
+    wire perf_in_load    = (state == ST_CACHE_LOAD_COLOR) ||
+                           (state == ST_CACHE_LOAD_Z) ||
+                           (state == ST_CACHE_DRAIN_COLOR) ||
+                           (state == ST_CACHE_DRAIN_Z) ||
+                           (state == ST_CACHE_START_LOAD_Z);
+    wire perf_flush_push = bg_flush_wr_push || main_flush_wr_push;
+
+    always_ff @(posedge clk) begin
+        if (reset || perf_flip_write) begin
+            perf_draw_active  <= 32'd0;
+            perf_draw_idle    <= 32'd0;
+            perf_flush_active <= 32'd0;
+            perf_flush_stall  <= 32'd0;
+            perf_init         <= 32'd0;
+            perf_load         <= 32'd0;
+        end else begin
+            if (perf_in_draw && perf_draw_commit)
+                perf_draw_active <= perf_draw_active + 32'd1;
+            if (perf_in_draw && !perf_draw_commit)
+                perf_draw_idle <= perf_draw_idle + 32'd1;
+            if (flush_active &&  perf_flush_push)
+                perf_flush_active <= perf_flush_active + 32'd1;
+            if (flush_active && !perf_flush_push)
+                perf_flush_stall <= perf_flush_stall + 32'd1;
+            if (state == ST_CACHE_INIT)
+                perf_init <= perf_init + 32'd1;
+            if (perf_in_load)
+                perf_load <= perf_load + 32'd1;
+        end
+    end
+
     always_comb begin
         case (address)
             ADDR_CONTROL : readdata = control_word;
@@ -4559,6 +4623,12 @@ module voxel_gpu (
             ADDR_EXTMEM_STAT: readdata = extmem_dma_status;
             ADDR_BAND_INDEX: readdata = {29'h0, band_index_cfg};
             ADDR_BAND_CTRL: readdata = {30'h0, band_flush_pending, band_begin_pending};
+            ADDR_PERF_DRAW_ACT : readdata = perf_draw_active;
+            ADDR_PERF_DRAW_IDLE: readdata = perf_draw_idle;
+            ADDR_PERF_FLUSH_ACT: readdata = perf_flush_active;
+            ADDR_PERF_FLUSH_STL: readdata = perf_flush_stall;
+            ADDR_PERF_INIT     : readdata = perf_init;
+            ADDR_PERF_LOAD     : readdata = perf_load;
             default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end

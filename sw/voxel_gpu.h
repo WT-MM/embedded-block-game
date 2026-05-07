@@ -60,6 +60,12 @@ typedef int32_t  __s32;
 #define VOXEL_REG_EXTMEM_STAT   0x0030
 #define VOXEL_REG_BAND_INDEX    0x0034
 #define VOXEL_REG_BAND_CTRL     0x0038
+#define VOXEL_REG_PERF_DRAW_ACT  0x0040
+#define VOXEL_REG_PERF_DRAW_IDLE 0x0044
+#define VOXEL_REG_PERF_FLUSH_ACT 0x0048
+#define VOXEL_REG_PERF_FLUSH_STL 0x004C
+#define VOXEL_REG_PERF_INIT      0x0050
+#define VOXEL_REG_PERF_LOAD      0x0054
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x3000          /* exclusive */
@@ -138,6 +144,15 @@ struct voxel_band_state {
 	__u32 band_index;       /* 0..VOXEL_BAND_COUNT-1 */
 };
 
+struct voxel_perf_counters {
+	__u32 draw_active;      /* cycles draw committing pixel */
+	__u32 draw_idle;        /* cycles draw stalled (descriptor starved) */
+	__u32 flush_active;     /* cycles bg flush pushing word to SDRAM */
+	__u32 flush_stall;      /* cycles bg flush stalled (SDRAM/scanout) */
+	__u32 init;             /* cycles in cache init */
+	__u32 load;             /* cycles in cache load/drain */
+};
+
 /* ----- ioctl numbers ----- */
 #define VOXEL_IOC_MAGIC 'v'
 
@@ -153,8 +168,9 @@ struct voxel_band_state {
 #define VOXEL_IOC_END_BAND         _IO(VOXEL_IOC_MAGIC, 10)
 #define VOXEL_IOC_FLIP_ASYNC       _IO(VOXEL_IOC_MAGIC, 11)
 #define VOXEL_IOC_WAIT_FLIP        _IO(VOXEL_IOC_MAGIC, 12)
+#define VOXEL_IOC_GET_PERF         _IOR(VOXEL_IOC_MAGIC, 13, struct voxel_perf_counters)
 
-#define VOXEL_IOC_MAXNR            12
+#define VOXEL_IOC_MAXNR            13
 
 #define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
 #define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)

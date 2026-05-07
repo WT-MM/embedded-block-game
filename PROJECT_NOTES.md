@@ -2655,3 +2655,117 @@ May 5 — two-pixel `ST_CACHE_INIT` fit brainstorm:
   variant, so likely lands in different pipeline stages. If it also
   fails fit, try (5) to consolidate maintenance address generators
   before reattempting (1).
+
+May 7 2026: ST_CACHE_INIT Stranded From Banked BRAM Ports
+---------------------------------------------------------
+
+Symptoms:
+
+  * VGA output showed the rendered frame replicated 3-4 times vertically
+    (entire HUD + sky + clouds + sun stacked as duplicate horizontal
+    strips covering the full 480 rows).
+  * Sky gradient and HUD rendered correctly inside each strip; world
+    blocks (terrain, trees, anything depth-tested) were completely
+    missing.
+  * The number of replicated copies (3 vs 4) drifted between rebuilds,
+    which initially looked like a timing race but was actually a
+    function of which stale pixels happened to be left in the cache
+    BRAM after the previous frame's ST_DRAW writes.
+
+Diagnosis dead-end (do not repeat):
+
+  * First theory was a 16-bit overflow in `draw_row_base` (`logic
+    [15:0]` at `voxel_gpu.sv:199`). On paper, 480*640 = 307200 ≫ 65535,
+    and the increments at `draw_row_base <= draw_row_base + 16'd640`
+    would wrap. A speculative fix gated the increment on
+    `draw_band_index >= cache_band_index` so it only ticks once we
+    reach the active band.
+  * That fix was a no-op for the actual workload: `gpu_transport.c`
+    already bins descriptors per band (fast path at lines 787-799,
+    slow path with `clipped_y_min = max(y_min, band_y_min)` at lines
+    807-808). For every band-N descriptor, `desc_y_min` is already
+    inside the band, so `draw_band_index >= cache_band_index` is
+    always true while drawing — the gate never suppressed anything.
+    The early-scanline-exit logic also prevents off-band runaway.
+  * The `draw_row_base` width was reverted to 16 bits with no gate.
+
+Real root cause:
+
+  * The 2-px-per-cycle refactor split the cache write port into Even
+    (`_e`) and Odd (`_o`) lanes. The always_comb block at
+    `voxel_gpu.sv:2456` fans the legacy unsuffixed write signals
+    (`fb_wr_addr`, `fb_wr_data`, `fb_back_wr_en`, `z_wr_addr`,
+    `z_wr_data`, `z_wr_en`) out to the new `_e` / `_o` ports for any
+    state that still operates at 1 px/cycle.
+  * The exclusion list incorrectly contained `state == ST_CACHE_INIT`:
+
+        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH ||
+              state == ST_CACHE_INIT)) begin
+            fb_wr_addr_e = fb_wr_addr;
+            ...
+        end
+
+  * `ST_CACHE_INIT` only drives the unsuffixed signals (`fb_wr_addr =
+    cache_maint_addr`, `z_wr_en = 1'b1`, `z_wr_data = 16'hFFFF`,
+    etc., at `voxel_gpu.sv:2396-2408`). It does NOT drive the `_e` /
+    `_o` ports directly the way `ST_DRAW` / `ST_DRAW_FLUSH` do. So
+    once it was excluded from the fan-out block, its writes never
+    reached the banked BRAM ports. The cache color and Z words it
+    wanted to clear stayed at whatever the previous band's draw had
+    left behind.
+
+Why this produced the exact observed image:
+
+  * Missing terrain. With the Z BRAM never reset, depth-tested quads
+    (terrain, blocks) tested against stale Z values from the previous
+    band's draw — typically near 0 — and lost the depth test
+    (`z < z_ref`). Their pixel writes were suppressed.
+  * HUD renders. HUD descriptors set `FLAG_ZTEST_BIT = 0` and skip the
+    depth test entirely, so they wrote into the color BRAM normally.
+  * Vertical replication / ghosting. With the color BRAM never
+    cleared, the previous band's writes (often from band 7 — the
+    bottom HUD strip) stayed resident. The flush controller then
+    copied that stale content out to SDRAM as part of the new band's
+    flush, painting the previous band's HUD into the new band's
+    SDRAM region. Across 8 bands this manifested as several near-
+    duplicate strips of the same content.
+  * Perfect sky between strips. When a band's draw produced no
+    pixels (e.g., a sky-only band), `cache_draw_dirty` stayed clear
+    and the flush controller took the `flush_generated_sky` fast
+    path, writing the sky gradient to SDRAM directly without
+    touching the broken cache. Those bands looked correct.
+
+Fix:
+
+  * Drop `state == ST_CACHE_INIT` from the exclusion at
+    `voxel_gpu.sv:2456-2457`. The block now reads:
+
+        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH)) begin
+
+  * `ST_DRAW` / `ST_DRAW_FLUSH` remain excluded because they drive
+    `_e` / `_o` directly inside the case (lines 2426-2451) using
+    `commit_addr` / `commit_addr_o`, and the post-case fan-out would
+    clobber that. Every other state — including `ST_CACHE_INIT`,
+    `ST_CLEAR`, `ST_CACHE_LOAD_COLOR`, `ST_CACHE_LOAD_Z`, sky-patch
+    `ST_FETCH` — only drives the unsuffixed signals and depends on
+    this block to reach the BRAM ports.
+
+Verification:
+
+  * On hardware after rebuild + reflash: terrain renders, HUD
+    renders, and the vertical replication is gone in a single pass.
+
+Lesson / how to avoid repeating this:
+
+  * Whenever a state writes the cache BRAM, it must either drive the
+    `_e` / `_o` ports directly inside its case branch (the
+    `ST_DRAW` pattern) or fall through the fan-out block at
+    `voxel_gpu.sv:2456`. If a new state is added to the exclusion
+    list, audit that the state assigns `fb_wr_addr_e`, `fb_wr_addr_o`,
+    `fb_back_wr_en_e`, `fb_back_wr_en_o`, and the matching Z lane
+    signals itself.
+  * "Symptom looks like an addressing wrap" is a misleading prior.
+    A stale-cache-write bug can produce identical-looking vertical
+    replication because the flush controller is faithfully copying
+    whatever the cache happens to contain, including unwanted leftover
+    pixels from a different band.

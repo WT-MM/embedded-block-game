@@ -1618,44 +1618,39 @@ static bool ensure_chunk_face_capacity(Chunk *chunk, int needed)
     return true;
 }
 
-static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
+/* Build a freshly-allocated ChunkMesh from `chunk`'s blocks/lighting and
+ * its neighbor cache `nb`. Does NOT publish to chunk->live_mesh and does
+ * NOT update chunk->flags - those are the caller's responsibility under
+ * world_mu. The function may grow chunk->faces (the rebuild scratch) and
+ * write chunk->face_count.
+ *
+ * Split out from rebuild_chunk_faces so the mesh worker can run the heavy
+ * greedy meshing on a snapshot Chunk without holding world_mu, and only
+ * re-acquire the lock briefly to publish the result. */
+static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
+                                                const Chunk *nb[3][3],
+                                                int ccx, int ccz,
+                                                bool is_near)
 {
     int max_face_count;
     int out = 0;
-    const Chunk *nb[3][3];
-    int ccx;
-    int ccz;
 
-    if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
-        return false;
+    if (!chunk)
+        return NULL;
 
-    ccx = chunk->chunk_x;
-    ccz = chunk->chunk_z;
-    fill_neighbor_chunk_cache(world, ccx, ccz, nb);
-
-    bool is_near = chunk_is_near(world, chunk);
-
-    max_face_count = count_exposed_faces_for_chunk_nb(world, chunk, nb);
+    max_face_count = count_exposed_faces_for_chunk_nb(NULL, chunk, nb);
     if (max_face_count == 0) {
         ChunkMesh *empty = chunk_mesh_alloc(0);
         if (!empty)
-            return false;
+            return NULL;
         empty->generation = chunk->generation;
         empty->meshed_near = is_near;
-        chunk_publish_mesh(chunk, empty);
-
         chunk->face_count = 0;
-        chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
-        chunk->flags |= CHUNK_FLAG_MESH_READY;
-        if (is_near)
-            chunk->flags |= CHUNK_FLAG_MESHED_NEAR;
-        else
-            chunk->flags &= ~CHUNK_FLAG_MESHED_NEAR;
-        return true;
+        return empty;
     }
 
     if (!ensure_chunk_face_capacity(chunk, max_face_count))
-        return false;
+        return NULL;
 
     for (int f = 0; f < NUM_FACES; f++) {
         int layers;
@@ -1770,34 +1765,190 @@ static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
 
     chunk->face_count = out;
 
-    /* Publish an immutable snapshot for the renderer. Must be done after
-     * face_count is final but before clearing MESH_DIRTY so a concurrent
-     * world_drain_dirty pass cannot re-queue this chunk between
-     * publication and the dirty-bit clear. */
-    {
-        ChunkMesh *snapshot = chunk_mesh_alloc(out);
-        if (!snapshot)
-            return false;
-        if (out > 0)
-            memcpy(snapshot->faces, chunk->faces,
-                   (size_t)out * sizeof(ChunkFace));
-        snapshot->generation = chunk->generation;
-        snapshot->meshed_near = is_near;
-        chunk_publish_mesh(chunk, snapshot);
-    }
+    ChunkMesh *snapshot = chunk_mesh_alloc(out);
+    if (!snapshot)
+        return NULL;
+    if (out > 0)
+        memcpy(snapshot->faces, chunk->faces,
+               (size_t)out * sizeof(ChunkFace));
+    snapshot->generation = chunk->generation;
+    snapshot->meshed_near = is_near;
+    return snapshot;
+}
 
+/* Publish a freshly-built mesh and update flag bits. Caller must hold
+ * world_mu so the flag writes don't race with main-thread edits. */
+static void apply_built_mesh_locked(Chunk *chunk, ChunkMesh *mesh, bool is_near)
+{
+    chunk_publish_mesh(chunk, mesh);
     chunk->flags &= ~CHUNK_FLAG_MESH_DIRTY;
     chunk->flags |= CHUNK_FLAG_MESH_READY;
     if (is_near)
         chunk->flags |= CHUNK_FLAG_MESHED_NEAR;
     else
         chunk->flags &= ~CHUNK_FLAG_MESHED_NEAR;
+}
+
+static bool rebuild_chunk_faces(VoxelWorld *world, Chunk *chunk)
+{
+    const Chunk *nb[3][3];
+
+    if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return false;
+
+    fill_neighbor_chunk_cache(world, chunk->chunk_x, chunk->chunk_z, nb);
+    bool is_near = chunk_is_near(world, chunk);
+
+    ChunkMesh *mesh = chunk_build_mesh_unpublished(chunk, nb,
+                                                    chunk->chunk_x,
+                                                    chunk->chunk_z,
+                                                    is_near);
+    if (!mesh)
+        return false;
+
+    apply_built_mesh_locked(chunk, mesh, is_near);
     return true;
 }
 
 bool world_rebuild_and_publish_mesh(VoxelWorld *world, Chunk *chunk)
 {
     return rebuild_chunk_faces(world, chunk);
+}
+
+/* === Snapshot mesh worker support ===
+ *
+ * Lets the mesh worker do the heavy greedy-meshing work without holding
+ * world_mu. Lock discipline:
+ *   1. Lock world, copy self + 4 cardinal neighbor block/light arrays into
+ *      a worker-owned scratch (5 mini-Chunks). Capture is_near + generation.
+ *      Unlock. Hold time: ~one chunk + four 4 KB-ish memcpys ~= sub-ms.
+ *   2. Build the mesh from the scratch with no lock held. This is the
+ *      expensive part (5-15 ms on the SoC).
+ *   3. Re-lock briefly to publish via atomic_exchange and flag-update,
+ *      after re-validating that the chunk wasn't evicted/regenerated
+ *      while we were unlocked. Discard the mesh if so.
+ *
+ * The diagonal nb[3][3] corners are unused by rebuild (FACE_NX/NY/NZ are
+ * cardinal only), so the scratch only stores 4 cardinal neighbors. */
+
+struct ChunkMeshWorkerScratch {
+    Chunk self;
+    Chunk neighbors[4];
+    bool nb_present[4];
+};
+
+static const int NB_DX[4] = {-1, +1,  0,  0};
+static const int NB_DZ[4] = { 0,  0, -1, +1};
+static const int NB_NB_IX[4] = {0, 2, 1, 1};
+static const int NB_NB_IZ[4] = {1, 1, 0, 2};
+
+ChunkMeshWorkerScratch *chunk_mesh_worker_scratch_create(void)
+{
+    return calloc(1, sizeof(ChunkMeshWorkerScratch));
+}
+
+void chunk_mesh_worker_scratch_destroy(ChunkMeshWorkerScratch *scratch)
+{
+    if (!scratch)
+        return;
+    free(scratch->self.faces);
+    free(scratch);
+}
+
+static void copy_chunk_data_to_scratch(Chunk *dest, const Chunk *src)
+{
+    memcpy(dest->blocks, src->blocks, sizeof(dest->blocks));
+    memcpy(dest->sky_light, src->sky_light, sizeof(dest->sky_light));
+    memcpy(dest->block_light, src->block_light, sizeof(dest->block_light));
+    dest->chunk_x = src->chunk_x;
+    dest->chunk_z = src->chunk_z;
+    dest->generation = src->generation;
+    dest->flags = CHUNK_FLAG_LOADED;
+}
+
+bool world_run_mesh_job(VoxelWorld *world,
+                        ChunkMeshWorkerScratch *scratch,
+                        int chunk_x, int chunk_z,
+                        uint32_t expected_generation)
+{
+    if (!world || !scratch)
+        return false;
+
+    bool is_near;
+    uint32_t generation;
+
+    /* Phase 1: snapshot under lock. */
+    world_lock(world);
+    Chunk *target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
+    if (!target ||
+        target->generation != expected_generation ||
+        !(target->flags & CHUNK_FLAG_LOADED)) {
+        if (target)
+            target->flags &= ~CHUNK_FLAG_MESH_QUEUED;
+        world_unlock(world);
+        return false;
+    }
+
+    copy_chunk_data_to_scratch(&scratch->self, target);
+    for (int i = 0; i < 4; i++) {
+        Chunk *nb_chunk = world_get_chunk_mut_locked(world,
+                                                     chunk_x + NB_DX[i],
+                                                     chunk_z + NB_DZ[i]);
+        if (nb_chunk && (nb_chunk->flags & CHUNK_FLAG_LOADED)) {
+            copy_chunk_data_to_scratch(&scratch->neighbors[i], nb_chunk);
+            scratch->nb_present[i] = true;
+        } else {
+            scratch->neighbors[i].flags = 0;
+            scratch->nb_present[i] = false;
+        }
+    }
+    is_near = chunk_is_near(world, target);
+    generation = target->generation;
+    world_unlock(world);
+
+    /* Phase 2: build mesh outside the lock. */
+    const Chunk *nb_arr[3][3];
+    for (int ix = 0; ix < 3; ix++)
+        for (int iz = 0; iz < 3; iz++)
+            nb_arr[ix][iz] = NULL;
+    nb_arr[1][1] = &scratch->self;
+    for (int i = 0; i < 4; i++) {
+        if (scratch->nb_present[i])
+            nb_arr[NB_NB_IX[i]][NB_NB_IZ[i]] = &scratch->neighbors[i];
+    }
+
+    ChunkMesh *mesh = chunk_build_mesh_unpublished(&scratch->self, nb_arr,
+                                                    chunk_x, chunk_z,
+                                                    is_near);
+    if (!mesh) {
+        world_lock(world);
+        target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
+        if (target)
+            target->flags &= ~CHUNK_FLAG_MESH_QUEUED;
+        world_unlock(world);
+        return false;
+    }
+
+    /* Phase 3: re-validate and publish under lock. Discard if the chunk
+     * was evicted or its generation advanced (an edit landed mid-build). */
+    bool published = false;
+    world_lock(world);
+    target = world_get_chunk_mut_locked(world, chunk_x, chunk_z);
+    if (target &&
+        target->generation == generation &&
+        (target->flags & CHUNK_FLAG_LOADED)) {
+        apply_built_mesh_locked(target, mesh, is_near);
+        target->flags &= ~CHUNK_FLAG_MESH_QUEUED;
+        world->meshes_rebuilt_last_stream++;
+        published = true;
+    } else {
+        free(mesh->faces);
+        free(mesh);
+        if (target)
+            target->flags &= ~CHUNK_FLAG_MESH_QUEUED;
+    }
+    world_unlock(world);
+    return published;
 }
 
 static void mark_near_far_transitions_dirty(VoxelWorld *world)

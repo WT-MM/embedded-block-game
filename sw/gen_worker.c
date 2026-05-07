@@ -1,6 +1,7 @@
 #include "gen_worker.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -50,6 +51,38 @@ static bool worker_enabled_from_env(void)
     if (value[0] == '0' && value[1] == '\0')
         return false;
     return true;
+}
+
+/* Per-frame cap on how many gen jobs we push into the worker queue.
+ * Caches the env value on first read.
+ *
+ * Returns:
+ *   < 0: env unset, fall back to world->stream_chunks_per_frame
+ *   = 0: explicit unlimited
+ *   > 0: hard cap
+ *
+ * Why this exists: the pre-async path implicitly rate-limited mesh-dirty
+ * marking via VOXEL_CHUNKS_PER_FRAME on the main thread. With async gen,
+ * the worker can finalize all freshly-streamed chunks back-to-back, which
+ * either floods the mesh queue (without the deferral fix) or piles up a
+ * single big mesh wave once neighbors complete. Capping pushes per drain
+ * call restores the smoothed pace.
+ */
+static int gen_pushes_cap_from_env(void)
+{
+    static int cached = -1;
+    static bool initialized = false;
+    if (!initialized) {
+        const char *value = getenv("VOXEL_GEN_PUSHES_PER_FRAME");
+        if (value && value[0] != '\0') {
+            char *end = NULL;
+            long parsed = strtol(value, &end, 10);
+            if (end != value && *end == '\0' && parsed >= 0 && parsed < 1024)
+                cached = (int)parsed;
+        }
+        initialized = true;
+    }
+    return cached;
 }
 
 static unsigned queue_count_unlocked(void)
@@ -208,7 +241,21 @@ void gen_worker_drain_pending(VoxelWorld *world)
 
     pthread_mutex_lock(&g_worker.queue_mu);
 
+    /* Effective cap: env override if set, else mirror stream_chunks_per_frame.
+     * Initial stream (epoch <= 1) bypasses the cap so the world fills in
+     * fast on startup; subsequent crossings respect the cap to keep the
+     * mesh queue from spiking. 0 means unlimited. */
+    int env_cap = gen_pushes_cap_from_env();
+    int cap;
+    if (env_cap < 0)
+        cap = world->stream_chunks_per_frame;
+    else
+        cap = env_cap;
+    if (world->stream_epoch <= 1 || cap <= 0)
+        cap = INT_MAX;
+
     bool pushed_any = false;
+    int pushed_count = 0;
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
 
@@ -216,6 +263,8 @@ void gen_worker_drain_pending(VoxelWorld *world)
             continue;
         if (chunk->flags & CHUNK_FLAG_GEN_QUEUED)
             continue;
+        if (pushed_count >= cap)
+            break;
 
         GenJob job = {
             .chunk_x = chunk->chunk_x,
@@ -230,6 +279,7 @@ void gen_worker_drain_pending(VoxelWorld *world)
         }
         chunk->flags |= CHUNK_FLAG_GEN_QUEUED;
         pushed_any = true;
+        pushed_count++;
     }
 
     if (pushed_any)

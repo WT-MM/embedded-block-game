@@ -41,6 +41,12 @@ static struct {
     unsigned tail;          /* next push index */
     _Atomic bool stop;
     bool running;
+
+    /* Owned by the worker thread. world_run_mesh_job uses this to copy
+     * self+neighbor block/light data under a brief world_mu hold, then
+     * runs the heavy meshing on it without the lock so the main thread
+     * is not blocked behind a 5-15 ms rebuild. */
+    ChunkMeshWorkerScratch *scratch;
 } g_worker;
 
 static bool worker_enabled_from_env(void)
@@ -100,21 +106,12 @@ static void *mesh_worker_thread(void *arg)
         if (!got_job)
             continue;
 
-        /*
-         * Resolve coords -> Chunk* under world_mu so the chunk array
-         * cannot be compacted underneath us. Discard the job if the
-         * chunk has been evicted or re-generated since enqueue.
-         */
-        world_lock(world);
-        Chunk *chunk = world_get_chunk_mut_locked(world, job.chunk_x, job.chunk_z);
-        if (chunk && chunk->generation == job.generation) {
-            if (world_rebuild_and_publish_mesh(world, chunk))
-                world->meshes_rebuilt_last_stream++;
-            chunk->flags &= ~CHUNK_FLAG_MESH_QUEUED;
-        } else if (chunk) {
-            chunk->flags &= ~CHUNK_FLAG_MESH_QUEUED;
-        }
-        world_unlock(world);
+        /* world_run_mesh_job handles the lock-snapshot-build-publish dance
+         * internally: world_mu is held only during the snapshot copy and
+         * the publish, not during the (much longer) greedy meshing. It
+         * also clears MESH_QUEUED on every exit path. */
+        (void)world_run_mesh_job(world, g_worker.scratch,
+                                 job.chunk_x, job.chunk_z, job.generation);
     }
 
     return NULL;
@@ -133,11 +130,19 @@ bool mesh_worker_start(VoxelWorld *world)
 
     memset(&g_worker, 0, sizeof(g_worker));
     g_worker.world = world;
-
-    if (pthread_mutex_init(&g_worker.queue_mu, NULL) != 0)
+    g_worker.scratch = chunk_mesh_worker_scratch_create();
+    if (!g_worker.scratch)
         return false;
+
+    if (pthread_mutex_init(&g_worker.queue_mu, NULL) != 0) {
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
+        return false;
+    }
     if (pthread_cond_init(&g_worker.queue_cv, NULL) != 0) {
         pthread_mutex_destroy(&g_worker.queue_mu);
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
         return false;
     }
 
@@ -146,6 +151,8 @@ bool mesh_worker_start(VoxelWorld *world)
         fprintf(stderr, "mesh_worker: pthread_create failed (%d)\n", rc);
         pthread_cond_destroy(&g_worker.queue_cv);
         pthread_mutex_destroy(&g_worker.queue_mu);
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
         return false;
     }
 
@@ -175,6 +182,7 @@ void mesh_worker_stop(void)
 
     pthread_cond_destroy(&g_worker.queue_cv);
     pthread_mutex_destroy(&g_worker.queue_mu);
+    chunk_mesh_worker_scratch_destroy(g_worker.scratch);
 
     if (world) {
         world_lock(world);

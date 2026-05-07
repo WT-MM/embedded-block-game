@@ -168,6 +168,25 @@ void world_unlock(VoxelWorld *world);
 bool world_chunk_has_loading_neighbor_locked(const VoxelWorld *world,
                                              int chunk_x, int chunk_z);
 
+/* Worker-owned snapshot scratch used by world_run_mesh_job. Holds a self
+ * + 4 cardinal neighbor mini-Chunks plus a face scratch buffer. Allocate
+ * once per worker thread (~70 KB) and reuse for every job. */
+typedef struct ChunkMeshWorkerScratch ChunkMeshWorkerScratch;
+
+ChunkMeshWorkerScratch *chunk_mesh_worker_scratch_create(void);
+void chunk_mesh_worker_scratch_destroy(ChunkMeshWorkerScratch *scratch);
+
+/* Run one mesh-rebuild job. Locks world_mu briefly to snapshot data and
+ * to publish the result; the heavy greedy meshing in between runs without
+ * the lock held. The chunk's MESH_QUEUED bit is cleared on every exit
+ * path (success, stale, or alloc failure). Returns true if a mesh was
+ * actually published (i.e. the chunk still existed and the generation
+ * still matched at publish time). */
+bool world_run_mesh_job(VoxelWorld *world,
+                        ChunkMeshWorkerScratch *scratch,
+                        int chunk_x, int chunk_z,
+                        uint32_t expected_generation);
+
 /* Result buffer for off-thread chunk generation. Sized to a single chunk
  * - the worker fills this without holding world->world_mu, then hands it
  * to world_finalize_async_chunk_load for integration. */

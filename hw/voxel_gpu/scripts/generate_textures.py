@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 
 # Pillow is imported lazily inside write_preview() so the .mif emission
@@ -12,42 +13,74 @@ TILE_COUNT = 128
 TEXELS_PER_TILE = TILE_SIZE * TILE_SIZE
 ATLAS_BYTES = TILE_COUNT * TEXELS_PER_TILE
 
-TEX_TILE_GRASS_TOP = 0
-TEX_TILE_GRASS_SIDE = 1
-TEX_TILE_DIRT = 2
-TEX_TILE_STONE = 3
-TEX_TILE_WOOD_SIDE = 4
-TEX_TILE_WOOD_TOP = 5
-TEX_TILE_GLASS = 6
-TEX_TILE_LAMP = 7
-TEX_TILE_LEAVES = 8
-TEX_TILE_WOOD_PLANK = 9
-TEX_TILE_GRASS_TOP_MIP1 = 16
-TEX_TILE_GRASS_SIDE_MIP1 = 17
-TEX_TILE_DIRT_MIP1 = 18
-TEX_TILE_STONE_MIP1 = 19
-TEX_TILE_WOOD_SIDE_MIP1 = 20
-TEX_TILE_WOOD_TOP_MIP1 = 21
-TEX_TILE_GLASS_MIP1 = 22
-TEX_TILE_LAMP_MIP1 = 23
-TEX_TILE_GRASS_TOP_MIP2 = 24
-TEX_TILE_GRASS_SIDE_MIP2 = 25
-TEX_TILE_DIRT_MIP2 = 26
-TEX_TILE_STONE_MIP2 = 27
-TEX_TILE_WOOD_SIDE_MIP2 = 28
-TEX_TILE_WOOD_TOP_MIP2 = 29
-TEX_TILE_GLASS_MIP2 = 30
-TEX_TILE_LAMP_MIP2 = 31
-TEX_TILE_LEAVES_MIP1 = 32
-TEX_TILE_LEAVES_MIP2 = 33
-TEX_TILE_WOOD_PLANK_MIP1 = 34
-TEX_TILE_WOOD_PLANK_MIP2 = 35
-TEX_TILE_SKY = 48
-TEX_TILE_CLOUD = 49
-TEX_TILE_SUN = 50
-TEX_TILE_MOON = 51
-TEX_TILE_STARS = 52
-TEX_TILE_CROSSHAIR = 63
+REPO_ROOT = Path(__file__).resolve().parents[3]
+TEXTURE_TILE_DEF = REPO_ROOT / "sw" / "texture_tiles.def"
+
+
+class TextureTile:
+    def __init__(self, name: str, base: int, mip1: int | None = None, mip2: int | None = None):
+        self.name = name
+        self.base = base
+        self.mip1 = mip1
+        self.mip2 = mip2
+
+    @property
+    def label(self) -> str:
+        return self.name.lower()
+
+
+def load_texture_tiles(path: Path) -> list[TextureTile]:
+    tile_re = re.compile(r"^\s*TEXTURE_TILE\(\s*([A-Z0-9_]+)\s*,\s*(\d+)\s*\)")
+    mip_re = re.compile(
+        r"^\s*TEXTURE_TILE_MIPPED\(\s*([A-Z0-9_]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"
+    )
+    tiles: list[TextureTile] = []
+    used: dict[int, str] = {}
+
+    with path.open("r", encoding="ascii") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            line = line.split("/*", 1)[0].strip()
+            if not line or line.startswith("//"):
+                continue
+
+            match = mip_re.match(line)
+            if match:
+                name = match.group(1)
+                ids = [int(match.group(i)) for i in range(2, 5)]
+                for tile_id in ids:
+                    if tile_id >= TILE_COUNT:
+                        raise ValueError(f"{path}:{line_no}: tile {tile_id} exceeds atlas size {TILE_COUNT}")
+                    if tile_id in used:
+                        raise ValueError(f"{path}:{line_no}: tile {tile_id} reused by {name} and {used[tile_id]}")
+                    used[tile_id] = name
+                tiles.append(TextureTile(name, ids[0], ids[1], ids[2]))
+                continue
+
+            match = tile_re.match(line)
+            if match:
+                name = match.group(1)
+                tile_id = int(match.group(2))
+                if tile_id >= TILE_COUNT:
+                    raise ValueError(f"{path}:{line_no}: tile {tile_id} exceeds atlas size {TILE_COUNT}")
+                if tile_id in used:
+                    raise ValueError(f"{path}:{line_no}: tile {tile_id} reused by {name} and {used[tile_id]}")
+                used[tile_id] = name
+                tiles.append(TextureTile(name, tile_id))
+                continue
+
+            raise ValueError(f"{path}:{line_no}: unrecognized texture metadata line: {line!r}")
+
+    return tiles
+
+
+TEXTURE_TILES = load_texture_tiles(TEXTURE_TILE_DEF)
+MIPPED_TEXTURE_TILES = [tile for tile in TEXTURE_TILES if tile.mip1 is not None and tile.mip2 is not None]
+
+for tile in TEXTURE_TILES:
+    globals()[f"TEX_TILE_{tile.name}"] = tile.base
+    if tile.mip1 is not None and tile.mip2 is not None:
+        globals()[f"TEX_TILE_{tile.name}_MIP1"] = tile.mip1
+        globals()[f"TEX_TILE_{tile.name}_MIP2"] = tile.mip2
 
 PAL_TRANSPARENT = 0
 PAL_GRASS_TOP = 1
@@ -134,45 +167,20 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
 # Columns are chosen so the preview matches what a player actually sees on
 # a real block face; add/remove entries as the atlas grows.
 PREVIEW_COLUMNS: list[tuple[str, int, int, int]] = [
-    # (label, base_tile, mip1_tile, mip2_tile)
-    ("grass_top",  TEX_TILE_GRASS_TOP,  TEX_TILE_GRASS_TOP_MIP1,  TEX_TILE_GRASS_TOP_MIP2),
-    ("grass_side", TEX_TILE_GRASS_SIDE, TEX_TILE_GRASS_SIDE_MIP1, TEX_TILE_GRASS_SIDE_MIP2),
-    ("dirt",       TEX_TILE_DIRT,       TEX_TILE_DIRT_MIP1,       TEX_TILE_DIRT_MIP2),
-    ("stone",      TEX_TILE_STONE,      TEX_TILE_STONE_MIP1,      TEX_TILE_STONE_MIP2),
-    ("wood_side",  TEX_TILE_WOOD_SIDE,  TEX_TILE_WOOD_SIDE_MIP1,  TEX_TILE_WOOD_SIDE_MIP2),
-    ("wood_top",   TEX_TILE_WOOD_TOP,   TEX_TILE_WOOD_TOP_MIP1,   TEX_TILE_WOOD_TOP_MIP2),
-    ("glass",      TEX_TILE_GLASS,      TEX_TILE_GLASS_MIP1,      TEX_TILE_GLASS_MIP2),
-    ("lamp",       TEX_TILE_LAMP,       TEX_TILE_LAMP_MIP1,       TEX_TILE_LAMP_MIP2),
-    ("leaves",     TEX_TILE_LEAVES,     TEX_TILE_LEAVES_MIP1,     TEX_TILE_LEAVES_MIP2),
-    ("wood_plank", TEX_TILE_WOOD_PLANK, TEX_TILE_WOOD_PLANK_MIP1, TEX_TILE_WOOD_PLANK_MIP2),
+    (tile.label, tile.base, tile.mip1, tile.mip2)
+    for tile in MIPPED_TEXTURE_TILES
 ]
 
 
 
 MIP1_TILES = {
-    TEX_TILE_GRASS_TOP_MIP1: TEX_TILE_GRASS_TOP,
-    TEX_TILE_GRASS_SIDE_MIP1: TEX_TILE_GRASS_SIDE,
-    TEX_TILE_DIRT_MIP1: TEX_TILE_DIRT,
-    TEX_TILE_STONE_MIP1: TEX_TILE_STONE,
-    TEX_TILE_WOOD_SIDE_MIP1: TEX_TILE_WOOD_SIDE,
-    TEX_TILE_WOOD_TOP_MIP1: TEX_TILE_WOOD_TOP,
-    TEX_TILE_GLASS_MIP1: TEX_TILE_GLASS,
-    TEX_TILE_LAMP_MIP1: TEX_TILE_LAMP,
-    TEX_TILE_LEAVES_MIP1: TEX_TILE_LEAVES,
-    TEX_TILE_WOOD_PLANK_MIP1: TEX_TILE_WOOD_PLANK,
+    tile.mip1: tile.base
+    for tile in MIPPED_TEXTURE_TILES
 }
 
 MIP2_TILES = {
-    TEX_TILE_GRASS_TOP_MIP2: TEX_TILE_GRASS_TOP,
-    TEX_TILE_GRASS_SIDE_MIP2: TEX_TILE_GRASS_SIDE,
-    TEX_TILE_DIRT_MIP2: TEX_TILE_DIRT,
-    TEX_TILE_STONE_MIP2: TEX_TILE_STONE,
-    TEX_TILE_WOOD_SIDE_MIP2: TEX_TILE_WOOD_SIDE,
-    TEX_TILE_WOOD_TOP_MIP2: TEX_TILE_WOOD_TOP,
-    TEX_TILE_GLASS_MIP2: TEX_TILE_GLASS,
-    TEX_TILE_LAMP_MIP2: TEX_TILE_LAMP,
-    TEX_TILE_LEAVES_MIP2: TEX_TILE_LEAVES,
-    TEX_TILE_WOOD_PLANK_MIP2: TEX_TILE_WOOD_PLANK,
+    tile.mip2: tile.base
+    for tile in MIPPED_TEXTURE_TILES
 }
 
 GRASS_TOP_ROWS = [

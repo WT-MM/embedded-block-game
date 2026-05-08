@@ -133,6 +133,9 @@ bool world_init_infinite_procedural(VoxelWorld *world,
                                     float center_x,
                                     float center_z,
                                     const char *save_root);
+bool world_read_save_metadata(const char *save_root,
+                              uint32_t *seed_out,
+                              int *stone_tries_per_chunk_out);
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 bool world_flush(VoxelWorld *world);
 bool world_rebuild_dirty_meshes(VoxelWorld *world);

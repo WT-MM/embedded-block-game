@@ -346,6 +346,42 @@ static bool load_or_create_world_meta(VoxelWorld *world)
     return true;
 }
 
+bool world_read_save_metadata(const char *save_root,
+                              uint32_t *seed_out,
+                              int *stone_tries_per_chunk_out)
+{
+    char meta_path[WORLD_SAVE_PATH_MAX];
+    WorldSaveHeader header = {0};
+    FILE *file;
+
+    if (!save_root || save_root[0] == '\0')
+        return false;
+    if (snprintf(meta_path, sizeof(meta_path), "%s/world.meta", save_root) >=
+        (int)sizeof(meta_path))
+        return false;
+
+    file = fopen(meta_path, "rb");
+    if (!file)
+        return false;
+    if (fread(&header, sizeof(header), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+
+    if (memcmp(header.magic, "VWLD", 4) != 0 ||
+        header.version != WORLD_META_VERSION ||
+        header.chunk_size != WORLD_CHUNK_SIZE ||
+        header.chunk_height != WORLD_CHUNK_HEIGHT)
+        return false;
+
+    if (seed_out)
+        *seed_out = header.procedural_seed;
+    if (stone_tries_per_chunk_out)
+        *stone_tries_per_chunk_out = (int)header.stone_tries_per_chunk;
+    return true;
+}
+
 static bool initialize_world_persistence(VoxelWorld *world,
                                          const char *save_root)
 {

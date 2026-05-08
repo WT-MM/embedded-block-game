@@ -10,6 +10,20 @@ static void set_all_faces(BlockDescriptor *block, uint8_t tile_id)
         block->face_texture_ids[i] = tile_id;
 }
 
+typedef struct {
+    uint8_t base;
+    uint8_t mip1;
+    uint8_t mip2;
+} TextureLodEntry;
+
+static const TextureLodEntry TEXTURE_LOD_ENTRIES[] = {
+#define TEXTURE_TILE(name, base)
+#define TEXTURE_TILE_MIPPED(name, base, mip1, mip2) { base, mip1, mip2 },
+#include "texture_tiles.def"
+#undef TEXTURE_TILE
+#undef TEXTURE_TILE_MIPPED
+};
+
 void init_block_types(void)
 {
     memset(BlockRegistry, 0, sizeof(BlockRegistry));
@@ -73,30 +87,12 @@ uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
     if (lod <= 0)
         return tile_id;
 
-    switch (tile_id) {
-    case TEX_TILE_GRASS_TOP:
-        return lod >= 2 ? TEX_TILE_GRASS_TOP_MIP2 : TEX_TILE_GRASS_TOP_MIP1;
-    case TEX_TILE_GRASS_SIDE:
-        return lod >= 2 ? TEX_TILE_GRASS_SIDE_MIP2 : TEX_TILE_GRASS_SIDE_MIP1;
-    case TEX_TILE_DIRT:
-        return lod >= 2 ? TEX_TILE_DIRT_MIP2 : TEX_TILE_DIRT_MIP1;
-    case TEX_TILE_STONE:
-        return lod >= 2 ? TEX_TILE_STONE_MIP2 : TEX_TILE_STONE_MIP1;
-    case TEX_TILE_WOOD_SIDE:
-        return lod >= 2 ? TEX_TILE_WOOD_SIDE_MIP2 : TEX_TILE_WOOD_SIDE_MIP1;
-    case TEX_TILE_WOOD_TOP:
-        return lod >= 2 ? TEX_TILE_WOOD_TOP_MIP2 : TEX_TILE_WOOD_TOP_MIP1;
-    case TEX_TILE_GLASS:
-        return lod >= 2 ? TEX_TILE_GLASS_MIP2 : TEX_TILE_GLASS_MIP1;
-    case TEX_TILE_LAMP:
-        return lod >= 2 ? TEX_TILE_LAMP_MIP2 : TEX_TILE_LAMP_MIP1;
-    case TEX_TILE_LEAVES:
-        return lod >= 2 ? TEX_TILE_LEAVES_MIP2 : TEX_TILE_LEAVES_MIP1;
-    case TEX_TILE_WOOD_PLANK:
-        return lod >= 2 ? TEX_TILE_WOOD_PLANK_MIP2 : TEX_TILE_WOOD_PLANK_MIP1;
-    default:
-        return tile_id;
+    for (size_t i = 0; i < sizeof(TEXTURE_LOD_ENTRIES) / sizeof(TEXTURE_LOD_ENTRIES[0]); i++) {
+        if (TEXTURE_LOD_ENTRIES[i].base == tile_id)
+            return lod >= 2 ? TEXTURE_LOD_ENTRIES[i].mip2 : TEXTURE_LOD_ENTRIES[i].mip1;
     }
+
+    return tile_id;
 }
 
 uint8_t block_emission_level(BlockID id)

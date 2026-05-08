@@ -498,6 +498,11 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                     inp->jump_pressed = true;
                 inp->up = down;
                 break;
+            case KEY_ENTER:
+            case KEY_KPENTER:
+                if (press_edge)
+                    inp->menu_select_pressed = true;
+                break;
             case KEY_LEFTSHIFT:
             case KEY_RIGHTSHIFT:             inp->down    = down; break;
             case KEY_G:
@@ -638,6 +643,13 @@ bool input_consume_debug_hud_toggle(InputState *inp)
     return pressed;
 }
 
+bool input_consume_menu_select(InputState *inp)
+{
+    bool pressed = inp->menu_select_pressed;
+    inp->menu_select_pressed = false;
+    return pressed;
+}
+
 int input_consume_hotbar_slot(InputState *inp)
 {
     int slot = inp->hotbar_slot_pressed;
@@ -653,6 +665,8 @@ void input_set_pointer_capture(InputState *inp, bool on)
 
     if (!inp)
         return;
+    if (on && !inp->_grab_pointers)
+        on = false;
     wanted_changed = inp->_pointer_capture_wanted != on;
     capture_matches = pointer_capture_matches_request(inp, on);
     if (!wanted_changed && capture_matches)
@@ -685,6 +699,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->mode_toggle_pressed = false;
         inp->break_pressed = false;
         inp->place_pressed = false;
+        inp->menu_select_pressed = false;
         inp->hotbar_slot_pressed = -1;
         inp->_forward_tap_armed = false;
         inp->_last_forward_press_ns = 0;

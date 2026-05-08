@@ -43,10 +43,13 @@
 
 /*
  * Bounce buffer for write(): we copy from user in chunks, then push the
- * chunk into the FIFO in bursts sized by STATUS.FIFO_COUNT. Keep it under
- * the 4 KB FIFO so each copied chunk can drain without unbounded buffering.
+ * chunk into the FIFO in bursts paced by STATUS.FIFO_COUNT. Sized larger
+ * than the 4 KB hardware FIFO so one copy_from_user() feeds multiple
+ * burst rounds; the inner loop already back-pressures via
+ * voxel_fifo_wait_space, so a bigger bounce just amortizes the
+ * outer-loop syscall/copy overhead on heavy bands.
  */
-#define VOXEL_BOUNCE_WORDS  1024                      /* 4 KB per chunk */
+#define VOXEL_BOUNCE_WORDS  2048                      /* 8 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
 /*
@@ -145,7 +148,7 @@ static int voxel_fifo_wait_space(size_t *space_words, size_t min_req)
 		}
 		if (time_after(jiffies, deadline))
 			return -ETIMEDOUT;
-		usleep_range(10, 50);
+		usleep_range(2, 5);
 	}
 }
 

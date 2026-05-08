@@ -28,42 +28,14 @@ typedef enum {
 } BlockID;
 
 typedef enum {
-    TEX_TILE_GRASS_TOP = 0,
-    TEX_TILE_GRASS_SIDE,
-    TEX_TILE_DIRT,
-    TEX_TILE_STONE,
-    TEX_TILE_WOOD_SIDE,
-    TEX_TILE_WOOD_TOP,
-    TEX_TILE_GLASS = 6,
-    TEX_TILE_LAMP = 7,
-    TEX_TILE_LEAVES = 8,
-    TEX_TILE_WOOD_PLANK = 9,
-    TEX_TILE_GRASS_TOP_MIP1 = 16,
-    TEX_TILE_GRASS_SIDE_MIP1,
-    TEX_TILE_DIRT_MIP1,
-    TEX_TILE_STONE_MIP1,
-    TEX_TILE_WOOD_SIDE_MIP1,
-    TEX_TILE_WOOD_TOP_MIP1,
-    TEX_TILE_GLASS_MIP1 = 22,
-    TEX_TILE_LAMP_MIP1 = 23,
-    TEX_TILE_GRASS_TOP_MIP2 = 24,
-    TEX_TILE_GRASS_SIDE_MIP2,
-    TEX_TILE_DIRT_MIP2,
-    TEX_TILE_STONE_MIP2,
-    TEX_TILE_WOOD_SIDE_MIP2,
-    TEX_TILE_WOOD_TOP_MIP2,
-    TEX_TILE_GLASS_MIP2 = 30,
-    TEX_TILE_LAMP_MIP2 = 31,
-    TEX_TILE_LEAVES_MIP1 = 32,
-    TEX_TILE_LEAVES_MIP2 = 33,
-    TEX_TILE_WOOD_PLANK_MIP1 = 34,
-    TEX_TILE_WOOD_PLANK_MIP2 = 35,
-    TEX_TILE_SKY = 48,
-    TEX_TILE_CLOUD = 49,
-    TEX_TILE_SUN = 50,
-    TEX_TILE_MOON = 51,
-    TEX_TILE_STARS = 52,
-    TEX_TILE_CROSSHAIR = 63,
+#define TEXTURE_TILE(name, base) TEX_TILE_##name = base,
+#define TEXTURE_TILE_MIPPED(name, base, mip1, mip2) \
+    TEX_TILE_##name = base,                         \
+    TEX_TILE_##name##_MIP1 = mip1,                  \
+    TEX_TILE_##name##_MIP2 = mip2,
+#include "texture_tiles.def"
+#undef TEXTURE_TILE
+#undef TEXTURE_TILE_MIPPED
     NUM_TEXTURE_TILES = 128
 } TextureTileID;
 

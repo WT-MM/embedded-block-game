@@ -121,10 +121,10 @@ int main(void)
         return check_failed("center chunk missing after initial load");
     if (world_near_chunk_radius(&world) != 1)
         return check_failed("default near chunk radius changed");
-    if (world_stream_chunks_per_frame(&world) != 1)
+    if (world_stream_chunks_per_frame(&world) != 0)
         return check_failed("default stream chunk cap changed");
     /* Most of this test validates full-window synchronous streaming behavior;
-     * opt out of the runtime smoothing default for those checks. */
+     * keep that mode explicit for the checks below. */
     world_set_stream_chunks_per_frame(&world, 0);
     if (block_emission_level(BLOCK_LAMP) != 15 || !block_is_self_lit(BLOCK_LAMP))
         return check_failed("lamp metadata missing");

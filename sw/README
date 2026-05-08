@@ -10,6 +10,9 @@ Files
   virtual_gpu_protocol.h
                 Binary protocol shared with the Python virtual GPU server.
   renderer.c     Software block renderer that emits quad descriptors.
+  texture_tiles.def
+                Shared atlas slot metadata consumed by block_types.h/c and
+                ../hw/voxel_gpu/scripts/generate_textures.py.
   tests/         Userspace test programs (see below).
   Makefile       Builds both the .ko and the test binaries.
   ../PROJECT_NOTES.md
@@ -96,6 +99,9 @@ Then run any renderer-based binary with one of:
     VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
     VOXEL_GPU_BACKEND=socket ./game
 
+`./game` opens on a world-select screen. Press W/S to choose an existing save
+or create a new random-seed world, then Enter or Space to start.
+
 To mirror to both FPGA hardware and the Python monitor at once:
 
     VOXEL_GPU_BACKEND=tee ./game
@@ -108,7 +114,8 @@ Environment variables:
     VOXEL_STATUS_LOG=auto|0|1            # per-frame HUD; auto only on TTY
     VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
     VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 1, keep abs-tablet fallback active
-    VOXEL_WORLD_DIR=/path/to/world       # default: ../worlds/default
+    VOXEL_WORLDS_DIR=/path/to/worlds     # home-screen root; default: ../worlds
+    VOXEL_WORLD_DIR=/path/to/world       # bypass home screen and open/create one save
     VOXEL_FOV_DEG=30..150                # horizontal FOV in degrees; default 86.5
     VOXEL_DIAG_BBOX=0|1                  # log per-frame quad bbox (red-stripe debug)
     VOXEL_PIPELINE_FRAMES=0|1            # hw submit worker; default: 1 for hw

@@ -1,8 +1,10 @@
 #include <math.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -41,6 +43,31 @@
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
+#define DEFAULT_WORLDS_DIR "../worlds"
+#define HOME_MAX_WORLDS 10
+#define HOME_NAME_MAX 64
+
+typedef struct {
+    char name[HOME_NAME_MAX];
+    char path[WORLD_SAVE_PATH_MAX];
+    uint32_t seed;
+    int stone_tries_per_chunk;
+} HomeWorldEntry;
+
+typedef struct {
+    HomeWorldEntry worlds[HOME_MAX_WORLDS];
+    int world_count;
+    int selected;
+    bool prev_up;
+    bool prev_down;
+} HomeMenuState;
+
+typedef struct {
+    char name[HOME_NAME_MAX];
+    char path[WORLD_SAVE_PATH_MAX];
+    uint32_t seed;
+    int stone_tries_per_chunk;
+} SelectedWorld;
 
 typedef struct {
     bool hit;
@@ -238,6 +265,298 @@ static const char *read_world_save_dir(void)
         return DEFAULT_WORLD_SAVE_DIR;
 
     return value;
+}
+
+static const char *read_worlds_dir(void)
+{
+    const char *value = getenv("VOXEL_WORLDS_DIR");
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_WORLDS_DIR;
+
+    return value;
+}
+
+static bool path_is_directory(const char *path)
+{
+    struct stat st;
+
+    return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static bool join_path(char *out, size_t out_size,
+                      const char *root, const char *name)
+{
+    if (!out || out_size == 0 || !root || !name)
+        return false;
+
+    return snprintf(out, out_size, "%s/%s", root, name) < (int)out_size;
+}
+
+static int compare_world_entries(const void *a, const void *b)
+{
+    const HomeWorldEntry *wa = (const HomeWorldEntry *)a;
+    const HomeWorldEntry *wb = (const HomeWorldEntry *)b;
+
+    return strcmp(wa->name, wb->name);
+}
+
+static int scan_saved_worlds(const char *worlds_root,
+                             HomeWorldEntry *entries,
+                             int max_entries)
+{
+    DIR *dir;
+    struct dirent *entry;
+    int count = 0;
+
+    if (!worlds_root || !entries || max_entries <= 0)
+        return 0;
+
+    dir = opendir(worlds_root);
+    if (!dir)
+        return 0;
+
+    while ((entry = readdir(dir)) != NULL && count < max_entries) {
+        char path[WORLD_SAVE_PATH_MAX];
+        uint32_t seed = 0;
+        int stone_tries = STONE_TRIES_PER_CHUNK;
+
+        if (entry->d_name[0] == '.')
+            continue;
+        if (!join_path(path, sizeof(path), worlds_root, entry->d_name))
+            continue;
+        if (!path_is_directory(path))
+            continue;
+        if (!world_read_save_metadata(path, &seed, &stone_tries))
+            continue;
+
+        snprintf(entries[count].name, sizeof(entries[count].name), "%s",
+                 entry->d_name);
+        snprintf(entries[count].path, sizeof(entries[count].path), "%s", path);
+        entries[count].seed = seed;
+        entries[count].stone_tries_per_chunk = stone_tries;
+        count++;
+    }
+
+    closedir(dir);
+    qsort(entries, (size_t)count, sizeof(entries[0]), compare_world_entries);
+    return count;
+}
+
+static uint32_t random_world_seed(void)
+{
+    uint32_t seed = 0;
+    FILE *urandom = fopen("/dev/urandom", "rb");
+
+    if (urandom) {
+        if (fread(&seed, sizeof(seed), 1, urandom) == 1 && seed != 0) {
+            fclose(urandom);
+            return seed;
+        }
+        fclose(urandom);
+    }
+
+    seed = (uint32_t)time(NULL);
+    seed ^= (uint32_t)getpid() * 0x9e3779b9u;
+    seed ^= (uint32_t)clock() * 0x85ebca6bu;
+    return seed ? seed : STONE_SEED;
+}
+
+static bool choose_new_world_path(const char *worlds_root,
+                                  SelectedWorld *selection)
+{
+    if (!worlds_root || !selection)
+        return false;
+
+    for (int attempt = 0; attempt < 32; attempt++) {
+        uint32_t seed = random_world_seed();
+        char name[HOME_NAME_MAX];
+        char path[WORLD_SAVE_PATH_MAX];
+
+        snprintf(name, sizeof(name), "world_%08x", seed);
+        if (!join_path(path, sizeof(path), worlds_root, name))
+            return false;
+        if (path_is_directory(path))
+            continue;
+
+        snprintf(selection->name, sizeof(selection->name), "%s", name);
+        snprintf(selection->path, sizeof(selection->path), "%s", path);
+        selection->seed = seed;
+        selection->stone_tries_per_chunk = STONE_TRIES_PER_CHUNK;
+        return true;
+    }
+
+    return false;
+}
+
+static void draw_centered_text(RenderContext *ctx, const char *text,
+                               float y, uint8_t palette_index)
+{
+    int len = text ? (int)strlen(text) : 0;
+    float width = (float)(len * chat_font_cell_w());
+    float x = floorf((SCREEN_WIDTH - width) * 0.5f);
+
+    if (x < 0.0f)
+        x = 0.0f;
+    chat_draw_text(ctx, text, len, x, y, palette_index);
+}
+
+static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
+                           const char *worlds_root)
+{
+    char line[96];
+    int cell_h = chat_font_cell_h();
+    int line_step = cell_h + 4;
+    float y = 76.0f;
+
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 25, 0);
+    renderer_fill_rect(ctx, 0.0f, 140.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 27, 0);
+    renderer_fill_rect(ctx, 0.0f, 322.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 1, 0);
+
+    draw_centered_text(ctx, "EMBEDDED BLOCK GAME", 34.0f, 5);
+    draw_centered_text(ctx, "SELECT WORLD", 56.0f, 8);
+
+    snprintf(line, sizeof(line), "%c NEW RANDOM WORLD",
+             menu->selected == 0 ? '>' : ' ');
+    draw_centered_text(ctx, line, y, menu->selected == 0 ? 8 : 5);
+    y += (float)line_step;
+
+    if (menu->world_count == 0) {
+        draw_centered_text(ctx, "NO SAVED WORLDS FOUND", y, 14);
+        y += (float)line_step;
+    } else {
+        for (int i = 0; i < menu->world_count; i++) {
+            const HomeWorldEntry *world = &menu->worlds[i];
+
+            snprintf(line, sizeof(line), "%c LOAD %-32s SEED %08x",
+                     menu->selected == i + 1 ? '>' : ' ',
+                     world->name,
+                     world->seed);
+            draw_centered_text(ctx, line, y,
+                               menu->selected == i + 1 ? 8 : 5);
+            y += (float)line_step;
+        }
+    }
+
+    y += (float)line_step;
+    snprintf(line, sizeof(line), "ROOT %s", worlds_root ? worlds_root : "(none)");
+    draw_centered_text(ctx, line, y, 14);
+    y += (float)line_step;
+    draw_centered_text(ctx, "W/S SELECT   ENTER/SPACE START   Q QUIT", y, 5);
+}
+
+static bool home_edge_pressed(bool now, bool *prev)
+{
+    bool pressed = now && !*prev;
+
+    *prev = now;
+    return pressed;
+}
+
+static void clear_home_menu_input(InputState *inp)
+{
+    if (!inp)
+        return;
+
+    inp->forward = inp->back = inp->left = inp->right = false;
+    inp->up = inp->down = false;
+    inp->sprint = false;
+    inp->look_left = inp->look_right = inp->look_up = inp->look_down = false;
+    inp->jump_pressed = false;
+    inp->menu_select_pressed = false;
+    input_clear_mouse(inp);
+}
+
+static bool select_world_direct(SelectedWorld *selection)
+{
+    const char *world_save_dir = read_world_save_dir();
+    uint32_t seed = STONE_SEED;
+    int stone_tries = STONE_TRIES_PER_CHUNK;
+
+    if (!selection)
+        return false;
+
+    if (world_read_save_metadata(world_save_dir, &seed, &stone_tries)) {
+        /* Existing save: honor its stored procedural parameters. */
+    }
+
+    snprintf(selection->name, sizeof(selection->name), "%s", world_save_dir);
+    snprintf(selection->path, sizeof(selection->path), "%s", world_save_dir);
+    selection->seed = seed;
+    selection->stone_tries_per_chunk = stone_tries;
+    return true;
+}
+
+static bool run_home_menu(RenderContext *ctx, InputState *inp,
+                          int target_fps, SelectedWorld *selection)
+{
+    const char *direct_world = getenv("VOXEL_WORLD_DIR");
+    const char *worlds_root = read_worlds_dir();
+    HomeMenuState menu = {0};
+    long frame_ns = 1000000000L / target_fps;
+
+    if (!selection)
+        return false;
+    if (direct_world && direct_world[0] != '\0')
+        return select_world_direct(selection);
+
+    menu.world_count = scan_saved_worlds(worlds_root, menu.worlds,
+                                         HOME_MAX_WORLDS);
+    input_set_pointer_capture(inp, false);
+
+    while (!inp->quit) {
+        struct timespec frame_start;
+        struct timespec frame_end;
+        int option_count = menu.world_count + 1;
+
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+        input_update(inp);
+
+        if (home_edge_pressed(inp->look_up || inp->forward, &menu.prev_up)) {
+            menu.selected--;
+            if (menu.selected < 0)
+                menu.selected = option_count - 1;
+        }
+        if (home_edge_pressed(inp->look_down || inp->back, &menu.prev_down)) {
+            menu.selected++;
+            if (menu.selected >= option_count)
+                menu.selected = 0;
+        }
+
+        if (input_consume_menu_select(inp) || input_consume_jump(inp)) {
+            if (menu.selected == 0) {
+                if (!choose_new_world_path(worlds_root, selection))
+                    return false;
+            } else {
+                HomeWorldEntry *world = &menu.worlds[menu.selected - 1];
+
+                snprintf(selection->name, sizeof(selection->name), "%s",
+                         world->name);
+                snprintf(selection->path, sizeof(selection->path), "%s",
+                         world->path);
+                selection->seed = world->seed;
+                selection->stone_tries_per_chunk =
+                    world->stone_tries_per_chunk;
+            }
+            clear_home_menu_input(inp);
+            input_set_pointer_capture(inp, true);
+            return true;
+        }
+
+        renderer_begin_frame(ctx);
+        draw_home_menu(ctx, &menu, worlds_root);
+        renderer_end_frame(ctx);
+
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        long used = ns_diff(&frame_end, &frame_start);
+        if (used < frame_ns) {
+            struct timespec ts = { 0, frame_ns - used };
+
+            nanosleep(&ts, NULL);
+        }
+    }
+
+    return false;
 }
 
 /* Camera focal length is stored in screen pixels, so the FOV scales with the
@@ -553,9 +872,16 @@ int main(void)
     int render_distance_chunks = read_render_distance_chunks();
     int stream_chunks_per_frame = read_stream_chunks_per_frame();
     int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
-    const char *world_save_dir = read_world_save_dir();
+    SelectedWorld selected_world = {0};
     int selected_hotbar_slot = 0;
     PauseMenuSettings pause_settings = {0};
+
+    if (!run_home_menu(ctx, &inp, target_fps, &selected_world)) {
+        input_shutdown(&inp);
+        world_free(&world);
+        renderer_shutdown(ctx);
+        return inp.quit ? 0 : 1;
+    }
 
     /* Initialize Player */
     Player player;
@@ -570,12 +896,12 @@ int main(void)
     };
 
     if (!world_init_infinite_procedural(&world,
-                                        STONE_SEED,
-                                        STONE_TRIES_PER_CHUNK,
+                                        selected_world.seed,
+                                        selected_world.stone_tries_per_chunk,
                                         render_distance_chunks,
                                         player.x,
                                         player.z,
-                                        world_save_dir)) {
+                                        selected_world.path)) {
         fprintf(stderr, "world generation failed\n");
         input_shutdown(&inp);
         world_free(&world);
@@ -598,9 +924,11 @@ int main(void)
         printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
         printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
-        printf("World: infinite deterministic chunk stream of %dx%dx%d blocks (seed 0x%08x)\n",
-               WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
-        printf("World save dir: %s\n", world_save_dir);
+        printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
+               selected_world.name,
+               WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE,
+               selected_world.seed);
+        printf("World save dir: %s\n", selected_world.path);
         printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
                world.chunks_x, world.chunks_z, world_render_distance(&world),
                world_chunk_capacity(&world));

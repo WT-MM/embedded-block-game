@@ -25,7 +25,7 @@ ordinary block views naturally hide by keeping the rasterizer busy.
 
 Current Architecture
 --------------------
-The current full-resolution path renders eight 64-line vertical bands:
+The current full-resolution path renders eight 60-line vertical bands:
 
   * userspace still builds one frame descriptor stream in `sw/renderer.c`
   * `sw/gpu_transport.c` bins descriptors by band and wraps each bin with
@@ -61,7 +61,7 @@ Fix:
   * Once the pipeline is idle, the background flush is allowed to own the cache
     port even if `flush_cache_sel == draw_cache_sel`.
   * `band_pixel_count()` also uses 10-bit row math so the final band is treated
-    as rows 448..479 instead of wrapping the row calculation in 9 bits.
+    as rows 420..479 instead of wrapping the row calculation in 9 bits.
 
 Status:
 
@@ -1051,7 +1051,7 @@ Keep tiny per-frame metadata in RTL:
     flushed during this frame.
   * `cache_valid`: whether the BRAM cache currently contains a resident band.
   * `cache_dirty`: whether the resident band must be flushed before eviction.
-  * `cache_band_index`: resident vertical band, `pixel_y[8:6]`.
+  * `cache_band_index`: resident vertical band, `pixel_y / 60`.
 
 At `CLEAR_FRAME` / frame begin:
 
@@ -1093,9 +1093,10 @@ Default byte layout for the first pass:
 Color scanout only reads whichever color frame is visible. Rendering writes the
 inactive color frame and the z backing frame.
 
-The last band is partial: band 7 covers rows 448..479. Flush/load logic must
-transfer only 32 rows for that band, not the full 64 rows, otherwise it will
-write past the color frame into the next SDRAM region.
+With the current 60-line bands, band 7 covers rows 420..479. Flush/load logic
+must keep the SDRAM word offset and pixel count in the same 60-line geometry as
+the descriptor binning; mixing a 64-line stride with 60-line bins creates a
+vertical offset that grows by four rows per band.
 
 SDRAM read arbitration
 ----------------------
@@ -1528,11 +1529,10 @@ copy/scanout path.
    this, but sparse scenes can leave stale pixels. Fixing it is possible by
    marking initialized empty bands dirty, but that adds SDRAM traffic.
 
-2. **Last band over-flushes past visible height** — The RTL uses a fixed
-   64-line band size for every band, so band 7 flushes 40960 words even though
-   only 32 rows are visible at 640x480. The extra writes land after the visible
-   frame inside the back-buffer allocation gap, so this should not blank the
-   display, but it wastes bandwidth.
+2. **Historical 64-line band stride hazard** — The 60-line fit relies on every
+   band helper using the same geometry. If `band_word_offset()` or `y_to_band()`
+   regresses to 64-line math, each lower band is placed four more rows away from
+   where software binned it.
 
 3. **Verilator cannot fully lint vendor IP here** — Local lint reaches useful
    warnings, but stops on missing Intel primitives/wrappers (`dcfifo`,

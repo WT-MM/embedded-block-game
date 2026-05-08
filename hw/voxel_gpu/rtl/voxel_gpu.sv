@@ -1641,17 +1641,20 @@ module voxel_gpu (
 
     function automatic [24:0] band_word_offset(input logic [2:0] band);
         begin
-            /* band * 40960 = band*32768 + band*8192 = (band<<15) + (band<<13).
+            /* band * 38400 = band*32768 + band*4096 + band*1024 + band*512.
              * Encoding as shift+add avoids a synthesized variable-width
              * multiplier whose result mis-aliased on the Cyclone V build. */
-            band_word_offset = {7'd0, band, 15'd0} + {9'd0, band, 13'd0};
+            band_word_offset = {7'd0, band, 15'd0} +
+                               {10'd0, band, 12'd0} +
+                               {12'd0, band, 10'd0} +
+                               {13'd0, band, 9'd0};
         end
     endfunction
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            /* band * 60 */
-            band_base_row = band * 9'd60;
+            /* band * 60 == band*64 - band*4 */
+            band_base_row = {band, 6'd0} - {4'd0, band, 2'd0};
         end
     endfunction
 
@@ -1659,43 +1662,29 @@ module voxel_gpu (
         begin
             case (band)
                 3'd0: sky_clear_start_palette = 8'd40;  // row 0
-                3'd1: sky_clear_start_palette = 8'd43;  // row 64
-                3'd2: sky_clear_start_palette = 8'd46;  // row 128
-                3'd3: sky_clear_start_palette = 8'd49;  // row 192
-                3'd4: sky_clear_start_palette = 8'd52;  // row 256
-                3'd5: sky_clear_start_palette = 8'd56;  // row 320
-                3'd6: sky_clear_start_palette = 8'd59;  // row 384
-                default: sky_clear_start_palette = 8'd62; // row 448
-            endcase
-        end
-    endfunction
-
-    function automatic [4:0] sky_clear_start_row_count(input logic [2:0] band);
-        begin
-            case (band)
-                3'd0,
-                3'd5: sky_clear_start_row_count = 5'd0;
-                3'd1,
-                3'd6: sky_clear_start_row_count = 5'd4;
-                3'd2,
-                3'd7: sky_clear_start_row_count = 5'd8;
-                3'd3: sky_clear_start_row_count = 5'd12;
-                default: sky_clear_start_row_count = 5'd16;
+                3'd1: sky_clear_start_palette = 8'd43;  // row 60
+                3'd2: sky_clear_start_palette = 8'd46;  // row 120
+                3'd3: sky_clear_start_palette = 8'd49;  // row 180
+                3'd4: sky_clear_start_palette = 8'd52;  // row 240
+                3'd5: sky_clear_start_palette = 8'd55;  // row 300
+                3'd6: sky_clear_start_palette = 8'd58;  // row 360
+                default: sky_clear_start_palette = 8'd61; // row 420
             endcase
         end
     endfunction
 
     function automatic [7:0] sky_palette_for_y(input logic [8:0] y);
         logic [2:0] band;
+        logic [8:0] local_y_wide;
         logic [5:0] local_y;
         logic [6:0] row_sum;
         logic [1:0] pal_offset;
         logic [8:0] pal;
         begin
-            band = y[8:6];
-            local_y = y[5:0];
-            row_sum = {2'b00, sky_clear_start_row_count(band)} +
-                      {1'b0, local_y};
+            band = y_to_band(y);
+            local_y_wide = y - band_base_row(band);
+            local_y = local_y_wide[5:0];
+            row_sum = {1'b0, local_y};
             if (row_sum >= 7'd60)
                 pal_offset = 2'd3;
             else if (row_sum >= 7'd40)
@@ -1713,9 +1702,12 @@ module voxel_gpu (
     endfunction
 
     function automatic [2:0] y_to_band(input logic [8:0] y);
+        logic [9:0] y_adjusted;
         begin
-            /* y / 64 */
-            y_to_band = y[8:6];
+            /* Exact floor(y / 60) for visible rows 0..479, but cheaper than
+             * a divider or a chain of threshold compares. */
+            y_adjusted = {1'b0, y} + {5'd0, y[8:5], 1'b0} + 10'd2;
+            y_to_band = y_adjusted[8:6];
         end
     endfunction
 
@@ -3716,7 +3708,7 @@ module voxel_gpu (
                             flush_generated_sky <= sky_gradient_clear_enabled &&
                                                    !cache_draw_dirty;
                             flush_sky_x <= 10'd0;
-                            flush_sky_row_count <= sky_clear_start_row_count(cache_band_index);
+                            flush_sky_row_count <= 5'd0;
                             flush_sky_palette <= sky_clear_start_palette(cache_band_index);
                             flush_sdram_wr_addr <= copy_target_base_words +
                                                    band_word_offset(cache_band_index);

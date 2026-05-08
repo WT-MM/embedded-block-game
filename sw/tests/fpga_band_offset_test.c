@@ -1,16 +1,16 @@
 /*
  * fpga_band_offset_test.c — visual band-offset diagnostic.
  *
- * Renders 8 horizontal bands, each 64 rows tall, each a distinct flat color:
+ * Renders 8 horizontal bands, each 60 rows tall, each a distinct flat color:
  *
- *     band 0 (rows   0..63 ) red
- *     band 1 (rows  64..127) green
- *     band 2 (rows 128..191) blue
- *     band 3 (rows 192..255) yellow
- *     band 4 (rows 256..319) magenta
- *     band 5 (rows 320..383) cyan
- *     band 6 (rows 384..447) white
- *     band 7 (rows 448..511) orange   (last 32 rows clipped at 480)
+ *     band 0 (rows   0..59 ) red
+ *     band 1 (rows  60..119) green
+ *     band 2 (rows 120..179) blue
+ *     band 3 (rows 180..239) yellow
+ *     band 4 (rows 240..299) magenta
+ *     band 5 (rows 300..359) cyan
+ *     band 6 (rows 360..419) white
+ *     band 7 (rows 420..479) orange
  *
  * Each frame: CLEAR + 8 BEGIN_BAND/quad/END_BAND + FLIP. Frames repeat for
  * a configurable count or until Ctrl-C.

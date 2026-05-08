@@ -3447,3 +3447,125 @@ Files touched:
     routing.
   * `sw/game.c` - late mouse re-sample before `renderer_set_camera`,
     priority-flag calls in the break/place handlers.
+
+
+May 7 2026: Bin-During-Emit (Eliminate Second-Pass Descriptor Walk)
+===================================================================
+
+Context: Post-tier-1 + async mesh + edit-priority shipped. Perf showed
+`draw_busy=92-97%` (FPGA-bound), but ~0.3-1 ms/frame was still spent in
+the second-pass `submit_hw_binned` walk that re-reads the whole
+descriptor stream from `submit_buffer` to bin into per-band buffers.
+
+Optimization: front-load the per-band routing. The renderer already
+knows each descriptor's `y_min/y_max` at emit time, so do the binning
+right after writing the descriptor (still hot in L1) instead of as a
+separate pass.
+
+Mechanism:
+
+  * Pulled the per-quad logic out of `submit_hw_binned`'s inner loop
+    into `bin_one_descriptor(transport, desc, size, diag*)` -- the
+    redundant-sky-clear filter, the off-screen y-clip skip, the
+    single-band fast path (memcpy-only), and the multi-band slow path
+    (rewrite_clipped per band).
+  * Two new public APIs in `gpu_transport.h`:
+      - `gpu_transport_begin_descriptors(transport)` resets the current
+        per-band bin set, appends the per-band primer descriptors, zeros
+        the staging diag accumulators, and sets
+        `transport->staged_active = 1`. HW-mode only (no-op for pure
+        socket).
+      - `gpu_transport_bin_descriptor(transport, desc, size)` calls
+        `bin_one_descriptor` if `staged_active` is set; otherwise no-op.
+  * `submit_hw_binned`: when `staged_active` is set, copy staged diag
+    state into locals, clear the flag, `goto skip_binning`. Legacy path
+    (no `begin_descriptors` caller, e.g. socket-only) unchanged --
+    re-runs the binning loop from the contiguous stream.
+  * `renderer_begin_frame`: now calls `gpu_transport_begin_descriptors`.
+  * `stage_prepared_quad`: after committing `submit_bytes` and
+    `n_quads`, calls `gpu_transport_bin_descriptor(ctx->transport, d,
+    emitted_size)`.
+
+Why the contiguous `submit_buffer` is still maintained: the socket
+backend (virtual_gpu over UNIX socket) consumes the contiguous stream
+verbatim. Keeping it in parallel costs the descriptor's struct-field
+stores (already paid on the HW path too -- they are direct writes, not
+memcpy), so the socket backend keeps working without touching its
+codepath.
+
+writev coalescing was investigated and **rejected**. The kernel driver
+(`voxel_gpu.c`) only registers `.write`, not `.write_iter`. Per-band
+framing is `ioctl(BEGIN_BAND)` -> `write` -> `ioctl(END_BAND)`, with the
+ioctl between bands required to switch the on-chip band cache index.
+We already coalesce all of a band's descriptors into one `write_all`
+call, so writev saves zero syscalls without driver changes.
+
+Files touched:
+
+  * `sw/gpu_transport.h` -- two new API decls.
+  * `sw/gpu_transport.c` -- `bin_one_descriptor` helper,
+    `reset_bins_and_prime` helper, public begin/bin functions, staged
+    diag globals, staged-mode short-circuit in `submit_hw_binned`.
+  * `sw/renderer.c` -- begin call in `renderer_begin_frame`, bin call
+    at the tail of `stage_prepared_quad`.
+
+Expected impact: ~0.3-1 ms/frame in HW mode. Not a huge win on its
+own, but cleans up the path for the bigger upcoming optimization
+(frame pipelining: overlap CPU prep of frame N+1 with FPGA flush of
+frame N).
+
+
+May 7 2026: Opt-In Frame Pipelining (CPU Emit While FPGA Drains)
+================================================================
+
+Context: after bin-during-emit, the remaining wall time is mostly
+serialized FPGA work inside `renderer_end_frame`: `CLEAR`, 8x
+`BEGIN_BAND/write/END_BAND`, then `FLIP`. Perf logs showed frames where
+the CPU-side update/draw was ~8 ms but the main thread spent ~14-28 ms
+waiting for the FPGA to finish the per-band submit/flush sequence.
+
+Optimization: `VOXEL_PIPELINE_FRAMES=1` enables an HW-only submit
+worker. `renderer_end_frame` keeps the same public order, but
+`gpu_transport_submit_descriptors` hands the already-binned frame to the
+worker and returns immediately. The following `gpu_transport_flip` call
+is consumed as worker-owned; the worker performs the actual HW
+submit+flip after draining the handed-off bins. The main thread can then
+start CPU emit for frame N+1 while the FPGA drains frame N.
+
+Safety shape:
+
+  * Opt-in only: set `VOXEL_PIPELINE_FRAMES=1`.
+  * HW backend only (`VOXEL_GPU_BACKEND=hw`). Socket/tee stay synchronous
+    because the socket backend consumes the contiguous `submit_buffer`,
+    which the renderer reuses immediately on the next frame.
+  * `gpu_transport_clear`, `gpu_transport_set_palette`, and
+    `gpu_transport_set_fog` first wait for the prior worker job, so clear
+    and GPU state writes never interleave with an in-flight band submit.
+  * Worker errors are stored in the transport and surfaced on the next
+    wait boundary (normally the next frame's `gpu_transport_clear`).
+
+Mechanism:
+
+  * `g_bins_pool[2][VOXEL_BAND_COUNT]` double-buffers the per-band
+    descriptor bins. Main fills `g_main_bin_set`; a queued pipeline job
+    records that set and flips `g_main_bin_set ^= 1` for the next frame.
+  * `submit_hw_prebinned(...)` is the shared submit path for both sync and
+    worker modes. It consumes an explicit bin-set pointer instead of
+    reading a global, so the worker can submit frame N while main bins
+    frame N+1.
+  * The pipeline job snapshots staged diagnostics (`diag_cost`, bbox,
+    frame index, quad count) before the main thread starts the next frame.
+  * `gpu_transport_flip_hw_only` factors the HW flip path out of the
+    public `gpu_transport_flip` so the worker can flip without touching
+    socket state or recursively entering the public pipeline gate.
+
+Files touched:
+
+  * `sw/gpu_transport.c` -- pthread worker, double-buffered bin pool,
+    explicit-bin submit helper, opt-in env handling, wait boundaries for
+    clear/palette/fog, worker-owned flip path.
+
+Expected impact: on frames where CPU emit/update is fully serialized
+behind FPGA band submission, this can recover most of that CPU time
+(roughly the ~8 ms/frame seen in recent logs). It cannot reduce the FPGA
+work itself; it overlaps it.

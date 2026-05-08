@@ -1747,6 +1747,11 @@ void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
     ctx->submit_bytes = 0;
+    /* Front-load the per-quad band binning into emit time: stage_prepared_quad
+     * will hand each finished descriptor to gpu_transport_bin_descriptor as
+     * soon as it is built (descriptor still hot in L1), and the corresponding
+     * second-pass walk inside submit_hw_binned is skipped. */
+    gpu_transport_begin_descriptors(ctx->transport);
 }
 
 void renderer_end_frame(RenderContext *ctx)
@@ -1879,18 +1884,25 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     d->tex_or_color = (uint8_t)DEBUG_FLAT_COLOR_INDEX;
 #endif
 
+    size_t emitted_size;
     if (d->flags & QUAD_FLAG_TEX) {
         struct quad_desc_uv *uv = (struct quad_desc_uv *)
             (ctx->submit_buffer + ctx->submit_bytes + sizeof(*d));
 
         memset(uv, 0, sizeof(*uv));
         fit_uv_plane(v, &basis, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
-        ctx->submit_bytes += sizeof(*d) + sizeof(*uv);
+        emitted_size = sizeof(*d) + sizeof(*uv);
     } else {
-        ctx->submit_bytes += sizeof(*d);
+        emitted_size = sizeof(*d);
     }
-
+    ctx->submit_bytes += emitted_size;
     ctx->n_quads++;
+
+    /* Bin-during-emit: route this just-built descriptor into the per-band
+     * bins now while it is still in L1, instead of having submit_hw_binned
+     * walk the contiguous stream a second time. No-op when the transport is
+     * not in HW mode. */
+    gpu_transport_bin_descriptor(ctx->transport, d, emitted_size);
     return true;
 }
 

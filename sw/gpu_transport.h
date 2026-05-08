@@ -21,4 +21,13 @@ int gpu_transport_submit_descriptors(GPUTransport *transport,
                                      const void *descriptors,
                                      size_t descriptor_bytes);
 
+/* Bin-during-emit: the renderer calls begin at frame start, then bin once
+ * per finished descriptor. submit_descriptors will then skip its second-pass
+ * walk over the contiguous stream and use the pre-staged per-band bins.
+ * Both calls are HW-mode no-ops; the contiguous `descriptors` stream is
+ * still the source of truth for the socket backend. */
+void gpu_transport_begin_descriptors(GPUTransport *transport);
+int  gpu_transport_bin_descriptor(GPUTransport *transport,
+                                  const void *desc_bytes, size_t desc_size);
+
 #endif

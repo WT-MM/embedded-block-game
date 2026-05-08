@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,8 @@ typedef enum {
     GPU_BACKEND_SOCKET,
     GPU_BACKEND_TEE,
 } GPUBackendMode;
+
+struct pipeline_submit_job;
 
 struct hw_band_cache_entry {
     uint64_t hash;
@@ -48,6 +51,20 @@ struct GPUTransport {
     uint32_t hw_sky_epoch_bumps;
     uint8_t hw_sky_epoch_bump_indices[8];
     uint32_t hw_sky_epoch_bump_count;
+    /* Bin-during-emit staging flag. Set by gpu_transport_begin_descriptors
+     * and cleared by submit_hw_binned after it consumes the staged bins. */
+    int staged_active;
+    int pipeline_enabled;
+    int pipeline_thread_started;
+    int pipeline_shutdown;
+    int pipeline_job_ready;
+    int pipeline_job_running;
+    int pipeline_flip_owned;
+    int pipeline_ret;
+    pthread_t pipeline_thread;
+    pthread_mutex_t pipeline_mutex;
+    pthread_cond_t pipeline_cond;
+    struct pipeline_submit_job *pipeline_job;
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
@@ -58,7 +75,14 @@ struct descriptor_bin {
     size_t flat_capacity;
 };
 
-static struct descriptor_bin g_bins[VOXEL_BAND_COUNT];
+/* Two parallel sets of per-band bins. With frame pipelining
+ * (VOXEL_PIPELINE_FRAMES=1) the submit worker reads the set it was handed
+ * (`worker_bin_set`) while the main thread has already swapped to the other
+ * set (`g_main_bin_set`) for the next frame. Pipelining off: only set 0 is
+ * ever used. Functions that touch bins take the set as a parameter so the
+ * worker thread reads the correct set without racing on a global. */
+static struct descriptor_bin g_bins_pool[2][VOXEL_BAND_COUNT];
+static int g_main_bin_set = 0;
 
 /* Per-band "primer" quad. Submitted as the first descriptor of every band so
  * the very first pixel through the rasterizer pipeline after BEGIN_BAND lands
@@ -157,6 +181,27 @@ struct diag_band_submit {
     double write_ms;
     double end_ms;
     double total_ms;
+};
+
+/* Bin-during-emit staging accumulators. Populated by
+ * gpu_transport_bin_descriptor (called from the renderer at quad-emit
+ * time) and consumed by submit_hw_binned, which resets them for the
+ * next frame. */
+static struct diag_cost g_staged_diag_cost;
+static int16_t g_staged_diag_x_min, g_staged_diag_x_max;
+static int16_t g_staged_diag_y_min, g_staged_diag_y_max;
+static int g_staged_diag_log_frame;
+static unsigned g_staged_diag_frame_index;
+static uint64_t g_staged_desc_count;
+
+struct pipeline_submit_job {
+    int bin_set;
+    struct diag_cost diag_cost;
+    int16_t diag_x_min, diag_x_max;
+    int16_t diag_y_min, diag_y_max;
+    int diag_log_frame;
+    unsigned diag_frame_index;
+    uint64_t desc_count;
 };
 
 static double diag_timespec_ms(const struct timespec *a, const struct timespec *b)
@@ -670,197 +715,213 @@ static int bin_append_descriptor(struct descriptor_bin *bin,
     return 0;
 }
 
-static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
-                            size_t descriptor_bytes)
+/* Reset per-band bins, prime each, and zero the staging diag accumulators.
+ * Shared by the legacy in-submit binning loop and the new bin-during-emit
+ * path so both produce identical per-band content (primer first, then quads). */
+static int reset_bins_and_prime(struct descriptor_bin bins[VOXEL_BAND_COUNT],
+                                struct diag_cost *diag_cost)
 {
-    const uint8_t *stream = descriptors;
-    size_t offset = 0;
-    int ret = 0;
-    int16_t diag_x_min = INT16_MAX, diag_x_max = INT16_MIN;
-    int16_t diag_y_min = INT16_MAX, diag_y_max = INT16_MIN;
-    struct diag_cost diag_cost = {0};
-    struct diag_band_submit diag_bands[VOXEL_BAND_COUNT];
-    int diag_log_frame = 0;
-    int copy_target_buffer = -1;
-
-    struct timespec t_start = {0}, t_binned = {0}, t_submit = {0};
-    int have_t_binned = 0;
-    int have_t_submit = 0;
-
-    if (g_diag_bbox)
-        clock_gettime(CLOCK_MONOTONIC, &t_start);
-    if (g_diag_bbox || g_diag_cache)
-        diag_log_frame = ((g_diag_frame_count++ % 60) == 0);
-    memset(diag_bands, 0, sizeof(diag_bands));
-
     init_band_primers();
-
-    /* Reset bins up front so the empty/error paths below see clean state. */
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-        g_bins[band].flat_used = 0;
-        ret = bin_append_descriptor(&g_bins[band], &g_band_primers[band],
+        int ret;
+        bins[band].flat_used = 0;
+        ret = bin_append_descriptor(&bins[band], &g_band_primers[band],
                                     sizeof(g_band_primers[band]));
         if (ret < 0)
             return ret;
-        if (g_diag_bbox) {
-            diag_add_band_fixed_cost(&diag_cost, band);
-            diag_add_band_descriptor(&diag_cost, band, &g_band_primers[band],
+        if (g_diag_bbox && diag_cost) {
+            diag_add_band_fixed_cost(diag_cost, band);
+            diag_add_band_descriptor(diag_cost, band, &g_band_primers[band],
                                      g_band_primers[band].y_min,
                                      g_band_primers[band].y_max,
                                      sizeof(g_band_primers[band]));
         }
     }
+    return 0;
+}
 
-    if (descriptor_bytes == 0) {
-        for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
-            ret = submit_hw_band_flat(transport, band,
-                                      g_bins[band].flat_buf,
-                                      g_bins[band].flat_used,
-                                      diag_log_frame ? &diag_bands[band] : NULL);
-            if (ret < 0)
-                return ret;
-        }
-        if (diag_log_frame)
-            g_diag_log_flip_next = 1;
+/* Route one already-built descriptor into the per-band bins. Returns 0 on
+ * success (including the y-fully-off-screen and redundant-sky-clear skips),
+ * negative errno on allocation failure. Caller-owned diag accumulators are
+ * updated when g_diag_bbox is set. Pulled out of submit_hw_binned so both
+ * the legacy second-pass loop and the new gpu_transport_bin_descriptor
+ * front-loaded path share one implementation. */
+static int bin_one_descriptor(GPUTransport *transport,
+                              struct descriptor_bin bins[VOXEL_BAND_COUNT],
+                              const void *desc_bytes, size_t desc_size,
+                              struct diag_cost *diag_cost,
+                              int16_t *diag_x_min, int16_t *diag_x_max,
+                              int16_t *diag_y_min, int16_t *diag_y_max)
+{
+    const struct quad_desc *desc = desc_bytes;
+    int y_min, y_max;
+    unsigned first_band, last_band;
+
+    if (g_diag_bbox && diag_cost) {
+        diag_cost->desc_count++;
+        if (diag_x_min && desc->x_min < *diag_x_min) *diag_x_min = desc->x_min;
+        if (diag_x_max && desc->x_max > *diag_x_max) *diag_x_max = desc->x_max;
+        if (diag_y_min && desc->y_min < *diag_y_min) *diag_y_min = desc->y_min;
+        if (diag_y_max && desc->y_max > *diag_y_max) *diag_y_max = desc->y_max;
+    }
+
+    y_min = desc->y_min;
+    y_max = desc->y_max;
+    if (y_max < 0 || y_min >= (int)VOXEL_RENDER_HEIGHT || y_min > y_max)
+        return 0;
+    if (y_min < 0)
+        y_min = 0;
+    if (y_max >= (int)VOXEL_RENDER_HEIGHT)
+        y_max = (int)VOXEL_RENDER_HEIGHT - 1;
+
+    first_band = (unsigned)y_min / VOXEL_BAND_CACHE_HEIGHT;
+    last_band = (unsigned)y_max / VOXEL_BAND_CACHE_HEIGHT;
+    if (last_band >= VOXEL_BAND_COUNT)
+        last_band = VOXEL_BAND_COUNT - 1;
+
+    if (transport->hw_sky_gradient_clear_enabled &&
+        diag_desc_is_redundant_sky_clear(desc)) {
+        if (g_diag_bbox && diag_cost)
+            diag_count_omitted_sky_clear(diag_cost, first_band, last_band);
         return 0;
     }
 
-    while (offset < descriptor_bytes) {
-        const struct quad_desc *desc;
-        size_t desc_size;
-        int y_min;
-        int y_max;
-        unsigned first_band;
-        unsigned last_band;
-
-        if (descriptor_bytes - offset < sizeof(struct quad_desc)) {
-            ret = -EINVAL;
-            goto done;
-        }
-
-        desc = (const struct quad_desc *)(const void *)(stream + offset);
-        quad_descriptor_size(desc, &desc_size);
-        if (descriptor_bytes - offset < desc_size) {
-            ret = -EINVAL;
-            goto done;
-        }
-
-        if (g_diag_bbox) {
-            diag_cost.desc_count++;
-            if (desc->x_min < diag_x_min) diag_x_min = desc->x_min;
-            if (desc->x_max > diag_x_max) diag_x_max = desc->x_max;
-            if (desc->y_min < diag_y_min) diag_y_min = desc->y_min;
-            if (desc->y_max > diag_y_max) diag_y_max = desc->y_max;
-        }
-
-        y_min = desc->y_min;
-        y_max = desc->y_max;
-        if (y_max < 0 || y_min >= (int)VOXEL_RENDER_HEIGHT || y_min > y_max) {
-            offset += desc_size;
-            continue;
-        }
-        if (y_min < 0)
-            y_min = 0;
-        if (y_max >= (int)VOXEL_RENDER_HEIGHT)
-            y_max = (int)VOXEL_RENDER_HEIGHT - 1;
-
-        first_band = (unsigned)y_min / VOXEL_BAND_CACHE_HEIGHT;
-        last_band = (unsigned)y_max / VOXEL_BAND_CACHE_HEIGHT;
-        if (last_band >= VOXEL_BAND_COUNT)
-            last_band = VOXEL_BAND_COUNT - 1;
-
-        /*
-         * Cheap path: the FPGA band init path already paints the sky gradient
-         * into the resident cache and marks it dirty for generated-sky flushes.
-         * Full-width sky-gradient quads are therefore redundant command traffic;
-         * omit them before they consume FIFO, fetch, and descriptor overhead.
-         */
-        if (transport->hw_sky_gradient_clear_enabled &&
-            diag_desc_is_redundant_sky_clear(desc)) {
-            if (g_diag_bbox)
-                diag_count_omitted_sky_clear(&diag_cost, first_band, last_band);
-            offset += desc_size;
-            continue;
-        }
-
-        /* Fast path: descriptor fits inside one band and didn't need y-clipping. */
-        if (first_band == last_band &&
-            (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
-            struct descriptor_bin *bin = &g_bins[first_band];
-
-            ret = bin_append_descriptor(bin, stream + offset, desc_size);
-            if (ret < 0)
-                goto done;
-            if (g_diag_bbox)
-                diag_add_band_descriptor(&diag_cost, first_band, desc,
-                                         y_min, y_max, desc_size);
-
-            offset += desc_size;
-            continue;
-        }
-
-        /* Slow path: rewrite z0/uv into per-band flat_buf. */
-        for (unsigned band = first_band; band <= last_band; band++) {
-            struct descriptor_bin *bin = &g_bins[band];
-            int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
-            int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
-            int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
-            int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
-            uint8_t *dst;
-
-            ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
-            if (ret < 0)
-                goto done;
-
-            dst = bin->flat_buf + bin->flat_used;
-            rewrite_clipped(dst, stream + offset, desc_size,
-                            clipped_y_min, clipped_y_max);
-            bin->flat_used += desc_size;
-            if (g_diag_bbox)
-                diag_add_band_descriptor(&diag_cost, band, desc,
-                                         clipped_y_min, clipped_y_max,
-                                         desc_size);
-        }
-
-        offset += desc_size;
+    /* Fast path: descriptor fits inside one band and didn't need y-clipping. */
+    if (first_band == last_band &&
+        (int)desc->y_min == y_min && (int)desc->y_max == y_max) {
+        struct descriptor_bin *bin = &bins[first_band];
+        int ret = bin_append_descriptor(bin, desc_bytes, desc_size);
+        if (ret < 0)
+            return ret;
+        if (g_diag_bbox && diag_cost)
+            diag_add_band_descriptor(diag_cost, first_band, desc,
+                                     y_min, y_max, desc_size);
+        return 0;
     }
 
-    if (g_diag_bbox) {
-        clock_gettime(CLOCK_MONOTONIC, &t_binned);
-        have_t_binned = 1;
+    /* Slow path: rewrite z0/uv into per-band flat_buf. */
+    for (unsigned band = first_band; band <= last_band; band++) {
+        struct descriptor_bin *bin = &bins[band];
+        int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
+        int band_y_max = band_y_min + (int)VOXEL_BAND_CACHE_HEIGHT - 1;
+        int clipped_y_min = y_min > band_y_min ? y_min : band_y_min;
+        int clipped_y_max = y_max < band_y_max ? y_max : band_y_max;
+        uint8_t *dst;
+        int ret = bin_ensure_flat_capacity(bin, bin->flat_used + desc_size);
+        if (ret < 0)
+            return ret;
+        dst = bin->flat_buf + bin->flat_used;
+        rewrite_clipped(dst, desc_bytes, desc_size,
+                        clipped_y_min, clipped_y_max);
+        bin->flat_used += desc_size;
+        if (g_diag_bbox && diag_cost)
+            diag_add_band_descriptor(diag_cost, band, desc,
+                                     clipped_y_min, clipped_y_max,
+                                     desc_size);
     }
+    return 0;
+}
+
+void gpu_transport_begin_descriptors(GPUTransport *transport)
+{
+    struct descriptor_bin *bins;
+
+    if (!transport || !transport_needs_hw(transport))
+        return;
+
+    bins = g_bins_pool[g_main_bin_set];
+
+    memset(&g_staged_diag_cost, 0, sizeof(g_staged_diag_cost));
+    g_staged_diag_x_min = INT16_MAX;
+    g_staged_diag_x_max = INT16_MIN;
+    g_staged_diag_y_min = INT16_MAX;
+    g_staged_diag_y_max = INT16_MIN;
+    g_staged_desc_count = 0;
+    if (g_diag_bbox || g_diag_cache) {
+        g_staged_diag_frame_index = g_diag_frame_count;
+        g_staged_diag_log_frame = ((g_diag_frame_count++ % 60) == 0);
+    } else {
+        g_staged_diag_frame_index = 0;
+        g_staged_diag_log_frame = 0;
+    }
+
+    if (reset_bins_and_prime(bins, g_diag_bbox ? &g_staged_diag_cost : NULL) < 0) {
+        /* OOM: leave staged_active=0 so submit_hw_binned re-runs the
+         * legacy binning path on the contiguous stream. */
+        transport->staged_active = 0;
+        return;
+    }
+    transport->staged_active = 1;
+}
+
+int gpu_transport_bin_descriptor(GPUTransport *transport,
+                                 const void *desc_bytes, size_t desc_size)
+{
+    int ret;
+
+    if (!transport || !transport->staged_active)
+        return 0;
+    g_staged_desc_count++;
+    ret = bin_one_descriptor(transport, g_bins_pool[g_main_bin_set],
+                             desc_bytes, desc_size,
+                             &g_staged_diag_cost,
+                             &g_staged_diag_x_min, &g_staged_diag_x_max,
+                             &g_staged_diag_y_min, &g_staged_diag_y_max);
+    if (ret < 0)
+        transport->staged_active = 0;
+    return ret;
+}
+
+static int submit_hw_prebinned(GPUTransport *transport,
+                               struct descriptor_bin bins[VOXEL_BAND_COUNT],
+                               struct diag_cost *diag_cost,
+                               int16_t diag_x_min, int16_t diag_x_max,
+                               int16_t diag_y_min, int16_t diag_y_max,
+                               int diag_log_frame,
+                               unsigned diag_frame_index,
+                               unsigned diag_quad_count,
+                               const struct timespec *t_start,
+                               const struct timespec *t_binned)
+{
+    struct diag_band_submit diag_bands[VOXEL_BAND_COUNT];
+    struct timespec t_submit = {0};
+    int copy_target_buffer = -1;
+    int have_t_submit = 0;
+    int ret = 0;
+
+    memset(diag_bands, 0, sizeof(diag_bands));
 
     copy_target_buffer = gpu_transport_read_copy_target_buffer(transport);
 
     if (g_diag_cache) {
         fprintf(stderr,
                 "DIAG_CACHE frame=%u ct=%d reuse=%d render_epoch=%u sky_epoch=%u\n",
-                g_diag_frame_count - 1, copy_target_buffer,
+                diag_frame_index, copy_target_buffer,
                 g_hw_band_reuse,
                 transport->hw_render_epoch, transport->hw_sky_epoch);
     }
 
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         const int primer_only =
-            g_bins[band].flat_used == sizeof(g_band_primers[band]);
+            bins[band].flat_used == sizeof(g_band_primers[band]);
         const uint64_t band_hash =
-            hash_band_bytes(g_bins[band].flat_buf, g_bins[band].flat_used);
+            hash_band_bytes(bins[band].flat_buf, bins[band].flat_used);
         struct hw_band_cache_entry *band_cache =
             (copy_target_buffer >= 0) ?
                 &transport->hw_band_cache[copy_target_buffer][band] : NULL;
 
         if (g_hw_band_reuse && band_cache &&
             band_cache->render_epoch == transport->hw_render_epoch &&
-            band_cache->bytes == g_bins[band].flat_used &&
+            band_cache->bytes == bins[band].flat_used &&
             band_cache->hash == band_hash) {
             if (g_diag_bbox) {
-                diag_remove_cached_band_cost(&diag_cost, band);
-                diag_cost.cached_exact_band_reuses++;
+                diag_remove_cached_band_cost(diag_cost, band);
+                diag_cost->cached_exact_band_reuses++;
             }
             if (g_diag_cache) {
                 fprintf(stderr,
                         "DIAG_CACHE   b%u=HIT  bytes=%zu hash=0x%016llx\n",
-                        band, g_bins[band].flat_used,
+                        band, bins[band].flat_used,
                         (unsigned long long)band_hash);
             }
             continue;
@@ -871,18 +932,18 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             transport->hw_sky_band_epoch[copy_target_buffer][band] ==
                 transport->hw_sky_epoch) {
             if (g_diag_bbox) {
-                diag_remove_cached_band_cost(&diag_cost, band);
-                diag_cost.cached_sky_band_reuses++;
+                diag_remove_cached_band_cost(diag_cost, band);
+                diag_cost->cached_sky_band_reuses++;
             }
             if (band_cache) {
                 band_cache->hash = band_hash;
-                band_cache->bytes = g_bins[band].flat_used;
+                band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
             }
             if (g_diag_cache) {
                 fprintf(stderr,
                         "DIAG_CACHE   b%u=SKY  bytes=%zu hash=0x%016llx\n",
-                        band, g_bins[band].flat_used,
+                        band, bins[band].flat_used,
                         (unsigned long long)band_hash);
             }
             continue;
@@ -895,9 +956,9 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
          * glitch to absorb. Skipping the primer write saves a write_all()
          * syscall + one descriptor's FIFO traversal per primer-only miss. */
         const void *submit_buf =
-            primer_only ? NULL : g_bins[band].flat_buf;
+            primer_only ? NULL : bins[band].flat_buf;
         size_t submit_bytes =
-            primer_only ? 0 : g_bins[band].flat_used;
+            primer_only ? 0 : bins[band].flat_used;
 
         ret = submit_hw_band_flat(transport, band,
                                   submit_buf, submit_bytes,
@@ -922,7 +983,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
             fprintf(stderr,
                     "DIAG_CACHE   b%u=MISS bytes=%zu hash=0x%016llx primer=%d "
                     "post: dma=0x%08x late=%u ct=%u fa=%u ccp=%u dv=%u cbi=%u\n",
-                    band, g_bins[band].flat_used,
+                    band, bins[band].flat_used,
                     (unsigned long long)band_hash, primer_only,
                     dma_post, late_post, ct_post, fa_post, ccp_post,
                     dv_post, cbi_post);
@@ -933,7 +994,7 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
                 primer_only ? transport->hw_sky_epoch : 0;
             if (band_cache) {
                 band_cache->hash = band_hash;
-                band_cache->bytes = g_bins[band].flat_used;
+                band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
             }
         }
@@ -945,31 +1006,31 @@ static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
     }
 
 done:
-    if (g_diag_bbox && have_t_binned && have_t_submit && diag_log_frame) {
-        uint64_t init_cycles = diag_sum_u64(diag_cost.init_cycles,
+    if (g_diag_bbox && have_t_submit && diag_log_frame) {
+        uint64_t init_cycles = diag_sum_u64(diag_cost->init_cycles,
                                             VOXEL_BAND_COUNT);
         uint64_t overhead_cycles =
-            diag_sum_u64(diag_cost.desc_overhead_cycles_band,
+            diag_sum_u64(diag_cost->desc_overhead_cycles_band,
                          VOXEL_BAND_COUNT);
-        uint64_t flush_words = diag_sum_u64(diag_cost.flush_words,
+        uint64_t flush_words = diag_sum_u64(diag_cost->flush_words,
                                             VOXEL_BAND_COUNT);
         uint64_t flush_wall_cycles =
             diag_write_slack_limited_cycles(flush_words);
-        uint64_t ready_cycles = diag_estimate_ready_cycles(&diag_cost);
+        uint64_t ready_cycles = diag_estimate_ready_cycles(diag_cost);
         uint64_t vsync_slots =
             (ready_cycles + DIAG_VGA_FRAME_CYCLES - 1) /
             DIAG_VGA_FRAME_CYCLES;
-        double ms_bin = (t_binned.tv_sec - t_start.tv_sec) * 1000.0 +
-                        (t_binned.tv_nsec - t_start.tv_nsec) / 1e6;
-        double ms_submit = (t_submit.tv_sec - t_binned.tv_sec) * 1000.0 +
-                           (t_submit.tv_nsec - t_binned.tv_nsec) / 1e6;
+        double ms_bin = (t_binned->tv_sec - t_start->tv_sec) * 1000.0 +
+                        (t_binned->tv_nsec - t_start->tv_nsec) / 1e6;
+        double ms_submit = (t_submit.tv_sec - t_binned->tv_sec) * 1000.0 +
+                           (t_submit.tv_nsec - t_binned->tv_nsec) / 1e6;
 
         if (vsync_slots == 0)
             vsync_slots = 1;
 
         fprintf(stderr,
                 "renderer: HW mode [flat buf, %u quads, bbox: (%d,%d)-(%d,%d)] bin=%5.2fms bands=%5.2fms\n",
-                (unsigned)(descriptor_bytes / sizeof(struct quad_desc)), /* approx */
+                diag_quad_count,
                 diag_x_min, diag_y_min, diag_x_max, diag_y_max,
                 ms_bin, ms_submit);
         fprintf(stderr,
@@ -1013,18 +1074,18 @@ done:
                 "fetch=%5.2fms overhead=%5.2fms flush_raw=%5.2fms "
                 "flush_slack=%5.2fms "
                 "ideal_ready=%5.2fms vsync_floor=%5.2fms slots=%llu\n",
-                (unsigned long long)diag_cost.desc_count,
-                (unsigned long long)diag_cost.band_copies,
-                (unsigned long long)diag_cost.textured_band_copies,
-                (unsigned long long)diag_cost.skipped_sky_copies,
-                (unsigned long long)diag_cost.cached_sky_band_reuses,
-                (unsigned long long)diag_cost.cached_exact_band_reuses,
-                diag_cycles_ms(diag_cost.bbox_pixels_1px),
-                diag_cycles_ms(diag_cost.pair_cycles_2px),
-                diag_cycles_ms(diag_cost.bbox_pixels_1px -
-                               diag_cost.pair_cycles_2px),
+                (unsigned long long)diag_cost->desc_count,
+                (unsigned long long)diag_cost->band_copies,
+                (unsigned long long)diag_cost->textured_band_copies,
+                (unsigned long long)diag_cost->skipped_sky_copies,
+                (unsigned long long)diag_cost->cached_sky_band_reuses,
+                (unsigned long long)diag_cost->cached_exact_band_reuses,
+                diag_cycles_ms(diag_cost->bbox_pixels_1px),
+                diag_cycles_ms(diag_cost->pair_cycles_2px),
+                diag_cycles_ms(diag_cost->bbox_pixels_1px -
+                               diag_cost->pair_cycles_2px),
                 diag_cycles_ms(init_cycles),
-                diag_cycles_ms(diag_cost.fetch_words),
+                diag_cycles_ms(diag_cost->fetch_words),
                 diag_cycles_ms(overhead_cycles),
                 diag_cycles_ms(flush_words),
                 diag_cycles_ms(flush_wall_cycles),
@@ -1090,10 +1151,111 @@ done:
         }
         g_diag_log_flip_next = 1;
     }
+
     transport->hw_render_epoch_bumps = 0;
     transport->hw_sky_epoch_bumps = 0;
     transport->hw_sky_epoch_bump_count = 0;
     return ret;
+}
+
+static int submit_hw_binned(GPUTransport *transport, const void *descriptors,
+                            size_t descriptor_bytes)
+{
+    const uint8_t *stream = descriptors;
+    size_t offset = 0;
+    int ret = 0;
+    int16_t diag_x_min = INT16_MAX, diag_x_max = INT16_MIN;
+    int16_t diag_y_min = INT16_MAX, diag_y_max = INT16_MIN;
+    struct diag_cost diag_cost = {0};
+    int diag_log_frame = 0;
+    unsigned diag_frame_index = 0;
+    const int staged = transport->staged_active;
+    struct descriptor_bin *bins = g_bins_pool[g_main_bin_set];
+
+    struct timespec t_start = {0}, t_binned = {0};
+
+    if (g_diag_bbox)
+        clock_gettime(CLOCK_MONOTONIC, &t_start);
+    if (staged) {
+        /* Bin-during-emit path: the renderer already populated the current
+         * bin set via gpu_transport_bin_descriptor. Pull staged diag
+         * accumulators in so the per-frame log line still has the same data. */
+        diag_cost = g_staged_diag_cost;
+        diag_x_min = g_staged_diag_x_min;
+        diag_x_max = g_staged_diag_x_max;
+        diag_y_min = g_staged_diag_y_min;
+        diag_y_max = g_staged_diag_y_max;
+        diag_log_frame = g_staged_diag_log_frame;
+        diag_frame_index = g_staged_diag_frame_index;
+        transport->staged_active = 0;
+        goto skip_binning;
+    }
+
+    if (g_diag_bbox || g_diag_cache) {
+        diag_frame_index = g_diag_frame_count;
+        diag_log_frame = ((g_diag_frame_count++ % 60) == 0);
+    }
+
+    ret = reset_bins_and_prime(bins, g_diag_bbox ? &diag_cost : NULL);
+    if (ret < 0)
+        return ret;
+
+    if (descriptor_bytes == 0) {
+        if (g_diag_bbox)
+            clock_gettime(CLOCK_MONOTONIC, &t_binned);
+        return submit_hw_prebinned(transport, bins, &diag_cost,
+                                   diag_x_min, diag_x_max,
+                                   diag_y_min, diag_y_max,
+                                   diag_log_frame, diag_frame_index, 0,
+                                   &t_start, &t_binned);
+    }
+
+    while (offset < descriptor_bytes) {
+        const struct quad_desc *desc;
+        size_t desc_size;
+
+        if (descriptor_bytes - offset < sizeof(struct quad_desc)) {
+            ret = -EINVAL;
+            goto done;
+        }
+
+        desc = (const struct quad_desc *)(const void *)(stream + offset);
+        quad_descriptor_size(desc, &desc_size);
+        if (descriptor_bytes - offset < desc_size) {
+            ret = -EINVAL;
+            goto done;
+        }
+
+        ret = bin_one_descriptor(transport, bins, stream + offset, desc_size,
+                                 &diag_cost,
+                                 &diag_x_min, &diag_x_max,
+                                 &diag_y_min, &diag_y_max);
+        if (ret < 0)
+            goto done;
+
+        offset += desc_size;
+    }
+
+done:
+    if (ret < 0) {
+        transport->hw_render_epoch_bumps = 0;
+        transport->hw_sky_epoch_bumps = 0;
+        transport->hw_sky_epoch_bump_count = 0;
+        return ret;
+    }
+
+skip_binning:
+    if (g_diag_bbox)
+        clock_gettime(CLOCK_MONOTONIC, &t_binned);
+    return submit_hw_prebinned(transport, bins, &diag_cost,
+                               diag_x_min, diag_x_max,
+                               diag_y_min, diag_y_max,
+                               diag_log_frame,
+                               diag_frame_index,
+                               staged ? (unsigned)g_staged_desc_count :
+                                        (unsigned)(descriptor_bytes /
+                                                   sizeof(struct quad_desc)),
+                               &t_start, &t_binned);
 }
 
 static void log_extmem_state(GPUTransport *transport, int debug_enabled)
@@ -1234,6 +1396,20 @@ static int read_debug_enabled_local(void)
     return 1;
 }
 
+static int env_flag_enabled(const char *value)
+{
+    if (!value || value[0] == '\0')
+        return 0;
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "false") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "no") == 0)
+        return 0;
+    return 1;
+}
+
+static int gpu_transport_flip_hw_only(GPUTransport *transport);
+
 static int gpu_transport_wait_pending_flip(GPUTransport *transport)
 {
     int ret = 0;
@@ -1264,6 +1440,177 @@ static int gpu_transport_wait_pending_flip(GPUTransport *transport)
     }
 
     return ret;
+}
+
+static void *gpu_transport_pipeline_worker(void *arg)
+{
+    GPUTransport *transport = arg;
+
+    for (;;) {
+        struct pipeline_submit_job job;
+        struct timespec t_start = {0}, t_binned = {0};
+        int ret;
+
+        pthread_mutex_lock(&transport->pipeline_mutex);
+        while (!transport->pipeline_shutdown &&
+               !transport->pipeline_job_ready) {
+            pthread_cond_wait(&transport->pipeline_cond,
+                              &transport->pipeline_mutex);
+        }
+        if (transport->pipeline_shutdown &&
+            !transport->pipeline_job_ready) {
+            pthread_mutex_unlock(&transport->pipeline_mutex);
+            return NULL;
+        }
+
+        job = *transport->pipeline_job;
+        transport->pipeline_job_ready = 0;
+        transport->pipeline_job_running = 1;
+        pthread_mutex_unlock(&transport->pipeline_mutex);
+
+        if (g_diag_bbox) {
+            clock_gettime(CLOCK_MONOTONIC, &t_start);
+            t_binned = t_start;
+        }
+
+        ret = submit_hw_prebinned(transport, g_bins_pool[job.bin_set],
+                                  &job.diag_cost,
+                                  job.diag_x_min, job.diag_x_max,
+                                  job.diag_y_min, job.diag_y_max,
+                                  job.diag_log_frame,
+                                  job.diag_frame_index,
+                                  (unsigned)job.desc_count,
+                                  &t_start, &t_binned);
+        if (ret == 0)
+            ret = gpu_transport_flip_hw_only(transport);
+
+        pthread_mutex_lock(&transport->pipeline_mutex);
+        transport->pipeline_ret = ret;
+        transport->pipeline_job_running = 0;
+        pthread_cond_broadcast(&transport->pipeline_cond);
+        pthread_mutex_unlock(&transport->pipeline_mutex);
+    }
+}
+
+static int gpu_transport_pipeline_wait_idle(GPUTransport *transport)
+{
+    int ret;
+
+    if (!transport || !transport->pipeline_enabled)
+        return 0;
+
+    pthread_mutex_lock(&transport->pipeline_mutex);
+    while (transport->pipeline_job_ready ||
+           transport->pipeline_job_running) {
+        pthread_cond_wait(&transport->pipeline_cond,
+                          &transport->pipeline_mutex);
+    }
+    ret = transport->pipeline_ret;
+    transport->pipeline_ret = 0;
+    transport->pipeline_flip_owned = 0;
+    pthread_mutex_unlock(&transport->pipeline_mutex);
+    return ret;
+}
+
+static int gpu_transport_pipeline_queue_submit(GPUTransport *transport)
+{
+    int ret;
+
+    if (!transport || !transport->pipeline_enabled ||
+        !transport->pipeline_thread_started ||
+        !transport->pipeline_job)
+        return -EINVAL;
+
+    ret = gpu_transport_pipeline_wait_idle(transport);
+    if (ret < 0)
+        return ret;
+
+    pthread_mutex_lock(&transport->pipeline_mutex);
+    transport->pipeline_job->bin_set = g_main_bin_set;
+    transport->pipeline_job->diag_cost = g_staged_diag_cost;
+    transport->pipeline_job->diag_x_min = g_staged_diag_x_min;
+    transport->pipeline_job->diag_x_max = g_staged_diag_x_max;
+    transport->pipeline_job->diag_y_min = g_staged_diag_y_min;
+    transport->pipeline_job->diag_y_max = g_staged_diag_y_max;
+    transport->pipeline_job->diag_log_frame = g_staged_diag_log_frame;
+    transport->pipeline_job->diag_frame_index = g_staged_diag_frame_index;
+    transport->pipeline_job->desc_count = g_staged_desc_count;
+    transport->pipeline_ret = 0;
+    transport->pipeline_job_ready = 1;
+    transport->pipeline_flip_owned = 1;
+    transport->staged_active = 0;
+    g_main_bin_set ^= 1;
+    pthread_cond_signal(&transport->pipeline_cond);
+    pthread_mutex_unlock(&transport->pipeline_mutex);
+
+    return 0;
+}
+
+static int gpu_transport_pipeline_start(GPUTransport *transport,
+                                        int debug_enabled)
+{
+    int ret;
+
+    transport->pipeline_job = calloc(1, sizeof(*transport->pipeline_job));
+    if (!transport->pipeline_job)
+        return -ENOMEM;
+
+    ret = pthread_mutex_init(&transport->pipeline_mutex, NULL);
+    if (ret != 0) {
+        free(transport->pipeline_job);
+        transport->pipeline_job = NULL;
+        return -ret;
+    }
+
+    ret = pthread_cond_init(&transport->pipeline_cond, NULL);
+    if (ret != 0) {
+        pthread_mutex_destroy(&transport->pipeline_mutex);
+        free(transport->pipeline_job);
+        transport->pipeline_job = NULL;
+        return -ret;
+    }
+
+    transport->pipeline_enabled = 1;
+    ret = pthread_create(&transport->pipeline_thread, NULL,
+                         gpu_transport_pipeline_worker, transport);
+    if (ret != 0) {
+        transport->pipeline_enabled = 0;
+        pthread_cond_destroy(&transport->pipeline_cond);
+        pthread_mutex_destroy(&transport->pipeline_mutex);
+        free(transport->pipeline_job);
+        transport->pipeline_job = NULL;
+        return -ret;
+    }
+
+    transport->pipeline_thread_started = 1;
+    if (debug_enabled)
+        fprintf(stderr,
+                "renderer: VOXEL_PIPELINE_FRAMES enabled (HW submit+flip worker)\n");
+    return 0;
+}
+
+static void gpu_transport_pipeline_stop(GPUTransport *transport)
+{
+    if (!transport)
+        return;
+
+    if (transport->pipeline_thread_started) {
+        (void)gpu_transport_pipeline_wait_idle(transport);
+        pthread_mutex_lock(&transport->pipeline_mutex);
+        transport->pipeline_shutdown = 1;
+        pthread_cond_signal(&transport->pipeline_cond);
+        pthread_mutex_unlock(&transport->pipeline_mutex);
+        pthread_join(transport->pipeline_thread, NULL);
+        transport->pipeline_thread_started = 0;
+    }
+
+    if (transport->pipeline_enabled || transport->pipeline_job) {
+        pthread_cond_destroy(&transport->pipeline_cond);
+        pthread_mutex_destroy(&transport->pipeline_mutex);
+        free(transport->pipeline_job);
+        transport->pipeline_job = NULL;
+        transport->pipeline_enabled = 0;
+    }
 }
 
 GPUTransport *gpu_transport_open(void)
@@ -1354,6 +1701,23 @@ GPUTransport *gpu_transport_open(void)
                     "renderer: VOXEL_HW_BAND_REUSE enabled (full-band skip path; set =0 to disable)\n");
     }
 
+    {
+        const char *pipeline = getenv("VOXEL_PIPELINE_FRAMES");
+        if (env_flag_enabled(pipeline)) {
+            if (transport->mode == GPU_BACKEND_HW) {
+                ret = gpu_transport_pipeline_start(transport, debug_enabled);
+                if (ret < 0) {
+                    fprintf(stderr,
+                            "renderer: VOXEL_PIPELINE_FRAMES disabled (worker start failed: %s)\n",
+                            strerror(-ret));
+                }
+            } else if (debug_enabled) {
+                fprintf(stderr,
+                        "renderer: VOXEL_PIPELINE_FRAMES requested but requires VOXEL_GPU_BACKEND=hw\n");
+            }
+        }
+    }
+
     return transport;
 }
 
@@ -1362,6 +1726,7 @@ void gpu_transport_close(GPUTransport *transport)
     if (!transport)
         return;
 
+    gpu_transport_pipeline_stop(transport);
     (void)gpu_transport_wait_pending_flip(transport);
 
     if (transport->socket_fd >= 0)
@@ -1370,17 +1735,24 @@ void gpu_transport_close(GPUTransport *transport)
         close(transport->hw_fd);
     free(transport);
 
-    for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
-        free(g_bins[i].flat_buf);
-        g_bins[i].flat_buf = NULL;
-        g_bins[i].flat_used = 0;
-        g_bins[i].flat_capacity = 0;
+    for (unsigned set = 0; set < 2; set++) {
+        for (unsigned i = 0; i < VOXEL_BAND_COUNT; i++) {
+            free(g_bins_pool[set][i].flat_buf);
+            g_bins_pool[set][i].flat_buf = NULL;
+            g_bins_pool[set][i].flat_used = 0;
+            g_bins_pool[set][i].flat_capacity = 0;
+        }
     }
 }
 
 int gpu_transport_clear(GPUTransport *transport)
 {
-    int ret = gpu_transport_wait_pending_flip(transport);
+    int ret = gpu_transport_pipeline_wait_idle(transport);
+
+    if (ret < 0)
+        return ret;
+
+    ret = gpu_transport_wait_pending_flip(transport);
 
     if (ret < 0)
         return ret;
@@ -1404,7 +1776,7 @@ int gpu_transport_clear(GPUTransport *transport)
     return ret;
 }
 
-int gpu_transport_flip(GPUTransport *transport)
+static int gpu_transport_flip_hw_only(GPUTransport *transport)
 {
     struct timespec t0 = {0}, t1 = {0};
     int ret = 0;
@@ -1418,35 +1790,23 @@ int gpu_transport_flip(GPUTransport *transport)
     if (g_diag_bbox)
         clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    if (transport_needs_hw(transport)) {
-        if (transport->hw_async_flip_supported) {
-            if (ioctl(transport->hw_fd, VOXEL_IOC_FLIP_ASYNC) < 0) {
-                if (errno == ENOTTY || errno == EINVAL) {
-                    transport->hw_async_flip_supported = 0;
-                } else {
-                    perror("ioctl(FLIP_ASYNC)");
-                    ret = -errno;
-                }
+    if (transport->hw_async_flip_supported) {
+        if (ioctl(transport->hw_fd, VOXEL_IOC_FLIP_ASYNC) < 0) {
+            if (errno == ENOTTY || errno == EINVAL) {
+                transport->hw_async_flip_supported = 0;
             } else {
-                transport->hw_flip_pending = 1;
+                perror("ioctl(FLIP_ASYNC)");
+                ret = -errno;
             }
-        }
-
-        if (ret == 0 && !transport->hw_async_flip_supported &&
-            ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
-            perror("ioctl(FLIP)");
-            ret = -errno;
+        } else {
+            transport->hw_flip_pending = 1;
         }
     }
 
-    if (transport_needs_socket(transport)) {
-        int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_FLIP,
-                                      NULL, 0, NULL, NULL);
-        if (sock_ret < 0 && ret == 0) {
-            fprintf(stderr, "renderer: socket FLIP failed: %s\n",
-                    strerror(-sock_ret));
-            ret = sock_ret;
-        }
+    if (ret == 0 && !transport->hw_async_flip_supported &&
+        ioctl(transport->hw_fd, VOXEL_IOC_FLIP) < 0) {
+        perror("ioctl(FLIP)");
+        ret = -errno;
     }
 
     if (g_diag_bbox && g_diag_log_flip_next && ret == 0 &&
@@ -1460,11 +1820,48 @@ int gpu_transport_flip(GPUTransport *transport)
     return ret;
 }
 
+int gpu_transport_flip(GPUTransport *transport)
+{
+    int ret = 0;
+
+    if (transport->pipeline_enabled) {
+        pthread_mutex_lock(&transport->pipeline_mutex);
+        if (transport->pipeline_flip_owned) {
+            transport->pipeline_flip_owned = 0;
+            pthread_mutex_unlock(&transport->pipeline_mutex);
+            return 0;
+        }
+        pthread_mutex_unlock(&transport->pipeline_mutex);
+
+        ret = gpu_transport_pipeline_wait_idle(transport);
+        if (ret < 0)
+            return ret;
+    }
+
+    if (transport_needs_hw(transport))
+        ret = gpu_transport_flip_hw_only(transport);
+
+    if (transport_needs_socket(transport)) {
+        int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_FLIP,
+                                      NULL, 0, NULL, NULL);
+        if (sock_ret < 0 && ret == 0) {
+            fprintf(stderr, "renderer: socket FLIP failed: %s\n",
+                    strerror(-sock_ret));
+            ret = sock_ret;
+        }
+    }
+
+    return ret;
+}
+
 int gpu_transport_set_palette(GPUTransport *transport,
                               const struct voxel_palette_entry *entry)
 {
-    int ret = 0;
+    int ret = gpu_transport_pipeline_wait_idle(transport);
     int hw_written = 0;
+
+    if (ret < 0)
+        return ret;
 
     if (transport_needs_hw(transport)) {
         if (ioctl(transport->hw_fd, VOXEL_IOC_SET_PALETTE, entry) < 0) {
@@ -1496,8 +1893,11 @@ int gpu_transport_set_palette(GPUTransport *transport,
 int gpu_transport_set_fog(GPUTransport *transport,
                           const struct voxel_fog_state *fog)
 {
-    int ret = 0;
+    int ret = gpu_transport_pipeline_wait_idle(transport);
     int hw_written = 0;
+
+    if (ret < 0)
+        return ret;
 
     if (transport_needs_hw(transport)) {
         if (ioctl(transport->hw_fd, VOXEL_IOC_SET_FOG, fog) < 0) {
@@ -1534,6 +1934,14 @@ int gpu_transport_submit_descriptors(GPUTransport *transport,
         return -E2BIG;
 
     if (transport_needs_hw(transport)) {
+        if (transport->pipeline_enabled && transport->staged_active &&
+            descriptor_bytes > 0 && !transport_needs_socket(transport))
+            return gpu_transport_pipeline_queue_submit(transport);
+
+        ret = gpu_transport_pipeline_wait_idle(transport);
+        if (ret < 0)
+            return ret;
+
         ret = submit_hw_binned(transport, descriptors, descriptor_bytes);
     }
 

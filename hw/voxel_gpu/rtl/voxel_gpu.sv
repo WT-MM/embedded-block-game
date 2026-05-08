@@ -213,14 +213,14 @@ module voxel_gpu (
     // demotes it to M10K (sync read). The MLAB attribute still keeps
     // the read cheap on paper; the explicit two-stage pipeline is the
     // correctness guarantee. See PROJECT_NOTES.md for the history.
-    (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
+    (* ramstyle = "logic" *) logic [23:0] palette [0:255];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     // texture_mem is implemented as an explicit altsyncram ROM below
     // (see voxel_texture_rom). Do NOT reintroduce an inferred array here:
     // inference lets Quartus silently pick between 1-cycle and 2-cycle
     // read latency, which is what caused the quad-boundary colored
     // fringes / "chromatic aberration" we chased for weeks.
-    (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
+    (* ramstyle = "logic" *) logic [31:0] recip_lut [0:1024];
 
     logic [10:0] fifo_wr_ptr;
     logic [10:0] fifo_rd_ptr;

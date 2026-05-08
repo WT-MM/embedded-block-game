@@ -550,6 +550,28 @@ static long voxel_ioc_get_perf(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_get_perf2(void __user *uarg)
+{
+	struct voxel_perf_counters_v2 p;
+
+	mutex_lock(&voxdev.lock);
+	p.base.draw_active  = voxel_rd(VOXEL_REG_PERF_DRAW_ACT);
+	p.base.draw_idle    = voxel_rd(VOXEL_REG_PERF_DRAW_IDLE);
+	p.base.flush_active = voxel_rd(VOXEL_REG_PERF_FLUSH_ACT);
+	p.base.flush_stall  = voxel_rd(VOXEL_REG_PERF_FLUSH_STL);
+	p.base.init         = voxel_rd(VOXEL_REG_PERF_INIT);
+	p.base.load         = voxel_rd(VOXEL_REG_PERF_LOAD);
+	p.flush_wait_load   = voxel_rd(VOXEL_REG_PERF_FLUSH_LOAD);
+	p.flush_wait_fifo   = voxel_rd(VOXEL_REG_PERF_FLUSH_FIFO);
+	p.flush_wait_data   = voxel_rd(VOXEL_REG_PERF_FLUSH_DATA);
+	p.flush_wait_drain  = voxel_rd(VOXEL_REG_PERF_FLUSH_DRAIN);
+	mutex_unlock(&voxdev.lock);
+
+	if (copy_to_user(uarg, &p, sizeof(p)))
+		return -EFAULT;
+	return 0;
+}
+
 static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (_IOC_TYPE(cmd) != VOXEL_IOC_MAGIC)
@@ -584,6 +606,8 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_end_band();
 	case VOXEL_IOC_GET_PERF:
 		return voxel_ioc_get_perf((void __user *)arg);
+	case VOXEL_IOC_GET_PERF2:
+		return voxel_ioc_get_perf2((void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

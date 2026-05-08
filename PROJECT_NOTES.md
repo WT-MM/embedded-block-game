@@ -3601,3 +3601,56 @@ Expected impact: this does not speed up active moving frames where the FPGA
 must redraw the scene. It makes the new pipeline measurable above 30 FPS on
 cache-hit/static frames and reduces periodic full-redraw spikes caused only
 by sky palette motion.
+
+
+May 8 2026: Lazy Color Clear via Z Sentinel
+===========================================
+
+Context: The older two-pixel `ST_CACHE_INIT` attempt failed Quartus fit by
+43 LABs because it tried to clear color and Z through both banked cache write
+lanes. Recent logs still show `init=6.14ms` on uncached full-frame redraws,
+so the fixed init cost is worth attacking if we can avoid that area shape.
+
+RTL change:
+
+  * `ST_CACHE_INIT` now clears only the Z cache, two pixels/cycle, using the
+    even/odd bank write ports directly.
+  * `Z=0xFFFF` is reserved as `Z_CLEAR_SENTINEL`, meaning "no real pixel has
+    written this cache location for this band." Real committed pixels write
+    either their clamped depth or `0xFFFE` for non-Z-tested pixels so flush
+    can distinguish valid color from untouched stale color.
+  * The color cache is not physically initialized. When draw blending reads
+    a destination with `Z_CLEAR_SENTINEL`, it substitutes the current sky or
+    clear color. When background flush reads a cache pixel with
+    `Z_CLEAR_SENTINEL`, it writes generated sky/clear color to SDRAM instead
+    of stale cache color.
+  * The old cache-init sky palette row counters and color write path were
+    removed, so this should be much more fit-friendly than the previous
+    two-pixel color+Z init attempt.
+
+Low-risk instrumentation:
+
+  * Added `VOXEL_IOC_GET_PERF2` while keeping the old `VOXEL_IOC_GET_PERF`
+    ABI intact.
+  * New RTL counters split background flush stalls into `load`, `fifo`,
+    `data`, and `drain`; `gpu_transport.c` prints them as
+    `renderer: hw_flush_wait ...` when the v2 ioctl is available.
+  * The software bbox estimator now models cache init as two pixels/cycle.
+
+Expected impact: uncached full-frame init should fall from ~6.14 ms to
+~3.07 ms at 50 MHz. This does not reduce SDRAM flush bytes, but it should
+help frames hovering just over the 16.80 ms one-vsync bucket.
+
+Validation done locally:
+
+  * `verilator --lint-only` passes with Intel megafunctions boxed/missing
+    warnings suppressed.
+  * `cc -Wall -Wextra -pthread -c sw/gpu_transport.c`, `sw/renderer.c`, and
+    `sw/game.c` pass.
+  * Renderer test binaries build; only the pre-existing `world.c` warnings
+    remain.
+
+Hardware validation still needed: rebuild the RBF in Quartus to confirm the
+LAB fit, reload the kernel module so `VOXEL_IOC_GET_PERF2` is available, and
+check board logs for `init~=3.07ms` on uncached redraws plus the new
+`hw_flush_wait` breakdown.

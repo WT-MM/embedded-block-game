@@ -325,9 +325,9 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
         return;
 
     pixels = diag_band_pixels(band);
-    /* ST_CACHE_INIT runs 1 px/cycle (2 px/cycle variant cost 43 LABs we
-     * don't have, see PROJECT_NOTES May 5 fitter result). */
-    cost->init_cycles[band] += pixels;
+    /* ST_CACHE_INIT now clears only Z, two pixels/cycle; untouched color is
+     * synthesized from sky/clear when a later blend or flush sees Z=0xFFFF. */
+    cost->init_cycles[band] += (pixels + 1) / 2;
     cost->flush_words[band] += pixels;
 }
 
@@ -340,7 +340,7 @@ static void diag_remove_cached_band_cost(struct diag_cost *cost, unsigned band)
         return;
 
     pixels = diag_band_pixels(band);
-    init_cycles = pixels;
+    init_cycles = (pixels + 1) / 2;
 
     if (cost->init_cycles[band] >= init_cycles)
         cost->init_cycles[band] -= init_cycles;
@@ -1094,26 +1094,50 @@ done:
              * runs in parallel with raster + ping-pong init), so columns
              * don't sum to wall-clock — they reveal the breakdown of what
              * was happening during the frame. See PROJECT_NOTES.md. */
-            struct voxel_perf_counters perf;
-            if (ioctl(transport->hw_fd, VOXEL_IOC_GET_PERF, &perf) == 0) {
+            struct voxel_perf_counters_v2 perf2;
+            int have_perf2 = (ioctl(transport->hw_fd,
+                                    VOXEL_IOC_GET_PERF2, &perf2) == 0);
+            int have_perf = have_perf2;
+            if (!have_perf2) {
+                struct voxel_perf_counters perf1;
+                memset(&perf2, 0, sizeof(perf2));
+                if (ioctl(transport->hw_fd, VOXEL_IOC_GET_PERF, &perf1) == 0) {
+                    perf2.base = perf1;
+                    have_perf = 1;
+                } else {
+                    memset(&perf2.base, 0, sizeof(perf2.base));
+                }
+            }
+            if (have_perf) {
                 const double cyc_per_ms = 50000.0;
                 fprintf(stderr,
                         "renderer: hw_perf draw_act=%5.2fms draw_idle=%5.2fms "
                         "flush_act=%5.2fms flush_stall=%5.2fms "
                         "init=%5.2fms load=%5.2fms "
                         "(draw_busy=%.0f%% flush_busy=%.0f%%)\n",
-                        perf.draw_active  / cyc_per_ms,
-                        perf.draw_idle    / cyc_per_ms,
-                        perf.flush_active / cyc_per_ms,
-                        perf.flush_stall  / cyc_per_ms,
-                        perf.init         / cyc_per_ms,
-                        perf.load         / cyc_per_ms,
-                        (perf.draw_active + perf.draw_idle) ?
-                            100.0 * perf.draw_active /
-                                (double)(perf.draw_active + perf.draw_idle) : 0.0,
-                        (perf.flush_active + perf.flush_stall) ?
-                            100.0 * perf.flush_active /
-                                (double)(perf.flush_active + perf.flush_stall) : 0.0);
+                        perf2.base.draw_active  / cyc_per_ms,
+                        perf2.base.draw_idle    / cyc_per_ms,
+                        perf2.base.flush_active / cyc_per_ms,
+                        perf2.base.flush_stall  / cyc_per_ms,
+                        perf2.base.init         / cyc_per_ms,
+                        perf2.base.load         / cyc_per_ms,
+                        (perf2.base.draw_active + perf2.base.draw_idle) ?
+                            100.0 * perf2.base.draw_active /
+                                (double)(perf2.base.draw_active +
+                                         perf2.base.draw_idle) : 0.0,
+                        (perf2.base.flush_active + perf2.base.flush_stall) ?
+                            100.0 * perf2.base.flush_active /
+                                (double)(perf2.base.flush_active +
+                                         perf2.base.flush_stall) : 0.0);
+                if (have_perf2) {
+                    fprintf(stderr,
+                            "renderer: hw_flush_wait load=%5.2fms fifo=%5.2fms "
+                            "data=%5.2fms drain=%5.2fms\n",
+                            perf2.flush_wait_load  / cyc_per_ms,
+                            perf2.flush_wait_fifo  / cyc_per_ms,
+                            perf2.flush_wait_data  / cyc_per_ms,
+                            perf2.flush_wait_drain / cyc_per_ms);
+                }
             }
         }
         {

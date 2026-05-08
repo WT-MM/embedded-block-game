@@ -66,6 +66,10 @@ typedef int32_t  __s32;
 #define VOXEL_REG_PERF_FLUSH_STL 0x004C
 #define VOXEL_REG_PERF_INIT      0x0050
 #define VOXEL_REG_PERF_LOAD      0x0054
+#define VOXEL_REG_PERF_FLUSH_LOAD  0x0058
+#define VOXEL_REG_PERF_FLUSH_FIFO  0x005C
+#define VOXEL_REG_PERF_FLUSH_DATA  0x0060
+#define VOXEL_REG_PERF_FLUSH_DRAIN 0x0064
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x3000          /* exclusive */
@@ -153,6 +157,14 @@ struct voxel_perf_counters {
 	__u32 load;             /* cycles in cache load/drain */
 };
 
+struct voxel_perf_counters_v2 {
+	struct voxel_perf_counters base;
+	__u32 flush_wait_load;   /* cycles waiting to launch WR stream */
+	__u32 flush_wait_fifo;   /* cycles blocked by write FIFO/headroom */
+	__u32 flush_wait_data;   /* cycles waiting on cache/sky word */
+	__u32 flush_wait_drain;  /* cycles final SDRAM/FIFO drain */
+};
+
 /* ----- ioctl numbers ----- */
 #define VOXEL_IOC_MAGIC 'v'
 
@@ -169,8 +181,9 @@ struct voxel_perf_counters {
 #define VOXEL_IOC_FLIP_ASYNC       _IO(VOXEL_IOC_MAGIC, 11)
 #define VOXEL_IOC_WAIT_FLIP        _IO(VOXEL_IOC_MAGIC, 12)
 #define VOXEL_IOC_GET_PERF         _IOR(VOXEL_IOC_MAGIC, 13, struct voxel_perf_counters)
+#define VOXEL_IOC_GET_PERF2        _IOR(VOXEL_IOC_MAGIC, 14, struct voxel_perf_counters_v2)
 
-#define VOXEL_IOC_MAXNR            13
+#define VOXEL_IOC_MAXNR            14
 
 #define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
 #define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)

@@ -6,7 +6,8 @@
 // source-color ABI, but resolved pixels are stored as RGB565 so translucent
 // quads can alpha blend against the existing destination pixel.
 // FLIP no longer copies a full BRAM framebuffer. Instead:
-//   * BEGIN_BAND clears the resident color/z band,
+//   * BEGIN_BAND clears the resident Z band; untouched color is lazy and
+//     regenerated as sky/clear where Z still equals 0xFFFF,
 //   * the rasterizer writes only pixels that fall inside that resident band,
 //   * END_BAND flushes the color band to the inactive SDRAM color frame, and
 //   * scanout reads the active SDRAM frame through small line buffers.
@@ -71,6 +72,10 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_PERF_FLUSH_STL = 13'h013;
     localparam logic [12:0] ADDR_PERF_INIT      = 13'h014;
     localparam logic [12:0] ADDR_PERF_LOAD      = 13'h015;
+    localparam logic [12:0] ADDR_PERF_FLUSH_LOAD  = 13'h016;
+    localparam logic [12:0] ADDR_PERF_FLUSH_FIFO  = 13'h017;
+    localparam logic [12:0] ADDR_PERF_FLUSH_DATA  = 13'h018;
+    localparam logic [12:0] ADDR_PERF_FLUSH_DRAIN = 13'h019;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
@@ -119,6 +124,8 @@ module voxel_gpu (
     localparam int EXTMEM_SKY_GRADIENT_CLEAR_BIT = 5;
     localparam logic [7:0] PAL_SKY_GRADIENT_BASE = 8'd40;
     localparam logic [7:0] PAL_SKY_GRADIENT_LAST = 8'd63;
+    localparam logic [15:0] Z_CLEAR_SENTINEL = 16'hFFFF;
+    localparam logic [15:0] Z_VALID_FAR      = 16'hFFFE;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_002B;
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
     localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd1048576; // 1MB
@@ -191,6 +198,10 @@ module voxel_gpu (
     logic [31:0] perf_flush_stall;   // bg flush running AND no push (SDRAM stall)
     logic [31:0] perf_init;          // ST_CACHE_INIT
     logic [31:0] perf_load;          // ST_CACHE_LOAD_*/ST_CACHE_DRAIN_*
+    logic [31:0] perf_flush_wait_load;  // bg flush waiting to launch WR stream
+    logic [31:0] perf_flush_wait_fifo;  // bg flush blocked by write FIFO/headroom
+    logic [31:0] perf_flush_wait_data;  // bg flush waiting on cache/sky word
+    logic [31:0] perf_flush_wait_drain; // bg flush final SDRAM/FIFO drain
 
     // Palette lookup path: draw_pipe_color -> apply_light_bank ->
     // pal_rd_src_addr (registered) -> palette[] -> plr_src_rgb
@@ -767,9 +778,6 @@ module voxel_gpu (
     logic        cache_final_flush;
     logic [15:0] cache_maint_addr;
     logic [15:0] cache_pixels_total;
-    logic  [9:0] cache_init_x;
-    logic  [4:0] cache_init_sky_row_count;
-    logic  [7:0] cache_init_sky_palette;
     logic [15:0] cache_words_issued;
     logic [15:0] cache_words_done;
     logic        cache_fetch_inflight;
@@ -803,6 +811,7 @@ module voxel_gpu (
     logic  [9:0] flush_sky_x;
     logic  [4:0] flush_sky_row_count;
     logic  [7:0] flush_sky_palette;
+    logic [15:0] flush_fetch_clear_rgb565; // clear color aligned with cache read
 
     /*
      * Per-cache, per-bank read/write signals. Each cache (fb_A, fb_B,
@@ -1251,6 +1260,7 @@ module voxel_gpu (
     wire [15:0] z_draw_rd_data_o  = draw_cache_sel ? z_B_o_rd_data  : z_A_o_rd_data;
     /* Flush read data from flush_cache_sel's cache */
     wire [15:0] flush_fb_rd_data = flush_cache_sel ? fb_B_rd_data : fb_A_rd_data;
+    wire [15:0] flush_z_rd_data  = flush_cache_sel ? z_B_rd_data  : z_A_rd_data;
 
     wire signed [15:0] desc_x_min_raw = $signed(desc_words[0][15:0]);
     wire signed [15:0] desc_y_min_raw = $signed(desc_words[0][31:16]);
@@ -1447,9 +1457,13 @@ module voxel_gpu (
     wire [15:0] clear_rgb565 = rgb888_to_rgb565(palette[8'd0]);
     wire        sky_gradient_clear_enabled =
         extmem_ctrl[EXTMEM_SKY_GRADIENT_CLEAR_BIT];
-    wire [15:0] cache_init_rgb565 =
+    wire [15:0] flush_clear_rgb565 =
         sky_gradient_clear_enabled ?
-        rgb888_to_rgb565(palette[cache_init_sky_palette]) :
+        rgb888_to_rgb565(palette[flush_sky_palette]) :
+        clear_rgb565;
+    wire [15:0] draw_clear_rgb565 =
+        sky_gradient_clear_enabled ?
+        rgb888_to_rgb565(palette[sky_palette_for_y(recip0_y)]) :
         clear_rgb565;
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
@@ -1671,6 +1685,33 @@ module voxel_gpu (
         end
     endfunction
 
+    function automatic [7:0] sky_palette_for_y(input logic [8:0] y);
+        logic [2:0] band;
+        logic [5:0] local_y;
+        logic [6:0] row_sum;
+        logic [1:0] pal_offset;
+        logic [8:0] pal;
+        begin
+            band = y[8:6];
+            local_y = y[5:0];
+            row_sum = {2'b00, sky_clear_start_row_count(band)} +
+                      {1'b0, local_y};
+            if (row_sum >= 7'd60)
+                pal_offset = 2'd3;
+            else if (row_sum >= 7'd40)
+                pal_offset = 2'd2;
+            else if (row_sum >= 7'd20)
+                pal_offset = 2'd1;
+            else
+                pal_offset = 2'd0;
+
+            pal = {1'b0, sky_clear_start_palette(band)} +
+                  {7'b0, pal_offset};
+            sky_palette_for_y = (pal > {1'b0, PAL_SKY_GRADIENT_LAST}) ?
+                                PAL_SKY_GRADIENT_LAST : pal[7:0];
+        end
+    endfunction
+
     function automatic [2:0] y_to_band(input logic [8:0] y);
         begin
             /* y / 64 */
@@ -1682,8 +1723,8 @@ module voxel_gpu (
         begin
             if (value < 0)
                 clamp_z = 16'h0000;
-            else if (value > 48'sd65535)
-                clamp_z = 16'hFFFF;
+            else if (value > 48'sd65534)
+                clamp_z = Z_VALID_FAR;
             else
                 clamp_z = value[15:0];
         end
@@ -2286,9 +2327,6 @@ module voxel_gpu (
         cache_final_flush = 1'b0;
         cache_maint_addr = 16'd0;
         cache_pixels_total = 16'd0;
-        cache_init_x = 10'd0;
-        cache_init_sky_row_count = 5'd0;
-        cache_init_sky_palette = PAL_SKY_GRADIENT_BASE;
         cache_words_issued = 16'd0;
         cache_words_done = 16'd0;
         cache_fetch_inflight = 1'b0;
@@ -2318,6 +2356,7 @@ module voxel_gpu (
         flush_sky_x = 10'd0;
         flush_sky_row_count = 5'd0;
         flush_sky_palette = PAL_SKY_GRADIENT_BASE;
+        flush_fetch_clear_rgb565 = 16'h0000;
         sdram_powerup_counter = 18'd0;
         sdram_init_wait_counter = 16'd0;
         sdram_ctrl_reset_n = 1'b0;
@@ -2432,7 +2471,7 @@ module voxel_gpu (
                 fb_wr_addr = clear_addr;
                 fb_wr_data = clear_rgb565;
                 z_wr_addr = clear_addr;
-                z_wr_data = 16'hFFFF;
+                z_wr_data = Z_CLEAR_SENTINEL;
                 z_wr_en   = 1'b1;
                 fb_back_wr_en = 1'b1;
             end
@@ -2442,21 +2481,24 @@ module voxel_gpu (
                     fb_wr_addr = band_local_addr(desc_x_min, desc_y_min, cache_band_index);
                     fb_wr_data = rgb888_to_rgb565(palette[desc_tex_or_color]);
                     fb_back_wr_en = 1'b1;
+                    z_wr_addr = fb_wr_addr;
+                    z_wr_data = Z_VALID_FAR;
+                    z_wr_en = 1'b1;
                 end
             end
 
             ST_CACHE_INIT: begin
-                /* 1 px/cycle init. The 2 px/cycle variant cost 43 LABs we
-                 * don't have (PROJECT_NOTES May 5 fitter result). The
-                 * cache reuse fix (gpu_transport.c BACKBUF_EN drop) makes
-                 * most cached bands skip ST_CACHE_INIT entirely, so the
-                 * one-pixel init runs only on uncached bands. */
-                fb_wr_addr = cache_maint_addr;
-                fb_wr_data = cache_init_rgb565;
-                fb_back_wr_en = 1'b1;
-                z_wr_addr = cache_maint_addr;
-                z_wr_data = 16'hFFFF;
-                z_wr_en = 1'b1;
+                /* Lazy color clear: only clear Z, two pixels/cycle. The color
+                 * cache is left untouched; Z_CLEAR_SENTINEL means "this pixel
+                 * was never written this band, synthesize sky/clear color when
+                 * a later blend or flush reads it." This avoids the LAB-heavy
+                 * dual color+Z init path that failed fitting. */
+                z_wr_addr_e = cache_maint_addr;
+                z_wr_data_e = Z_CLEAR_SENTINEL;
+                z_wr_en_e = 1'b1;
+                z_wr_addr_o = cache_maint_addr | 16'd1;
+                z_wr_data_o = Z_CLEAR_SENTINEL;
+                z_wr_en_o = 1'b1;
             end
 
             ST_CACHE_LOAD_COLOR: begin
@@ -2483,10 +2525,10 @@ module voxel_gpu (
                     fb_back_wr_en_e = 1'b1;
                 end
 
-                if (commit_valid && commit_pass && commit_ztest) begin
+                if (commit_valid && commit_pass) begin
                     z_wr_en_e = 1'b1;
                     z_wr_addr_e = commit_addr;
-                    z_wr_data_e = commit_z;
+                    z_wr_data_e = commit_ztest ? commit_z : Z_VALID_FAR;
                 end
 
                 if (commit_valid_o && commit_pass_o) begin
@@ -2495,26 +2537,21 @@ module voxel_gpu (
                     fb_back_wr_en_o = 1'b1;
                 end
 
-                if (commit_valid_o && commit_pass_o && commit_ztest_o) begin
+                if (commit_valid_o && commit_pass_o) begin
                     z_wr_en_o = 1'b1;
                     z_wr_addr_o = commit_addr_o;
-                    z_wr_data_o = commit_z_o;
+                    z_wr_data_o = commit_ztest_o ? commit_z_o : Z_VALID_FAR;
                 end
             end
 
             default: ;
         endcase
 
-        /* ST_DRAW / ST_DRAW_FLUSH already drive the _e/_o write ports directly
-         * inside the case above (lines 2426-2451). Every other state — including
-         * ST_CACHE_INIT — only drives the unsuffixed fb_wr_addr / z_wr_en /
-         * cache_maint_addr signals and relies on this block to fan them out to
-         * the banked BRAM ports. Excluding ST_CACHE_INIT here previously left
-         * its writes stranded on dead defaults: the Z-buffer never reset to
-         * 0xFFFF (so depth-tested terrain failed the test against 0x0000) and
-         * the color BRAM kept stale band content across frames (visible as
-         * vertically-replicated HUD/sky strips). */
-        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH)) begin
+        /* ST_DRAW / ST_DRAW_FLUSH and ST_CACHE_INIT drive the _e/_o write ports
+         * directly. Other one-pixel maintenance states drive the unsuffixed
+         * fb_wr_addr / z_wr_en signals and use this fanout block. */
+        if (!(state == ST_DRAW || state == ST_DRAW_FLUSH ||
+              state == ST_CACHE_INIT)) begin
             fb_wr_addr_e = fb_wr_addr;
             fb_wr_data_e = fb_wr_data;
             fb_back_wr_en_e = fb_back_wr_en && (fb_wr_addr[0] == 1'b0);
@@ -2957,9 +2994,6 @@ module voxel_gpu (
             cache_final_flush <= 1'b0;
             cache_maint_addr <= 16'd0;
             cache_pixels_total <= 16'd0;
-            cache_init_x <= 10'd0;
-            cache_init_sky_row_count <= 5'd0;
-            cache_init_sky_palette <= PAL_SKY_GRADIENT_BASE;
             cache_words_issued <= 16'd0;
             cache_words_done <= 16'd0;
             cache_fetch_inflight <= 1'b0;
@@ -2996,6 +3030,7 @@ module voxel_gpu (
             flush_sky_x <= 10'd0;
             flush_sky_row_count <= 5'd0;
             flush_sky_palette <= PAL_SKY_GRADIENT_BASE;
+            flush_fetch_clear_rgb565 <= 16'h0000;
             draw_row_inside <= 1'b0;
             sdram_powerup_counter <= 18'd0;
             sdram_init_wait_counter <= 16'd0;
@@ -3375,7 +3410,9 @@ module voxel_gpu (
                 /* Capture read data after one-cycle latency */
                 if (!flush_generated_sky && flush_fetch_inflight &&
                     (!flush_word_pending_valid || bg_flush_wr_push)) begin
-                    flush_word_pending <= flush_fb_rd_data;
+                    flush_word_pending <=
+                        (flush_z_rd_data == Z_CLEAR_SENTINEL) ?
+                        flush_fetch_clear_rgb565 : flush_fb_rd_data;
                     flush_word_pending_valid <= 1'b1;
                     flush_fetch_inflight <= 1'b0;
                 end
@@ -3385,19 +3422,23 @@ module voxel_gpu (
                     flush_maint_addr <= flush_words_issued;
                     flush_words_issued <= flush_words_issued + 16'd1;
                     flush_fetch_inflight <= 1'b1;
+                    flush_fetch_clear_rgb565 <= flush_clear_rgb565;
                 end
 
                 /*
                  * Sky-only bands do not need the local cache as a flush source:
-                 * ST_CACHE_INIT already wrote the same gradient into the cache,
-                 * but no real draw committed over it. Generate the SDRAM stream
-                 * directly so the next fast band can reuse either local cache
-                 * without waiting for this flush to finish.
+                 * no real draw committed over the lazy-cleared Z sentinels, so
+                 * generate the SDRAM stream directly and leave both local color
+                 * caches out of the path.
                  */
                 if (flush_can_issue_sky) begin
-                    flush_word_pending <= rgb888_to_rgb565(palette[flush_sky_palette]);
+                    flush_word_pending <= flush_clear_rgb565;
                     flush_word_pending_valid <= 1'b1;
                     flush_words_issued <= flush_words_issued + 16'd1;
+                end
+
+                if ((!flush_generated_sky && flush_can_issue_read) ||
+                    flush_can_issue_sky) begin
                     if (flush_sky_x == 10'd639) begin
                         flush_sky_x <= 10'd0;
                         if (flush_sky_row_count == 5'd19) begin
@@ -3627,9 +3668,6 @@ module voxel_gpu (
                         cache_band_index <= band_index_cfg;
                         cache_pixels_total <= band_pixel_count(band_index_cfg);
                         cache_maint_addr <= 16'd0;
-                        cache_init_x <= 10'd0;
-                        cache_init_sky_row_count <= sky_clear_start_row_count(band_index_cfg);
-                        cache_init_sky_palette <= sky_clear_start_palette(band_index_cfg);
                         cache_valid <= 1'b0;
                         cache_dirty <= 1'b0;
                         cache_draw_dirty <= 1'b0;
@@ -3721,9 +3759,6 @@ module voxel_gpu (
                     cache_dirty <= 1'b0;
                     cache_draw_dirty <= 1'b0;
                     cache_band_valid <= 8'h00;
-                    cache_init_x <= 10'd0;
-                    cache_init_sky_row_count <= 5'd0;
-                    cache_init_sky_palette <= PAL_SKY_GRADIENT_BASE;
                     cache_resume_draw <= 1'b0;
                     cache_final_flush <= 1'b0;
                     band_begin_pending <= 1'b0;
@@ -3898,7 +3933,9 @@ module voxel_gpu (
                     recip1_addr <= recip0_addr;
                     recip1_z <= recip0_z;
                     recip1_z_ref <= z_draw_rd_data_e;
-                    recip1_dst_rgb565 <= fb_draw_rd_data_e;
+                    recip1_dst_rgb565 <=
+                        (z_draw_rd_data_e == Z_CLEAR_SENTINEL) ?
+                        draw_clear_rgb565 : fb_draw_rd_data_e;
                     recip1_x <= recip0_x;
                     recip1_y <= recip0_y;
                     recip1_uw_q <= recip0_uw_q;
@@ -3920,7 +3957,9 @@ module voxel_gpu (
                     recip1_addr_o <= recip0_addr_o;
                     recip1_z_o <= recip0_z_o;
                     recip1_z_ref_o <= z_draw_rd_data_o;
-                    recip1_dst_rgb565_o <= fb_draw_rd_data_o;
+                    recip1_dst_rgb565_o <=
+                        (z_draw_rd_data_o == Z_CLEAR_SENTINEL) ?
+                        draw_clear_rgb565 : fb_draw_rd_data_o;
                     recip1_x_o <= recip0_x_o;
                     recip1_y_o <= recip0_y_o;
                     recip1_uw_q_o <= recip0_uw_q_o;
@@ -4379,37 +4418,21 @@ module voxel_gpu (
                     end else if (cache_band_valid[cache_target_band]) begin
                         state <= ST_CACHE_SELECT_FILL;
                     end else begin
-                        cache_init_x <= 10'd0;
-                        cache_init_sky_row_count <= sky_clear_start_row_count(cache_target_band);
-                        cache_init_sky_palette <= sky_clear_start_palette(cache_target_band);
                         state <= ST_CACHE_INIT;
                     end
                 end
 
                 ST_CACHE_INIT: begin
-                    if (cache_maint_addr == cache_pixels_total - 16'd1) begin
+                    if (cache_maint_addr == cache_pixels_total - 16'd2) begin
                         cache_valid <= 1'b1;
-                        cache_dirty <= sky_gradient_clear_enabled;
+                        cache_dirty <= 1'b1;
                         cache_draw_dirty <= 1'b0;
                         cache_band_index <= cache_target_band;
                         cache_maint_addr <= 16'd0;
-                        cache_init_x <= 10'd0;
                         cache_resume_draw <= 1'b0;
                         state <= ST_IDLE;
                     end else begin
-                        cache_maint_addr <= cache_maint_addr + 16'd1;
-                        if (cache_init_x == 10'd639) begin
-                            cache_init_x <= 10'd0;
-                            if (cache_init_sky_row_count == 5'd19) begin
-                                cache_init_sky_row_count <= 5'd0;
-                                if (cache_init_sky_palette != PAL_SKY_GRADIENT_LAST)
-                                    cache_init_sky_palette <= cache_init_sky_palette + 8'd1;
-                            end else begin
-                                cache_init_sky_row_count <= cache_init_sky_row_count + 5'd1;
-                            end
-                        end else begin
-                            cache_init_x <= cache_init_x + 10'd1;
-                        end
+                        cache_maint_addr <= cache_maint_addr + 16'd2;
                     end
                 end
 
@@ -4526,9 +4549,6 @@ module voxel_gpu (
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;
-                cache_init_x <= 10'd0;
-                cache_init_sky_row_count <= 5'd0;
-                cache_init_sky_palette <= PAL_SKY_GRADIENT_BASE;
                 cache_rd_capture <= 1'b0;
                 cache_fetch_inflight <= 1'b0;
                 cache_flush_load_pending <= 1'b0;
@@ -4617,6 +4637,13 @@ module voxel_gpu (
                            (state == ST_CACHE_DRAIN_Z) ||
                            (state == ST_CACHE_START_LOAD_Z);
     wire perf_flush_push = bg_flush_wr_push || main_flush_wr_push;
+    wire perf_flush_stalling = flush_active && !perf_flush_push;
+    wire perf_flush_done_wait =
+        (flush_words_done == flush_pixels_total) &&
+        !flush_word_pending_valid &&
+        !flush_fetch_inflight;
+    wire perf_flush_fifo_wait =
+        sdram_wr_full || (sdram_wr_use[8:0] >= COPY_WR_FIFO_HIGH_WATER);
 
     always_ff @(posedge clk) begin
         if (reset || perf_flip_write) begin
@@ -4626,6 +4653,10 @@ module voxel_gpu (
             perf_flush_stall  <= 32'd0;
             perf_init         <= 32'd0;
             perf_load         <= 32'd0;
+            perf_flush_wait_load  <= 32'd0;
+            perf_flush_wait_fifo  <= 32'd0;
+            perf_flush_wait_data  <= 32'd0;
+            perf_flush_wait_drain <= 32'd0;
         end else begin
             if (perf_in_draw && perf_draw_commit)
                 perf_draw_active <= perf_draw_active + 32'd1;
@@ -4635,6 +4666,14 @@ module voxel_gpu (
                 perf_flush_active <= perf_flush_active + 32'd1;
             if (flush_active && !perf_flush_push)
                 perf_flush_stall <= perf_flush_stall + 32'd1;
+            if (perf_flush_stalling && flush_load_pending)
+                perf_flush_wait_load <= perf_flush_wait_load + 32'd1;
+            else if (perf_flush_stalling && perf_flush_fifo_wait)
+                perf_flush_wait_fifo <= perf_flush_wait_fifo + 32'd1;
+            else if (perf_flush_stalling && perf_flush_done_wait)
+                perf_flush_wait_drain <= perf_flush_wait_drain + 32'd1;
+            else if (perf_flush_stalling && !flush_word_pending_valid)
+                perf_flush_wait_data <= perf_flush_wait_data + 32'd1;
             if (state == ST_CACHE_INIT)
                 perf_init <= perf_init + 32'd1;
             if (perf_in_load)
@@ -4664,6 +4703,10 @@ module voxel_gpu (
             ADDR_PERF_FLUSH_STL: readdata = perf_flush_stall;
             ADDR_PERF_INIT     : readdata = perf_init;
             ADDR_PERF_LOAD     : readdata = perf_load;
+            ADDR_PERF_FLUSH_LOAD : readdata = perf_flush_wait_load;
+            ADDR_PERF_FLUSH_FIFO : readdata = perf_flush_wait_fifo;
+            ADDR_PERF_FLUSH_DATA : readdata = perf_flush_wait_data;
+            ADDR_PERF_FLUSH_DRAIN: readdata = perf_flush_wait_drain;
             default      : readdata = 32'h0;  /* palette readback not needed by driver */
         endcase
     end

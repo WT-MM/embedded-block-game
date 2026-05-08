@@ -214,7 +214,7 @@ module voxel_gpu (
     // the read cheap on paper; the explicit two-stage pipeline is the
     // correctness guarantee. See PROJECT_NOTES.md for the history.
     (* ramstyle = "MLAB" *) logic [23:0] palette [0:255];
-    (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
+    (* ramstyle = "MLAB" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     // texture_mem is implemented as an explicit altsyncram ROM below
     // (see voxel_texture_rom). Do NOT reintroduce an inferred array here:
     // inference lets Quartus silently pick between 1-cycle and 2-cycle

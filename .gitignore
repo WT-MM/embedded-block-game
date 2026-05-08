@@ -60,12 +60,11 @@ sw/tests/renderer_edge_test
 sw/tests/fpga_sdram_test
 sw/tests/world_chunk_test
 sw/tests/renderer_fog_test
+sw/tests/fpga_band_offset_test
 sw/game
 
-# --- Local one-off RTL/Verilator scratch files ---
-/test_band
-/test_band.c
-/test_band.sv
+# --- Build logs ---
+hw/build.log
 
 # --- Virtual GPU local artifacts ---
 virtual_hw/*.sock

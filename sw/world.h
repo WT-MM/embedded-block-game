@@ -142,6 +142,12 @@ int world_stream_chunks_per_frame(const VoxelWorld *world);
 void world_set_near_chunk_radius(VoxelWorld *world, int radius);
 int world_near_chunk_radius(const VoxelWorld *world);
 
+/* Change the render distance at runtime. Resizes chunk storage and forces
+ * a full re-stream on the next world_stream_around call. The player will
+ * see a brief loading hitch while the new chunk window is populated. */
+void world_set_render_distance(VoxelWorld *world, int distance);
+int world_render_distance(const VoxelWorld *world);
+
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);

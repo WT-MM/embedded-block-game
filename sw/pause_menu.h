@@ -20,6 +20,8 @@ typedef struct {
     int stream_chunks_per_frame_max;
     int near_chunk_radius;
     int near_chunk_radius_max;
+    int render_distance;
+    int render_distance_max;
 } PauseMenuSettings;
 
 void pause_menu_init(PauseMenu *pm);

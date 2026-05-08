@@ -2174,6 +2174,40 @@ int world_near_chunk_radius(const VoxelWorld *world)
     return world->near_chunk_radius;
 }
 
+void world_set_render_distance(VoxelWorld *world, int distance)
+{
+    if (!world || distance < 1)
+        return;
+
+    world_lock(world);
+    if (world->render_distance_chunks == distance) {
+        world_unlock(world);
+        return;
+    }
+
+    world->render_distance_chunks = distance;
+    world->load_radius_chunks = distance + 1;
+
+    /* Clamp near_chunk_radius to the new render distance. */
+    if (world->near_chunk_radius > distance)
+        world->near_chunk_radius = distance;
+
+    /* Invalidate the cached window so the next world_stream_around call
+     * takes the full re-stream branch. Setting chunks_x/z to 0 ensures
+     * the same_window check in stream_world_to_chunk_center fails. */
+    world->chunks_x = 0;
+    world->chunks_z = 0;
+
+    world_unlock(world);
+}
+
+int world_render_distance(const VoxelWorld *world)
+{
+    if (!world)
+        return 0;
+    return world->render_distance_chunks;
+}
+
 static bool world_has_dirty_meshes_locked(const VoxelWorld *world)
 {
     if (!world)

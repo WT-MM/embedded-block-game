@@ -4,11 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "voxel_gpu.h"
-#include "block_types.h" // Requires your block types and textures definitions
+#include "block_types.h"
 
 typedef struct VoxelWorld VoxelWorld;
 
-// --- Constants ---
+/* --- Constants --- */
 #define SCREEN_WIDTH ((float)VOXEL_RENDER_WIDTH)
 #define SCREEN_HEIGHT ((float)VOXEL_RENDER_HEIGHT)
 /* Multiplier for HUD elements that were originally laid out for the 320x240
@@ -27,7 +27,7 @@ typedef struct VoxelWorld VoxelWorld;
  */
 #define MAX_QUADS_IN_FLIGHT 32768
 
-// --- Core Math & Entity Structures ---
+/* --- Core Math & Entity Structures --- */
 typedef struct {
     float x, y, z;
 } Vec3;
@@ -40,7 +40,7 @@ typedef struct {
     Vec3 position;
     float pitch;
     float yaw;
-    float depth; // Focal length / projection distance
+    float depth; /* Focal length / projection distance */
 } Camera;
 
 typedef struct {
@@ -48,13 +48,13 @@ typedef struct {
     Vec3 position;
 } Block;
 
-// --- Rendering Structures ---
+/* --- Rendering Structures --- */
 typedef struct {
     float x, y;
-    float z;             // Inverse-z mapped depth for the FPGA Z-buffer
-    float u_over_w;      // Perspective-correct UV: u / w_eye
-    float v_over_w;      //                         v / w_eye
-    float one_over_w;    // 1 / w_eye, used by the HW reciprocal unit
+    float z;             /* Inverse-z mapped depth for the FPGA Z-buffer */
+    float u_over_w;      /* Perspective-correct UV: u / w_eye */
+    float v_over_w;      /*                         v / w_eye */
+    float one_over_w;    /* 1 / w_eye, used by the HW reciprocal unit */
 } Vertex2D;
 
 typedef struct {
@@ -64,18 +64,18 @@ typedef struct {
     uint8_t flags;
 } RenderQuad;
 
-// Opaque context struct
+/* Opaque context struct */
 typedef struct RenderContext RenderContext;
 
-// --- Lifecycle Functions ---
+/* --- Lifecycle Functions --- */
 RenderContext* renderer_init(void);
 void renderer_shutdown(RenderContext* ctx);
 
-// --- Frame Operations ---
+/* --- Frame Operations --- */
 void renderer_begin_frame(RenderContext* ctx);
 void renderer_end_frame(RenderContext* ctx);
 
-// --- Camera & Geometry ---
+/* --- Camera & Geometry --- */
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);
 int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks);
 int renderer_draw_sky(RenderContext* ctx, float time_seconds);
@@ -90,4 +90,4 @@ bool renderer_fill_rect(RenderContext* ctx,
                         float x0, float y0, float x1, float y1,
                         uint8_t palette_index, uint8_t extra_flags);
 
-#endif // RENDERER_H
+#endif /* RENDERER_H */

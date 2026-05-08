@@ -8,8 +8,8 @@
 
 #define PAUSE_DIM_PALETTE   14   /* medium grey (0x5c5c5c) */
 #define PAUSE_TEXT_PALETTE  5    /* white */
-#define PAUSE_SETTING_COUNT 2
-#define PAUSE_MAX_LINES 10
+#define PAUSE_SETTING_COUNT 3
+#define PAUSE_MAX_LINES 12
 #define PAUSE_LINE_CHARS 72
 
 void pause_menu_init(PauseMenu *pm)
@@ -85,6 +85,11 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                 settings->near_chunk_radius--;
                 changed = true;
             }
+        } else if (pm->selected_setting == 2) {
+            if (settings->render_distance > 1) {
+                settings->render_distance--;
+                changed = true;
+            }
         }
     }
     if (edge_pressed(right, &pm->prev_right)) {
@@ -98,6 +103,12 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
             if (settings->near_chunk_radius <
                 settings->near_chunk_radius_max) {
                 settings->near_chunk_radius++;
+                changed = true;
+            }
+        } else if (pm->selected_setting == 2) {
+            if (settings->render_distance <
+                settings->render_distance_max) {
+                settings->render_distance++;
                 changed = true;
             }
         }
@@ -153,6 +164,9 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c NEAR MESH RADIUS     %d",
              pm->selected_setting == 1 ? '>' : ' ',
              settings ? settings->near_chunk_radius : 0);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c RENDER DISTANCE       %d",
+             pm->selected_setting == 2 ? '>' : ' ',
+             settings ? settings->render_distance : 0);
     set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "W/S SELECT   A/D ADJUST");
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "ESC RESUME   Q QUIT");

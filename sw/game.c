@@ -13,7 +13,7 @@
 #include "mesh_worker.h"
 #include "gen_worker.h"
 #include "thread_affinity.h"
-#include "player_physics.h" /* Added physics integration */
+#include "player_physics.h"
 #include "chat.h"
 #include "pause_menu.h"
 
@@ -140,6 +140,11 @@ static int read_status_log_enabled(int debug_enabled)
         return 0;
 
     return 1;
+}
+
+static int read_debug_hud_enabled(void)
+{
+    return read_env_bool("VOXEL_DEBUG_HUD");
 }
 
 static int read_target_fps(void)
@@ -456,6 +461,55 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
     }
 }
 
+/* Debug HUD: player position, chunk coords, render distance, loaded chunks.
+ * Enabled by VOXEL_DEBUG_HUD=1. Drawn in the top-right corner using the
+ * same drop-shadow text style as the FPS counter. */
+static void draw_debug_hud(RenderContext *ctx, const Player *player,
+                           const Camera *cam, const VoxelWorld *world)
+{
+    char lines[8][56];
+    int line_count = 0;
+    int cell_w = chat_font_cell_w();
+    int cell_h = chat_font_cell_h();
+    int line_step = cell_h + 2;
+    int chunk_x = (int)floorf(player->x / (float)WORLD_CHUNK_SIZE);
+    int chunk_z = (int)floorf(player->z / (float)WORLD_CHUNK_SIZE);
+
+    /* Block position within the current chunk (0..15 in each axis). */
+    float local_x = player->x - (float)(chunk_x * WORLD_CHUNK_SIZE);
+    float local_z = player->z - (float)(chunk_z * WORLD_CHUNK_SIZE);
+
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "XYZ: %.1f / %.1f / %.1f", player->x, player->y, player->z);
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "Chunk: %d, %d  [%.1f, %.1f]", chunk_x, chunk_z,
+             local_x, local_z);
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "Facing: yaw=%.1f pitch=%.1f",
+             cam->yaw * 180.0f / (float)M_PI,
+             cam->pitch * 180.0f / (float)M_PI);
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "Render dist: %d  Near: %d",
+             world_render_distance(world),
+             world_near_chunk_radius(world));
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "Loaded: %d / %d chunks",
+             world_loaded_chunk_count(world),
+             world_chunk_capacity(world));
+
+    float y = 12.0f;
+    for (int i = 0; i < line_count; i++) {
+        int len = (int)strlen(lines[i]);
+        float text_w = (float)(len * cell_w);
+        float x = SCREEN_WIDTH - text_w - 12.0f;
+        if (x < 0.0f) x = 0.0f;
+        /* Drop shadow + foreground, same as FPS counter */
+        chat_draw_text(ctx, lines[i], len, x + 1.0f, y + 1.0f, 0);
+        chat_draw_text(ctx, lines[i], len, x, y, 5);
+        y += (float)line_step;
+    }
+}
+
 int main(void)
 {
     int debug_enabled = read_debug_enabled();
@@ -519,7 +573,9 @@ int main(void)
     pause_settings.stream_chunks_per_frame = world_stream_chunks_per_frame(&world);
     pause_settings.stream_chunks_per_frame_max = MAX_STREAM_CHUNKS_PER_FRAME;
     pause_settings.near_chunk_radius = world_near_chunk_radius(&world);
-    pause_settings.near_chunk_radius_max = world.render_distance_chunks;
+    pause_settings.near_chunk_radius_max = world_render_distance(&world);
+    pause_settings.render_distance = world_render_distance(&world);
+    pause_settings.render_distance_max = render_distance_chunks;
 
     bool mesh_worker_running = mesh_worker_start(&world);
     bool gen_worker_running = gen_worker_start(&world);
@@ -532,7 +588,7 @@ int main(void)
                WORLD_CHUNK_SIZE, WORLD_CHUNK_HEIGHT, WORLD_CHUNK_SIZE, STONE_SEED);
         printf("World save dir: %s\n", world_save_dir);
         printf("Loaded window: %dx%d chunks around player (%d-chunk render radius + 1 border, capacity=%d)\n",
-               world.chunks_x, world.chunks_z, world.render_distance_chunks,
+               world.chunks_x, world.chunks_z, world_render_distance(&world),
                world_chunk_capacity(&world));
         printf("Cached loaded world: chunks=%d blocks=%d exposed_faces=%d generated=%d mesh_rebuilds=%d\n",
                world_loaded_chunk_count(&world),
@@ -576,6 +632,7 @@ int main(void)
     double perf_mesh_drain_ns = 0.0;
     int perf_physics_dropped_steps = 0;
     int status_log_enabled = read_status_log_enabled(debug_enabled);
+    int debug_hud_enabled = read_debug_hud_enabled();
     char fps_text[16] = "fps --";
     int fps_text_len = (int)strlen(fps_text);
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -610,10 +667,17 @@ int main(void)
                                               pause_settings.stream_chunks_per_frame);
             world_set_near_chunk_radius(&world,
                                         pause_settings.near_chunk_radius);
+            world_set_render_distance(&world,
+                                      pause_settings.render_distance);
             pause_settings.stream_chunks_per_frame =
                 world_stream_chunks_per_frame(&world);
             pause_settings.near_chunk_radius =
                 world_near_chunk_radius(&world);
+            pause_settings.render_distance =
+                world_render_distance(&world);
+            /* near_chunk_radius_max tracks the current render distance */
+            pause_settings.near_chunk_radius_max =
+                world_render_distance(&world);
         }
 
         /* Chat toggle: ignored while paused — pause owns the overlay. */
@@ -810,6 +874,8 @@ int main(void)
             chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);
             chat_draw_text(ctx, fps_text, fps_text_len, 12.0f, 12.0f, 5);
         }
+        if (debug_hud_enabled)
+            draw_debug_hud(ctx, &player, &cam, &world);
         clock_gettime(CLOCK_MONOTONIC, &draw_end);
         renderer_end_frame(ctx);
         clock_gettime(CLOCK_MONOTONIC, &end_end);

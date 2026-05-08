@@ -77,7 +77,7 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_PERF_FLUSH_DATA  = 13'h018;
     localparam logic [12:0] ADDR_PERF_FLUSH_DRAIN = 13'h019;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
-    localparam logic [12:0] ADDR_FIFO_HI  = 13'h800;  // 0x2000 (exclusive)
+    localparam logic [12:0] ADDR_FIFO_HI  = 13'hC00;  // 0x3000 (exclusive)
 
     localparam int FB_WIDTH       = 640;
     localparam int FB_HEIGHT      = 480;
@@ -85,7 +85,7 @@ module voxel_gpu (
     localparam int BAND_HEIGHT    = 64;
     localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
     localparam int BAND_COUNT     = 8;
-    localparam int FIFO_DEPTH     = 1024;
+    localparam int FIFO_DEPTH     = 2048;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
@@ -222,10 +222,10 @@ module voxel_gpu (
     // fringes / "chromatic aberration" we chased for weeks.
     (* ramstyle = "MLAB" *) logic [31:0] recip_lut [0:1024];
 
-    logic [9:0]  fifo_wr_ptr;
-    logic [9:0]  fifo_rd_ptr;
-    logic [10:0] fifo_count;
-    wire         fifo_full  = (fifo_count == 11'd1024);
+    logic [10:0] fifo_wr_ptr;
+    logic [10:0] fifo_rd_ptr;
+    logic [11:0] fifo_count;
+    wire         fifo_full  = (fifo_count == 12'd2048);
     wire         fifo_empty = (fifo_count == 0);
     wire [31:0]  fifo_head  = fifo_mem[fifo_rd_ptr];
 
@@ -1558,7 +1558,7 @@ module voxel_gpu (
                               (!draw_pipe_ztest_o || (draw_pipe_z_o < draw_pipe_z_ref_o));
     wire [31:0] status_word = {
         12'h0,
-        {5'h0, fifo_count},
+        {4'h0, fifo_count},
         vsy_latch,
         fifo_empty,
         fifo_full,
@@ -2046,9 +2046,9 @@ module voxel_gpu (
         copy_target_sel  = 1'b1;
         copy_complete_pending = 1'b0;
         state            = ST_IDLE;
-        fifo_wr_ptr      = 10'd0;
-        fifo_rd_ptr      = 10'd0;
-        fifo_count       = 11'd0;
+        fifo_wr_ptr      = 11'd0;
+        fifo_rd_ptr      = 11'd0;
+        fifo_count       = 12'd0;
         fetch_count      = 6'd0;
         draw_flush_count = 4'd0;
         clear_addr       = 16'd0;
@@ -2710,9 +2710,9 @@ module voxel_gpu (
             copy_target_sel  <= 1'b1;
             copy_complete_pending <= 1'b0;
             state            <= ST_IDLE;
-            fifo_wr_ptr      <= 10'd0;
-            fifo_rd_ptr      <= 10'd0;
-            fifo_count       <= 11'd0;
+            fifo_wr_ptr      <= 11'd0;
+            fifo_rd_ptr      <= 11'd0;
+            fifo_count       <= 12'd0;
             fetch_count      <= 6'd0;
             draw_flush_count <= 4'd0;
             clear_addr       <= 16'd0;
@@ -3201,16 +3201,16 @@ module voxel_gpu (
 
             case ({fifo_push_req, fifo_pop_req})
                 2'b10: begin
-                    fifo_wr_ptr <= fifo_wr_ptr + 10'd1;
-                    fifo_count  <= fifo_count + 11'd1;
+                    fifo_wr_ptr <= fifo_wr_ptr + 11'd1;
+                    fifo_count  <= fifo_count + 12'd1;
                 end
                 2'b01: begin
-                    fifo_rd_ptr <= fifo_rd_ptr + 10'd1;
-                    fifo_count  <= fifo_count - 11'd1;
+                    fifo_rd_ptr <= fifo_rd_ptr + 11'd1;
+                    fifo_count  <= fifo_count - 12'd1;
                 end
                 2'b11: begin
-                    fifo_wr_ptr <= fifo_wr_ptr + 10'd1;
-                    fifo_rd_ptr <= fifo_rd_ptr + 10'd1;
+                    fifo_wr_ptr <= fifo_wr_ptr + 11'd1;
+                    fifo_rd_ptr <= fifo_rd_ptr + 11'd1;
                 end
                 default: ;
             endcase
@@ -3729,7 +3729,7 @@ module voxel_gpu (
                                 !copy_complete_pending && !flush_active) begin
                         copy_complete_pending <= 1'b1;
                         cache_final_flush <= 1'b0;
-                    end else if (ctrl_en && (fifo_count >= 11'd16) &&
+                    end else if (ctrl_en && (fifo_count >= 12'd16) &&
                                  !band_flush_pending) begin
                         /*
                          * Don't pull descriptors while a band flush is queued.
@@ -4562,9 +4562,9 @@ module voxel_gpu (
                  * Dropping scan_rd_capture/load/hold state mid-line corrupts
                  * the line-buffer fill and shows up as sky/ground flashing.
                  */
-                fifo_wr_ptr <= 10'd0;
-                fifo_rd_ptr <= 10'd0;
-                fifo_count <= 11'd0;
+                fifo_wr_ptr <= 11'd0;
+                fifo_rd_ptr <= 11'd0;
+                fifo_count <= 12'd0;
                 fetch_count <= 6'd0;
                 draw_flush_count <= 4'd0;
                 pipe0_valid <= 1'b0;

@@ -72,9 +72,9 @@ typedef int32_t  __s32;
 #define VOXEL_REG_PERF_FLUSH_DRAIN 0x0064
 
 #define VOXEL_FIFO_BASE         0x1000
-#define VOXEL_FIFO_END          0x2000          /* exclusive */
+#define VOXEL_FIFO_END          0x3000          /* exclusive */
 #define VOXEL_FIFO_BYTES        (VOXEL_FIFO_END - VOXEL_FIFO_BASE)
-#define VOXEL_FIFO_WORDS        (VOXEL_FIFO_BYTES / 4)   /* 1024 */
+#define VOXEL_FIFO_WORDS        (VOXEL_FIFO_BYTES / 4)   /* 2048 */
 
 #define VOXEL_REG_SPAN          VOXEL_FIFO_END
 

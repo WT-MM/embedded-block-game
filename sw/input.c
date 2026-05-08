@@ -375,6 +375,9 @@ static int hotbar_slot_for_key(int code)
     case KEY_7:
     case KEY_KP7:
         return 6;
+    case KEY_8:
+    case KEY_KP8:
+        return 7;
     default:
         return -1;
     }

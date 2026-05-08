@@ -1989,7 +1989,7 @@ module voxel_gpu (
 
     /*
      * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 128 tiles *
-     * 16 * 16 = 16384 entries (14-bit address). See voxel_texture_rom
+     * 16 * 16 = 32768 entries (15-bit address). See voxel_texture_rom
      * for why we instantiate altsyncram directly instead of letting
      * Quartus infer a ramstyle="M10K" array -- the short version is
      * that inference can silently pick 2-cycle latency, producing
@@ -1997,7 +1997,7 @@ module voxel_gpu (
      */
     voxel_texture_rom #(
         .DATA_W(8),
-        .ADDR_W(14),
+        .ADDR_W(15),
         .DEPTH(TEXTURE_BYTES),
         /*
          * The texture atlas lives as a single `.mif` file, produced by

@@ -135,7 +135,7 @@ TOP_LEVEL_SOURCES = $(SYSTEM)_top.sv
 
 $(QSYS_STAMP) : $(QSYS) $(QSYS_COMPONENT_SOURCES)
 	rm -rf $(SOPCINFO) $(SYSTEM)/
-	$(QSYS_GENERATE) $(QSYS) --synthesis=VERILOG
+	env PERL5LIB=$(PWD) $(QSYS_GENERATE) $(QSYS) --synthesis=VERILOG
 	test -f $(SOPCINFO)
 	test -f $(QIP)
 	test -f $(HPS_PIN_TCL)

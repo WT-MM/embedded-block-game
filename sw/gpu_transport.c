@@ -74,8 +74,8 @@ struct descriptor_bin {
     size_t flat_capacity;
 };
 
-/* Two parallel sets of per-band bins. With frame pipelining
- * (VOXEL_PIPELINE_FRAMES=1) the submit worker reads the set it was handed
+/* Two parallel sets of per-band bins. With frame pipelining enabled, the
+ * submit worker reads the set it was handed
  * (`worker_bin_set`) while the main thread has already swapped to the other
  * set (`g_main_bin_set`) for the next frame. Pipelining off: only set 0 is
  * ever used. Functions that touch bins take the set as a parameter so the
@@ -1722,7 +1722,10 @@ GPUTransport *gpu_transport_open(void)
 
     {
         const char *pipeline = getenv("VOXEL_PIPELINE_FRAMES");
-        if (env_flag_enabled(pipeline)) {
+        int pipeline_default =
+            (!pipeline || pipeline[0] == '\0') &&
+            transport->mode == GPU_BACKEND_HW;
+        if (pipeline_default || env_flag_enabled(pipeline)) {
             if (transport->mode == GPU_BACKEND_HW) {
                 ret = gpu_transport_pipeline_start(transport, debug_enabled);
                 if (ret < 0) {

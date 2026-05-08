@@ -111,6 +111,7 @@ Environment variables:
     VOXEL_WORLD_DIR=/path/to/world       # default: ../worlds/default
     VOXEL_FOV_DEG=30..150                # horizontal FOV in degrees; default 86.5
     VOXEL_DIAG_BBOX=0|1                  # log per-frame quad bbox (red-stripe debug)
+    VOXEL_PIPELINE_FRAMES=0|1            # hw submit worker; default: 1 for hw
 
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
 same command stream to both backends.

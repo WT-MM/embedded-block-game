@@ -3536,17 +3536,19 @@ serialized FPGA work inside `renderer_end_frame`: `CLEAR`, 8x
 the CPU-side update/draw was ~8 ms but the main thread spent ~14-28 ms
 waiting for the FPGA to finish the per-band submit/flush sequence.
 
-Optimization: `VOXEL_PIPELINE_FRAMES=1` enables an HW-only submit
+Optimization: the HW backend now enables an HW-only submit
 worker. `renderer_end_frame` keeps the same public order, but
 `gpu_transport_submit_descriptors` hands the already-binned frame to the
 worker and returns immediately. The following `gpu_transport_flip` call
 is consumed as worker-owned; the worker performs the actual HW
 submit+flip after draining the handed-off bins. The main thread can then
-start CPU emit for frame N+1 while the FPGA drains frame N.
+start CPU emit for frame N+1 while the FPGA drains frame N. Set
+`VOXEL_PIPELINE_FRAMES=0` to return to synchronous submission.
 
 Safety shape:
 
-  * Opt-in only: set `VOXEL_PIPELINE_FRAMES=1`.
+  * Enabled by default for `VOXEL_GPU_BACKEND=hw`; set
+    `VOXEL_PIPELINE_FRAMES=0` to disable.
   * HW backend only (`VOXEL_GPU_BACKEND=hw`). Socket/tee stay synchronous
     because the socket backend consumes the contiguous `submit_buffer`,
     which the renderer reuses immediately on the next frame.

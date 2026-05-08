@@ -27,10 +27,13 @@
 /* Quantization step for the sky-gradient palette computation. Continuous
  * world_time would re-derive every frame; even sub-pixel color drift bumps
  * gpu_transport's hw_sky_epoch, which invalidates the per-band SDRAM reuse
- * cache (see PROJECT_NOTES.md "May 5 sky-band reuse epoch fix"). 0.5 s steps
- * give 360 distinct sky states across a 180 s day cycle — visually smooth
- * but stable for ~15 frames at 30 FPS, so sky_band_reuse can hit. */
-#define SKY_PALETTE_TIME_STEP_SECONDS 0.5f
+ * cache (see PROJECT_NOTES.md "May 5 sky-band reuse epoch fix"). 1.0 s steps
+ * give 180 distinct sky states across a 180 s day cycle, visually smooth
+ * while cutting periodic palette/cache invalidations in half versus the old
+ * 0.5 s cadence. VOXEL_SKY_PALETTE_STEP_SECONDS can tune this at runtime. */
+#define DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS 1.0f
+#define MIN_SKY_PALETTE_TIME_STEP_SECONDS 0.1f
+#define MAX_SKY_PALETTE_TIME_STEP_SECONDS 10.0f
 
 enum {
     PAL_SKY_HIGH = 25,
@@ -528,8 +531,24 @@ static void update_world_light_from_sun(RenderContext *ctx, Vec3 sun_dir)
 
 static float palette_time_for(float time_seconds)
 {
-    return floorf(time_seconds / SKY_PALETTE_TIME_STEP_SECONDS) *
-           SKY_PALETTE_TIME_STEP_SECONDS;
+    static int initialized;
+    static float step_seconds = DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS;
+
+    if (!initialized) {
+        const char *value = getenv("VOXEL_SKY_PALETTE_STEP_SECONDS");
+        if (value && value[0] != '\0') {
+            char *end = NULL;
+            float parsed = strtof(value, &end);
+            if (end != value && (!end || *end == '\0') &&
+                parsed >= MIN_SKY_PALETTE_TIME_STEP_SECONDS &&
+                parsed <= MAX_SKY_PALETTE_TIME_STEP_SECONDS) {
+                step_seconds = parsed;
+            }
+        }
+        initialized = 1;
+    }
+
+    return floorf(time_seconds / step_seconds) * step_seconds;
 }
 
 static void update_world_light_state(RenderContext *ctx, float time_seconds)

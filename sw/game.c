@@ -20,8 +20,9 @@
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
 #define LOOK_SPEED   1.8f         /* radians per second (arrow keys) */
 #define PITCH_LIMIT  1.48f        /* ~85 degrees, avoids gimbal flip */
-#define TARGET_FPS   30
-#define FRAME_NS     (1000000000L / TARGET_FPS)
+#define DEFAULT_TARGET_FPS 30
+#define MIN_TARGET_FPS 15
+#define MAX_TARGET_FPS 120
 #define PHYSICS_HZ   60
 #define PHYSICS_DT   (1.0f / (float)PHYSICS_HZ)
 #define MAX_FRAME_DT 0.25f
@@ -139,6 +140,23 @@ static int read_status_log_enabled(int debug_enabled)
         return 0;
 
     return 1;
+}
+
+static int read_target_fps(void)
+{
+    const char *value = getenv("VOXEL_TARGET_FPS");
+    char *end = NULL;
+    long parsed;
+
+    if (!value || value[0] == '\0')
+        return DEFAULT_TARGET_FPS;
+
+    parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0') ||
+        parsed < MIN_TARGET_FPS || parsed > MAX_TARGET_FPS)
+        return DEFAULT_TARGET_FPS;
+
+    return (int)parsed;
 }
 
 static int read_render_distance_chunks(void)
@@ -462,6 +480,8 @@ int main(void)
     init_block_types();
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
+    int target_fps = read_target_fps();
+    long frame_ns = 1000000000L / target_fps;
     int render_distance_chunks = read_render_distance_chunks();
     int stream_chunks_per_frame = read_stream_chunks_per_frame();
     int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
@@ -521,6 +541,8 @@ int main(void)
                world.meshes_rebuilt_last_stream);
         printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
                mouse_sens);
+        printf("Frame cap: %d FPS (set VOXEL_TARGET_FPS=%d-%d to override)\n",
+               target_fps, MIN_TARGET_FPS, MAX_TARGET_FPS);
         printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
                world_stream_chunks_per_frame(&world),
                world_near_chunk_radius(&world));
@@ -812,8 +834,8 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
         long used = ns_diff(&frame_end, &loop_start);
         double sleep_ns = 0.0;
-        if (used < FRAME_NS) {
-            struct timespec ts = { 0, FRAME_NS - used };
+        if (used < frame_ns) {
+            struct timespec ts = { 0, frame_ns - used };
             struct timespec sleep_start, sleep_end;
             clock_gettime(CLOCK_MONOTONIC, &sleep_start);
             nanosleep(&ts, NULL);

@@ -3569,3 +3569,35 @@ Expected impact: on frames where CPU emit/update is fully serialized
 behind FPGA band submission, this can recover most of that CPU time
 (roughly the ~8 ms/frame seen in recent logs). It cannot reduce the FPGA
 work itself; it overlaps it.
+
+
+May 8 2026: Tunable Frame Cap and Sky Palette Cadence
+=====================================================
+
+Context: Frame pipelining was stable on hardware. Logs showed cached/static
+frames can drop to ~11-14 ms of CPU work, but the game loop still caps at
+30 FPS. Logs also showed periodic `render_epoch`/`sky_epoch` bumps on
+otherwise static views, which invalidates full-band reuse and forces a
+full redraw for a sky/daylight palette tick.
+
+Changes:
+
+  * `VOXEL_TARGET_FPS` lets the main loop frame cap be raised without a
+    rebuild. Default remains 30 FPS; accepted range is 15-120 FPS.
+    Useful test command: `VOXEL_TARGET_FPS=60 VOXEL_PIPELINE_FRAMES=1`.
+  * `DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS` increased from 0.5 s to
+    1.0 s, cutting periodic sky/daylight palette cache invalidations in
+    half while still giving 180 sky states over the 180 s day cycle.
+  * `VOXEL_SKY_PALETTE_STEP_SECONDS` (0.1-10.0) can tune that cadence.
+    Larger values favor frame-cache reuse; smaller values favor smoother
+    sky color motion.
+  * Removed stale `sys/uio.h` / `IOV_MAX` leftovers from the rejected
+    `writev` experiment.
+  * Cleanup: ignored root `a.out` and one-off `test_band.*` Verilator
+    scratch files; fixed `hw/Makefile`'s `tar` target by removing missing
+    legacy `ip/intr_capturer`/`.srf` dependencies and correcting `.PHONY`.
+
+Expected impact: this does not speed up active moving frames where the FPGA
+must redraw the scene. It makes the new pipeline measurable above 30 FPS on
+cache-hit/static frames and reduces periodic full-redraw spikes caused only
+by sky palette motion.

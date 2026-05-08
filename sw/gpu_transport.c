@@ -9,7 +9,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <time.h>
@@ -129,10 +128,6 @@ static void init_band_primers(void)
     }
     g_band_primers_initialized = 1;
 }
-
-#ifndef IOV_MAX
-#  define IOV_MAX 1024
-#endif
 
 /* Diagnostics gated by VOXEL_DIAG_BBOX=1: scan submitted x_min/x_max and
  * y_min/y_max ranges so we can confirm nothing is leaking off-screen on

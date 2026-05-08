@@ -85,13 +85,10 @@ TARFILES = Makefile \
 	$(QSYS) \
 	$(SYSTEM)_top.sv \
 	$(BOARD_INFO) \
-	$(SRF) \
 	$(VOXEL_GPU_RTL) \
 	$(VOXEL_GPU_ASSETS) \
 	$(VOXEL_GPU_DEBUG_ASSETS) \
 	$(VOXEL_GPU_SCRIPTS) \
-	ip/intr_capturer/intr_capturer.v \
-	ip/intr_capturer/intr_capturer_hw.tcl \
 	vga_ball.sv
 
 TARFILE = lab3-hw.tar.gz
@@ -320,7 +317,7 @@ $(ZIMAGE) : $(KERNEL_CONFIG)
 #
 # Build soc_system.tar.gz
 
-.phony : tar
+.PHONY : tar
 tar : $(TARFILE)
 
 $(TARFILE) : $(TARFILES)

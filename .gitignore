@@ -51,6 +51,7 @@ Module.symvers
 .tmp_versions/
 
 # --- Userspace build artifacts ---
+/a.out
 sw/tests/voxel_test
 sw/tests/renderer_scene_test
 sw/tests/renderer_static_test
@@ -60,6 +61,11 @@ sw/tests/fpga_sdram_test
 sw/tests/world_chunk_test
 sw/tests/renderer_fog_test
 sw/game
+
+# --- Local one-off RTL/Verilator scratch files ---
+/test_band
+/test_band.c
+/test_band.sv
 
 # --- Virtual GPU local artifacts ---
 virtual_hw/*.sock

@@ -97,7 +97,7 @@ module Sdram_RD_FIFO (
 				.wrempty ());
 	defparam
 		dcfifo_component.intended_device_family = "Cyclone V",
-		dcfifo_component.lpm_hint = "RAM_BLOCK_TYPE=MLAB",
+		dcfifo_component.lpm_hint = "RAM_BLOCK_TYPE=M10K",
 		dcfifo_component.lpm_numwords = 512,
 		dcfifo_component.lpm_showahead = "OFF",
 		dcfifo_component.lpm_type = "dcfifo",
@@ -151,7 +151,7 @@ endmodule
 // Retrieval info: PRIVATE: wsUsedW NUMERIC "1"
 // Retrieval info: LIBRARY: altera_mf altera_mf.altera_mf_components.all
 // Retrieval info: CONSTANT: INTENDED_DEVICE_FAMILY STRING "Cyclone V"
-// Retrieval info: CONSTANT: LPM_HINT STRING "RAM_BLOCK_TYPE=MLAB"
+// Retrieval info: CONSTANT: LPM_HINT STRING "RAM_BLOCK_TYPE=M10K"
 // Retrieval info: CONSTANT: LPM_NUMWORDS NUMERIC "512"
 // Retrieval info: CONSTANT: LPM_SHOWAHEAD STRING "OFF"
 // Retrieval info: CONSTANT: LPM_TYPE STRING "dcfifo"

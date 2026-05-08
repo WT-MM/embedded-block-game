@@ -941,10 +941,11 @@ bit 7 only for coordinate wrapping. This preserves the doubled atlas while
 keeping repeated far-quad UVs unambiguous.
 
 The 128-tile atlas made the current fit land just over the device limit
-(400/397 M10Ks). The first-pass relief keeps the raster/cache path intact:
-the small SDRAM controller RD/WR FIFOs are hinted to MLAB, and the Quartus
-paused-read equivalence setting is loosened to `DONT CARE` so eligible side
-RAMs can spill into MLAB before reducing band height or descriptor FIFO depth.
+(400/397 M10Ks). Spilling small side FIFOs into MLAB fixed M10K pressure but
+then missed LAB placement (3242/3207 LABs), so the safer resource trade is to
+keep MLAB pressure low and trim the GPU command FIFO from 2048 to 1024 words.
+That saves the needed M10Ks without changing the raster/cache datapath, at the
+cost of some descriptor-upload buffering headroom.
 
 The hardware now applies the repeat case first. The renderer once again uses
 merged far quads by default, and `BLOCK_GAME_MERGE_FAR_QUADS=0` remains as a
@@ -1372,7 +1373,7 @@ The `end` phase calls `renderer_end_frame()`, which loops over 5 bands:
 
     for each band 0..4:
         BEGIN_BAND ioctl    → kernel polls BSY until ST_CACHE_INIT finishes
-        write() descriptors → kernel pushes into 2048-word FIFO, blocks when full
+        write() descriptors → kernel pushes into 1024-word FIFO, blocks when full
         END_BAND ioctl      → kernel polls BSY until rasterizer + cache flush done
     FLIP ioctl              → kernel polls until next vsync
 

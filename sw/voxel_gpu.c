@@ -44,9 +44,9 @@
 /*
  * Bounce buffer for write(): we copy from user in chunks, then push the
  * chunk into the FIFO in bursts sized by STATUS.FIFO_COUNT. Keep it under
- * the 8 KB FIFO so each copied chunk can drain without unbounded buffering.
+ * the 4 KB FIFO so each copied chunk can drain without unbounded buffering.
  */
-#define VOXEL_BOUNCE_WORDS  2048                      /* 8 KB per chunk */
+#define VOXEL_BOUNCE_WORDS  1024                      /* 4 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
 /*

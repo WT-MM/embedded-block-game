@@ -21,7 +21,7 @@
  *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
  *   0x0034  BAND_INDEX   active 64-line render band index          (R/W)
  *   0x0038  BAND_CTRL    [1]=FLUSH [0]=BEGIN band command pulses   (W)
- *   0x1000..0x2FFF  FIFO_WINDOW (8 KB / 2048 words)              (W)
+ *   0x1000..0x1FFF  FIFO_WINDOW (4 KB / 1024 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
  * userspace straight into FIFO_WINDOW and provides ioctls for the
@@ -72,9 +72,9 @@ typedef int32_t  __s32;
 #define VOXEL_REG_PERF_FLUSH_DRAIN 0x0064
 
 #define VOXEL_FIFO_BASE         0x1000
-#define VOXEL_FIFO_END          0x3000          /* exclusive */
+#define VOXEL_FIFO_END          0x2000          /* exclusive */
 #define VOXEL_FIFO_BYTES        (VOXEL_FIFO_END - VOXEL_FIFO_BASE)
-#define VOXEL_FIFO_WORDS        (VOXEL_FIFO_BYTES / 4)   /* 2048 */
+#define VOXEL_FIFO_WORDS        (VOXEL_FIFO_BYTES / 4)   /* 1024 */
 
 #define VOXEL_REG_SPAN          VOXEL_FIFO_END
 

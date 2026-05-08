@@ -401,48 +401,144 @@ static void draw_centered_text(RenderContext *ctx, const char *text,
     chat_draw_text(ctx, text, len, x, y, palette_index);
 }
 
+/*
+ * Tiled dirt background for the home menu, drawn as a single textured quad
+ * with hardware UV-wrap so we don't pay 80+ small quads per frame. UV span =
+ * (pixels / DIRT_BG_TILE_PX) * 16 maps each on-screen tile to one full atlas
+ * tile of TEX_TILE_DIRT.
+ */
+#define DIRT_BG_TILE_PX 64.0f
+
+static void draw_dirt_tiled_bg(RenderContext *ctx)
+{
+    float u_span = (SCREEN_WIDTH  / DIRT_BG_TILE_PX) * 16.0f;
+    float v_span = (SCREEN_HEIGHT / DIRT_BG_TILE_PX) * 16.0f;
+    RenderQuad q = {0};
+
+    q.texture_id = (uint8_t)(TEX_TILE_DIRT | QUAD_TEX_REPEAT_UV);
+    q.flags = QUAD_FLAG_TEX;
+    q.vertices[0] = (Vertex2D){ 0.0f,         0.0f,          0.0f, 0.0f,   0.0f,   1.0f };
+    q.vertices[1] = (Vertex2D){ SCREEN_WIDTH, 0.0f,          0.0f, u_span, 0.0f,   1.0f };
+    q.vertices[2] = (Vertex2D){ SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f, u_span, v_span, 1.0f };
+    q.vertices[3] = (Vertex2D){ 0.0f,         SCREEN_HEIGHT, 0.0f, 0.0f,   v_span, 1.0f };
+    renderer_push_quad(ctx, &q);
+}
+
+static void draw_centered_text_scaled(RenderContext *ctx, const char *text,
+                                      float y, uint8_t palette_index, int scale)
+{
+    int len = text ? (int)strlen(text) : 0;
+    int cell_w = (5 + 1) * scale;   /* GLYPH_W + 1 kerning, matches chat.c */
+    float width = (float)(len * cell_w);
+    float x = floorf((SCREEN_WIDTH - width) * 0.5f);
+
+    if (x < 0.0f)
+        x = 0.0f;
+    chat_draw_text_scaled(ctx, text, len, x, y, palette_index, scale);
+}
+
+static void draw_menu_button(RenderContext *ctx, float x, float y,
+                             float w, float h, const char *label, bool selected)
+{
+    /* Stack two 50% panels so the underlying dirt darkens without needing
+     * a 25%-or-less hardware blend level we don't have. Selected variant
+     * uses a single 50% panel for a brighter, more obvious focus. */
+    uint8_t panel_pal = selected ? 24 : 14;   /* stone-light vs medium grey */
+
+    renderer_fill_rect(ctx, x, y, x + w, y + h, panel_pal, QUAD_ALPHA_50);
+    if (!selected)
+        renderer_fill_rect(ctx, x, y, x + w, y + h, panel_pal, QUAD_ALPHA_50);
+
+    /* 1px outer border in near-black to give the button a chiseled look. */
+    renderer_fill_rect(ctx, x,         y,         x + w, y + 1.0f, 0, 0);
+    renderer_fill_rect(ctx, x,         y + h - 1, x + w, y + h,    0, 0);
+    renderer_fill_rect(ctx, x,         y,         x + 1, y + h,    0, 0);
+    renderer_fill_rect(ctx, x + w - 1, y,         x + w, y + h,    0, 0);
+
+    /* Top inner highlight line: 1px lighter strip just inside the top
+     * border, classic Minecraft "raised" button look. */
+    if (selected)
+        renderer_fill_rect(ctx, x + 1, y + 1, x + w - 1, y + 2, 5, 0);
+
+    int len = label ? (int)strlen(label) : 0;
+    int cell_w = chat_font_cell_w();
+    int cell_h = chat_font_cell_h();
+    float text_w = (float)(len * cell_w);
+    float tx = floorf(x + (w - text_w) * 0.5f);
+    float ty = floorf(y + (h - (float)cell_h) * 0.5f);
+    uint8_t text_pal = selected ? 8 : 5;   /* yellow when selected, white otherwise */
+
+    chat_draw_text(ctx, label, len, tx, ty, text_pal);
+}
+
 static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
                            const char *worlds_root)
 {
     char line[96];
-    int cell_h = chat_font_cell_h();
-    int line_step = cell_h + 4;
-    float y = 76.0f;
 
-    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 25, 0);
-    renderer_fill_rect(ctx, 0.0f, 140.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 27, 0);
-    renderer_fill_rect(ctx, 0.0f, 322.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 1, 0);
+    draw_dirt_tiled_bg(ctx);
+    /* Two stacked 50% dim panels darken the dirt enough that the title and
+     * buttons read clearly without washing the texture out completely. */
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 0, QUAD_ALPHA_50);
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 0, QUAD_ALPHA_50);
 
-    draw_centered_text(ctx, "EMBEDDED BLOCK GAME", 34.0f, 5);
-    draw_centered_text(ctx, "SELECT WORLD", 56.0f, 8);
+    /* Title with a 2px drop shadow for the chunky Minecraft look. */
+    const char *title = "EMBEDDED BLOCK GAME";
+    int title_len = (int)strlen(title);
+    int title_cell = (5 + 1) * 4;   /* scale 4 */
+    float title_w = (float)(title_len * title_cell);
+    float title_x = floorf((SCREEN_WIDTH - title_w) * 0.5f);
+    float title_y = 36.0f;
 
-    snprintf(line, sizeof(line), "%c NEW RANDOM WORLD",
-             menu->selected == 0 ? '>' : ' ');
-    draw_centered_text(ctx, line, y, menu->selected == 0 ? 8 : 5);
-    y += (float)line_step;
+    chat_draw_text_scaled(ctx, title, title_len,
+                          title_x + 2.0f, title_y + 2.0f, 0, 4);
+    chat_draw_text_scaled(ctx, title, title_len, title_x, title_y, 5, 4);
+
+    draw_centered_text_scaled(ctx, "SELECT WORLD", title_y + 36.0f, 8, 2);
+
+    int option_count = (menu->world_count > 0 ? menu->world_count : 1) + 1;
+    float btn_w = 460.0f;
+    float btn_h = 22.0f;
+    float btn_step = 28.0f;
+    float total_h = (float)option_count * btn_step;
+    float btn_x = floorf((SCREEN_WIDTH - btn_w) * 0.5f);
+    float btn_y = 124.0f;
+
+    /* Push everything up if the world list would otherwise crowd the footer. */
+    float footer_y = SCREEN_HEIGHT - 30.0f;
+    if (btn_y + total_h > footer_y - 6.0f)
+        btn_y = footer_y - 6.0f - total_h;
+    if (btn_y < 110.0f)
+        btn_y = 110.0f;
+
+    draw_menu_button(ctx, btn_x, btn_y, btn_w, btn_h,
+                     "NEW RANDOM WORLD", menu->selected == 0);
 
     if (menu->world_count == 0) {
-        draw_centered_text(ctx, "NO SAVED WORLDS FOUND", y, 14);
-        y += (float)line_step;
+        float y = btn_y + btn_step;
+        draw_menu_button(ctx, btn_x, y, btn_w, btn_h,
+                         "(NO SAVED WORLDS)", false);
     } else {
         for (int i = 0; i < menu->world_count; i++) {
             const HomeWorldEntry *world = &menu->worlds[i];
+            float y = btn_y + (float)(i + 1) * btn_step;
 
-            snprintf(line, sizeof(line), "%c LOAD %-32s SEED %08x",
-                     menu->selected == i + 1 ? '>' : ' ',
-                     world->name,
-                     world->seed);
-            draw_centered_text(ctx, line, y,
-                               menu->selected == i + 1 ? 8 : 5);
-            y += (float)line_step;
+            snprintf(line, sizeof(line), "LOAD  %-24s  SEED %08x",
+                     world->name, world->seed);
+            draw_menu_button(ctx, btn_x, y, btn_w, btn_h,
+                             line, menu->selected == i + 1);
         }
     }
 
-    y += (float)line_step;
-    snprintf(line, sizeof(line), "ROOT %s", worlds_root ? worlds_root : "(none)");
-    draw_centered_text(ctx, line, y, 14);
-    y += (float)line_step;
-    draw_centered_text(ctx, "W/S SELECT   ENTER/SPACE START   Q QUIT", y, 5);
+    /* Footer: small instruction line and worlds-root path so users can find
+     * their saves on disk. */
+    snprintf(line, sizeof(line), "W/S SELECT   ENTER/SPACE START   Q QUIT");
+    draw_centered_text(ctx, line, footer_y, 5);
+
+    if (worlds_root && worlds_root[0]) {
+        snprintf(line, sizeof(line), "WORLDS: %s", worlds_root);
+        draw_centered_text(ctx, line, footer_y - 14.0f, 14);
+    }
 }
 
 static bool home_edge_pressed(bool now, bool *prev)

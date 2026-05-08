@@ -633,6 +633,51 @@ void chat_draw_text(RenderContext *ctx, const char *s, int len,
     draw_line(ctx, s, len, x, y, palette_index);
 }
 
+static void draw_glyph_scaled(RenderContext *ctx, char ch,
+                              float x, float y, uint8_t palette, int scale)
+{
+    uint8_t code = resolve_glyph(ch);
+    for (int row = 0; row < GLYPH_H; row++) {
+        uint8_t bits = g_glyphs[code][row];
+        if (!bits) continue;
+        for (int col = 0; col < GLYPH_W;) {
+            if (!(bits & (1u << (GLYPH_W - 1 - col)))) {
+                col++;
+                continue;
+            }
+            int run_start = col;
+            do {
+                col++;
+            } while (col < GLYPH_W &&
+                     (bits & (1u << (GLYPH_W - 1 - col))));
+            int run_end = col;
+            float px = x + (float)(run_start * scale);
+            float py = y + (float)(row * scale);
+            renderer_fill_rect(ctx,
+                               px, py,
+                               px + (float)((run_end - run_start) * scale),
+                               py + (float)scale,
+                               palette, 0);
+        }
+    }
+}
+
+int chat_draw_text_scaled(RenderContext *ctx, const char *s, int len,
+                          float x, float y, uint8_t palette_index, int scale)
+{
+    if (!ctx || !s || len <= 0 || scale <= 0) return 0;
+    build_glyph_tables();
+    int cell_w = (GLYPH_W + 1) * scale;
+    for (int i = 0; i < len; i++) {
+        if (x + (float)cell_w > SCREEN_WIDTH)
+            break;
+        if (s[i] != ' ')
+            draw_glyph_scaled(ctx, s[i], x, y, palette_index, scale);
+        x += (float)cell_w;
+    }
+    return cell_w;
+}
+
 void chat_draw(const Chat *chat, RenderContext *ctx)
 {
     if (!ctx) return;

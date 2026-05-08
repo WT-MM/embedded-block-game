@@ -125,3 +125,8 @@ bool block_is_translucent(BlockID id)
 {
     return id == BLOCK_GLASS;
 }
+
+bool block_is_alpha_keyed(BlockID id)
+{
+    return id == BLOCK_LEAVES;
+}

@@ -50,4 +50,10 @@ int  chat_font_cell_h(void);
 void chat_draw_text(RenderContext *ctx, const char *s, int len,
                     float x, float y, uint8_t palette_index);
 
+/* Same as chat_draw_text but each 5x7 glyph pixel is rendered as a `scale`x
+ * square block, giving big chunky title text. Returns the per-cell width
+ * (glyph + 1px kerning) × scale, useful for centering. */
+int chat_draw_text_scaled(RenderContext *ctx, const char *s, int len,
+                          float x, float y, uint8_t palette_index, int scale);
+
 #endif

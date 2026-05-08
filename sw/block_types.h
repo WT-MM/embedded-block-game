@@ -60,5 +60,7 @@ bool block_blocks_light(BlockID id);
 bool block_is_transparent(BlockID id);
 /* True for alpha-blended blocks that need special draw treatment (glass). */
 bool block_is_translucent(BlockID id);
+/* True for cutout blocks rendered with palette-0 alpha-key (leaves). */
+bool block_is_alpha_keyed(BlockID id);
 
 #endif

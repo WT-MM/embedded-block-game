@@ -1518,6 +1518,13 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
      */
     if (block_is_translucent(type))
         face_flags |= QUAD_ALPHA_50;
+    /*
+     * Cutout foliage (leaves) carries palette index 0 for the gaps between
+     * leaf clumps. Without ALPHA_KEY those texels render as the palette-0
+     * background color and look like solid sky-tinted blobs instead of holes.
+     */
+    if (block_is_alpha_keyed(type))
+        face_flags |= QUAD_FLAG_ALPHA_KEY;
 
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);

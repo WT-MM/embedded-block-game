@@ -2385,14 +2385,18 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
      * and renderer_draw_world use palette_time_for() so they cannot disagree
      * across a 32-step daylight_key boundary and re-flush the palette. */
     float palette_time = palette_time_for(time_seconds);
-    sun_dir = sun_direction_for_time(palette_time);
-    moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
-    update_world_light_from_sun(ctx, sun_dir);
+    /* Palette and lighting use quantized time so hw_sky_epoch stays stable. */
+    Vec3 palette_sun_dir = sun_direction_for_time(palette_time);
+    update_world_light_from_sun(ctx, palette_sun_dir);
     daylight = ctx->world_daylight;
     night = 1.0f - daylight;
-    palette = make_sky_palette(sun_dir);
+    palette = make_sky_palette(palette_sun_dir);
     upload_sky_palette(ctx, &palette);
     draw_sky_gradient(ctx, &palette);
+
+    /* Sprite positions use continuous time so movement is smooth. */
+    sun_dir = sun_direction_for_time(time_seconds);
+    moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
 
     if (night > 0.2f) {
         for (size_t i = 0; i < sizeof(star_defs) / sizeof(star_defs[0]); i++) {
@@ -2421,6 +2425,75 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     }
 
     return ctx->n_quads - before;
+}
+
+/* Project a world-space vertical line segment to screen and draw it as a
+ * 1-pixel-wide rect. Returns true if visible. */
+static bool draw_projected_line(RenderContext *ctx,
+                                float wx0, float wy0, float wz0,
+                                float wx1, float wy1, float wz1,
+                                uint8_t palette_index)
+{
+    CameraVertex cam0, cam1;
+    Vertex2D scr0, scr1;
+
+    world_to_camera(ctx, (Vec3){wx0, wy0, wz0}, &cam0);
+    world_to_camera(ctx, (Vec3){wx1, wy1, wz1}, &cam1);
+    if (!project_camera_vertex(ctx, &cam0, &scr0) ||
+        !project_camera_vertex(ctx, &cam1, &scr1))
+        return false;
+
+    /* Thin vertical or near-vertical line: draw a 1px-wide rect. */
+    float min_x = fminf(scr0.x, scr1.x) - 0.5f;
+    float max_x = fmaxf(scr0.x, scr1.x) + 0.5f;
+    float min_y = fminf(scr0.y, scr1.y);
+    float max_y = fmaxf(scr0.y, scr1.y);
+
+    /* Cull off-screen lines. */
+    if (max_x < 0.0f || min_x > SCREEN_WIDTH ||
+        max_y < 0.0f || min_y > SCREEN_HEIGHT)
+        return false;
+
+    return renderer_fill_rect(ctx, min_x, min_y, max_x, max_y,
+                              palette_index, 0);
+}
+
+int renderer_draw_chunk_borders(RenderContext *ctx,
+                                float player_x, float player_z,
+                                int render_distance)
+{
+    if (!ctx || render_distance <= 0)
+        return 0;
+
+    int drawn = 0;
+    int player_cx = (int)floorf(player_x / (float)WORLD_CHUNK_SIZE);
+    int player_cz = (int)floorf(player_z / (float)WORLD_CHUNK_SIZE);
+
+    /* Draw vertical lines at chunk boundaries within render distance.
+     * Lines run from y=0 to y=WORLD_CHUNK_HEIGHT at each chunk edge. */
+    float y_bot = 0.0f;
+    float y_top = (float)WORLD_CHUNK_HEIGHT;
+
+    for (int dx = -render_distance; dx <= render_distance + 1; dx++) {
+        float wx = (float)((player_cx + dx) * WORLD_CHUNK_SIZE);
+        /* Highlight the player's chunk borders in yellow (palette 8),
+         * other chunk borders in grey (palette 14). */
+        bool is_player_edge = (dx == 0 || dx == 1);
+        uint8_t color = is_player_edge ? 8 : 14;
+
+        for (int dz = -render_distance; dz <= render_distance + 1; dz++) {
+            float wz = (float)((player_cz + dz) * WORLD_CHUNK_SIZE);
+            bool is_player_z = (dz == 0 || dz == 1);
+            uint8_t line_color = (is_player_edge && is_player_z) ? 8 : color;
+
+            /* Vertical line at this grid intersection. */
+            if (draw_projected_line(ctx, wx, y_bot, wz, wx, y_top, wz,
+                                    line_color))
+                drawn++;
+        }
+    }
+
+    return drawn;
 }
 
 bool renderer_draw_crosshair(RenderContext *ctx)

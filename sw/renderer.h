@@ -90,4 +90,11 @@ bool renderer_fill_rect(RenderContext* ctx,
                         float x0, float y0, float x1, float y1,
                         uint8_t palette_index, uint8_t extra_flags);
 
+/* Draw chunk boundary lines visible from the current camera. Projects the
+ * vertical edges of the chunk grid onto screen space as thin colored lines.
+ * Returns the number of border lines drawn. */
+int renderer_draw_chunk_borders(RenderContext *ctx,
+                                float player_x, float player_z,
+                                int render_distance);
+
 #endif /* RENDERER_H */

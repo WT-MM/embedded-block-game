@@ -30,7 +30,7 @@
 #define MAX_PHYSICS_STEPS_PER_FRAME 16
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
-#define MAX_WORLD_RENDER_DISTANCE_CHUNKS 8
+#define MAX_WORLD_RENDER_DISTANCE_CHUNKS 9
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
 #define MAX_STREAM_CHUNKS_PER_FRAME 64
 #define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
@@ -473,14 +473,13 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
 }
 
 /* Debug HUD: player position, chunk coords, render distance, loaded chunks.
- * Enabled by VOXEL_DEBUG_HUD=1. Drawn in the top-right corner using the
- * same drop-shadow text style as the FPS counter. */
+ * Toggled with F3 or VOXEL_DEBUG_HUD=1. Drawn top-left below the FPS counter
+ * using the same drop-shadow text style. Also draws 3D chunk border lines. */
 static void draw_debug_hud(RenderContext *ctx, const Player *player,
                            const Camera *cam, const VoxelWorld *world)
 {
     char lines[8][56];
     int line_count = 0;
-    int cell_w = chat_font_cell_w();
     int cell_h = chat_font_cell_h();
     int line_step = cell_h + 2;
     int chunk_x = (int)floorf(player->x / (float)WORLD_CHUNK_SIZE);
@@ -508,17 +507,19 @@ static void draw_debug_hud(RenderContext *ctx, const Player *player,
              world_loaded_chunk_count(world),
              world_chunk_capacity(world));
 
-    float y = 12.0f;
+    /* Position below the FPS counter (top-left, same x=12). */
+    float y = 12.0f + (float)line_step;
     for (int i = 0; i < line_count; i++) {
         int len = (int)strlen(lines[i]);
-        float text_w = (float)(len * cell_w);
-        float x = SCREEN_WIDTH - text_w - 12.0f;
-        if (x < 0.0f) x = 0.0f;
-        /* Drop shadow + foreground, same as FPS counter */
-        chat_draw_text(ctx, lines[i], len, x + 1.0f, y + 1.0f, 0);
-        chat_draw_text(ctx, lines[i], len, x, y, 5);
+        /* Drop shadow + foreground, left-aligned under FPS */
+        chat_draw_text(ctx, lines[i], len, 13.0f, y + 1.0f, 0);
+        chat_draw_text(ctx, lines[i], len, 12.0f, y, 5);
         y += (float)line_step;
     }
+
+    /* Draw 3D chunk border lines in the world. */
+    renderer_draw_chunk_borders(ctx, player->x, player->z,
+                                world_render_distance(world));
 }
 
 int main(void)

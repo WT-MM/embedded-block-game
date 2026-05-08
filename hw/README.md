@@ -319,10 +319,10 @@ Those base addresses are byte addresses for 320x240 RGB565 framebuffers in
 SDRAM. The on-chip BRAM render target is also RGB565 so alpha-blended pixels
 can preserve their resolved destination color before the SDRAM copy.
 
-Reference self-test
--------------------
+Reference self-test (removed)
+-----------------------------
 
-`sdram_selftest_vga.sv` is still kept in-tree as a known-good local SDRAM smoke
-test, but it is no longer the default top-level owner of the board pins. If you
-need to fall back to the old standalone test, re-hook it in `soc_system_top.sv`
-and rebuild.
+`sdram_selftest_vga.sv` was previously kept in-tree as a known-good local SDRAM
+smoke test.  It has been removed as part of the RTL cleanup.  If you need a
+standalone SDRAM self-test, check the git history for the last version of that
+file.

@@ -88,8 +88,7 @@ TARFILES = Makefile \
 	$(VOXEL_GPU_RTL) \
 	$(VOXEL_GPU_ASSETS) \
 	$(VOXEL_GPU_DEBUG_ASSETS) \
-	$(VOXEL_GPU_SCRIPTS) \
-	vga_ball.sv
+	$(VOXEL_GPU_SCRIPTS)
 
 TARFILE = lab3-hw.tar.gz
 
@@ -128,7 +127,7 @@ project19 : project
 qsys : $(QSYS_STAMP)
 
 QSYS_COMPONENT_SOURCES = voxel_gpu_hw.tcl $(VOXEL_GPU_RTL) $(VOXEL_GPU_ASSETS) \
-	$(VOXEL_GPU_SCRIPTS) vga_ball.sv vga_ball_hw.tcl \
+	$(VOXEL_GPU_SCRIPTS) \
 	$(wildcard sdram_local_test/*.v) \
 	$(wildcard sdram_local_test/*.h) \
 	$(wildcard sdram_local_test/sdram_pll0/*.v)

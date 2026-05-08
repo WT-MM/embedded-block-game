@@ -343,12 +343,36 @@ def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int]) -> int:
     if a < 96:
         return PAL_TRANSPARENT
 
+    if tile == TEX_TILE_GLASS:
+        # Vanilla glass has very low alpha body with bright streaks. Generic
+        # nearest-color quantization makes it blotchy in our tiny palette, so
+        # classify explicitly by opacity and brightness.
+        luma = (r * 30 + g * 59 + b * 11) // 100
+        if a < 140:
+            return PAL_TRANSPARENT
+        if luma >= 200:
+            return PAL_GLASS_HIGHLIGHT
+        if a >= 220 or luma <= 130:
+            return PAL_GLASS_EDGE
+        return PAL_GLASS
+
     tint = SOURCE_TILE_TINT.get(tile)
     if tint is not None:
-        tr, tg, tb = tint
-        r = (r * tr) // 255
-        g = (g * tg) // 255
-        b = (b * tb) // 255
+        apply_tint = True
+
+        if tile == TEX_TILE_GRASS_SIDE:
+            # Keep dirt pixels brown; tint only the gray/neutral grass mask
+            # regions from vanilla side textures.
+            max_c = max(r, g, b)
+            min_c = min(r, g, b)
+            is_neutral_mask = (max_c - min_c) <= 26
+            apply_tint = is_neutral_mask
+
+        if apply_tint:
+            tr, tg, tb = tint
+            r = (r * tr) // 255
+            g = (g * tg) // 255
+            b = (b * tb) // 255
 
     allowed = SOURCE_TILE_ALLOWED_PALETTE.get(tile)
     if not allowed:

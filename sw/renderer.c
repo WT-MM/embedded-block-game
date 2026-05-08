@@ -2356,12 +2356,12 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     } SkySpriteDef;
 
     static const SkySpriteDef star_defs[] = {
-        { 0.20f,  0.95f, 18.0f, 0.0f, 0.0f },
-        { 1.30f,  0.72f, 22.0f, 0.0f, 0.0f },
-        { 2.45f,  0.84f, 20.0f, 0.0f, 0.0f },
-        { 3.60f,  0.66f, 24.0f, 0.0f, 0.0f },
-        { 4.55f,  0.90f, 18.0f, 0.0f, 0.0f },
-        { 5.60f,  0.76f, 20.0f, 0.0f, 0.0f },
+        { 0.20f,  0.95f, 34.0f, 0.0f, 0.0f },
+        { 1.30f,  0.72f, 40.0f, 0.0f, 0.0f },
+        { 2.45f,  0.84f, 36.0f, 0.0f, 0.0f },
+        { 3.60f,  0.66f, 44.0f, 0.0f, 0.0f },
+        { 4.55f,  0.90f, 34.0f, 0.0f, 0.0f },
+        { 5.60f,  0.76f, 38.0f, 0.0f, 0.0f },
     };
     static const SkySpriteDef cloud_defs[] = {
         { 0.15f, 0.48f, 62.0f,  0.014f, 0.23f },

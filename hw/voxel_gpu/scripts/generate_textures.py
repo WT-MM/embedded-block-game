@@ -614,15 +614,25 @@ def moon(x: int, y: int) -> int:
 
 
 def stars(x: int, y: int) -> int:
-    points = {
-        (2, 3), (5, 11), (8, 6), (12, 2), (13, 9),
-        (4, 7), (10, 13), (14, 5),
-    }
+    # Dense-but-structured starfield: a few twinkly "cross" stars plus
+    # deterministic micro-clusters so the sky reads like stars, not noise.
+    twinkles = {(3, 3), (12, 4), (5, 10), (11, 12)}
 
-    if (x, y) in points:
+    if (x, y) in twinkles:
         return PAL_STAR
-    if (x - 1, y) in points or (x, y - 1) in points:
-        return PAL_STAR if ((x + y) & 1) == 0 else PAL_TRANSPARENT
+    for sx, sy in twinkles:
+        if abs(x - sx) + abs(y - sy) == 1:
+            return PAL_STAR if ((x + y + sx + sy) & 1) == 0 else PAL_TRANSPARENT
+
+    n0 = noise(x, y, 73)
+    n1 = noise(x + 5, y + 11, 157)
+
+    if n0 >= 250:
+        return PAL_STAR
+    if n1 >= 247 and ((x + y) & 1) == 0:
+        return PAL_STAR
+    if n0 >= 242 and n1 >= 238 and ((x ^ y) & 1) == 0:
+        return PAL_STAR
     return PAL_TRANSPARENT
 
 

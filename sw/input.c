@@ -513,6 +513,10 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                     inp->pause_toggle_pressed = true;
                 break;
             case KEY_Q:     if (down) inp->quit = true;   break;
+            case KEY_F3:
+                if (press_edge)
+                    inp->debug_hud_toggle_pressed = true;
+                break;
             default: break;
             }
         } else if (pointer && pointer->mode == INPUT_POINTER_REL && ev.type == EV_REL) {
@@ -618,6 +622,13 @@ bool input_consume_pause_toggle(InputState *inp)
 {
     bool pressed = inp->pause_toggle_pressed;
     inp->pause_toggle_pressed = false;
+    return pressed;
+}
+
+bool input_consume_debug_hud_toggle(InputState *inp)
+{
+    bool pressed = inp->debug_hud_toggle_pressed;
+    inp->debug_hud_toggle_pressed = false;
     return pressed;
 }
 

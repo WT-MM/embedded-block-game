@@ -47,6 +47,10 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_LAMP], TEX_TILE_LAMP);
     BlockRegistry[BLOCK_LAMP].emission_level = 15;
     BlockRegistry[BLOCK_LAMP].self_lit = true;
+
+    BlockRegistry[BLOCK_PLANKS].id = BLOCK_PLANKS;
+    BlockRegistry[BLOCK_PLANKS].name = "Planks";
+    set_all_faces(&BlockRegistry[BLOCK_PLANKS], TEX_TILE_WOOD_PLANK);
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -81,6 +85,10 @@ uint8_t texture_lod_tile_id(uint8_t tile_id, int lod)
         return lod >= 2 ? TEX_TILE_GLASS_MIP2 : TEX_TILE_GLASS_MIP1;
     case TEX_TILE_LAMP:
         return lod >= 2 ? TEX_TILE_LAMP_MIP2 : TEX_TILE_LAMP_MIP1;
+    case TEX_TILE_LEAVES:
+        return lod >= 2 ? TEX_TILE_LEAVES_MIP2 : TEX_TILE_LEAVES_MIP1;
+    case TEX_TILE_WOOD_PLANK:
+        return lod >= 2 ? TEX_TILE_WOOD_PLANK_MIP2 : TEX_TILE_WOOD_PLANK_MIP1;
     default:
         return tile_id;
     }

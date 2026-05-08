@@ -37,7 +37,7 @@
 #define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
-#define HOTBAR_SLOT_COUNT 6
+#define HOTBAR_SLOT_COUNT 7
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -58,6 +58,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_DIRT,
     BLOCK_STONE,
     BLOCK_WOOD,
+    BLOCK_PLANKS,
     BLOCK_GLASS,
     BLOCK_LAMP,
 };
@@ -69,6 +70,7 @@ static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
     { 0x5, 0x5, 0x7, 0x1, 0x1 }, /* 4 */
     { 0x7, 0x4, 0x7, 0x1, 0x7 }, /* 5 */
     { 0x7, 0x4, 0x7, 0x5, 0x7 }, /* 6 */
+    { 0x7, 0x1, 0x1, 0x1, 0x1 }, /* 7 */
 };
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -144,7 +146,16 @@ static int read_status_log_enabled(int debug_enabled)
 
 static int read_debug_hud_enabled(void)
 {
-    return read_env_bool("VOXEL_DEBUG_HUD");
+    const char *value = getenv("VOXEL_DEBUG_HUD");
+
+    if (!value || value[0] == '\0')
+        return 0;
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "false") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "no") == 0)
+        return 0;
+    return 1;
 }
 
 static int read_target_fps(void)
@@ -660,6 +671,8 @@ int main(void)
             if (!chat_is_open(&chat))
                 pause_menu_toggle(&pause);
         }
+        if (input_consume_debug_hud_toggle(&inp))
+            debug_hud_enabled = !debug_hud_enabled;
 
         bool paused = pause_menu_is_open(&pause);
         if (paused && pause_menu_update(&pause, &inp, &pause_settings)) {

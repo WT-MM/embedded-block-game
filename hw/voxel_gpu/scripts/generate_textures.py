@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 # Pillow is imported lazily inside write_preview() so the .mif emission
 # path (which has no extra dependencies) still works on hosts that don't
@@ -19,6 +20,8 @@ TEX_TILE_WOOD_SIDE = 4
 TEX_TILE_WOOD_TOP = 5
 TEX_TILE_GLASS = 6
 TEX_TILE_LAMP = 7
+TEX_TILE_LEAVES = 8
+TEX_TILE_WOOD_PLANK = 9
 TEX_TILE_GRASS_TOP_MIP1 = 16
 TEX_TILE_GRASS_SIDE_MIP1 = 17
 TEX_TILE_DIRT_MIP1 = 18
@@ -35,6 +38,10 @@ TEX_TILE_WOOD_SIDE_MIP2 = 28
 TEX_TILE_WOOD_TOP_MIP2 = 29
 TEX_TILE_GLASS_MIP2 = 30
 TEX_TILE_LAMP_MIP2 = 31
+TEX_TILE_LEAVES_MIP1 = 32
+TEX_TILE_LEAVES_MIP2 = 33
+TEX_TILE_WOOD_PLANK_MIP1 = 34
+TEX_TILE_WOOD_PLANK_MIP2 = 35
 TEX_TILE_SKY = 48
 TEX_TILE_CLOUD = 49
 TEX_TILE_SUN = 50
@@ -82,15 +89,15 @@ PAL_LAMP_FRAME = 39
 # updates are impossible to miss visually.
 PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     0:  (0x10, 0x10, 0x18),  # background / transparent
-    1:  (0x6b, 0xa4, 0x3a),  # grass top
-    2:  (0x8b, 0x63, 0x41),  # dirt side
+    1:  (0x74, 0xb3, 0x44),  # grass top
+    2:  (0x86, 0x5f, 0x3c),  # dirt side
     3:  (0x6f, 0x57, 0x37),  # wood side
     4:  (0x7c, 0x7c, 0x7c),  # stone side
     5:  (0xff, 0xff, 0xff),  # debug white
     6:  (0xff, 0x40, 0x40),  # debug red
     7:  (0x40, 0xa0, 0xff),  # debug blue
     8:  (0xff, 0xd0, 0x40),  # debug yellow
-    9:  (0x5c, 0x86, 0x34),  # grass side
+    9:  (0x66, 0x95, 0x39),  # grass side
     10: (0x6a, 0x4a, 0x2c),  # grass bottom / dark dirt
     11: (0x9d, 0x7b, 0x4d),  # wood top
     12: (0x53, 0x38, 0x23),  # wood bottom
@@ -98,10 +105,10 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     14: (0x5c, 0x5c, 0x5c),  # stone bottom
     15: (0xa7, 0x79, 0x52),  # dirt top
     16: (0x59, 0x41, 0x2a),  # dirt bottom
-    17: (0x4f, 0x78, 0x2d),  # grass dark
-    18: (0x84, 0xba, 0x57),  # grass highlight
-    19: (0x6f, 0x4f, 0x32),  # dirt dark
-    20: (0xaa, 0x81, 0x5a),  # dirt light
+    17: (0x4e, 0x7a, 0x2b),  # grass dark
+    18: (0x8b, 0xc7, 0x5a),  # grass highlight
+    19: (0x6a, 0x49, 0x2f),  # dirt dark
+    20: (0xa7, 0x7c, 0x53),  # dirt light
     21: (0x88, 0x6a, 0x44),  # wood grain
     22: (0x50, 0x3b, 0x24),  # wood bark dark
     23: (0x63, 0x63, 0x63),  # stone dark
@@ -136,6 +143,8 @@ PREVIEW_COLUMNS: list[tuple[str, int, int, int]] = [
     ("wood_top",   TEX_TILE_WOOD_TOP,   TEX_TILE_WOOD_TOP_MIP1,   TEX_TILE_WOOD_TOP_MIP2),
     ("glass",      TEX_TILE_GLASS,      TEX_TILE_GLASS_MIP1,      TEX_TILE_GLASS_MIP2),
     ("lamp",       TEX_TILE_LAMP,       TEX_TILE_LAMP_MIP1,       TEX_TILE_LAMP_MIP2),
+    ("leaves",     TEX_TILE_LEAVES,     TEX_TILE_LEAVES_MIP1,     TEX_TILE_LEAVES_MIP2),
+    ("wood_plank", TEX_TILE_WOOD_PLANK, TEX_TILE_WOOD_PLANK_MIP1, TEX_TILE_WOOD_PLANK_MIP2),
 ]
 
 
@@ -149,6 +158,8 @@ MIP1_TILES = {
     TEX_TILE_WOOD_TOP_MIP1: TEX_TILE_WOOD_TOP,
     TEX_TILE_GLASS_MIP1: TEX_TILE_GLASS,
     TEX_TILE_LAMP_MIP1: TEX_TILE_LAMP,
+    TEX_TILE_LEAVES_MIP1: TEX_TILE_LEAVES,
+    TEX_TILE_WOOD_PLANK_MIP1: TEX_TILE_WOOD_PLANK,
 }
 
 MIP2_TILES = {
@@ -160,102 +171,158 @@ MIP2_TILES = {
     TEX_TILE_WOOD_TOP_MIP2: TEX_TILE_WOOD_TOP,
     TEX_TILE_GLASS_MIP2: TEX_TILE_GLASS,
     TEX_TILE_LAMP_MIP2: TEX_TILE_LAMP,
+    TEX_TILE_LEAVES_MIP2: TEX_TILE_LEAVES,
+    TEX_TILE_WOOD_PLANK_MIP2: TEX_TILE_WOOD_PLANK,
 }
 
 GRASS_TOP_ROWS = [
-    "ggddggggllggggdg",
-    "ggddggggllggddgg",
-    "dgggggddggggllgg",
-    "dgggllggggddgggg",
-    "ggggllggggddgggg",
-    "ggddggggggggggll",
-    "ggddggllggggggll",
-    "ggggggllggddgggg",
-    "llggggggggddgggg",
-    "llggddggggggggdd",
-    "ggggddggllggggdd",
-    "ggggggggllgggggg",
-    "ddggggggggllgggg",
-    "ggllggddgggggggg",
-    "ggllggddggggllgg",
-    "ggggggggddggllgg",
+    "ggglggdgggglggdg",
+    "gdggggglgdgggggg",
+    "ggggdgggglgggdgg",
+    "lggggggdgggglggg",
+    "ggdggglggggdgggg",
+    "gggglggggdgggglg",
+    "dgggggglgggggdgg",
+    "gglggdgggglggggg",
+    "gggggglggdgggglg",
+    "lggdgggggglggggd",
+    "gggglggdgggggglg",
+    "dgggggglggggdggg",
+    "gglggggdggglgggg",
+    "ggggdgggglggggdg",
+    "lggggglggdgggggg",
+    "ggdgggggglggdggl",
 ]
 
 DIRT_ROWS = [
-    "bbddbbbbllbbbbbb",
-    "bbddbbbbllbbddbb",
-    "ddbbbbbbbbbblldb",
-    "ddbbbbllbbbbbbdb",
-    "bbbbbbllbbbbddbb",
-    "bbbddbbbbbbbddbb",
-    "bbbddbbllbbbbbbb",
-    "llbbbbbbbbbddbbb",
-    "llbbbbddbbbbbbbb",
-    "bbbbbbbbllbbbbdd",
-    "bbddbbbbllddbbbb",
-    "bbbbllbbbbddbbbb",
-    "ddbbbbbbbbbbllbb",
-    "ddbbllbbbbbbbbbb",
-    "bbbbllbbbbddbbll",
-    "bbbbbbbbddbbllbb",
+    "bbdbbbbblbbbdbbb",
+    "bbbbdbbbbbbblbbb",
+    "dbbbbbbbdbbbbbbl",
+    "bbbblbbbbbbbdbbb",
+    "bbbbbdbbbblbbbbb",
+    "lbbbbbbbbdbbbbdb",
+    "bbbbdbbbbbblbbbb",
+    "bbbblbbbdbbbbbbb",
+    "dbbbbbblbbbbdbbb",
+    "bbbbbbdbbbbbblbb",
+    "bbdbbbbbblbbbbbb",
+    "bbbblbbbbbbbdbbb",
+    "bbbdbbbbblbbbbdb",
+    "lbbbbbbdbbbbbbbb",
+    "bbbbdbbbbbblbbbl",
+    "bbbbbblbbbdbbbbb",
 ]
 
 GRASS_SIDE_ROWS = [
-    "ggddggggllgggggg",
-    "ggddggggllggddgg",
-    "dgggggddggggllgg",
-    "bbggllbbggddbbgg",
-    "bbddbbbbllbbbbbb",
-    "bbddbbbbllbbddbb",
-    "ddbbbbbbbbbblldb",
-    "ddbbbbllbbbbbbdb",
-    "bbbbbbllbbbbddbb",
-    "bbbddbbbbbbbddbb",
-    "bbbddbbllbbbbbbb",
-    "llbbbbbbbbbddbbb",
-    "llbbbbddbbbbbbbb",
-    "bbbbbbbbllbbbbdd",
-    "bbddbbbbllddbbbb",
-    "bbbbllbbbbddbbbb",
+    "ggglggdgggglggdg",
+    "gdggggglgdgggggg",
+    "ggggdgggglgggdgg",
+    "bdbbbbbblbbbdbbb",
+    "bbbbdbbbbbbblbbb",
+    "dbbbbbbbdbbbbbbl",
+    "bbbblbbbbbbbdbbb",
+    "bbbbbdbbbblbbbbb",
+    "lbbbbbbbbdbbbbdb",
+    "bbbbdbbbbbblbbbb",
+    "bbbblbbbdbbbbbbb",
+    "dbbbbbblbbbbdbbb",
+    "bbbbbbdbbbbbblbb",
+    "bbdbbbbbblbbbbbb",
+    "bbbblbbbbbbbdbbb",
+    "bbbdbbbbblbbbbdb",
 ]
 
 STONE_ROWS = [
-    "ssddssssllssssss",
-    "ssddssssllssddss",
-    "ddsssssssssllssd",
-    "ddssssllssssssds",
-    "ssssssllssssddss",
-    "sssddsssssssddss",
-    "sssddssllsssssss",
-    "llsssssssssddsss",
-    "llssssddssssssss",
-    "ssssssssllssssdd",
-    "ssddssssllddssss",
-    "ssssllssssddssss",
-    "ddssssssssssllss",
-    "ddssllssssssssss",
-    "ssssllssssddssll",
-    "ssssssssddssllss",
+    "ssssdssslssssssd",
+    "dsssssssdssslsss",
+    "ssslssssdsssssss",
+    "sssssdssssslsssd",
+    "lsssssssssdsssss",
+    "sssdssslssssdsss",
+    "ssssssssslsssssd",
+    "dssslsssssssssss",
+    "ssssssdssslsssss",
+    "ssslsssssdssssls",
+    "ssssssslsssssdss",
+    "dssssssssdssslss",
+    "ssssldsssssssssd",
+    "sssdssssslssssss",
+    "sssssssdssssslss",
+    "lssssdsssssssdss",
 ]
 
 WOOD_SIDE_ROWS = [
-    "dgbbbggbbbgbbbgd",
-    "dgbbgbbbggbbbggd",
-    "dbgbbbggbbbgbbgd",
-    "dggbbbgbbbggbbgd",
-    "dgbbbggbbbgbbbgd",
-    "dgbbgbbbggbbbggd",
-    "dbgbbbggddggbbgd",
-    "dggbbbgbddddbbgd",
-    "dgbbbggbddddbbgd",
-    "dgbbgbbbddggbggd",
-    "dbgbbbggbbbgbbgd",
-    "dggbbbgbbbggbbgd",
-    "dgbbbggbbbgbbbgd",
-    "dgbbgbbbggbbbggd",
-    "dbgbbbggbbbgbbgd",
-    "dggbbbgbbbggbbgd",
+    "dbgbbggbbgbbggbd",
+    "dbgbbbgbbggbbbdd",
+    "dggbbbgbbgbbggbd",
+    "dbgbbggbbbgbbbgd",
+    "dggbbbgbbgbbggbd",
+    "dbgbbbgbbggbbbdd",
+    "dbgbbggbbgbbggbd",
+    "dggbbbgbbgbbggbd",
+    "dbgbbggbbbgbbbgd",
+    "dbgbbbgbbggbbbdd",
+    "dggbbbgbbgbbggbd",
+    "dbgbbggbbgbbggbd",
+    "dbgbbbgbbggbbbdd",
+    "dggbbbgbbgbbggbd",
+    "dbgbbggbbbgbbbgd",
+    "dggbbbgbbgbbggbd",
 ]
+
+
+LEAVES_ROWS = [
+    "tggltggdggtlgttg",
+    "ggdggtgglggdggtg",
+    "tgglggdgtgglggdt",
+    "ggtgglggdggtgglg",
+    "dggtgglggdgtgglt",
+    "gglgdtggtgglggdg",
+    "tggdgglggtggdggt",
+    "ggtggdgglggtggld",
+    "lggtgglgdtgglggt",
+    "ggdggtgglggdggtl",
+    "tgglggdgtgglggdt",
+    "ggtgglggdggtgglg",
+    "dggtgglggdgtgglt",
+    "gglgdtggtgglggdg",
+    "tggdgglggtggdggt",
+    "ggtggdgglggtgglt",
+]
+
+SOURCE_TEXTURE_FILES: dict[int, str] = {
+    TEX_TILE_GRASS_TOP: "grass_block_top.png",
+    TEX_TILE_GRASS_SIDE: "grass_block_side.png",
+    TEX_TILE_DIRT: "dirt.png",
+    TEX_TILE_STONE: "stone.png",
+    TEX_TILE_WOOD_SIDE: "oak_log.png",
+    TEX_TILE_WOOD_TOP: "oak_log_top.png",
+    TEX_TILE_WOOD_PLANK: "oak_planks.png",
+    TEX_TILE_GLASS: "glass.png",
+    TEX_TILE_LEAVES: "oak_leaves.png",
+}
+
+# Restrict quantization per tile so imported textures remain faithful while
+# still mapping to the renderer's fixed hardware palette.
+SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
+    TEX_TILE_GRASS_TOP: (1, 17, 18),
+    TEX_TILE_GRASS_SIDE: (9, 17, 18, 2, 19, 20),
+    TEX_TILE_DIRT: (2, 19, 20),
+    TEX_TILE_STONE: (4, 23, 24),
+    TEX_TILE_WOOD_SIDE: (11, 3, 21, 22),
+    TEX_TILE_WOOD_TOP: (11, 3, 21, 22),
+    TEX_TILE_WOOD_PLANK: (11, 3, 21, 22),
+    TEX_TILE_GLASS: (0, 35, 36, 37),
+    TEX_TILE_LEAVES: (0, 9, 17, 18, 2, 19),
+}
+
+# Vanilla grass/leaves textures are grayscale masks intended for biome tinting.
+# Apply a fixed lush-green tint in this project since we do not have biome maps.
+SOURCE_TILE_TINT: dict[int, tuple[int, int, int]] = {
+    TEX_TILE_GRASS_TOP: (121, 192, 90),
+    TEX_TILE_GRASS_SIDE: (121, 192, 90),
+    TEX_TILE_LEAVES: (106, 170, 72),
+}
 
 
 def pattern_texel(rows: list[str], mapping: dict[str, int], x: int, y: int) -> int:
@@ -266,6 +333,74 @@ def noise(x: int, y: int, seed: int) -> int:
     value = (x * 97) ^ (y * 57) ^ (seed * 131)
     value = (value * 1103515245 + 12345) & 0x7FFFFFFF
     return value & 0xFF
+
+
+_SOURCE_TILE_CACHE: dict[int, list[tuple[int, int, int, int]]] = {}
+
+
+def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int]) -> int:
+    r, g, b, a = rgba
+    if a < 96:
+        return PAL_TRANSPARENT
+
+    tint = SOURCE_TILE_TINT.get(tile)
+    if tint is not None:
+        tr, tg, tb = tint
+        r = (r * tr) // 255
+        g = (g * tg) // 255
+        b = (b * tb) // 255
+
+    allowed = SOURCE_TILE_ALLOWED_PALETTE.get(tile)
+    if not allowed:
+        return PAL_TRANSPARENT
+
+    best_idx = allowed[0]
+    best_score = sys.maxsize
+    for idx in allowed:
+        pr, pg, pb = PREVIEW_PALETTE[idx]
+        dr = r - pr
+        dg = g - pg
+        db = b - pb
+        score = dr * dr + dg * dg + db * db
+        if score < best_score:
+            best_score = score
+            best_idx = idx
+    return best_idx
+
+
+def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
+    if tile in _SOURCE_TILE_CACHE:
+        return _SOURCE_TILE_CACHE[tile]
+
+    name = SOURCE_TEXTURE_FILES.get(tile)
+    if name is None:
+        return None
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    root = Path(__file__).resolve().parents[1]
+    source_path = root / "assets" / "minecraft_source" / name
+    if not source_path.exists():
+        return None
+
+    with Image.open(source_path) as image:
+        rgba = image.convert("RGBA")
+        if rgba.size != (TILE_SIZE, TILE_SIZE):
+            raise ValueError(f"{source_path} must be {TILE_SIZE}x{TILE_SIZE}, got {rgba.size}")
+        pixels = list(rgba.getdata())
+        _SOURCE_TILE_CACHE[tile] = pixels
+        return pixels
+
+
+def source_texel(tile: int, x: int, y: int) -> int | None:
+    pixels = _load_source_tile(tile)
+    if pixels is None:
+        return None
+    rgba = pixels[y * TILE_SIZE + x]
+    return _quantize_to_palette(tile, rgba)
 
 
 def grass_top(x: int, y: int) -> int:
@@ -362,6 +497,34 @@ def wood_top(x: int, y: int) -> int:
     return PAL_WOOD_TOP
 
 
+def wood_plank(x: int, y: int) -> int:
+    # Fallback if source PNG is missing.
+    band = (y // 4) & 3
+    if band == 0:
+        return PAL_WOOD_TOP if (x & 1) == 0 else PAL_WOOD_GRAIN
+    if band == 1:
+        return PAL_WOOD if ((x + y) & 3) else PAL_WOOD_GRAIN
+    if band == 2:
+        return PAL_WOOD_GRAIN if (x & 1) else PAL_WOOD_TOP
+    return PAL_WOOD if ((x + 2 * y) & 3) else PAL_WOOD_DARK
+
+
+def leaves(x: int, y: int) -> int:
+    # Includes sparse transparent texels for the dithered cutout look.
+    return pattern_texel(
+        LEAVES_ROWS,
+        {
+            "g": PAL_GRASS_SIDE,
+            "d": PAL_GRASS_DARK,
+            "l": PAL_GRASS_LIGHT,
+            "b": PAL_DIRT,
+            "t": PAL_TRANSPARENT,
+        },
+        x,
+        y,
+    )
+
+
 def crosshair(x: int, y: int) -> int:
     if (x == 7 and 4 <= y <= 11) or (y == 7 and 4 <= x <= 11):
         return PAL_WHITE
@@ -440,6 +603,10 @@ def stars(x: int, y: int) -> int:
 
 
 def base_texel(tile: int, x: int, y: int) -> int:
+    source_value = source_texel(tile, x, y)
+    if source_value is not None:
+        return source_value
+
     if tile == TEX_TILE_GRASS_TOP:
         return grass_top(x, y)
     if tile == TEX_TILE_GRASS_SIDE:
@@ -452,10 +619,14 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return wood_side(x, y)
     if tile == TEX_TILE_WOOD_TOP:
         return wood_top(x, y)
+    if tile == TEX_TILE_WOOD_PLANK:
+        return wood_plank(x, y)
     if tile == TEX_TILE_GLASS:
         return glass(x, y)
     if tile == TEX_TILE_LAMP:
         return lamp(x, y)
+    if tile == TEX_TILE_LEAVES:
+        return leaves(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:
@@ -549,8 +720,8 @@ def write_mif(path: Path) -> None:
         handle.write("END;\n")
 
 
-def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
-    """Render a PNG snapshot of the main atlas tiles at base + MIP1 + MIP2.
+def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8) -> bool:
+    """Render a PNG snapshot of the full texture atlas.
 
     The preview is a debug aid for humans, not a build input, so Pillow
     is a soft dependency: if PIL is not importable we just skip the PNG
@@ -558,8 +729,8 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
     file was written, False otherwise.
 
     Layout:
-      * one column per block type (see PREVIEW_COLUMNS),
-      * rows top-to-bottom are base LOD, MIP1, MIP2,
+      * all TILE_COUNT tiles are shown in row-major atlas order,
+      * `atlas_cols` controls grid width (defaults to 8 for 64 tiles),
       * each 16x16 tile is upscaled by `scale` with nearest-neighbour,
       * `gap` pixels of background colour separate the cells.
 
@@ -577,8 +748,8 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
         return False
 
     atlas = build_atlas()
-    cols = len(PREVIEW_COLUMNS)
-    rows = 3
+    cols = max(1, atlas_cols)
+    rows = (TILE_COUNT + cols - 1) // cols
     cell = TILE_SIZE * scale
     width = gap + cols * (cell + gap)
     height = gap + rows * (cell + gap)
@@ -600,13 +771,12 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8) -> bool:
                     for ox in range(scale):
                         pixels[px0 + ox, py0 + oy] = rgb
 
-    for col_index, (_label, base_tile, mip1_tile, mip2_tile) in enumerate(
-        PREVIEW_COLUMNS
-    ):
+    for tile in range(TILE_COUNT):
+        row_index = tile // cols
+        col_index = tile % cols
         cell_x = gap + col_index * (cell + gap)
-        for row_index, tile in enumerate((base_tile, mip1_tile, mip2_tile)):
-            cell_y = gap + row_index * (cell + gap)
-            paint(tile, cell_x, cell_y)
+        cell_y = gap + row_index * (cell + gap)
+        paint(tile, cell_x, cell_y)
 
     image.save(path, format="PNG", optimize=True)
     return True

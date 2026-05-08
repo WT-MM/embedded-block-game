@@ -934,6 +934,18 @@ at the top/left edge of a repeated quad clamped to texel 0. Correct modulo
 repeat should take the low 4 integer bits for both positive and negative
 values; in two's-complement that is simply `value[35:32]`.
 
+May 8 atlas-capacity follow-up: the 128-tile atlas needs seven tile-id bits,
+so `QUAD_TEX_REPEAT_UV` moved from `tex_or_color[6]` to `tex_or_color[7]`.
+The hardware sampler now uses `tex_or_color[6:0]` for the tile address and
+bit 7 only for coordinate wrapping. This preserves the doubled atlas while
+keeping repeated far-quad UVs unambiguous.
+
+The 128-tile atlas made the current fit land just over the device limit
+(400/397 M10Ks). The first-pass relief keeps the raster/cache path intact:
+the small SDRAM controller RD/WR FIFOs are hinted to MLAB, and the Quartus
+paused-read equivalence setting is loosened to `DONT CARE` so eligible side
+RAMs can spill into MLAB before reducing band height or descriptor FIFO depth.
+
 The hardware now applies the repeat case first. The renderer once again uses
 merged far quads by default, and `BLOCK_GAME_MERGE_FAR_QUADS=0` remains as a
 runtime fallback to force unit-quad expansion for A/B testing.
@@ -1807,11 +1819,10 @@ Port A keeps its existing `rd_addr` / `rd_data` names so the rasterizer
 instantiation didn't need to rename anything; port B is now driven by the
 odd lane's `pipe2_tex_addr_o`.
 
-**M10K cost:** atlas is 64 tiles × 16 × 16 × 8 bits = 131 072 bits.
-Single-port ROM packs ~13 M10Ks; duplicating it doubles that to ~26
-M10Ks. Pre-fit headroom was 51/397 unused, so we still have room, but
-this is a real cost (vs the "+3-4" we hoped for from BIDIR_DUAL_PORT).
-Will reconfirm after the next Quartus fit.
+**Original M10K cost:** atlas was 64 tiles × 16 × 16 × 8 bits = 131 072
+bits. Single-port ROM packed ~13 M10Ks; duplicating it doubled that to ~26
+M10Ks. The later 128-tile atlas doubles this ROM cost again, so any fit fix
+should recover memory outside the raster/cache quality path first.
 
 **Risks:** both ROM copies hold byte-identical data because they share the same
 `.mif`, so even/odd lane lookups are coherent. Port B is now used by the

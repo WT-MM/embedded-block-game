@@ -21,7 +21,7 @@ from .protocol import (
 
 CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
-TEXTURE_TILE_COUNT = 64
+TEXTURE_TILE_COUNT = 128
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
 RECIP_LUT_SIZE = 1025
 RECIP_LUT_STEP = 64
@@ -342,8 +342,8 @@ def _k_rasterize_quad(
         one_over_w_0 = uv[6]
         one_over_w_dx = uv[7]
         one_over_w_dy = uv[8]
-        tile_offset = (tex_or_color & 0x3F) << 8
-        repeat_uv = 1 if (tex_or_color & 0x40) != 0 else 0
+        tile_offset = (tex_or_color & 0x7F) << 8
+        repeat_uv = 1 if (tex_or_color & TEX_REPEAT_UV) != 0 else 0
     else:
         u_over_w_0 = 0
         u_over_w_dx = 0
@@ -476,7 +476,7 @@ def load_texture_mif(path: str | Path) -> bytes:
     The MIF grammar we need to support is tiny:
 
         WIDTH  = 8;
-        DEPTH  = 16384;
+        DEPTH  = 32768;
         ADDRESS_RADIX = HEX;
         DATA_RADIX    = HEX;
         CONTENT BEGIN

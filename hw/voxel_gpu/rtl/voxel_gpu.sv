@@ -1420,13 +1420,13 @@ module voxel_gpu (
     wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_u_prod_o = $signed(pipe1_uw_q_o) * $signed(pipe1_w_q_o);
     wire signed [63:0] pipe1_v_prod_o = $signed(pipe1_vw_q_o) * $signed(pipe1_w_q_o);
-    wire tex0_repeat_uv = tex0_tex_or_color[6];
+    wire tex0_repeat_uv = tex0_tex_or_color[7];
     wire [3:0] tex0_tex_u = texture_coord(tex0_u_prod, tex0_repeat_uv);
     wire [3:0] tex0_tex_v = texture_coord(tex0_v_prod, tex0_repeat_uv);
     wire [14:0] tex0_tex_addr = tex0_textured ?
                                  {tex0_tex_or_color[6:0], tex0_tex_v, tex0_tex_u} :
                                  15'd0;
-    wire tex0_repeat_uv_o = tex0_tex_or_color_o[6];
+    wire tex0_repeat_uv_o = tex0_tex_or_color_o[7];
     wire [3:0] tex0_tex_u_o = texture_coord(tex0_u_prod_o, tex0_repeat_uv_o);
     wire [3:0] tex0_tex_v_o = texture_coord(tex0_v_prod_o, tex0_repeat_uv_o);
     wire [14:0] tex0_tex_addr_o = tex0_textured_o ?
@@ -1994,6 +1994,10 @@ module voxel_gpu (
      * Quartus infer a ramstyle="M10K" array -- the short version is
      * that inference can silently pick 2-cycle latency, producing
      * colored 1-pixel fringes at every quad boundary.
+     *
+     * Textured descriptors use tex_or_color[6:0] as the 128-tile atlas
+     * index. tex_or_color[7] is QUAD_TEX_REPEAT_UV and only controls
+     * coordinate wrapping in texture_coord().
      */
     voxel_texture_rom #(
         .DATA_W(8),

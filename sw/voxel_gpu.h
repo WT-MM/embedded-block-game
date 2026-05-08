@@ -209,11 +209,11 @@ struct voxel_perf_counters_v2 {
 #define QUAD_ALPHA_50        QUAD_ALPHA_LEVEL(2)
 #define QUAD_ALPHA_25        QUAD_ALPHA_LEVEL(3)
 
-/* Textured descriptors use tex_or_color[5:0] as the tile id. Bit 6 asks
+/* Textured descriptors use tex_or_color[6:0] as the tile id. Bit 7 asks
  * the texture unit to wrap U/V every 16 texels, including slightly negative
  * fixed-point coordinates from perspective interpolation. This lets software
  * merge same-tile block faces without stretching their textures. */
-#define QUAD_TEX_REPEAT_UV   (1u << 6)
+#define QUAD_TEX_REPEAT_UV   (1u << 7)
 
 struct edge_coef {
 	__s32 A, B, C;   /* signed Q24.8 */
@@ -225,7 +225,7 @@ struct quad_desc {
 	struct edge_coef edges[4];           /* 4 × 12 = 48 B */
 	__u16 z0;                            /* Q1.15 unsigned, depth at (x_min, y_min) */
 	__s16 dz_dx, dz_dy;                  /* Q1.15 signed depth gradients */
-	__u8  tex_or_color;                  /* TEX=1: tile id (0-63); TEX=0: palette idx */
+	__u8  tex_or_color;                  /* TEX=1: tile id (0-127); TEX=0: palette idx */
 	__u8  flags;                         /* QUAD_FLAG_* */
 } __attribute__((packed));
 

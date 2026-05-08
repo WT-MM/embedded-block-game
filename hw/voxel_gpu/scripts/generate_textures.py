@@ -780,7 +780,7 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8
 
     Layout:
       * all TILE_COUNT tiles are shown in row-major atlas order,
-      * `atlas_cols` controls grid width (defaults to 8 for 64 tiles),
+      * `atlas_cols` controls grid width (defaults to 8 columns),
       * each 16x16 tile is upscaled by `scale` with nearest-neighbour,
       * `gap` pixels of background colour separate the cells.
 

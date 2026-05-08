@@ -30,8 +30,9 @@
 // here is to instantiate two single-port (operation_mode = "ROM")
 // altsyncrams that share the same `.mif` init file. Each instance
 // is a normal 1-cycle ROM; together they serve two independent reads
-// per cycle. M10K cost is 2x the unbanked atlas, but the atlas is
-// small (~13 M10Ks each) and the fitter has plenty of free M10Ks.
+// per cycle. M10K cost is 2x the unbanked atlas, so textured descriptors
+// reserve tex_or_color[6:0] for the 128-tile index and keep
+// tex_or_color[7] as the repeat-UV flag in the caller.
 //
 // The atlas is initialised from a `.mif` file (see hw/voxel_gpu/scripts/generate_textures.py)
 // because altsyncram's init_file does not accept Verilog $readmemh-style

@@ -64,7 +64,7 @@ typedef enum {
     TEX_TILE_MOON = 51,
     TEX_TILE_STARS = 52,
     TEX_TILE_CROSSHAIR = 63,
-    NUM_TEXTURE_TILES = 64
+    NUM_TEXTURE_TILES = 128
 } TextureTileID;
 
 typedef struct {

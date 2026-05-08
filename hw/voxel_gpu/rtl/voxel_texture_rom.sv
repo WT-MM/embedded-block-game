@@ -40,8 +40,8 @@
 // ====================================================================
 module voxel_texture_rom #(
     parameter int DATA_W = 8,
-    parameter int ADDR_W = 14,
-    parameter int DEPTH  = 16384,
+    parameter int ADDR_W = 15,
+    parameter int DEPTH  = 32768,
     parameter      INIT_FILE = "voxel_gpu/assets/textures.mif"
 ) (
     input  logic                clk,

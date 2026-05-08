@@ -8,7 +8,7 @@ import sys
 # have PIL installed.
 
 TILE_SIZE = 16
-TILE_COUNT = 64
+TILE_COUNT = 128
 TEXELS_PER_TILE = TILE_SIZE * TILE_SIZE
 ATLAS_BYTES = TILE_COUNT * TEXELS_PER_TILE
 
@@ -338,10 +338,26 @@ def noise(x: int, y: int, seed: int) -> int:
 _SOURCE_TILE_CACHE: dict[int, list[tuple[int, int, int, int]]] = {}
 
 
-def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int]) -> int:
+def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int], x: int, y: int) -> int:
     r, g, b, a = rgba
     if a < 96:
         return PAL_TRANSPARENT
+
+    if tile == TEX_TILE_GRASS_TOP:
+        # Darker, tighter 2-tone mapping: avoids bright highlights and keeps
+        # the contrast range closer to vanilla grass top in this palette.
+        bayer4 = (
+            (0, 8, 2, 10),
+            (12, 4, 14, 6),
+            (3, 11, 1, 9),
+            (15, 7, 13, 5),
+        )
+        gray = (r + g + b) // 3
+        dither = bayer4[y & 3][x & 3] - 8
+        gray = max(0, min(255, gray + dither * 2))
+        if gray < 148:
+            return PAL_GRASS_DARK
+        return PAL_GRASS_SIDE
 
     if tile == TEX_TILE_GLASS:
         # Vanilla glass has very low alpha body with bright streaks. Generic
@@ -401,7 +417,7 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
         return None
 
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw
     except ImportError:
         return None
 
@@ -424,7 +440,7 @@ def source_texel(tile: int, x: int, y: int) -> int | None:
     if pixels is None:
         return None
     rgba = pixels[y * TILE_SIZE + x]
-    return _quantize_to_palette(tile, rgba)
+    return _quantize_to_palette(tile, rgba, x, y)
 
 
 def grass_top(x: int, y: int) -> int:
@@ -773,7 +789,7 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8
     is impossible to miss.
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw
     except ImportError:
         print(
             "skip preview: Pillow not installed (pip install Pillow) -- "
@@ -791,6 +807,7 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8
     missing = (0xff, 0x00, 0xff)
 
     image = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(image)
     pixels = image.load()
 
     def paint(tile: int, cell_x: int, cell_y: int) -> None:
@@ -811,6 +828,14 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8
         cell_x = gap + col_index * (cell + gap)
         cell_y = gap + row_index * (cell + gap)
         paint(tile, cell_x, cell_y)
+
+        # Label every atlas cell with tile index for debugging.
+        # This keeps "is grass top wired?" questions answerable from the PNG.
+        label = f"{tile:02d}"
+        tx = cell_x + 2
+        ty = cell_y + 2
+        draw.rectangle((tx - 1, ty - 1, tx + 16, ty + 9), fill=(0x00, 0x00, 0x00))
+        draw.text((tx, ty), label, fill=(0xff, 0xff, 0xff))
 
     image.save(path, format="PNG", optimize=True)
     return True

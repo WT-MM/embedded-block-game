@@ -22,7 +22,7 @@
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
 #define DEFAULT_NEAR_CHUNK_RADIUS 1
-#define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define STREAM_CHUNKS_PER_FRAME_MAX 64
 #define WORLD_META_VERSION 1u
 #define WORLD_CHUNK_VERSION 1u
@@ -1699,8 +1699,8 @@ static void face_cell_to_block(BlockFace face, int layer, int u, int v,
         break;
     case FACE_FRONT:
     case FACE_BACK:
-        *x = v;
-        *y = u;
+        *x = u;
+        *y = v;
         *z = layer;
         break;
     default:
@@ -1729,8 +1729,8 @@ static void face_grid_dims(BlockFace face, int *layers, int *width, int *height)
     case FACE_FRONT:
     case FACE_BACK:
         *layers = WORLD_CHUNK_SIZE;
-        *width = WORLD_CHUNK_HEIGHT; /* u axis: y */
-        *height = WORLD_CHUNK_SIZE;  /* v axis: x */
+        *width = WORLD_CHUNK_SIZE;   /* u axis: x */
+        *height = WORLD_CHUNK_HEIGHT;/* v axis: y */
         break;
     default:
         *layers = 0;

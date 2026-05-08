@@ -31,13 +31,13 @@
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 9
-#define DEFAULT_STREAM_CHUNKS_PER_FRAME 1
+#define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define MAX_STREAM_CHUNKS_PER_FRAME 64
 #define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
 #define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
-#define HOTBAR_SLOT_COUNT 7
+#define HOTBAR_SLOT_COUNT 8
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -61,6 +61,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_PLANKS,
     BLOCK_GLASS,
     BLOCK_LAMP,
+    BLOCK_LEAVES,
 };
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
@@ -71,6 +72,7 @@ static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
     { 0x7, 0x4, 0x7, 0x1, 0x7 }, /* 5 */
     { 0x7, 0x4, 0x7, 0x5, 0x7 }, /* 6 */
     { 0x7, 0x1, 0x1, 0x1, 0x1 }, /* 7 */
+    { 0x7, 0x5, 0x7, 0x5, 0x7 }, /* 8 */
 };
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -587,7 +589,7 @@ int main(void)
     pause_settings.near_chunk_radius = world_near_chunk_radius(&world);
     pause_settings.near_chunk_radius_max = world_render_distance(&world);
     pause_settings.render_distance = world_render_distance(&world);
-    pause_settings.render_distance_max = render_distance_chunks;
+    pause_settings.render_distance_max = MAX_WORLD_RENDER_DISTANCE_CHUNKS;
 
     bool mesh_worker_running = mesh_worker_start(&world);
     bool gen_worker_running = gen_worker_start(&world);

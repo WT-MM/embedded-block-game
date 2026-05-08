@@ -1373,15 +1373,15 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
         break;
     case FACE_FRONT:
         out[0] = (Vec3){ x,     y,     z };
-        out[1] = (Vec3){ x,     y + u, z };
-        out[2] = (Vec3){ x + v, y + u, z };
-        out[3] = (Vec3){ x + v, y,     z };
+        out[1] = (Vec3){ x + u, y,     z };
+        out[2] = (Vec3){ x + u, y + v, z };
+        out[3] = (Vec3){ x,     y + v, z };
         break;
     case FACE_BACK:
-        out[0] = (Vec3){ x + v, y,     z + 1 };
-        out[1] = (Vec3){ x + v, y + u, z + 1 };
-        out[2] = (Vec3){ x,     y + u, z + 1 };
-        out[3] = (Vec3){ x,     y,     z + 1 };
+        out[0] = (Vec3){ x + u, y,     z + 1 };
+        out[1] = (Vec3){ x,     y,     z + 1 };
+        out[2] = (Vec3){ x,     y + v, z + 1 };
+        out[3] = (Vec3){ x + u, y + v, z + 1 };
         break;
     default:
         for (int i = 0; i < 4; i++)
@@ -1438,8 +1438,8 @@ static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
                 break;
             case FACE_FRONT:
             case FACE_BACK:
-                unit.y += (float)du;
-                unit.x += (float)dv;
+                unit.x += (float)du;
+                unit.y += (float)dv;
                 break;
             default:
                 break;
@@ -2428,7 +2428,7 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
 }
 
 /* Project a world-space vertical line segment to screen and draw it as a
- * 1-pixel-wide rect. Returns true if visible. */
+ * 1-pixel-wide line using a screen-space quad. Returns true if visible. */
 static bool draw_projected_line(RenderContext *ctx,
                                 float wx0, float wy0, float wz0,
                                 float wx1, float wy1, float wz1,
@@ -2443,19 +2443,38 @@ static bool draw_projected_line(RenderContext *ctx,
         !project_camera_vertex(ctx, &cam1, &scr1))
         return false;
 
-    /* Thin vertical or near-vertical line: draw a 1px-wide rect. */
-    float min_x = fminf(scr0.x, scr1.x) - 0.5f;
-    float max_x = fmaxf(scr0.x, scr1.x) + 0.5f;
-    float min_y = fminf(scr0.y, scr1.y);
-    float max_y = fmaxf(scr0.y, scr1.y);
+    float dx = scr1.x - scr0.x;
+    float dy = scr1.y - scr0.y;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.1f) return false;
 
-    /* Cull off-screen lines. */
-    if (max_x < 0.0f || min_x > SCREEN_WIDTH ||
-        max_y < 0.0f || min_y > SCREEN_HEIGHT)
-        return false;
+    /* Normal vector to the line in screen space */
+    float nx = -dy / len;
+    float ny = dx / len;
+    
+    /* 0.5px half-width for a 1-pixel wide line */
+    float hw = 0.5f;
+    nx *= hw;
+    ny *= hw;
 
-    return renderer_fill_rect(ctx, min_x, min_y, max_x, max_y,
-                              palette_index, 0);
+    /* Build a quad connecting the two points, 1px thick.
+     * Force z=0.0f (nearest possible depth) so the debug lines
+     * draw cleanly over all scene blocks. */
+    RenderQuad quad = {0};
+    quad.color_tint = palette_index;
+    quad.flags = 0;
+    
+    float inv_w0 = scr0.one_over_w;
+    float inv_w1 = scr1.one_over_w;
+    
+    quad.vertices[0] = (Vertex2D){ scr0.x - nx, scr0.y - ny, 0.0f, 0.0f, inv_w0, 0.0f };
+    quad.vertices[1] = (Vertex2D){ scr0.x + nx, scr0.y + ny, 0.0f, 0.0f, inv_w0, 0.0f };
+    quad.vertices[2] = (Vertex2D){ scr1.x + nx, scr1.y + ny, 0.0f, 0.0f, inv_w1, 0.0f };
+    quad.vertices[3] = (Vertex2D){ scr1.x - nx, scr1.y - ny, 0.0f, 0.0f, inv_w1, 0.0f };
+
+    if (projected_quad_fully_inside_viewport(quad.vertices))
+        return stage_projected_quad_no_clip(ctx, &quad);
+    return renderer_push_quad(ctx, &quad);
 }
 
 int renderer_draw_chunk_borders(RenderContext *ctx,
@@ -2477,9 +2496,9 @@ int renderer_draw_chunk_borders(RenderContext *ctx,
     for (int dx = -render_distance; dx <= render_distance + 1; dx++) {
         float wx = (float)((player_cx + dx) * WORLD_CHUNK_SIZE);
         /* Highlight the player's chunk borders in yellow (palette 8),
-         * other chunk borders in grey (palette 14). */
+         * other chunk borders in white (palette 5). */
         bool is_player_edge = (dx == 0 || dx == 1);
-        uint8_t color = is_player_edge ? 8 : 14;
+        uint8_t color = is_player_edge ? 8 : 5;
 
         for (int dz = -render_distance; dz <= render_distance + 1; dz++) {
             float wz = (float)((player_cz + dz) * WORLD_CHUNK_SIZE);

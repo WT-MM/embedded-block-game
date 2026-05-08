@@ -89,7 +89,7 @@ module voxel_gpu (
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 16;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
-    localparam int TEXTURE_BYTES   = 64 * 16 * 16;
+    localparam int TEXTURE_BYTES   = 128 * 16 * 16;
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 64;
     localparam int READ_BURST_WORDS = 64;
@@ -391,7 +391,7 @@ module voxel_gpu (
     logic  [9:0] pipe2_x;
     logic  [8:0] pipe2_y;
     logic [31:0] pipe2_w_q;
-    logic [13:0] pipe2_tex_addr;
+    logic [14:0] pipe2_tex_addr;
     logic        draw_pipe_valid;
     logic        draw_pipe_inside;
     logic        draw_pipe_ztest;
@@ -618,7 +618,7 @@ module voxel_gpu (
     logic  [9:0] pipe2_x_o;
     logic  [8:0] pipe2_y_o;
     logic [31:0] pipe2_w_q_o;
-    logic [13:0] pipe2_tex_addr_o;
+    logic [14:0] pipe2_tex_addr_o;
     logic        draw_pipe_valid_o;
     logic        draw_pipe_inside_o;
     logic        draw_pipe_ztest_o;
@@ -1423,15 +1423,15 @@ module voxel_gpu (
     wire tex0_repeat_uv = tex0_tex_or_color[6];
     wire [3:0] tex0_tex_u = texture_coord(tex0_u_prod, tex0_repeat_uv);
     wire [3:0] tex0_tex_v = texture_coord(tex0_v_prod, tex0_repeat_uv);
-    wire [13:0] tex0_tex_addr = tex0_textured ?
-                                 {tex0_tex_or_color[5:0], tex0_tex_v, tex0_tex_u} :
-                                 14'd0;
+    wire [14:0] tex0_tex_addr = tex0_textured ?
+                                 {tex0_tex_or_color[6:0], tex0_tex_v, tex0_tex_u} :
+                                 15'd0;
     wire tex0_repeat_uv_o = tex0_tex_or_color_o[6];
     wire [3:0] tex0_tex_u_o = texture_coord(tex0_u_prod_o, tex0_repeat_uv_o);
     wire [3:0] tex0_tex_v_o = texture_coord(tex0_v_prod_o, tex0_repeat_uv_o);
-    wire [13:0] tex0_tex_addr_o = tex0_textured_o ?
-                                   {tex0_tex_or_color_o[5:0], tex0_tex_v_o, tex0_tex_u_o} :
-                                   14'd0;
+    wire [14:0] tex0_tex_addr_o = tex0_textured_o ?
+                                   {tex0_tex_or_color_o[6:0], tex0_tex_v_o, tex0_tex_u_o} :
+                                   15'd0;
     wire  [7:0] draw_pipe_raw_color = draw_pipe_textured ? tex_rd_data : draw_pipe_tex_or_color;
     wire  [7:0] draw_pipe_color = apply_light_bank(draw_pipe_raw_color, draw_pipe_light_bank);
     wire  [7:0] draw_pipe_raw_color_o =
@@ -1988,7 +1988,7 @@ module voxel_gpu (
     assign z_B_rd_data  = z_B_rd_sel_q  ? z_B_o_rd_data  : z_B_e_rd_data;
 
     /*
-     * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 64 tiles *
+     * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 128 tiles *
      * 16 * 16 = 16384 entries (14-bit address). See voxel_texture_rom
      * for why we instantiate altsyncram directly instead of letting
      * Quartus infer a ramstyle="M10K" array -- the short version is
@@ -2209,7 +2209,7 @@ module voxel_gpu (
         pipe2_x          = 10'd0;
         pipe2_y          = 9'd0;
         pipe2_w_q        = 32'd0;
-        pipe2_tex_addr   = 14'd0;
+        pipe2_tex_addr   = 15'd0;
         draw_pipe_valid  = 1'b0;
         draw_pipe_inside = 1'b0;
         draw_pipe_ztest  = 1'b0;
@@ -2873,7 +2873,7 @@ module voxel_gpu (
             pipe2_x          <= 10'd0;
             pipe2_y          <= 9'd0;
             pipe2_w_q        <= 32'd0;
-            pipe2_tex_addr   <= 14'd0;
+            pipe2_tex_addr   <= 15'd0;
             draw_pipe_valid  <= 1'b0;
             draw_pipe_inside <= 1'b0;
             draw_pipe_ztest  <= 1'b0;

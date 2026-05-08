@@ -23,6 +23,7 @@ typedef enum {
     BLOCK_GLASS,
     BLOCK_LAMP,
     BLOCK_PLANKS,
+    BLOCK_LEAVES,
     NUM_BLOCK_TYPES
 } BlockID;
 

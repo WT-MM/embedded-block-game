@@ -88,7 +88,7 @@ typedef int32_t  __s32;
 #define VOXEL_RENDER_WIDTH      640u
 #define VOXEL_RENDER_HEIGHT     480u
 #define VOXEL_RENDER_STRIDE     (VOXEL_RENDER_WIDTH * 2u) /* RGB565 bytes */
-#define VOXEL_BAND_CACHE_HEIGHT 64u
+#define VOXEL_BAND_CACHE_HEIGHT 60u
 #define VOXEL_BAND_COUNT        ((VOXEL_RENDER_HEIGHT + VOXEL_BAND_CACHE_HEIGHT - 1u) / \
                                  VOXEL_BAND_CACHE_HEIGHT)
 

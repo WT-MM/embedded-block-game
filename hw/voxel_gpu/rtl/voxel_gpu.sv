@@ -82,7 +82,7 @@ module voxel_gpu (
     localparam int FB_WIDTH       = 640;
     localparam int FB_HEIGHT      = 480;
     localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
-    localparam int BAND_HEIGHT    = 64;
+    localparam int BAND_HEIGHT    = 60;
     localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
     localparam int BAND_COUNT     = 8;
     localparam int FIFO_DEPTH     = 2048;
@@ -1618,17 +1618,17 @@ module voxel_gpu (
         logic [9:0]  band_end;
         logic [15:0] visible_rows;
         begin
-            /* Use 10-bit row math: the final band is 448..479, and 448+64
+            /* Use 10-bit row math: the final band is 420..479, and 420+60
              * wraps if this calculation is accidentally kept at 9 bits. */
             base_row = {1'b0, band_base_row(band)};
-            band_end = base_row + 10'd64;
+            band_end = base_row + 10'd60;
             if (base_row >= 10'd480)
                 band_pixel_count = 16'd0;
             else if (band_end > 10'd480) begin
                 visible_rows = {6'd0, (10'd480 - base_row)};
                 band_pixel_count = visible_rows * 16'd640;
             end else begin
-                band_pixel_count = 16'd40960;
+                band_pixel_count = 16'd38400;
             end
         end
     endfunction
@@ -1650,8 +1650,8 @@ module voxel_gpu (
 
     function automatic [8:0] band_base_row(input logic [2:0] band);
         begin
-            /* band * 64 == band << 6 */
-            band_base_row = {band, 6'd0};
+            /* band * 60 */
+            band_base_row = band * 9'd60;
         end
     endfunction
 

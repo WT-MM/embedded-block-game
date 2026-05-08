@@ -98,7 +98,7 @@
  </module>
  <module
    name="fpga_sdram"
-   kind="altera_avalon_new_sdram_controller"
+   kind="altera_avalon_sdram_controller"
    version="19.1"
    enabled="1">
   <parameter name="TAC" value="5.4" />

@@ -342,6 +342,21 @@ static const CommandItemName COMMAND_ITEM_NAMES[] = {
     { "mushroom_stew", ITEM_MUSHROOM_STEW },
     { "stew", ITEM_MUSHROOM_STEW },
     { "coal", ITEM_COAL },
+    { "iron_ingot", ITEM_IRON_INGOT },
+    { "gold_ingot", ITEM_GOLD_INGOT },
+    { "diamond", ITEM_DIAMOND },
+    { "wood_pickaxe", ITEM_WOOD_PICKAXE },
+    { "wooden_pickaxe", ITEM_WOOD_PICKAXE },
+    { "stone_pickaxe", ITEM_STONE_PICKAXE },
+    { "iron_pickaxe", ITEM_IRON_PICKAXE },
+    { "gold_pickaxe", ITEM_GOLD_PICKAXE },
+    { "diamond_pickaxe", ITEM_DIAMOND_PICKAXE },
+    { "wood_axe", ITEM_WOOD_AXE },
+    { "wooden_axe", ITEM_WOOD_AXE },
+    { "stone_axe", ITEM_STONE_AXE },
+    { "iron_axe", ITEM_IRON_AXE },
+    { "gold_axe", ITEM_GOLD_AXE },
+    { "diamond_axe", ITEM_DIAMOND_AXE },
 };
 
 static bool parse_item_value(const CommandToken *token, ItemID *out)

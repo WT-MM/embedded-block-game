@@ -83,7 +83,7 @@ static void test_table_only_block_recipes(void)
     survival_inventory_init(&inv);
     survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
     for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++)
-        inv.craft[i] = (ItemStack){ (ItemID)BLOCK_DIAMOND_ORE, 1 };
+        inv.craft[i] = (ItemStack){ ITEM_DIAMOND, 1 };
     survival_inventory_refresh_craft_output(&inv);
     assert(inv.craft_output.item == (ItemID)BLOCK_DIAMOND_BLOCK);
     assert(inv.craft_output.count == 1);
@@ -174,11 +174,45 @@ static void test_furnace_torch_and_coal(void)
     assert(survival_inventory_count_item(&inv, ITEM_COAL) == 1);
     assert(!survival_inventory_remove_item(&inv, ITEM_COAL, 2));
     assert(survival_drop_for_block(BLOCK_COAL_ORE) == ITEM_COAL);
+    assert(survival_drop_for_block(BLOCK_DIAMOND_ORE) == ITEM_DIAMOND);
     assert(item_is_furnace_fuel(ITEM_COAL));
     assert(item_is_furnace_fuel((ItemID)BLOCK_WOOD));
     assert(item_is_furnace_fuel((ItemID)BLOCK_PLANKS));
     assert(item_is_furnace_fuel(ITEM_STICK));
     assert(!item_is_furnace_fuel((ItemID)BLOCK_SAND));
+    assert(item_furnace_smelt_output((ItemID)BLOCK_SAND) ==
+           (ItemID)BLOCK_GLASS);
+    assert(item_furnace_smelt_output((ItemID)BLOCK_IRON_ORE) ==
+           ITEM_IRON_INGOT);
+    assert(item_furnace_smelt_output((ItemID)BLOCK_GOLD_ORE) ==
+           ITEM_GOLD_INGOT);
+
+    survival_inventory_init(&inv);
+    survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
+    inv.craft[0] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    inv.craft[1] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    inv.craft[2] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    inv.craft[4] = (ItemStack){ ITEM_STICK, 1 };
+    inv.craft[7] = (ItemStack){ ITEM_STICK, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == ITEM_IRON_PICKAXE);
+
+    survival_inventory_init(&inv);
+    survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
+    inv.craft[0] = (ItemStack){ ITEM_DIAMOND, 1 };
+    inv.craft[1] = (ItemStack){ ITEM_DIAMOND, 1 };
+    inv.craft[3] = (ItemStack){ ITEM_DIAMOND, 1 };
+    inv.craft[4] = (ItemStack){ ITEM_STICK, 1 };
+    inv.craft[7] = (ItemStack){ ITEM_STICK, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == ITEM_DIAMOND_AXE);
+
+    assert(item_tool_kind(ITEM_STONE_PICKAXE) == ITEM_TOOL_PICKAXE);
+    assert(item_tool_kind(ITEM_WOOD_AXE) == ITEM_TOOL_AXE);
+    assert(item_tool_tier(ITEM_DIAMOND_PICKAXE) == ITEM_TOOL_TIER_DIAMOND);
+    assert(item_break_seconds(ITEM_IRON_PICKAXE, BLOCK_STONE, 2.4f) < 2.4f);
+    assert(item_break_seconds(ITEM_IRON_AXE, BLOCK_WOOD, 1.2f) < 1.2f);
+    assert(item_break_seconds(ITEM_IRON_AXE, BLOCK_STONE, 2.4f) == 2.4f);
 }
 
 static void test_added_item_textures(void)
@@ -190,6 +224,20 @@ static void test_added_item_textures(void)
     assert(item_texture_id((ItemID)BLOCK_FURNACE) == TEX_TILE_FURNACE_FRONT);
     assert(item_texture_id((ItemID)BLOCK_TORCH) == TEX_TILE_TORCH);
     assert(item_texture_id(ITEM_COAL) == TEX_TILE_COAL);
+    assert(item_texture_id(ITEM_IRON_INGOT) == TEX_TILE_IRON_INGOT);
+    assert(item_texture_id(ITEM_GOLD_INGOT) == TEX_TILE_GOLD_INGOT);
+    assert(item_texture_id(ITEM_DIAMOND) == TEX_TILE_DIAMOND);
+    assert(item_texture_id(ITEM_WOOD_PICKAXE) == TEX_TILE_WOOD_PICKAXE);
+    assert(item_texture_id(ITEM_STONE_PICKAXE) == TEX_TILE_STONE_PICKAXE);
+    assert(item_texture_id(ITEM_IRON_PICKAXE) == TEX_TILE_IRON_PICKAXE);
+    assert(item_texture_id(ITEM_GOLD_PICKAXE) == TEX_TILE_GOLD_PICKAXE);
+    assert(item_texture_id(ITEM_DIAMOND_PICKAXE) ==
+           TEX_TILE_DIAMOND_PICKAXE);
+    assert(item_texture_id(ITEM_WOOD_AXE) == TEX_TILE_WOOD_AXE);
+    assert(item_texture_id(ITEM_STONE_AXE) == TEX_TILE_STONE_AXE);
+    assert(item_texture_id(ITEM_IRON_AXE) == TEX_TILE_IRON_AXE);
+    assert(item_texture_id(ITEM_GOLD_AXE) == TEX_TILE_GOLD_AXE);
+    assert(item_texture_id(ITEM_DIAMOND_AXE) == TEX_TILE_DIAMOND_AXE);
 }
 
 static void test_cursor_slot_clicks(void)

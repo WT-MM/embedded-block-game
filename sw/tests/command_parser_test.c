@@ -211,6 +211,10 @@ int main(void)
         return 1;
     if (expect_give("/give player mushroom-stew", ITEM_MUSHROOM_STEW, 1))
         return 1;
+    if (expect_give("/give iron_pickaxe", ITEM_IRON_PICKAXE, 1))
+        return 1;
+    if (expect_give("/give diamond-axe 2", ITEM_DIAMOND_AXE, 2))
+        return 1;
 
     printf("command_parser_test: ok\n");
     return 0;

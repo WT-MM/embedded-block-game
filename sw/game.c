@@ -72,7 +72,8 @@
 #define INVENTORY_CURSOR_MIN_Y 0.0f
 #define INVENTORY_CURSOR_SPEED 1.0f
 #define FURNACE_SMELT_SECONDS 0.75f
-#define FURNACE_MAX_ACTIVE_SMELTS 32
+#define FURNACE_MAX_STATES 32
+#define RECIPE_LOOKUP_RECIPES_PER_PAGE 2
 
 typedef struct {
     bool hit;
@@ -90,15 +91,31 @@ typedef struct {
     int index;
 } InventoryHit;
 
+typedef enum {
+    FURNACE_SLOT_NONE = 0,
+    FURNACE_SLOT_INPUT,
+    FURNACE_SLOT_FUEL,
+    FURNACE_SLOT_OUTPUT,
+    FURNACE_SLOT_STORAGE,
+} FurnaceSlotArea;
+
+typedef struct {
+    FurnaceSlotArea area;
+    int index;
+} FurnaceHit;
+
 typedef struct {
     bool active;
     int x;
     int y;
     int z;
+    ItemStack input;
+    ItemStack fuel;
+    ItemStack output;
+    bool smelting;
     float timer;
-    ItemID output;
-    ItemID fuel;
-} FurnaceSmelt;
+    ItemID smelt_output;
+} FurnaceState;
 
 typedef struct {
     float panel_x;
@@ -121,6 +138,29 @@ typedef struct {
     float hotbar_y;
     int craft_grid_dim;
 } SurvivalInventoryLayout;
+
+typedef struct {
+    float panel_x;
+    float panel_y;
+    float panel_w;
+    float panel_h;
+    float slot;
+    float gap;
+    float input_x;
+    float input_y;
+    float fuel_x;
+    float fuel_y;
+    float output_x;
+    float output_y;
+    float progress_x;
+    float progress_y;
+    float progress_w;
+    float progress_h;
+    float main_x;
+    float main_y;
+    float hotbar_x;
+    float hotbar_y;
+} FurnaceLayout;
 
 static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
     {
@@ -657,16 +697,24 @@ static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
     return true;
 }
 
-static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
+static bool try_break_targeted_block(VoxelWorld *world,
+                                     const Camera *cam,
+                                     BlockTarget *target_out,
+                                     BlockID *broken_block_out)
 {
     BlockTarget target = {0};
+    BlockID broken = BLOCK_AIR;
 
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
 
-    if (!break_block_target(world, &target, NULL))
+    if (!break_block_target(world, &target, &broken))
         return false;
 
+    if (target_out)
+        *target_out = target;
+    if (broken_block_out)
+        *broken_block_out = broken;
     return true;
 }
 
@@ -844,69 +892,406 @@ static bool try_toggle_targeted_door(VoxelWorld *world,
     return true;
 }
 
-static int furnace_smelt_find(const FurnaceSmelt smelts[],
+static int furnace_state_find(const FurnaceState furnaces[],
                               int x, int y, int z)
 {
-    if (!smelts)
+    if (!furnaces)
         return -1;
 
-    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
-        if (smelts[i].active &&
-            smelts[i].x == x &&
-            smelts[i].y == y &&
-            smelts[i].z == z)
+    for (int i = 0; i < FURNACE_MAX_STATES; i++) {
+        if (furnaces[i].active &&
+            furnaces[i].x == x &&
+            furnaces[i].y == y &&
+            furnaces[i].z == z)
             return i;
     }
 
     return -1;
 }
 
-static FurnaceSmelt *furnace_smelt_free_slot(FurnaceSmelt smelts[])
+static FurnaceState *furnace_state_free_slot(FurnaceState furnaces[])
 {
-    if (!smelts)
+    if (!furnaces)
         return NULL;
 
-    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
-        if (!smelts[i].active)
-            return &smelts[i];
+    for (int i = 0; i < FURNACE_MAX_STATES; i++) {
+        if (!furnaces[i].active)
+            return &furnaces[i];
     }
 
     return NULL;
 }
 
-static ItemID furnace_inventory_first_fuel(const SurvivalInventory *inventory)
+static FurnaceState *furnace_state_get_or_create(FurnaceState furnaces[],
+                                                 int x, int y, int z)
 {
-    static const ItemID fuels[] = {
-        ITEM_COAL,
-        (ItemID)BLOCK_WOOD,
-        (ItemID)BLOCK_PLANKS,
-        ITEM_STICK,
-    };
+    int index = furnace_state_find(furnaces, x, y, z);
+    FurnaceState *furnace;
 
-    if (!inventory)
-        return ITEM_NONE;
+    if (index >= 0)
+        return &furnaces[index];
 
-    for (int i = 0; i < (int)(sizeof(fuels) / sizeof(fuels[0])); i++) {
-        if (survival_inventory_count_item(inventory, fuels[i]) > 0)
-            return fuels[i];
-    }
+    furnace = furnace_state_free_slot(furnaces);
+    if (!furnace)
+        return NULL;
 
-    return ITEM_NONE;
+    memset(furnace, 0, sizeof(*furnace));
+    furnace->active = true;
+    furnace->x = x;
+    furnace->y = y;
+    furnace->z = z;
+    furnace->smelt_output = ITEM_NONE;
+    return furnace;
 }
 
-static bool try_start_targeted_furnace_smelt(VoxelWorld *world,
-                                             const Camera *cam,
-                                             SurvivalInventory *inventory,
-                                             FurnaceSmelt smelts[],
-                                             int hotbar_slot,
-                                             Chat *chat)
+static bool furnace_output_can_accept(const FurnaceState *furnace,
+                                      ItemID output)
+{
+    if (!furnace || output == ITEM_NONE)
+        return false;
+    if (item_stack_is_empty(&furnace->output))
+        return true;
+    return furnace->output.item == output &&
+           furnace->output.count < ITEM_STACK_MAX;
+}
+
+static bool furnace_slot_accepts_item(FurnaceSlotArea area, ItemID item)
+{
+    if (item == ITEM_NONE)
+        return false;
+
+    switch (area) {
+    case FURNACE_SLOT_INPUT:
+        return item_furnace_smelt_output(item) != ITEM_NONE;
+    case FURNACE_SLOT_FUEL:
+        return item_is_furnace_fuel(item);
+    case FURNACE_SLOT_STORAGE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void furnace_try_start(FurnaceState *furnace)
+{
+    ItemID output;
+
+    if (!furnace || !furnace->active || furnace->smelting)
+        return;
+    if (item_stack_is_empty(&furnace->input) ||
+        item_stack_is_empty(&furnace->fuel))
+        return;
+
+    output = item_furnace_smelt_output(furnace->input.item);
+    if (!furnace_output_can_accept(furnace, output))
+        return;
+
+    item_stack_remove(&furnace->input, 1);
+    item_stack_remove(&furnace->fuel, 1);
+    furnace->smelting = true;
+    furnace->timer = 0.0f;
+    furnace->smelt_output = output;
+}
+
+static void furnace_finish_smelt(FurnaceState *furnace)
+{
+    if (!furnace || !furnace->smelting)
+        return;
+    if (!furnace_output_can_accept(furnace, furnace->smelt_output))
+        return;
+
+    if (item_stack_add(&furnace->output, furnace->smelt_output, 1) == 0) {
+        furnace->smelting = false;
+        furnace->timer = 0.0f;
+        furnace->smelt_output = ITEM_NONE;
+        furnace_try_start(furnace);
+    }
+}
+
+static void furnace_states_update(FurnaceState furnaces[],
+                                  const VoxelWorld *world,
+                                  float dt)
+{
+    if (!furnaces || !world)
+        return;
+
+    if (dt < 0.0f)
+        dt = 0.0f;
+
+    for (int i = 0; i < FURNACE_MAX_STATES; i++) {
+        FurnaceState *furnace = &furnaces[i];
+
+        if (!furnace->active)
+            continue;
+
+        if (world_get_block(world, furnace->x, furnace->y, furnace->z) !=
+            BLOCK_FURNACE) {
+            memset(furnace, 0, sizeof(*furnace));
+            continue;
+        }
+
+        furnace_try_start(furnace);
+        if (!furnace->smelting)
+            continue;
+
+        furnace->timer += dt;
+        if (furnace->timer >= FURNACE_SMELT_SECONDS)
+            furnace_finish_smelt(furnace);
+    }
+}
+
+static void furnace_drop_stack(ItemEntityPool *drops,
+                               const Player *player,
+                               ItemStack *stack)
+{
+    if (!stack || item_stack_is_empty(stack))
+        return;
+
+    item_entity_spawn_item_near_player(drops, player, stack->item, stack->count);
+    item_stack_clear(stack);
+}
+
+static void furnace_state_drop_contents(FurnaceState furnaces[],
+                                        ItemEntityPool *drops,
+                                        const Player *player,
+                                        int x, int y, int z)
+{
+    int index = furnace_state_find(furnaces, x, y, z);
+    FurnaceState *furnace;
+
+    if (index < 0)
+        return;
+
+    furnace = &furnaces[index];
+    furnace_drop_stack(drops, player, &furnace->input);
+    furnace_drop_stack(drops, player, &furnace->fuel);
+    furnace_drop_stack(drops, player, &furnace->output);
+    memset(furnace, 0, sizeof(*furnace));
+}
+
+static bool furnace_state_is_empty(const FurnaceState *furnace)
+{
+    if (!furnace)
+        return true;
+
+    return !furnace->smelting &&
+           item_stack_is_empty(&furnace->input) &&
+           item_stack_is_empty(&furnace->fuel) &&
+           item_stack_is_empty(&furnace->output);
+}
+
+static void return_inventory_cursor_to_storage_or_drop(SurvivalInventory *inventory,
+                                                       ItemEntityPool *drops,
+                                                       const Player *player)
+{
+    int leftover;
+
+    if (!inventory || item_stack_is_empty(&inventory->cursor))
+        return;
+
+    leftover = survival_inventory_add_item(inventory,
+                                           inventory->cursor.item,
+                                           inventory->cursor.count);
+    if (leftover > 0)
+        item_entity_spawn_item_near_player(drops, player,
+                                           inventory->cursor.item,
+                                           leftover);
+    item_stack_clear(&inventory->cursor);
+}
+
+static void close_furnace_ui(SurvivalInventory *inventory,
+                             ItemEntityPool *drops,
+                             const Player *player,
+                             FurnaceState furnaces[],
+                             bool *furnace_open,
+                             int *open_furnace_index)
+{
+    int index = open_furnace_index ? *open_furnace_index : -1;
+
+    return_inventory_cursor_to_storage_or_drop(inventory, drops, player);
+    if (furnaces && index >= 0 && index < FURNACE_MAX_STATES &&
+        furnace_state_is_empty(&furnaces[index]))
+        memset(&furnaces[index], 0, sizeof(furnaces[index]));
+    if (furnace_open)
+        *furnace_open = false;
+    if (open_furnace_index)
+        *open_furnace_index = -1;
+}
+
+static bool furnace_take_output(SurvivalInventory *inventory,
+                                FurnaceState *furnace)
+{
+    int remaining;
+    int moved;
+
+    if (!inventory || !furnace || item_stack_is_empty(&furnace->output))
+        return false;
+
+    if (item_stack_is_empty(&inventory->cursor)) {
+        inventory->cursor = furnace->output;
+        item_stack_clear(&furnace->output);
+        furnace_try_start(furnace);
+        return true;
+    }
+
+    if (inventory->cursor.item != furnace->output.item ||
+        inventory->cursor.count >= ITEM_STACK_MAX)
+        return false;
+
+    remaining = item_stack_add(&inventory->cursor,
+                               furnace->output.item,
+                               furnace->output.count);
+    moved = (int)furnace->output.count - remaining;
+    if (moved <= 0)
+        return false;
+
+    item_stack_remove(&furnace->output, moved);
+    furnace_try_start(furnace);
+    return true;
+}
+
+static ItemStack *furnace_stack_for_area(FurnaceState *furnace,
+                                         FurnaceSlotArea area)
+{
+    if (!furnace)
+        return NULL;
+
+    switch (area) {
+    case FURNACE_SLOT_INPUT:
+        return &furnace->input;
+    case FURNACE_SLOT_FUEL:
+        return &furnace->fuel;
+    default:
+        return NULL;
+    }
+}
+
+static bool furnace_click_stack_left(SurvivalInventory *inventory,
+                                     ItemStack *slot,
+                                     FurnaceSlotArea area)
+{
+    if (!inventory || !slot)
+        return false;
+
+    if (item_stack_is_empty(&inventory->cursor)) {
+        if (item_stack_is_empty(slot))
+            return false;
+
+        inventory->cursor = *slot;
+        item_stack_clear(slot);
+        return true;
+    }
+
+    if (!furnace_slot_accepts_item(area, inventory->cursor.item))
+        return false;
+
+    if (item_stack_is_empty(slot)) {
+        *slot = inventory->cursor;
+        item_stack_clear(&inventory->cursor);
+        return true;
+    }
+
+    if (slot->item == inventory->cursor.item &&
+        slot->count < ITEM_STACK_MAX) {
+        int remaining = item_stack_add(slot,
+                                       inventory->cursor.item,
+                                       inventory->cursor.count);
+
+        inventory->cursor.count = (uint8_t)remaining;
+        if (remaining == 0)
+            item_stack_clear(&inventory->cursor);
+        return true;
+    }
+
+    {
+        ItemStack tmp = *slot;
+
+        *slot = inventory->cursor;
+        inventory->cursor = tmp;
+    }
+    return true;
+}
+
+static bool furnace_click_stack_right(SurvivalInventory *inventory,
+                                      ItemStack *slot,
+                                      FurnaceSlotArea area)
+{
+    if (!inventory || !slot)
+        return false;
+
+    if (item_stack_is_empty(&inventory->cursor)) {
+        int take;
+
+        if (item_stack_is_empty(slot))
+            return false;
+
+        take = ((int)slot->count + 1) / 2;
+        inventory->cursor.item = slot->item;
+        inventory->cursor.count = 0;
+        item_stack_add(&inventory->cursor, slot->item, take);
+        item_stack_remove(slot, take);
+        return true;
+    }
+
+    if (!furnace_slot_accepts_item(area, inventory->cursor.item))
+        return false;
+
+    if (item_stack_is_empty(slot)) {
+        slot->item = inventory->cursor.item;
+        slot->count = 1;
+        item_stack_remove(&inventory->cursor, 1);
+        return true;
+    }
+
+    if (slot->item == inventory->cursor.item &&
+        slot->count < ITEM_STACK_MAX) {
+        item_stack_add(slot, inventory->cursor.item, 1);
+        item_stack_remove(&inventory->cursor, 1);
+        return true;
+    }
+
+    return false;
+}
+
+static bool furnace_click_slot(SurvivalInventory *inventory,
+                               FurnaceState *furnace,
+                               FurnaceSlotArea area,
+                               bool right_click)
+{
+    ItemStack *slot;
+    bool changed;
+
+    if (!inventory || !furnace)
+        return false;
+
+    if (area == FURNACE_SLOT_OUTPUT)
+        return furnace_take_output(inventory, furnace);
+
+    slot = furnace_stack_for_area(furnace, area);
+    if (!slot)
+        return false;
+
+    changed = right_click ?
+        furnace_click_stack_right(inventory, slot, area) :
+        furnace_click_stack_left(inventory, slot, area);
+    if (changed)
+        furnace_try_start(furnace);
+    return changed;
+}
+
+static bool try_open_targeted_furnace(const VoxelWorld *world,
+                                      const Camera *cam,
+                                      FurnaceState furnaces[],
+                                      bool *furnace_open,
+                                      int *open_furnace_index,
+                                      float *cursor_x,
+                                      float *cursor_y,
+                                      Chat *chat)
 {
     BlockTarget target = {0};
-    const ItemStack *held_stack;
-    FurnaceSmelt *smelt;
-    ItemID fuel;
+    FurnaceState *furnace;
 
-    if (!world || !cam || !inventory)
+    if (!world || !cam || !furnaces || !furnace_open)
         return false;
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
@@ -915,117 +1300,45 @@ static bool try_start_targeted_furnace_smelt(VoxelWorld *world,
             BLOCK_FURNACE)
         return false;
 
-    held_stack = survival_inventory_hotbar_stack(inventory, hotbar_slot);
-    if (item_stack_is_empty(held_stack)) {
+    furnace = furnace_state_get_or_create(furnaces,
+                                          target.hit_x,
+                                          target.hit_y,
+                                          target.hit_z);
+    if (!furnace) {
         if (chat)
-            chat_log(chat, "furnace: hold sand to smelt glass");
-        return true;
-    }
-    if (held_stack->item != (ItemID)BLOCK_SAND) {
-        if (!item_is_placeable_block(held_stack->item) &&
-            item_is_furnace_fuel(held_stack->item) && chat)
-            chat_log(chat, "furnace: hold sand to smelt glass");
-        return !item_is_placeable_block(held_stack->item) &&
-               item_is_furnace_fuel(held_stack->item);
-    }
-
-    if (furnace_smelt_find(smelts,
-                           target.hit_x, target.hit_y, target.hit_z) >= 0) {
-        if (chat)
-            chat_log(chat, "furnace is already smelting");
+            chat_log(chat, "furnace storage is full");
         return true;
     }
 
-    smelt = furnace_smelt_free_slot(smelts);
-    if (!smelt) {
-        if (chat)
-            chat_log(chat, "furnace queue is full");
-        return true;
-    }
-
-    fuel = furnace_inventory_first_fuel(inventory);
-    if (fuel == ITEM_NONE) {
-        if (chat)
-            chat_log(chat, "furnace: needs coal, wood, planks, or sticks");
-        return true;
-    }
-
-    if (!survival_inventory_remove_storage(inventory, hotbar_slot, 1))
-        return true;
-    if (!survival_inventory_remove_item(inventory, fuel, 1))
-        return true;
-
-    smelt->active = true;
-    smelt->x = target.hit_x;
-    smelt->y = target.hit_y;
-    smelt->z = target.hit_z;
-    smelt->timer = 0.0f;
-    smelt->output = (ItemID)BLOCK_GLASS;
-    smelt->fuel = fuel;
-
+    *furnace_open = true;
+    if (open_furnace_index)
+        *open_furnace_index = (int)(furnace - furnaces);
+    if (cursor_x)
+        *cursor_x = SCREEN_WIDTH * 0.5f;
+    if (cursor_y)
+        *cursor_y = SCREEN_HEIGHT * 0.5f;
     if (chat)
-        chat_log(chat, "furnace: smelting glass with %s", item_name(fuel));
+        chat_log(chat, "opened furnace");
     return true;
 }
 
-static void furnace_smelts_update(FurnaceSmelt smelts[],
-                                  const VoxelWorld *world,
-                                  SurvivalInventory *inventory,
-                                  ItemEntityPool *drops,
-                                  const Player *player,
-                                  float dt,
-                                  Chat *chat)
-{
-    if (!smelts || !world || !inventory)
-        return;
-
-    if (dt < 0.0f)
-        dt = 0.0f;
-
-    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
-        FurnaceSmelt *smelt = &smelts[i];
-        int leftover;
-
-        if (!smelt->active)
-            continue;
-
-        if (world_get_block(world, smelt->x, smelt->y, smelt->z) !=
-            BLOCK_FURNACE) {
-            smelt->active = false;
-            continue;
-        }
-
-        smelt->timer += dt;
-        if (smelt->timer < FURNACE_SMELT_SECONDS)
-            continue;
-
-        leftover = survival_inventory_add_item(inventory, smelt->output, 1);
-        if (leftover > 0)
-            item_entity_spawn_item_near_player(drops, player,
-                                               smelt->output, leftover);
-        if (chat)
-            chat_log(chat, "furnace finished %s", item_name(smelt->output));
-        smelt->active = false;
-    }
-}
-
-static void furnace_smelts_draw(RenderContext *ctx,
-                                const FurnaceSmelt smelts[],
+static void furnace_states_draw(RenderContext *ctx,
+                                const FurnaceState furnaces[],
                                 float world_time)
 {
-    if (!ctx || !smelts)
+    if (!ctx || !furnaces)
         return;
 
-    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
-        const FurnaceSmelt *smelt = &smelts[i];
+    for (int i = 0; i < FURNACE_MAX_STATES; i++) {
+        const FurnaceState *furnace = &furnaces[i];
         float progress;
         float flicker;
         Vec3 flame_center;
 
-        if (!smelt->active)
+        if (!furnace->active || !furnace->smelting)
             continue;
 
-        progress = smelt->timer / FURNACE_SMELT_SECONDS;
+        progress = furnace->timer / FURNACE_SMELT_SECONDS;
         if (progress < 0.0f)
             progress = 0.0f;
         if (progress > 1.0f)
@@ -1033,9 +1346,9 @@ static void furnace_smelts_draw(RenderContext *ctx,
 
         flicker = (sinf(world_time * 42.0f + (float)i * 1.7f) + 1.0f) * 0.5f;
         flame_center = (Vec3){
-            (float)smelt->x + 0.5f,
-            (float)smelt->y + 1.02f + progress * 0.22f + flicker * 0.04f,
-            (float)smelt->z + 0.5f,
+            (float)furnace->x + 0.5f,
+            (float)furnace->y + 1.02f + progress * 0.22f + flicker * 0.04f,
+            (float)furnace->z + 0.5f,
         };
         renderer_draw_world_billboard_tile(ctx,
                                            flame_center,
@@ -1632,6 +1945,107 @@ static InventoryHit survival_inventory_hit_test(float cursor_x, float cursor_y,
     return hit;
 }
 
+static void furnace_layout(FurnaceLayout *layout)
+{
+    const float slot = HOTBAR_SLOT_PIXELS;
+    const float gap = HOTBAR_GAP_PIXELS;
+    const float storage_w =
+        SURVIVAL_HOTBAR_SLOT_COUNT * slot +
+        (SURVIVAL_HOTBAR_SLOT_COUNT - 1) * gap;
+    const float panel_w = storage_w + 24.0f;
+    const float panel_h = 300.0f;
+    const float panel_x = floorf((SCREEN_WIDTH - panel_w) * 0.5f);
+    const float panel_y = floorf((SCREEN_HEIGHT - panel_h) * 0.5f) - 8.0f;
+
+    if (!layout)
+        return;
+
+    layout->panel_x = panel_x;
+    layout->panel_y = panel_y;
+    layout->panel_w = panel_w;
+    layout->panel_h = panel_h;
+    layout->slot = slot;
+    layout->gap = gap;
+    layout->input_x = panel_x + 68.0f;
+    layout->input_y = panel_y + 42.0f;
+    layout->fuel_x = layout->input_x;
+    layout->fuel_y = layout->input_y + slot + 12.0f;
+    layout->output_x = panel_x + panel_w - 86.0f;
+    layout->output_y = panel_y + 62.0f;
+    layout->progress_x = layout->input_x + slot + 26.0f;
+    layout->progress_y = panel_y + 76.0f;
+    layout->progress_w = layout->output_x - layout->progress_x - 24.0f;
+    layout->progress_h = 10.0f;
+    layout->main_x = panel_x + 12.0f;
+    layout->main_y = panel_y + 128.0f;
+    layout->hotbar_x = layout->main_x;
+    layout->hotbar_y = layout->main_y + 3.0f * (slot + gap) + 16.0f;
+}
+
+static FurnaceHit furnace_hit_test(float cursor_x, float cursor_y)
+{
+    FurnaceLayout layout;
+    FurnaceHit hit = { FURNACE_SLOT_NONE, -1 };
+
+    furnace_layout(&layout);
+
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.input_x, layout.input_y,
+                      layout.input_x + layout.slot,
+                      layout.input_y + layout.slot)) {
+        hit.area = FURNACE_SLOT_INPUT;
+        hit.index = 0;
+        return hit;
+    }
+
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.fuel_x, layout.fuel_y,
+                      layout.fuel_x + layout.slot,
+                      layout.fuel_y + layout.slot)) {
+        hit.area = FURNACE_SLOT_FUEL;
+        hit.index = 0;
+        return hit;
+    }
+
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.output_x, layout.output_y,
+                      layout.output_x + layout.slot,
+                      layout.output_y + layout.slot)) {
+        hit.area = FURNACE_SLOT_OUTPUT;
+        hit.index = 0;
+        return hit;
+    }
+
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+            float x0 = layout.main_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.main_y + (layout.slot + layout.gap) * (float)row;
+
+            if (point_in_rect(cursor_x, cursor_y,
+                              x0, y0, x0 + layout.slot, y0 + layout.slot)) {
+                hit.area = FURNACE_SLOT_STORAGE;
+                hit.index = SURVIVAL_HOTBAR_SLOT_COUNT +
+                            row * SURVIVAL_HOTBAR_SLOT_COUNT + col;
+                return hit;
+            }
+        }
+    }
+
+    for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+        float x0 = layout.hotbar_x + (layout.slot + layout.gap) * (float)col;
+        float y0 = layout.hotbar_y;
+
+        if (point_in_rect(cursor_x, cursor_y,
+                          x0, y0, x0 + layout.slot, y0 + layout.slot)) {
+            hit.area = FURNACE_SLOT_STORAGE;
+            hit.index = col;
+            return hit;
+        }
+    }
+
+    return hit;
+}
+
 static void draw_text_shadow(RenderContext *ctx, const char *text,
                              float x, float y, uint8_t palette_index)
 {
@@ -1779,7 +2193,10 @@ static int recipe_lookup_page_count(int craft_grid_dim)
 {
     int count = survival_craft_recipe_count_for_grid(craft_grid_dim);
 
-    return count > 0 ? count : 1;
+    return count > 0 ?
+        (count + RECIPE_LOOKUP_RECIPES_PER_PAGE - 1) /
+            RECIPE_LOOKUP_RECIPES_PER_PAGE :
+        1;
 }
 
 static int clamp_recipe_lookup_page(int craft_grid_dim, int page)
@@ -1863,6 +2280,71 @@ static void draw_recipe_arrow_button(RenderContext *ctx,
     }
 }
 
+static void draw_recipe_lookup_card(RenderContext *ctx,
+                                    const SurvivalInventoryLayout *layout,
+                                    int recipe_index,
+                                    float card_x,
+                                    float card_y,
+                                    float card_w,
+                                    float card_h)
+{
+    CraftRecipeView recipe;
+    ItemStack output;
+    int display_dim;
+    int label_len;
+    float grid_slot;
+    float grid_gap = 4.0f;
+    float grid_x;
+    float grid_y;
+    float grid_span;
+    float arrow_y;
+    float out_x;
+    float out_y;
+
+    if (!ctx || !layout)
+        return;
+    if (!survival_craft_recipe_view_for_grid(recipe_index,
+                                             layout->craft_grid_dim,
+                                             &recipe))
+        return;
+
+    display_dim = layout->craft_grid_dim;
+    grid_slot = display_dim == SURVIVAL_CRAFT_GRID_TABLE ? 20.0f : 26.0f;
+    grid_span = (float)display_dim * grid_slot +
+                (float)(display_dim - 1) * grid_gap;
+
+    renderer_fill_rect(ctx, card_x, card_y,
+                       card_x + card_w, card_y + card_h,
+                       0, QUAD_ALPHA_25);
+
+    label_len = (int)strlen(item_name(recipe.output));
+    if (label_len > 22)
+        label_len = 22;
+    chat_draw_text(ctx, item_name(recipe.output), label_len,
+                   card_x + 8.0f, card_y + 8.0f, 5);
+
+    grid_x = card_x + (display_dim == SURVIVAL_CRAFT_GRID_TABLE ? 8.0f : 12.0f);
+    grid_y = card_y + 30.0f;
+    draw_recipe_grid(ctx, &recipe, display_dim, grid_x, grid_y,
+                     grid_slot, grid_gap);
+
+    arrow_y = grid_y + grid_span * 0.5f;
+    renderer_fill_rect(ctx, grid_x + grid_span + 12.0f,
+                       arrow_y - 2.0f,
+                       grid_x + grid_span + 31.0f,
+                       arrow_y + 2.0f, 5, 0);
+    renderer_fill_rect(ctx, grid_x + grid_span + 27.0f,
+                       arrow_y - 7.0f,
+                       grid_x + grid_span + 35.0f,
+                       arrow_y + 7.0f, 5, 0);
+
+    output.item = recipe.output;
+    output.count = recipe.output_count;
+    out_x = card_x + card_w - 42.0f;
+    out_y = arrow_y - HOTBAR_SLOT_PIXELS * 0.5f;
+    draw_inventory_slot(ctx, &output, out_x, out_y, false, false);
+}
+
 static int recipe_lookup_nav_hit(float cursor_x,
                                  float cursor_y,
                                  int craft_grid_dim)
@@ -1892,34 +2374,23 @@ static void draw_recipe_lookup(RenderContext *ctx,
                                const SurvivalInventoryLayout *layout,
                                int recipe_page)
 {
-    CraftRecipeView recipe;
-    ItemStack output;
     char page_text[16];
+    int recipe_count;
     int page_count;
-    int label_len;
     int page_len;
-    int display_dim;
     float card_x;
     float card_y;
     float card_w;
-    float grid_slot;
-    float grid_gap = 4.0f;
-    float grid_x;
-    float grid_y;
-    float grid_span;
-    float out_x;
-    float out_y;
+    float card_h;
+    float card_gap = 8.0f;
     float nav_y;
 
     if (!ctx || !layout)
         return;
 
+    recipe_count = survival_craft_recipe_count_for_grid(layout->craft_grid_dim);
     page_count = recipe_lookup_page_count(layout->craft_grid_dim);
     recipe_page = clamp_recipe_lookup_page(layout->craft_grid_dim, recipe_page);
-    display_dim = layout->craft_grid_dim;
-    grid_slot = display_dim == SURVIVAL_CRAFT_GRID_TABLE ? 20.0f : 26.0f;
-    grid_span = (float)display_dim * grid_slot +
-                (float)(display_dim - 1) * grid_gap;
 
     draw_inventory_panel(ctx, layout->recipe_x, layout->recipe_y,
                          layout->recipe_w, layout->recipe_h);
@@ -1928,45 +2399,22 @@ static void draw_recipe_lookup(RenderContext *ctx,
                      "TABLE RECIPES" : "RECIPES",
                      layout->recipe_x + 10.0f, layout->recipe_y + 12.0f, 5);
 
-    if (!survival_craft_recipe_view_for_grid(recipe_page,
-                                             layout->craft_grid_dim,
-                                             &recipe))
-        return;
-
     card_x = layout->recipe_x + 10.0f;
     card_y = layout->recipe_y + 38.0f;
     card_w = layout->recipe_w - 20.0f;
-    renderer_fill_rect(ctx, card_x, card_y,
-                       card_x + card_w, layout->recipe_y + layout->recipe_h - 38.0f,
-                       0, QUAD_ALPHA_25);
-
-    label_len = (int)strlen(item_name(recipe.output));
-    if (label_len > 22)
-        label_len = 22;
-    chat_draw_text(ctx, item_name(recipe.output), label_len,
-                   card_x + 8.0f, card_y + 10.0f, 5);
-
-    grid_x = card_x + 12.0f;
-    grid_y = card_y + 36.0f;
-    draw_recipe_grid(ctx, &recipe, display_dim, grid_x, grid_y,
-                     grid_slot, grid_gap);
-
-    renderer_fill_rect(ctx, grid_x + grid_span + 13.0f,
-                       grid_y + grid_span * 0.5f - 2.0f,
-                       grid_x + grid_span + 35.0f,
-                       grid_y + grid_span * 0.5f + 2.0f, 5, 0);
-    renderer_fill_rect(ctx, grid_x + grid_span + 31.0f,
-                       grid_y + grid_span * 0.5f - 7.0f,
-                       grid_x + grid_span + 37.0f,
-                       grid_y + grid_span * 0.5f + 7.0f, 5, 0);
-
-    output.item = recipe.output;
-    output.count = recipe.output_count;
-    out_x = card_x + card_w - 46.0f;
-    out_y = grid_y + grid_span * 0.5f - 18.0f;
-    draw_inventory_slot(ctx, &output, out_x, out_y, false, false);
-
     nav_y = layout->recipe_y + layout->recipe_h - 30.0f;
+    card_h = (nav_y - card_y - 8.0f - card_gap) * 0.5f;
+    for (int i = 0; i < RECIPE_LOOKUP_RECIPES_PER_PAGE; i++) {
+        int recipe_index = recipe_page * RECIPE_LOOKUP_RECIPES_PER_PAGE + i;
+
+        if (recipe_index >= recipe_count)
+            break;
+        draw_recipe_lookup_card(ctx, layout, recipe_index,
+                                card_x,
+                                card_y + (card_h + card_gap) * (float)i,
+                                card_w, card_h);
+    }
+
     draw_recipe_arrow_button(ctx, layout->recipe_x + 10.0f, nav_y,
                              false, recipe_page > 0);
     draw_recipe_arrow_button(ctx, layout->recipe_x + layout->recipe_w - 32.0f,
@@ -2070,6 +2518,148 @@ static void draw_survival_inventory(RenderContext *ctx,
     for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
         float x0 = layout.hotbar_x + (layout.slot + layout.gap) * (float)col;
         bool hovered = hover.area == INVENTORY_SLOT_STORAGE &&
+                       hover.index == col;
+
+        draw_inventory_slot(ctx, &inventory->storage[col],
+                            x0, layout.hotbar_y,
+                            col == selected_slot, hovered);
+        draw_hotbar_digit(ctx, col + 1, x0 + 2.0f, layout.hotbar_y + 2.0f,
+                          col == selected_slot ? 8 : 5);
+    }
+
+    draw_inventory_cursor(ctx, &inventory->cursor, cursor_x, cursor_y);
+}
+
+static void draw_furnace_progress(RenderContext *ctx,
+                                  const FurnaceLayout *layout,
+                                  const FurnaceState *furnace)
+{
+    float progress = 0.0f;
+    float fill_w;
+    float arrow_y;
+
+    if (!ctx || !layout)
+        return;
+
+    if (furnace && furnace->smelting && FURNACE_SMELT_SECONDS > 0.0f) {
+        progress = furnace->timer / FURNACE_SMELT_SECONDS;
+        if (progress < 0.0f)
+            progress = 0.0f;
+        if (progress > 1.0f)
+            progress = 1.0f;
+    }
+
+    arrow_y = layout->progress_y + layout->progress_h * 0.5f;
+    renderer_fill_rect(ctx,
+                       layout->progress_x - 2.0f,
+                       arrow_y - 3.0f,
+                       layout->progress_x + layout->progress_w - 6.0f,
+                       arrow_y + 3.0f, 14, 0);
+    renderer_fill_rect(ctx,
+                       layout->progress_x + layout->progress_w - 11.0f,
+                       arrow_y - 8.0f,
+                       layout->progress_x + layout->progress_w,
+                       arrow_y + 8.0f, 14, 0);
+
+    fill_w = (layout->progress_w - 10.0f) * progress;
+    if (fill_w > 0.0f) {
+        renderer_fill_rect(ctx,
+                           layout->progress_x,
+                           arrow_y - 2.0f,
+                           layout->progress_x + fill_w,
+                           arrow_y + 2.0f, 8, 0);
+        renderer_fill_rect(ctx,
+                           layout->progress_x + fill_w - 2.0f,
+                           arrow_y - 5.0f,
+                           layout->progress_x + fill_w + 2.0f,
+                           arrow_y + 5.0f, 8, 0);
+    }
+
+    if (progress > 0.0f) {
+        float flame_x = layout->fuel_x + layout->slot + 7.0f;
+        float flame_y = layout->fuel_y + 8.0f;
+        float flame_h = 18.0f * (0.35f + progress * 0.65f);
+
+        renderer_fill_rect(ctx, flame_x + 5.0f,
+                           flame_y + 18.0f - flame_h,
+                           flame_x + 13.0f, flame_y + 18.0f,
+                           6, 0);
+        renderer_fill_rect(ctx, flame_x + 7.0f,
+                           flame_y + 18.0f - flame_h * 0.65f,
+                           flame_x + 11.0f, flame_y + 18.0f,
+                           8, 0);
+    }
+}
+
+static void draw_furnace_ui(RenderContext *ctx,
+                            const SurvivalInventory *inventory,
+                            const FurnaceState *furnace,
+                            int selected_slot,
+                            float cursor_x,
+                            float cursor_y)
+{
+    FurnaceLayout layout;
+    FurnaceHit hover;
+
+    if (!ctx || !inventory || !furnace)
+        return;
+
+    furnace_layout(&layout);
+    hover = furnace_hit_test(cursor_x, cursor_y);
+
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                       0, QUAD_ALPHA_50);
+    draw_inventory_panel(ctx, layout.panel_x, layout.panel_y,
+                         layout.panel_w, layout.panel_h);
+    renderer_draw_screen_tile(ctx,
+                              layout.panel_x + 12.0f,
+                              layout.panel_y + 10.0f,
+                              layout.panel_x + 30.0f,
+                              layout.panel_y + 28.0f,
+                              TEX_TILE_FURNACE_FRONT,
+                              0);
+    draw_text_shadow(ctx, "FURNACE",
+                     layout.panel_x + 36.0f, layout.panel_y + 16.0f, 5);
+
+    renderer_fill_rect(ctx,
+                       layout.input_x - 10.0f,
+                       layout.input_y - 10.0f,
+                       layout.output_x + layout.slot + 10.0f,
+                       layout.fuel_y + layout.slot + 10.0f,
+                       0, QUAD_ALPHA_25);
+    draw_inventory_slot(ctx, &furnace->input,
+                        layout.input_x, layout.input_y, false,
+                        hover.area == FURNACE_SLOT_INPUT);
+    draw_inventory_slot(ctx, &furnace->fuel,
+                        layout.fuel_x, layout.fuel_y, false,
+                        hover.area == FURNACE_SLOT_FUEL);
+    draw_inventory_slot(ctx, &furnace->output,
+                        layout.output_x, layout.output_y, false,
+                        hover.area == FURNACE_SLOT_OUTPUT);
+    draw_furnace_progress(ctx, &layout, furnace);
+
+    renderer_fill_rect(ctx, layout.main_x - 4.0f, layout.main_y - 4.0f,
+                       layout.main_x + 9.0f * layout.slot + 8.0f * layout.gap + 4.0f,
+                       layout.hotbar_y + layout.slot + 4.0f,
+                       0, QUAD_ALPHA_25);
+
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+            int index = SURVIVAL_HOTBAR_SLOT_COUNT +
+                        row * SURVIVAL_HOTBAR_SLOT_COUNT + col;
+            float x0 = layout.main_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.main_y + (layout.slot + layout.gap) * (float)row;
+            bool hovered = hover.area == FURNACE_SLOT_STORAGE &&
+                           hover.index == index;
+
+            draw_inventory_slot(ctx, &inventory->storage[index],
+                                x0, y0, false, hovered);
+        }
+    }
+
+    for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+        float x0 = layout.hotbar_x + (layout.slot + layout.gap) * (float)col;
+        bool hovered = hover.area == FURNACE_SLOT_STORAGE &&
                        hover.index == col;
 
         draw_inventory_slot(ctx, &inventory->storage[col],
@@ -2591,6 +3181,33 @@ static void draw_block_in_hand(RenderContext *ctx, BlockID type, float swing_tim
         block_face_texture_id(type, FACE_FRONT), QUAD_LIGHT_LEVEL(1));
 }
 
+static void draw_tool_in_hand(RenderContext *ctx, ItemID item, float swing_timer)
+{
+    const float s = HUD_SCALE;
+    float swing;
+    float x;
+    float y;
+    float size;
+    float skew;
+
+    if (!ctx || !item_is_tool(item))
+        return;
+
+    swing = hand_swing_phase(swing_timer);
+    size = 48.0f * s;
+    skew = 13.0f * s + swing * 11.0f * s;
+    x = SCREEN_WIDTH - 96.0f * s - swing * 11.0f * s;
+    y = SCREEN_HEIGHT - 132.0f * s + swing * 23.0f * s;
+
+    renderer_draw_custom_screen_quad(ctx,
+        x + skew,          y,
+        x + size + skew,   y + 5.0f * s,
+        x + size,          y + size,
+        x,                 y + size - 5.0f * s,
+        item_texture_id(item),
+        QUAD_FLAG_ALPHA_KEY);
+}
+
 /* Debug HUD: player position, chunk coords, render distance, loaded chunks.
  * Toggled with F3 or VOXEL_DEBUG_HUD=1. Drawn top-left below the FPS counter
  * using the same drop-shadow text style. Also draws 3D chunk border lines. */
@@ -2680,8 +3297,10 @@ int main(void)
     int selected_hotbar_page = 0;
     SurvivalInventory survival_inventory;
     ItemEntityPool item_drops;
-    FurnaceSmelt furnace_smelts[FURNACE_MAX_ACTIVE_SMELTS] = {0};
+    FurnaceState furnace_states[FURNACE_MAX_STATES] = {0};
     bool inventory_open = false;
+    bool furnace_open = false;
+    int open_furnace_index = -1;
     int inventory_recipe_page = 0;
     float inventory_cursor_x = SCREEN_WIDTH * 0.5f;
     float inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
@@ -2887,6 +3506,10 @@ int main(void)
             if (inventory_open) {
                 close_survival_inventory(&survival_inventory, &item_drops,
                                          &player, &inventory_open);
+            } else if (furnace_open) {
+                close_furnace_ui(&survival_inventory, &item_drops, &player,
+                                 furnace_states,
+                                 &furnace_open, &open_furnace_index);
             } else if (!chat_is_open(&chat)) {
                 pause_menu_toggle(&pause);
             }
@@ -2898,6 +3521,10 @@ int main(void)
         if (paused && inventory_open)
             close_survival_inventory(&survival_inventory, &item_drops,
                                      &player, &inventory_open);
+        if (paused && furnace_open)
+            close_furnace_ui(&survival_inventory, &item_drops, &player,
+                             furnace_states,
+                             &furnace_open, &open_furnace_index);
         bool pause_exit_requested = false;
         if (paused &&
             pause_menu_update(&pause, &inp, &pause_settings,
@@ -2931,6 +3558,10 @@ int main(void)
             if (inventory_open) {
                 close_survival_inventory(&survival_inventory, &item_drops,
                                          &player, &inventory_open);
+            } else if (furnace_open) {
+                close_furnace_ui(&survival_inventory, &item_drops, &player,
+                                 furnace_states,
+                                 &furnace_open, &open_furnace_index);
             } else {
                 survival_inventory_set_craft_grid_dim(&survival_inventory,
                                                       SURVIVAL_CRAFT_GRID_PLAYER);
@@ -2943,14 +3574,17 @@ int main(void)
 
         /* Chat toggle: ignored while paused or inventory is open — those
          * overlays own the screen. */
-        if (input_consume_chat_toggle(&inp) && !paused && !inventory_open) {
+        if (input_consume_chat_toggle(&inp) &&
+            !paused && !inventory_open && !furnace_open) {
             chat_toggle(&chat);
             input_set_text_mode(&inp, chat_is_open(&chat));
         }
 
         bool chat_open = chat_is_open(&chat);
         bool kill_requested = false;
-        input_set_pointer_capture(&inp, !paused && !chat_open && !inventory_open);
+        input_set_pointer_capture(&inp,
+                                  !paused && !chat_open &&
+                                  !inventory_open && !furnace_open);
 
         if (chat_open && !paused) {
             for (int i = 0; i < inp.text_queue_len; i++) {
@@ -2989,13 +3623,17 @@ int main(void)
             if (player.mode != PLAYER_MODE_SURVIVAL && inventory_open)
                 close_survival_inventory(&survival_inventory, &item_drops,
                                          &player, &inventory_open);
+            if (player.mode != PLAYER_MODE_SURVIVAL && furnace_open)
+                close_furnace_ui(&survival_inventory, &item_drops, &player,
+                                 furnace_states,
+                                 &furnace_open, &open_furnace_index);
             last_player_mode = player.mode;
         }
 
         /* Look: mouse + arrow keys. Muted while paused so the camera
          * stays still in the pause view, but we still drain mouse state
          * so a held mouse doesn't accumulate deltas across the pause. */
-        if (inventory_open) {
+        if (inventory_open || furnace_open) {
             inventory_cursor_x += inp.cursor_dx * INVENTORY_CURSOR_SPEED;
             inventory_cursor_y += inp.cursor_dy * INVENTORY_CURSOR_SPEED;
             if (inventory_cursor_x < INVENTORY_CURSOR_MIN_X)
@@ -3027,7 +3665,7 @@ int main(void)
 
         /* Movement inputs are silently dropped while paused — the player
          * coasts to a stop through the normal friction path. */
-        if (!paused && !inventory_open && !chat_open) {
+        if (!paused && !inventory_open && !furnace_open && !chat_open) {
             if (inp.forward) { wish_x += fwd_x; wish_z += fwd_z; }
             if (inp.back)    { wish_x -= fwd_x; wish_z -= fwd_z; }
             if (inp.right)   { wish_x += rgt_x; wish_z += rgt_z; }
@@ -3045,10 +3683,10 @@ int main(void)
         bool jump_pressed = false;
         if (physics_accumulator >= PHYSICS_DT)
             jump_pressed = input_consume_jump(&inp);
-        if (paused || inventory_open || chat_open)
+        if (paused || inventory_open || furnace_open || chat_open)
             jump_pressed = false;
 
-        if (!paused && !inventory_open && !chat_open &&
+        if (!paused && !inventory_open && !furnace_open && !chat_open &&
             player.mode == PLAYER_MODE_CREATIVE && jump_pressed) {
             if (creative_jump_tap_timer > 0.0f) {
                 creative_flight_enabled = !creative_flight_enabled;
@@ -3068,7 +3706,8 @@ int main(void)
          * this with double-Space; spectator always flies. */
         bool flight_controls = (player.mode == PLAYER_MODE_SPECTATOR) ||
             (player.mode == PLAYER_MODE_CREATIVE && creative_flight_enabled);
-        bool controls_blocked = paused || inventory_open || chat_open;
+        bool controls_blocked = paused || inventory_open || furnace_open ||
+            chat_open;
         bool up_input    = controls_blocked ? false : inp.up;
         bool down_input  = controls_blocked ? false : inp.down;
         bool sprint_input = controls_blocked ? false : inp.sprint;
@@ -3200,9 +3839,7 @@ int main(void)
             item_entities_update(&item_drops, &world, &survival_inventory,
                                  &player, frame_dt);
         if (!paused && player.mode == PLAYER_MODE_SURVIVAL)
-            furnace_smelts_update(furnace_smelts, &world,
-                                  &survival_inventory, &item_drops,
-                                  &player, frame_dt, &chat);
+            furnace_states_update(furnace_states, &world, frame_dt);
 
         if (!paused && !chat_is_open(&chat) && inventory_open) {
             bool left_click = input_consume_break(&inp);
@@ -3237,7 +3874,50 @@ int main(void)
                                          hit.area, hit.index, right_click);
             }
             inp.break_down = false;
-        } else if (!paused && !chat_is_open(&chat) && !inventory_open) {
+        } else if (!paused && !chat_is_open(&chat) && furnace_open) {
+            bool left_click = input_consume_break(&inp);
+            bool right_click = input_consume_place(&inp);
+            FurnaceState *furnace = NULL;
+            FurnaceHit hit = furnace_hit_test(inventory_cursor_x,
+                                              inventory_cursor_y);
+
+            break_timer = 0.0f;
+            break_duration = 0.0f;
+            break_target_valid = false;
+            hand_swing_timer = HAND_SWING_SECONDS;
+            (void)input_consume_hotbar_slot(&inp);
+            (void)input_consume_hotbar_page(&inp);
+            (void)input_consume_item_drop(&inp);
+
+            if (open_furnace_index >= 0 &&
+                open_furnace_index < FURNACE_MAX_STATES &&
+                furnace_states[open_furnace_index].active &&
+                world_get_block(&world,
+                                furnace_states[open_furnace_index].x,
+                                furnace_states[open_furnace_index].y,
+                                furnace_states[open_furnace_index].z) ==
+                    BLOCK_FURNACE) {
+                furnace = &furnace_states[open_furnace_index];
+            } else {
+                close_furnace_ui(&survival_inventory, &item_drops, &player,
+                                 furnace_states,
+                                 &furnace_open, &open_furnace_index);
+            }
+
+            if (furnace && (left_click || right_click) &&
+                hit.area != FURNACE_SLOT_NONE) {
+                if (hit.area == FURNACE_SLOT_STORAGE) {
+                    survival_inventory_click(&survival_inventory,
+                                             INVENTORY_SLOT_STORAGE,
+                                             hit.index, right_click);
+                } else {
+                    furnace_click_slot(&survival_inventory, furnace,
+                                       hit.area, right_click);
+                }
+            }
+            inp.break_down = false;
+        } else if (!paused && !chat_is_open(&chat) &&
+                   !inventory_open && !furnace_open) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
             bool hotbar_page_pressed = input_consume_hotbar_page(&inp);
             bool break_pressed = input_consume_break(&inp);
@@ -3304,7 +3984,18 @@ int main(void)
                 if (break_pressed ||
                     (inp.break_down &&
                      break_timer >= CREATIVE_BLOCK_BREAK_REPEAT_SECONDS)) {
-                    try_break_targeted_block(&world, &cam);
+                    BlockTarget broken_target = {0};
+                    BlockID broken = BLOCK_AIR;
+
+                    if (try_break_targeted_block(&world, &cam,
+                                                 &broken_target, &broken) &&
+                        broken == BLOCK_FURNACE) {
+                        furnace_state_drop_contents(furnace_states, &item_drops,
+                                                    &player,
+                                                    broken_target.hit_x,
+                                                    broken_target.hit_y,
+                                                    broken_target.hit_z);
+                    }
                     hand_swing_timer = 0.0f;
                     break_timer = 0.0f;
                 }
@@ -3319,11 +4010,20 @@ int main(void)
                                                                target.hit_y,
                                                                target.hit_z);
                         float target_break_duration = block_break_seconds(target_block);
+                        const ItemStack *tool_stack =
+                            survival_inventory_hotbar_stack(&survival_inventory,
+                                                            selected_hotbar_slot);
                         bool same_target =
                             break_target_valid &&
                             target.hit_x == break_target.hit_x &&
                             target.hit_y == break_target.hit_y &&
                             target.hit_z == break_target.hit_z;
+
+                        if (!item_stack_is_empty(tool_stack))
+                            target_break_duration =
+                                item_break_seconds(tool_stack->item,
+                                                   target_block,
+                                                   target_break_duration);
 
                         if (target_break_duration > 0.0f) {
                             if (!same_target) {
@@ -3340,6 +4040,13 @@ int main(void)
 
                                 if (break_block_target(&world, &break_target,
                                                        &broken)) {
+                                    if (broken == BLOCK_FURNACE)
+                                        furnace_state_drop_contents(
+                                            furnace_states, &item_drops,
+                                            &player,
+                                            break_target.hit_x,
+                                            break_target.hit_y,
+                                            break_target.hit_z);
                                     item_entity_spawn_block_drop(
                                         &item_drops, broken,
                                         break_target.hit_x,
@@ -3407,9 +4114,10 @@ int main(void)
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;
-                    } else if (try_start_targeted_furnace_smelt(
-                                   &world, &cam, &survival_inventory,
-                                   furnace_smelts, selected_hotbar_slot,
+                    } else if (try_open_targeted_furnace(
+                                   &world, &cam, furnace_states,
+                                   &furnace_open, &open_furnace_index,
+                                   &inventory_cursor_x, &inventory_cursor_y,
                                    &chat)) {
                         break_timer = 0.0f;
                         break_duration = 0.0f;
@@ -3500,7 +4208,7 @@ int main(void)
          * frames where update work isn't trivial. Keys are not consumed
          * here - any edge events the second poll picks up roll into the
          * next frame's normal input handling. */
-        if (!paused && inventory_open) {
+        if (!paused && (inventory_open || furnace_open)) {
             input_update(&inp);
             inventory_cursor_x += inp.cursor_dx * INVENTORY_CURSOR_SPEED;
             inventory_cursor_y += inp.cursor_dy * INVENTORY_CURSOR_SPEED;
@@ -3527,7 +4235,7 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
-        furnace_smelts_draw(ctx, furnace_smelts, world_time);
+        furnace_states_draw(ctx, furnace_states, world_time);
         item_entities_draw(ctx, &item_drops, world_time);
         if (camera_underwater)
             draw_underwater_overlay(ctx);
@@ -3552,6 +4260,13 @@ int main(void)
                             selected_hotbar_page, player.mode, NULL);
                 renderer_draw_crosshair(ctx);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
+                const ItemStack *held_stack =
+                    survival_inventory_hotbar_stack(&survival_inventory,
+                                                    selected_hotbar_slot);
+
+                if (!item_stack_is_empty(held_stack) &&
+                    item_is_tool(held_stack->item))
+                    draw_tool_in_hand(ctx, held_stack->item, hand_swing_timer);
                 draw_bare_hand(ctx, hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, 0, player.mode,
                             &survival_inventory);
@@ -3569,6 +4284,15 @@ int main(void)
                                     inventory_cursor_x,
                                     inventory_cursor_y,
                                     inventory_recipe_page);
+        if (!paused && furnace_open &&
+            open_furnace_index >= 0 &&
+            open_furnace_index < FURNACE_MAX_STATES &&
+            furnace_states[open_furnace_index].active)
+            draw_furnace_ui(ctx, &survival_inventory,
+                            &furnace_states[open_furnace_index],
+                            selected_hotbar_slot,
+                            inventory_cursor_x,
+                            inventory_cursor_y);
         pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
             chat_draw_text_scaled(ctx, fps_text, fps_text_len,

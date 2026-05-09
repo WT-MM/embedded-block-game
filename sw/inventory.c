@@ -31,6 +31,106 @@ static const CraftRecipe CRAFT_RECIPES[] = {
     },
     {
         .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    (ItemID)BLOCK_PLANKS, ITEM_NONE, ITEM_STICK, ITEM_NONE,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE },
+        .output = ITEM_WOOD_PICKAXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    (ItemID)BLOCK_PLANKS, ITEM_STICK,
+                    ITEM_NONE, ITEM_STICK },
+        .output = ITEM_WOOD_AXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE, ITEM_NONE, ITEM_STICK,
+                    ITEM_NONE, ITEM_NONE, ITEM_STICK, ITEM_NONE },
+        .output = ITEM_STONE_PICKAXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE, ITEM_STICK,
+                    ITEM_NONE, ITEM_STICK },
+        .output = ITEM_STONE_AXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { ITEM_IRON_INGOT, ITEM_IRON_INGOT, ITEM_IRON_INGOT,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE },
+        .output = ITEM_IRON_PICKAXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 3,
+        .inputs = { ITEM_IRON_INGOT, ITEM_IRON_INGOT,
+                    ITEM_IRON_INGOT, ITEM_STICK,
+                    ITEM_NONE, ITEM_STICK },
+        .output = ITEM_IRON_AXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { ITEM_GOLD_INGOT, ITEM_GOLD_INGOT, ITEM_GOLD_INGOT,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE },
+        .output = ITEM_GOLD_PICKAXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 3,
+        .inputs = { ITEM_GOLD_INGOT, ITEM_GOLD_INGOT,
+                    ITEM_GOLD_INGOT, ITEM_STICK,
+                    ITEM_NONE, ITEM_STICK },
+        .output = ITEM_GOLD_AXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { ITEM_DIAMOND, ITEM_DIAMOND, ITEM_DIAMOND,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE,
+                    ITEM_NONE, ITEM_STICK, ITEM_NONE },
+        .output = ITEM_DIAMOND_PICKAXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 3,
+        .inputs = { ITEM_DIAMOND, ITEM_DIAMOND,
+                    ITEM_DIAMOND, ITEM_STICK,
+                    ITEM_NONE, ITEM_STICK },
+        .output = ITEM_DIAMOND_AXE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
         .width = 2,
         .height = 2,
         .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
@@ -127,11 +227,9 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .shapeless = false,
         .width = 3,
         .height = 3,
-        .inputs = { (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
-                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
-                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
-                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
-                    (ItemID)BLOCK_GOLD_ORE },
+        .inputs = { ITEM_GOLD_INGOT, ITEM_GOLD_INGOT, ITEM_GOLD_INGOT,
+                    ITEM_GOLD_INGOT, ITEM_GOLD_INGOT, ITEM_GOLD_INGOT,
+                    ITEM_GOLD_INGOT, ITEM_GOLD_INGOT, ITEM_GOLD_INGOT },
         .output = (ItemID)BLOCK_GOLD_BLOCK,
         .output_count = 1,
     },
@@ -139,11 +237,9 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .shapeless = false,
         .width = 3,
         .height = 3,
-        .inputs = { (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
-                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
-                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
-                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
-                    (ItemID)BLOCK_DIAMOND_ORE },
+        .inputs = { ITEM_DIAMOND, ITEM_DIAMOND, ITEM_DIAMOND,
+                    ITEM_DIAMOND, ITEM_DIAMOND, ITEM_DIAMOND,
+                    ITEM_DIAMOND, ITEM_DIAMOND, ITEM_DIAMOND },
         .output = (ItemID)BLOCK_DIAMOND_BLOCK,
         .output_count = 1,
     },
@@ -172,7 +268,20 @@ static bool item_id_valid(ItemID item)
            item == ITEM_BROWN_MUSHROOM ||
            item == ITEM_BOWL ||
            item == ITEM_MUSHROOM_STEW ||
-           item == ITEM_COAL;
+           item == ITEM_COAL ||
+           item == ITEM_IRON_INGOT ||
+           item == ITEM_GOLD_INGOT ||
+           item == ITEM_DIAMOND ||
+           item == ITEM_WOOD_PICKAXE ||
+           item == ITEM_STONE_PICKAXE ||
+           item == ITEM_IRON_PICKAXE ||
+           item == ITEM_GOLD_PICKAXE ||
+           item == ITEM_DIAMOND_PICKAXE ||
+           item == ITEM_WOOD_AXE ||
+           item == ITEM_STONE_AXE ||
+           item == ITEM_IRON_AXE ||
+           item == ITEM_GOLD_AXE ||
+           item == ITEM_DIAMOND_AXE;
 }
 
 void item_stack_clear(ItemStack *stack)
@@ -254,6 +363,32 @@ const char *item_name(ItemID item)
         return "Mushroom Stew";
     if (item == ITEM_COAL)
         return "Coal";
+    if (item == ITEM_IRON_INGOT)
+        return "Iron Ingot";
+    if (item == ITEM_GOLD_INGOT)
+        return "Gold Ingot";
+    if (item == ITEM_DIAMOND)
+        return "Diamond";
+    if (item == ITEM_WOOD_PICKAXE)
+        return "Wooden Pickaxe";
+    if (item == ITEM_STONE_PICKAXE)
+        return "Stone Pickaxe";
+    if (item == ITEM_IRON_PICKAXE)
+        return "Iron Pickaxe";
+    if (item == ITEM_GOLD_PICKAXE)
+        return "Gold Pickaxe";
+    if (item == ITEM_DIAMOND_PICKAXE)
+        return "Diamond Pickaxe";
+    if (item == ITEM_WOOD_AXE)
+        return "Wooden Axe";
+    if (item == ITEM_STONE_AXE)
+        return "Stone Axe";
+    if (item == ITEM_IRON_AXE)
+        return "Iron Axe";
+    if (item == ITEM_GOLD_AXE)
+        return "Gold Axe";
+    if (item == ITEM_DIAMOND_AXE)
+        return "Diamond Axe";
 
     return "Unknown";
 }
@@ -282,6 +417,32 @@ uint8_t item_texture_id(ItemID item)
         return TEX_TILE_MUSHROOM_STEW;
     if (item == ITEM_COAL)
         return TEX_TILE_COAL;
+    if (item == ITEM_IRON_INGOT)
+        return TEX_TILE_IRON_INGOT;
+    if (item == ITEM_GOLD_INGOT)
+        return TEX_TILE_GOLD_INGOT;
+    if (item == ITEM_DIAMOND)
+        return TEX_TILE_DIAMOND;
+    if (item == ITEM_WOOD_PICKAXE)
+        return TEX_TILE_WOOD_PICKAXE;
+    if (item == ITEM_STONE_PICKAXE)
+        return TEX_TILE_STONE_PICKAXE;
+    if (item == ITEM_IRON_PICKAXE)
+        return TEX_TILE_IRON_PICKAXE;
+    if (item == ITEM_GOLD_PICKAXE)
+        return TEX_TILE_GOLD_PICKAXE;
+    if (item == ITEM_DIAMOND_PICKAXE)
+        return TEX_TILE_DIAMOND_PICKAXE;
+    if (item == ITEM_WOOD_AXE)
+        return TEX_TILE_WOOD_AXE;
+    if (item == ITEM_STONE_AXE)
+        return TEX_TILE_STONE_AXE;
+    if (item == ITEM_IRON_AXE)
+        return TEX_TILE_IRON_AXE;
+    if (item == ITEM_GOLD_AXE)
+        return TEX_TILE_GOLD_AXE;
+    if (item == ITEM_DIAMOND_AXE)
+        return TEX_TILE_DIAMOND_AXE;
 
     return 0;
 }
@@ -305,6 +466,131 @@ bool item_is_furnace_fuel(ItemID item)
            item == (ItemID)BLOCK_WOOD ||
            item == (ItemID)BLOCK_PLANKS ||
            item == ITEM_STICK;
+}
+
+ItemID item_furnace_smelt_output(ItemID input)
+{
+    if (input == (ItemID)BLOCK_SAND)
+        return (ItemID)BLOCK_GLASS;
+    if (input == (ItemID)BLOCK_IRON_ORE)
+        return ITEM_IRON_INGOT;
+    if (input == (ItemID)BLOCK_GOLD_ORE)
+        return ITEM_GOLD_INGOT;
+    return ITEM_NONE;
+}
+
+ItemToolKind item_tool_kind(ItemID item)
+{
+    switch (item) {
+    case ITEM_WOOD_PICKAXE:
+    case ITEM_STONE_PICKAXE:
+    case ITEM_IRON_PICKAXE:
+    case ITEM_GOLD_PICKAXE:
+    case ITEM_DIAMOND_PICKAXE:
+        return ITEM_TOOL_PICKAXE;
+    case ITEM_WOOD_AXE:
+    case ITEM_STONE_AXE:
+    case ITEM_IRON_AXE:
+    case ITEM_GOLD_AXE:
+    case ITEM_DIAMOND_AXE:
+        return ITEM_TOOL_AXE;
+    default:
+        return ITEM_TOOL_NONE;
+    }
+}
+
+ItemToolTier item_tool_tier(ItemID item)
+{
+    switch (item) {
+    case ITEM_WOOD_PICKAXE:
+    case ITEM_WOOD_AXE:
+        return ITEM_TOOL_TIER_WOOD;
+    case ITEM_STONE_PICKAXE:
+    case ITEM_STONE_AXE:
+        return ITEM_TOOL_TIER_STONE;
+    case ITEM_IRON_PICKAXE:
+    case ITEM_IRON_AXE:
+        return ITEM_TOOL_TIER_IRON;
+    case ITEM_GOLD_PICKAXE:
+    case ITEM_GOLD_AXE:
+        return ITEM_TOOL_TIER_GOLD;
+    case ITEM_DIAMOND_PICKAXE:
+    case ITEM_DIAMOND_AXE:
+        return ITEM_TOOL_TIER_DIAMOND;
+    default:
+        return ITEM_TOOL_TIER_NONE;
+    }
+}
+
+bool item_is_tool(ItemID item)
+{
+    return item_tool_kind(item) != ITEM_TOOL_NONE;
+}
+
+static bool block_prefers_pickaxe(BlockID block)
+{
+    return block == BLOCK_STONE ||
+           block == BLOCK_COBBLESTONE ||
+           block == BLOCK_BRICKS ||
+           block == BLOCK_OBSIDIAN ||
+           block == BLOCK_SANDSTONE ||
+           block == BLOCK_COAL_ORE ||
+           block == BLOCK_IRON_ORE ||
+           block == BLOCK_GOLD_ORE ||
+           block == BLOCK_DIAMOND_ORE ||
+           block == BLOCK_REDSTONE_ORE ||
+           block == BLOCK_GOLD_BLOCK ||
+           block == BLOCK_DIAMOND_BLOCK ||
+           block == BLOCK_REDSTONE_BLOCK ||
+           block == BLOCK_FURNACE;
+}
+
+static bool block_prefers_axe(BlockID block)
+{
+    return block == BLOCK_WOOD ||
+           block == BLOCK_PLANKS ||
+           block == BLOCK_CRAFTING_TABLE ||
+           block_is_door(block);
+}
+
+static float tool_tier_multiplier(ItemToolTier tier)
+{
+    switch (tier) {
+    case ITEM_TOOL_TIER_WOOD:
+        return 2.0f;
+    case ITEM_TOOL_TIER_STONE:
+        return 2.7f;
+    case ITEM_TOOL_TIER_IRON:
+        return 3.6f;
+    case ITEM_TOOL_TIER_GOLD:
+        return 4.4f;
+    case ITEM_TOOL_TIER_DIAMOND:
+        return 5.0f;
+    default:
+        return 1.0f;
+    }
+}
+
+float item_break_seconds(ItemID item, BlockID block, float base_seconds)
+{
+    ItemToolKind kind;
+    float multiplier;
+
+    if (base_seconds <= 0.0f)
+        return base_seconds;
+
+    kind = item_tool_kind(item);
+    if ((kind == ITEM_TOOL_PICKAXE && !block_prefers_pickaxe(block)) ||
+        (kind == ITEM_TOOL_AXE && !block_prefers_axe(block)) ||
+        kind == ITEM_TOOL_NONE)
+        return base_seconds;
+
+    multiplier = tool_tier_multiplier(item_tool_tier(item));
+    if (multiplier <= 1.0f)
+        return base_seconds;
+
+    base_seconds /= multiplier;
+    return base_seconds < 0.08f ? 0.08f : base_seconds;
 }
 
 int item_food_units(ItemID item)
@@ -820,6 +1106,8 @@ ItemID survival_drop_for_block(BlockID block)
         return (ItemID)BLOCK_COBBLESTONE;
     case BLOCK_COAL_ORE:
         return ITEM_COAL;
+    case BLOCK_DIAMOND_ORE:
+        return ITEM_DIAMOND;
     case BLOCK_LEAVES:
         return ITEM_NONE;
     case BLOCK_RED_MUSHROOM:

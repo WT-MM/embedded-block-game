@@ -1871,8 +1871,10 @@ static void torch_face_vertices(Vec3 block_pos, uint8_t face,
     out[3] = (Vec3){ cx - half, y + top, cz - half };
 }
 
-static void door_face_vertices(Vec3 block_pos, BlockID type, uint8_t face,
-                               Vec3 out[4])
+static void door_slab_planes(BlockID type,
+                             bool *span_x_out,
+                             float *outer_plane_out,
+                             float *inner_plane_out)
 {
     const float thickness = 0.10f;
     const float near_edge = 0.05f;
@@ -1906,26 +1908,42 @@ static void door_face_vertices(Vec3 block_pos, BlockID type, uint8_t face,
         switch (facing) {
         case BLOCK_DOOR_FACING_EAST:
             span_x = true;
-            plane = far_edge;
+            plane = near_edge;
             break;
         case BLOCK_DOOR_FACING_SOUTH:
             span_x = false;
-            plane = near_edge;
+            plane = far_edge;
             break;
         case BLOCK_DOOR_FACING_WEST:
             span_x = true;
-            plane = near_edge;
+            plane = far_edge;
             break;
         case BLOCK_DOOR_FACING_NORTH:
         default:
             span_x = false;
-            plane = far_edge;
+            plane = near_edge;
             break;
         }
     }
 
-    if (face == CHUNK_FACE_CROSS_B)
-        plane += plane < 0.5f ? thickness : -thickness;
+    if (span_x_out)
+        *span_x_out = span_x;
+    if (outer_plane_out)
+        *outer_plane_out = plane;
+    if (inner_plane_out)
+        *inner_plane_out = plane + (plane < 0.5f ? thickness : -thickness);
+}
+
+static void door_face_vertices(Vec3 block_pos, BlockID type, uint8_t face,
+                               Vec3 out[4])
+{
+    bool span_x;
+    float outer_plane;
+    float inner_plane;
+    float plane;
+
+    door_slab_planes(type, &span_x, &outer_plane, &inner_plane);
+    plane = face == CHUNK_FACE_CROSS_B ? inner_plane : outer_plane;
 
     if (span_x) {
         float z = block_pos.z + plane;
@@ -1944,6 +1962,90 @@ static void door_face_vertices(Vec3 block_pos, BlockID type, uint8_t face,
         out[1] = (Vec3){ x, block_pos.y,        block_pos.z };
         out[2] = (Vec3){ x, block_pos.y + 1.0f, block_pos.z };
         out[3] = (Vec3){ x, block_pos.y + 1.0f, block_pos.z + 1.0f };
+    }
+}
+
+static void door_edge_vertices(Vec3 block_pos, BlockID type, int edge,
+                               Vec3 out[4])
+{
+    bool span_x;
+    float outer_plane;
+    float inner_plane;
+    float min_plane;
+    float max_plane;
+    float x0 = block_pos.x;
+    float x1 = block_pos.x + 1.0f;
+    float y0 = block_pos.y;
+    float y1 = block_pos.y + 1.0f;
+    float z0 = block_pos.z;
+    float z1 = block_pos.z + 1.0f;
+
+    door_slab_planes(type, &span_x, &outer_plane, &inner_plane);
+    min_plane = outer_plane < inner_plane ? outer_plane : inner_plane;
+    max_plane = outer_plane < inner_plane ? inner_plane : outer_plane;
+
+    if (span_x) {
+        float za = block_pos.z + min_plane;
+        float zb = block_pos.z + max_plane;
+
+        switch (edge) {
+        case 0:
+            out[0] = (Vec3){ x0, y0, za };
+            out[1] = (Vec3){ x0, y0, zb };
+            out[2] = (Vec3){ x0, y1, zb };
+            out[3] = (Vec3){ x0, y1, za };
+            return;
+        case 1:
+            out[0] = (Vec3){ x1, y0, zb };
+            out[1] = (Vec3){ x1, y0, za };
+            out[2] = (Vec3){ x1, y1, za };
+            out[3] = (Vec3){ x1, y1, zb };
+            return;
+        case 2:
+            out[0] = (Vec3){ x0, y0, za };
+            out[1] = (Vec3){ x1, y0, za };
+            out[2] = (Vec3){ x1, y0, zb };
+            out[3] = (Vec3){ x0, y0, zb };
+            return;
+        default:
+            out[0] = (Vec3){ x0, y1, zb };
+            out[1] = (Vec3){ x1, y1, zb };
+            out[2] = (Vec3){ x1, y1, za };
+            out[3] = (Vec3){ x0, y1, za };
+            return;
+        }
+    }
+
+    {
+        float xa = block_pos.x + min_plane;
+        float xb = block_pos.x + max_plane;
+
+        switch (edge) {
+        case 0:
+            out[0] = (Vec3){ xa, y0, z0 };
+            out[1] = (Vec3){ xb, y0, z0 };
+            out[2] = (Vec3){ xb, y1, z0 };
+            out[3] = (Vec3){ xa, y1, z0 };
+            return;
+        case 1:
+            out[0] = (Vec3){ xb, y0, z1 };
+            out[1] = (Vec3){ xa, y0, z1 };
+            out[2] = (Vec3){ xa, y1, z1 };
+            out[3] = (Vec3){ xb, y1, z1 };
+            return;
+        case 2:
+            out[0] = (Vec3){ xa, y0, z0 };
+            out[1] = (Vec3){ xb, y0, z0 };
+            out[2] = (Vec3){ xb, y0, z1 };
+            out[3] = (Vec3){ xa, y0, z1 };
+            return;
+        default:
+            out[0] = (Vec3){ xa, y1, z1 };
+            out[1] = (Vec3){ xb, y1, z1 };
+            out[2] = (Vec3){ xb, y1, z0 };
+            out[3] = (Vec3){ xa, y1, z0 };
+            return;
+        }
     }
 }
 
@@ -1999,6 +2101,14 @@ static void emit_door_block_face_lit(RenderContext *ctx, BlockID type,
     emit_model_quad_lit(ctx, face_world,
                         block_face_texture_id(type, FACE_FRONT),
                         light_flags);
+
+    if (face == CHUNK_FACE_CROSS_A) {
+        for (int edge = 0; edge < 4; edge++) {
+            door_edge_vertices(block_pos, type, edge, face_world);
+            emit_model_quad_lit(ctx, face_world, TEX_TILE_WOOD_PLANK,
+                                light_flags);
+        }
+    }
 }
 
 static void emit_merged_block_face(RenderContext *ctx, BlockID type,

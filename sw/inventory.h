@@ -25,8 +25,36 @@ typedef enum {
     ITEM_BOWL,
     ITEM_MUSHROOM_STEW,
     ITEM_COAL,
+    ITEM_IRON_INGOT,
+    ITEM_GOLD_INGOT,
+    ITEM_DIAMOND,
+    ITEM_WOOD_PICKAXE,
+    ITEM_STONE_PICKAXE,
+    ITEM_IRON_PICKAXE,
+    ITEM_GOLD_PICKAXE,
+    ITEM_DIAMOND_PICKAXE,
+    ITEM_WOOD_AXE,
+    ITEM_STONE_AXE,
+    ITEM_IRON_AXE,
+    ITEM_GOLD_AXE,
+    ITEM_DIAMOND_AXE,
     NUM_ITEM_TYPES,
 } ItemID;
+
+typedef enum {
+    ITEM_TOOL_NONE = 0,
+    ITEM_TOOL_PICKAXE,
+    ITEM_TOOL_AXE,
+} ItemToolKind;
+
+typedef enum {
+    ITEM_TOOL_TIER_NONE = 0,
+    ITEM_TOOL_TIER_WOOD,
+    ITEM_TOOL_TIER_STONE,
+    ITEM_TOOL_TIER_IRON,
+    ITEM_TOOL_TIER_GOLD,
+    ITEM_TOOL_TIER_DIAMOND,
+} ItemToolTier;
 
 typedef struct {
     ItemID item;
@@ -67,6 +95,11 @@ uint8_t item_texture_id(ItemID item);
 bool item_is_placeable_block(ItemID item);
 BlockID item_place_block(ItemID item);
 bool item_is_furnace_fuel(ItemID item);
+ItemID item_furnace_smelt_output(ItemID input);
+ItemToolKind item_tool_kind(ItemID item);
+ItemToolTier item_tool_tier(ItemID item);
+bool item_is_tool(ItemID item);
+float item_break_seconds(ItemID item, BlockID block, float base_seconds);
 int item_food_units(ItemID item);
 bool item_food_returns_bowl(ItemID item);
 

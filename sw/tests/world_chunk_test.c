@@ -90,6 +90,7 @@ typedef struct {
     int flowers;
     int mushrooms;
     int cacti;
+    int ore_blocks;
     int lowest_surface_y;
     int highest_surface_y;
 } WorldgenSample;
@@ -103,6 +104,15 @@ static bool block_is_worldgen_decoration(BlockID id)
            id == BLOCK_RED_MUSHROOM ||
            id == BLOCK_BROWN_MUSHROOM ||
            id == BLOCK_CACTUS;
+}
+
+static bool block_is_ore(BlockID id)
+{
+    return id == BLOCK_COAL_ORE ||
+           id == BLOCK_IRON_ORE ||
+           id == BLOCK_GOLD_ORE ||
+           id == BLOCK_DIAMOND_ORE ||
+           id == BLOCK_REDSTONE_ORE;
 }
 
 static WorldgenSample sample_worldgen(const VoxelWorld *world)
@@ -135,6 +145,8 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
                         sample.mushrooms++;
                     if (id == BLOCK_CACTUS)
                         sample.cacti++;
+                    if (block_is_ore(id))
+                        sample.ore_blocks++;
                     if (id == BLOCK_AIR ||
                         id == BLOCK_WATER ||
                         id == BLOCK_WATER_FLOW ||
@@ -222,6 +234,8 @@ int main(void)
         return check_failed("biome worldgen did not create grass, beach, clay, and water");
     if (initial_sample.highest_surface_y - initial_sample.lowest_surface_y < 4)
         return check_failed("biome worldgen terrain was too flat");
+    if (initial_sample.ore_blocks <= 0)
+        return check_failed("ore worldgen did not place any ore blocks");
     bool found_desert_biome = false;
     for (int z = -128; z <= 128 && !found_desert_biome; z += 16) {
         for (int x = -128; x <= 128; x += 16) {

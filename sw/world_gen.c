@@ -363,12 +363,136 @@ static void worldgen_place_cactus(Chunk *chunk, int local_x, int base_y,
                                  BLOCK_CACTUS, false);
 }
 
+typedef struct {
+    BlockID block;
+    int attempts_per_24;
+    int min_y;
+    int max_y;
+    int radius;
+    uint32_t salt;
+} WorldgenOreConfig;
+
+static int worldgen_scaled_ore_attempts(int attempts_per_24,
+                                        int stone_tries_per_chunk)
+{
+    int density = stone_tries_per_chunk;
+    int attempts;
+
+    if (density <= 0)
+        density = 24;
+
+    attempts = (attempts_per_24 * density + 12) / 24;
+    return attempts < 1 ? 1 : attempts;
+}
+
+static void worldgen_try_place_ore(Chunk *chunk,
+                                   int lx, int y, int lz,
+                                   BlockID block,
+                                   uint32_t base_seed)
+{
+    int wx;
+    int wz;
+    WorldgenColumn column;
+
+    if (!chunk)
+        return;
+    if (lx < 0 || lx >= WORLD_CHUNK_SIZE ||
+        lz < 0 || lz >= WORLD_CHUNK_SIZE ||
+        y < 1 || y >= WORLD_CHUNK_HEIGHT)
+        return;
+    if (chunk->blocks[y][lz][lx] != BLOCK_STONE)
+        return;
+
+    wx = chunk->chunk_x * WORLD_CHUNK_SIZE + lx;
+    wz = chunk->chunk_z * WORLD_CHUNK_SIZE + lz;
+    column = worldgen_column_at(wx, wz, base_seed);
+    if (y >= column.surface_y - 2)
+        return;
+
+    chunk->blocks[y][lz][lx] = block;
+}
+
+static void worldgen_place_ore_vein(Chunk *chunk,
+                                    const WorldgenOreConfig *ore,
+                                    int center_x,
+                                    int center_y,
+                                    int center_z,
+                                    uint32_t roll,
+                                    uint32_t base_seed)
+{
+    int radius_sq;
+
+    if (!chunk || !ore)
+        return;
+
+    radius_sq = ore->radius * ore->radius;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dz = -ore->radius; dz <= ore->radius; dz++) {
+            for (int dx = -ore->radius; dx <= ore->radius; dx++) {
+                int dist_sq = dx * dx + dz * dz + dy * dy * 2;
+                uint32_t mask = roll >> ((abs(dx) + abs(dz) + abs(dy)) & 15);
+
+                if (dist_sq > radius_sq + (int)(mask & 1u))
+                    continue;
+
+                worldgen_try_place_ore(chunk,
+                                       center_x + dx,
+                                       center_y + dy,
+                                       center_z + dz,
+                                       ore->block,
+                                       base_seed);
+            }
+        }
+    }
+}
+
+static void worldgen_place_ores(Chunk *chunk,
+                                uint32_t base_seed,
+                                int stone_tries_per_chunk)
+{
+    static const WorldgenOreConfig ores[] = {
+        { BLOCK_COAL_ORE,     7,  4, 25, 2, 0xc0a10u },
+        { BLOCK_IRON_ORE,     6,  3, 22, 2, 0x1a0f0u },
+        { BLOCK_GOLD_ORE,     3,  2, 15, 1, 0x901du },
+        { BLOCK_REDSTONE_ORE, 3,  1, 12, 1, 0xed570u },
+        { BLOCK_DIAMOND_ORE,  2,  1, 10, 1, 0xd1a0du },
+    };
+    int origin_x;
+    int origin_z;
+
+    if (!chunk)
+        return;
+
+    origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
+    origin_z = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+    for (size_t ore_index = 0; ore_index < sizeof(ores) / sizeof(ores[0]);
+         ore_index++) {
+        const WorldgenOreConfig *ore = &ores[ore_index];
+        int attempts = worldgen_scaled_ore_attempts(ore->attempts_per_24,
+                                                   stone_tries_per_chunk);
+
+        for (int i = 0; i < attempts; i++) {
+            uint32_t roll = hash_world_coord(origin_x + i * 17,
+                                             origin_z - i * 31,
+                                             base_seed,
+                                             ore->salt);
+            int y_span = ore->max_y - ore->min_y + 1;
+            int center_x = (int)(roll & 15u);
+            int center_z = (int)((roll >> 4) & 15u);
+            int center_y = ore->min_y + (int)((roll >> 8) % (uint32_t)y_span);
+
+            worldgen_place_ore_vein(chunk, ore,
+                                    center_x, center_y, center_z,
+                                    roll, base_seed);
+        }
+    }
+}
+
 void world_generate_chunk_terrain(Chunk *chunk,
                                   uint32_t base_seed,
                                   int stone_tries_per_chunk)
 {
-    (void)stone_tries_per_chunk;
-
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
 
     int origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
@@ -390,6 +514,8 @@ void world_generate_chunk_terrain(Chunk *chunk,
             }
         }
     }
+
+    worldgen_place_ores(chunk, base_seed, stone_tries_per_chunk);
 
     for (int lz = -WORLDGEN_TREE_RADIUS;
          lz < WORLD_CHUNK_SIZE + WORLDGEN_TREE_RADIUS; lz++) {

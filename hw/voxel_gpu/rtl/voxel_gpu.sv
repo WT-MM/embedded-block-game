@@ -233,7 +233,6 @@ module voxel_gpu (
 
     logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
     logic  [5:0] fetch_count;
-    logic [31:0] prefetch_words [0:MAX_DESC_WORDS-1];
     logic  [5:0] prefetch_count;
     logic  [5:0] prefetch_target_words;
     logic        prefetch_active;
@@ -885,7 +884,13 @@ module voxel_gpu (
         MAX_DESC_WORDS_6 : BASE_QUAD_WORDS_6;
     wire fetch_pop_req =
         (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
-    wire [7:0] prefetch_flags = prefetch_words[15][31:24];
+    /*
+     * Descriptor prefetch reuses desc_words while ST_DRAW/ST_DRAW_FLUSH run.
+     * The active quad has already been latched into draw_* and edge_* regs by
+     * ST_FETCH, so desc_words can safely hold the next descriptor without a
+     * second 25-word register file.
+     */
+    wire [7:0] prefetch_flags = desc_words[15][31:24];
     wire prefetch_has_uv = prefetch_flags[FLAG_TEX_BIT];
     wire [5:0] prefetch_target_words_current =
         ((prefetch_count >= BASE_QUAD_WORDS_6) && prefetch_has_uv) ?
@@ -2434,8 +2439,6 @@ module voxel_gpu (
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
-        for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
-            prefetch_words[i] = 32'h0;
 
         for (i = 0; i < 4; i = i + 1) begin
             edge_A[i] = 32'sd0;
@@ -3236,7 +3239,7 @@ module voxel_gpu (
             if (fetch_pop_req)
                 desc_words[fetch_count[4:0]] <= fifo_head;
             else if (prefetch_pop_req)
-                prefetch_words[prefetch_count[4:0]] <= fifo_head;
+                desc_words[prefetch_count[4:0]] <= fifo_head;
 
             if (prefetch_can_start) begin
                 prefetch_active <= 1'b1;
@@ -3783,8 +3786,6 @@ module voxel_gpu (
                         copy_complete_pending <= 1'b1;
                         cache_final_flush <= 1'b0;
                     end else if (prefetch_valid && !band_flush_pending) begin
-                        for (ei = 0; ei < MAX_DESC_WORDS; ei = ei + 1)
-                            desc_words[ei] <= prefetch_words[ei];
                         fetch_count <= prefetch_target_words;
                         prefetch_valid <= 1'b0;
                         state <= ST_FETCH;
@@ -4382,8 +4383,6 @@ module voxel_gpu (
                         if (draw_flush_count == 4'd1) begin
                             draw_flush_count <= 4'd0;
                             if (prefetch_valid) begin
-                                for (ei = 0; ei < MAX_DESC_WORDS; ei = ei + 1)
-                                    desc_words[ei] <= prefetch_words[ei];
                                 fetch_count <= prefetch_target_words;
                                 prefetch_valid <= 1'b0;
                                 state <= ST_FETCH;

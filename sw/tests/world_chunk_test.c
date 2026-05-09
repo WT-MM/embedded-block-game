@@ -450,6 +450,19 @@ int main(void)
         !block_is_alpha_keyed(BLOCK_TORCH) ||
         !block_is_passable(BLOCK_TORCH))
         return check_failed("furnace/torch metadata missing");
+    if (block_render_model(BLOCK_REDSTONE_WIRE_ON) != BLOCK_RENDER_FLAT ||
+        !block_is_alpha_keyed(BLOCK_REDSTONE_WIRE_ON) ||
+        !block_is_passable(BLOCK_REDSTONE_WIRE_ON) ||
+        block_emission_level(BLOCK_REDSTONE_WIRE_ON) != 5 ||
+        block_render_model(BLOCK_REDSTONE_TORCH_ON) != BLOCK_RENDER_TORCH ||
+        block_emission_level(BLOCK_REDSTONE_TORCH_ON) != 7 ||
+        block_emission_level(BLOCK_REDSTONE_TORCH_OFF) != 0 ||
+        block_render_model(BLOCK_REPEATER_ON) != BLOCK_RENDER_FLAT ||
+        block_emission_level(BLOCK_REPEATER_ON) != 5 ||
+        block_face_texture_id(BLOCK_LAMP_OFF, FACE_FRONT) != TEX_TILE_LAMP_OFF ||
+        block_emission_level(BLOCK_LAMP_OFF) != 0 ||
+        block_render_model(BLOCK_BUTTON) != BLOCK_RENDER_FLAT)
+        return check_failed("redstone metadata missing");
     if (!block_is_door(BLOCK_DOOR) ||
         !block_is_door(block_door_make(BLOCK_DOOR_FACING_EAST, true, true)) ||
         block_render_model(BLOCK_DOOR) != BLOCK_RENDER_DOOR ||
@@ -472,6 +485,21 @@ int main(void)
         block_is_alpha_keyed(BLOCK_CACTUS) ||
         block_is_passable(BLOCK_CACTUS))
         return check_failed("plant metadata missing");
+    const int wire_x = 8;
+    const int wire_y = 26;
+    const int wire_z = 3;
+    if (!world_set_block(&world, wire_x, wire_y, wire_z,
+                         BLOCK_REDSTONE_WIRE_ON))
+        return check_failed("redstone wire placement failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-redstone mesh rebuild failed");
+    const Chunk *wire_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *wire_flat = find_chunk_face(wire_chunk,
+                                                 wire_x, wire_y, wire_z,
+                                                 (BlockFace)CHUNK_FACE_FLAT,
+                                                 BLOCK_REDSTONE_WIRE_ON);
+    if (!wire_flat)
+        return check_failed("redstone flat mesh missing");
     const int flower_x = 9;
     const int flower_y = 26;
     const int flower_z = 2;

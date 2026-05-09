@@ -243,6 +243,13 @@ int main(void)
         return 1;
     if (expect_setblock("/setblock 1 2 3 torch", BLOCK_TORCH))
         return 1;
+    if (expect_setblock("/setblock 1 2 3 redstone_torch_on",
+                        BLOCK_REDSTONE_TORCH_ON))
+        return 1;
+    if (expect_setblock("/setblock 1 2 3 repeater-off", BLOCK_REPEATER_OFF))
+        return 1;
+    if (expect_setblock("/setblock 1 2 3 button", BLOCK_BUTTON))
+        return 1;
     if (expect_fill("/blocks set ~-1 ~ ~1 ~1 ~2 ~3 diamond-block",
                     BLOCK_DIAMOND_BLOCK, true))
         return 1;

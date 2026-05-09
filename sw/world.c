@@ -1760,7 +1760,7 @@ static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk
                     continue;
 
                 if (!block_uses_cube_mesh(id)) {
-                    count += 2;
+                    count += block_render_model(id) == BLOCK_RENDER_FLAT ? 1 : 2;
                     continue;
                 }
 
@@ -2044,12 +2044,18 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                 if (block_emission_level(id) > block_light)
                     block_light = block_emission_level(id);
 
-                append_chunk_face(chunk->faces, &out, x, y, z,
-                                  CHUNK_FACE_CROSS_A, id, 1, 1,
-                                  sky_light, block_light, 8);
-                append_chunk_face(chunk->faces, &out, x, y, z,
-                                  CHUNK_FACE_CROSS_B, id, 1, 1,
-                                  sky_light, block_light, 8);
+                if (block_render_model(id) == BLOCK_RENDER_FLAT) {
+                    append_chunk_face(chunk->faces, &out, x, y, z,
+                                      CHUNK_FACE_FLAT, id, 1, 1,
+                                      sky_light, block_light, 8);
+                } else {
+                    append_chunk_face(chunk->faces, &out, x, y, z,
+                                      CHUNK_FACE_CROSS_A, id, 1, 1,
+                                      sky_light, block_light, 8);
+                    append_chunk_face(chunk->faces, &out, x, y, z,
+                                      CHUNK_FACE_CROSS_B, id, 1, 1,
+                                      sky_light, block_light, 8);
+                }
             }
         }
     }

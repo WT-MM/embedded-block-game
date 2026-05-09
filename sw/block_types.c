@@ -73,7 +73,7 @@ void init_block_types(void)
     BlockRegistry[BLOCK_GLASS].self_lit = false;
 
     BlockRegistry[BLOCK_LAMP].id = BLOCK_LAMP;
-    BlockRegistry[BLOCK_LAMP].name = "Lamp";
+    BlockRegistry[BLOCK_LAMP].name = "Lamp On";
     set_all_faces(&BlockRegistry[BLOCK_LAMP], TEX_TILE_LAMP);
     BlockRegistry[BLOCK_LAMP].emission_level = 15;
     BlockRegistry[BLOCK_LAMP].hardness_seconds = 0.8f;
@@ -269,6 +269,73 @@ void init_block_types(void)
     init_door_descriptor(BLOCK_DOOR_EAST_OPEN_UPPER, true);
     init_door_descriptor(BLOCK_DOOR_SOUTH_OPEN_UPPER, true);
     init_door_descriptor(BLOCK_DOOR_WEST_OPEN_UPPER, true);
+
+    BlockRegistry[BLOCK_REDSTONE_WIRE_UNCONNECTED].id =
+        BLOCK_REDSTONE_WIRE_UNCONNECTED;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_UNCONNECTED].name =
+        "Redstone Dust";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_WIRE_UNCONNECTED],
+                  TEX_TILE_REDSTONE_WIRE_UNCONNECTED);
+    BlockRegistry[BLOCK_REDSTONE_WIRE_UNCONNECTED].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_UNCONNECTED].render_model =
+        BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_REDSTONE_WIRE_OFF].id = BLOCK_REDSTONE_WIRE_OFF;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_OFF].name = "Redstone Wire Off";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_WIRE_OFF],
+                  TEX_TILE_REDSTONE_WIRE_OFF);
+    BlockRegistry[BLOCK_REDSTONE_WIRE_OFF].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_OFF].render_model = BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].id = BLOCK_REDSTONE_WIRE_ON;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].name = "Redstone Wire On";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_WIRE_ON],
+                  TEX_TILE_REDSTONE_WIRE_ON);
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].render_model = BLOCK_RENDER_FLAT;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].emission_level = 5;
+    BlockRegistry[BLOCK_REDSTONE_WIRE_ON].self_lit = true;
+
+    BlockRegistry[BLOCK_REDSTONE_TORCH_OFF].id = BLOCK_REDSTONE_TORCH_OFF;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_OFF].name = "Redstone Torch Off";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_TORCH_OFF],
+                  TEX_TILE_REDSTONE_TORCH_OFF);
+    BlockRegistry[BLOCK_REDSTONE_TORCH_OFF].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_OFF].render_model = BLOCK_RENDER_TORCH;
+
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].id = BLOCK_REDSTONE_TORCH_ON;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].name = "Redstone Torch On";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_TORCH_ON],
+                  TEX_TILE_REDSTONE_TORCH_ON);
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].emission_level = 7;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].self_lit = true;
+    BlockRegistry[BLOCK_REDSTONE_TORCH_ON].render_model = BLOCK_RENDER_TORCH;
+
+    BlockRegistry[BLOCK_REPEATER_OFF].id = BLOCK_REPEATER_OFF;
+    BlockRegistry[BLOCK_REPEATER_OFF].name = "Repeater Off";
+    set_all_faces(&BlockRegistry[BLOCK_REPEATER_OFF], TEX_TILE_REPEATER_OFF);
+    BlockRegistry[BLOCK_REPEATER_OFF].hardness_seconds = 0.2f;
+    BlockRegistry[BLOCK_REPEATER_OFF].render_model = BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_REPEATER_ON].id = BLOCK_REPEATER_ON;
+    BlockRegistry[BLOCK_REPEATER_ON].name = "Repeater On";
+    set_all_faces(&BlockRegistry[BLOCK_REPEATER_ON], TEX_TILE_REPEATER_ON);
+    BlockRegistry[BLOCK_REPEATER_ON].emission_level = 5;
+    BlockRegistry[BLOCK_REPEATER_ON].hardness_seconds = 0.2f;
+    BlockRegistry[BLOCK_REPEATER_ON].self_lit = true;
+    BlockRegistry[BLOCK_REPEATER_ON].render_model = BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_LAMP_OFF].id = BLOCK_LAMP_OFF;
+    BlockRegistry[BLOCK_LAMP_OFF].name = "Lamp Off";
+    set_all_faces(&BlockRegistry[BLOCK_LAMP_OFF], TEX_TILE_LAMP_OFF);
+    BlockRegistry[BLOCK_LAMP_OFF].hardness_seconds = 0.8f;
+
+    BlockRegistry[BLOCK_BUTTON].id = BLOCK_BUTTON;
+    BlockRegistry[BLOCK_BUTTON].name = "Button";
+    set_all_faces(&BlockRegistry[BLOCK_BUTTON], TEX_TILE_BUTTON);
+    BlockRegistry[BLOCK_BUTTON].hardness_seconds = 0.2f;
+    BlockRegistry[BLOCK_BUTTON].render_model = BLOCK_RENDER_FLAT;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -330,7 +397,8 @@ bool block_is_transparent(BlockID id)
            id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
            block_is_door(id) ||
            block_render_model(id) == BLOCK_RENDER_CROSS ||
-           block_render_model(id) == BLOCK_RENDER_TORCH;
+           block_render_model(id) == BLOCK_RENDER_TORCH ||
+           block_render_model(id) == BLOCK_RENDER_FLAT;
 }
 
 bool block_is_translucent(BlockID id)
@@ -343,7 +411,8 @@ bool block_is_alpha_keyed(BlockID id)
 {
     return id == BLOCK_LEAVES || block_is_door(id) ||
            block_render_model(id) == BLOCK_RENDER_CROSS ||
-           block_render_model(id) == BLOCK_RENDER_TORCH;
+           block_render_model(id) == BLOCK_RENDER_TORCH ||
+           block_render_model(id) == BLOCK_RENDER_FLAT;
 }
 
 bool block_is_passable(BlockID id)
@@ -352,7 +421,8 @@ bool block_is_passable(BlockID id)
            id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
            block_is_door_open(id) ||
            block_render_model(id) == BLOCK_RENDER_CROSS ||
-           block_render_model(id) == BLOCK_RENDER_TORCH;
+           block_render_model(id) == BLOCK_RENDER_TORCH ||
+           block_render_model(id) == BLOCK_RENDER_FLAT;
 }
 
 bool block_face_should_render(BlockID current, BlockID neighbor)

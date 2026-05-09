@@ -214,6 +214,13 @@ static void test_item_textures(void)
            TEX_TILE_CRAFTING_TABLE_FRONT);
     assert(item_texture_id((ItemID)BLOCK_FURNACE) == TEX_TILE_FURNACE_FRONT);
     assert(item_texture_id((ItemID)BLOCK_TORCH) == TEX_TILE_TORCH);
+    assert(item_texture_id((ItemID)BLOCK_REDSTONE_WIRE_ON) ==
+           TEX_TILE_REDSTONE_WIRE_ON);
+    assert(item_texture_id((ItemID)BLOCK_REDSTONE_TORCH_OFF) ==
+           TEX_TILE_REDSTONE_TORCH_OFF);
+    assert(item_texture_id((ItemID)BLOCK_REPEATER_ON) == TEX_TILE_REPEATER_ON);
+    assert(item_texture_id((ItemID)BLOCK_LAMP_OFF) == TEX_TILE_LAMP_OFF);
+    assert(item_texture_id((ItemID)BLOCK_BUTTON) == TEX_TILE_BUTTON);
     assert(item_texture_id(ITEM_DIAMOND_PICKAXE) ==
            TEX_TILE_DIAMOND_PICKAXE);
     assert(item_texture_id(ITEM_LAVA_BUCKET) == TEX_TILE_LAVA_BUCKET);

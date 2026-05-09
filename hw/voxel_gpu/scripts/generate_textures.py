@@ -985,6 +985,79 @@ def redstone_block(x: int, y: int) -> int:
     return PAL_BRICK
 
 
+def redstone_wire(x: int, y: int, connected: bool, powered: bool) -> int:
+    cx = x - 7.5
+    cy = y - 7.5
+    main = PAL_LAVA_ORANGE if powered else PAL_RED
+    highlight = PAL_LAVA_HOT if powered else PAL_BRICK
+    shadow = PAL_RED if powered else PAL_BRICK_DARK
+
+    if not connected:
+        if cx * cx + cy * cy <= 7.5:
+            return highlight if 6 <= x <= 9 and 6 <= y <= 9 else main
+        if cx * cx + cy * cy <= 12.5 and ((x + y) & 1) == 0:
+            return shadow
+        return PAL_TRANSPARENT
+
+    horizontal = 6 <= y <= 9 and 1 <= x <= 14
+    vertical = 6 <= x <= 9 and 1 <= y <= 14
+    if horizontal or vertical:
+        if powered and ((x + y) & 7) == 0:
+            return PAL_LAVA_HOT
+        if (horizontal and y in (6, 9)) or (vertical and x in (6, 9)):
+            return shadow
+        return main
+    if 5 <= x <= 10 and 5 <= y <= 10 and ((x + y) & 1) == 0:
+        return shadow
+    return PAL_TRANSPARENT
+
+
+def redstone_torch(x: int, y: int, powered: bool) -> int:
+    if 7 <= x <= 8 and 6 <= y <= 15:
+        return PAL_WOOD if (y & 1) else PAL_WOOD_DARK
+    if 6 <= x <= 9 and 3 <= y <= 7:
+        if powered:
+            return PAL_LAVA_HOT if 7 <= x <= 8 and 4 <= y <= 5 else PAL_RED
+        return PAL_BRICK_DARK if (x + y) & 1 else PAL_RED
+    if powered and ((x - 7) * (x - 7) + (y - 3) * (y - 3) <= 8):
+        return PAL_LAVA_ORANGE
+    return PAL_TRANSPARENT
+
+
+def repeater(x: int, y: int, powered: bool) -> int:
+    if not (2 <= x <= 13 and 3 <= y <= 12):
+        return PAL_TRANSPARENT
+    if x in (2, 13) or y in (3, 12):
+        return PAL_STONE_DARK
+    if 6 <= y <= 8 and 3 <= x <= 12:
+        return PAL_LAVA_ORANGE if powered else PAL_BRICK_DARK
+    if (x, y) in ((5, 5), (10, 5), (5, 6), (10, 6)):
+        return PAL_LAVA_HOT if powered else PAL_RED
+    if (x + 2 * y) & 7 == 0:
+        return PAL_STONE_LIGHT
+    return PAL_STONE
+
+
+def lamp_off(x: int, y: int) -> int:
+    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
+        return PAL_LAMP_FRAME
+    if x in (2, TILE_SIZE - 3) or y in (2, TILE_SIZE - 3):
+        return PAL_WOOD_DARK
+    if 4 <= x <= 11 and 4 <= y <= 11:
+        return PAL_STONE if ((x + y) & 1) else PAL_STONE_DARK
+    return PAL_WOOD_DARK if ((x + y) & 1) == 0 else PAL_WOOD
+
+
+def button(x: int, y: int) -> int:
+    if not (3 <= x <= 12 and 5 <= y <= 10):
+        return PAL_TRANSPARENT
+    if x in (3, 12) or y in (5, 10):
+        return PAL_STONE_DARK
+    if x in (4, 11) or y in (6, 9):
+        return PAL_STONE
+    return PAL_STONE_LIGHT if ((x + y) & 3) == 0 else PAL_STONE
+
+
 def lava(x: int, y: int) -> int:
     n = noise(x, y, 557)
     vein_a = (x + y + (noise(y, x, 563) >> 6)) & 7
@@ -1298,6 +1371,24 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return clay(x, y)
     if tile == TEX_TILE_REDSTONE_BLOCK:
         return redstone_block(x, y)
+    if tile == TEX_TILE_REDSTONE_WIRE_UNCONNECTED:
+        return redstone_wire(x, y, False, False)
+    if tile == TEX_TILE_REDSTONE_WIRE_OFF:
+        return redstone_wire(x, y, True, False)
+    if tile == TEX_TILE_REDSTONE_WIRE_ON:
+        return redstone_wire(x, y, True, True)
+    if tile == TEX_TILE_REDSTONE_TORCH_OFF:
+        return redstone_torch(x, y, False)
+    if tile == TEX_TILE_REDSTONE_TORCH_ON:
+        return redstone_torch(x, y, True)
+    if tile == TEX_TILE_REPEATER_OFF:
+        return repeater(x, y, False)
+    if tile == TEX_TILE_REPEATER_ON:
+        return repeater(x, y, True)
+    if tile == TEX_TILE_LAMP_OFF:
+        return lamp_off(x, y)
+    if tile == TEX_TILE_BUTTON:
+        return button(x, y)
     if tile == TEX_TILE_LAVA:
         return lava(x, y)
     if tile == TEX_TILE_COAL_ORE:

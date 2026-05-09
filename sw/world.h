@@ -13,6 +13,7 @@
 #define WORLD_SAVE_PATH_MAX 512
 #define CHUNK_FACE_CROSS_A ((uint8_t)NUM_FACES)
 #define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
+#define CHUNK_FACE_FLAT ((uint8_t)(NUM_FACES + 2))
 #define WORLD_MAX_FALLING_BLOCKS 256
 
 typedef enum {

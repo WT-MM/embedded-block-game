@@ -528,7 +528,9 @@ static bool block_prefers_pickaxe(BlockID block)
            block == BLOCK_GOLD_BLOCK ||
            block == BLOCK_DIAMOND_BLOCK ||
            block == BLOCK_REDSTONE_BLOCK ||
-           block == BLOCK_FURNACE;
+           block == BLOCK_FURNACE ||
+           block == BLOCK_LAMP ||
+           block == BLOCK_LAMP_OFF;
 }
 
 static bool block_prefers_axe(BlockID block)

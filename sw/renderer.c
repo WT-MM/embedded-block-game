@@ -1836,6 +1836,39 @@ static void emit_cross_block_face_lit(RenderContext *ctx, BlockID type,
     emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
 }
 
+static void emit_model_quad_lit(RenderContext *ctx,
+                                Vec3 face_world[4], uint8_t texture_tile,
+                                uint8_t light_flags);
+
+static void flat_face_vertices(Vec3 block_pos, Vec3 out[4])
+{
+    const float inset = 0.05f;
+    const float y = block_pos.y + 0.025f;
+
+    out[0] = (Vec3){ block_pos.x + inset,        y,
+                     block_pos.z + inset };
+    out[1] = (Vec3){ block_pos.x + 1.0f - inset, y,
+                     block_pos.z + inset };
+    out[2] = (Vec3){ block_pos.x + 1.0f - inset, y,
+                     block_pos.z + 1.0f - inset };
+    out[3] = (Vec3){ block_pos.x + inset,        y,
+                     block_pos.z + 1.0f - inset };
+}
+
+static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
+                                     Vec3 block_pos, uint8_t light_flags)
+{
+    Vec3 face_world[4];
+
+    if (type == BLOCK_AIR)
+        return;
+
+    flat_face_vertices(block_pos, face_world);
+    emit_model_quad_lit(ctx, face_world,
+                        block_face_texture_id(type, FACE_TOP),
+                        light_flags);
+}
+
 static void torch_face_vertices(Vec3 block_pos, uint8_t face,
                                 Vec3 out[4])
 {
@@ -2807,7 +2840,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
             if (model == BLOCK_RENDER_CROSS ||
                 model == BLOCK_RENDER_TORCH ||
-                model == BLOCK_RENDER_DOOR) {
+                model == BLOCK_RENDER_DOOR ||
+                model == BLOCK_RENDER_FLAT) {
                 Vec3 block_pos = { wx, wy, wz };
                 uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
                                                                     FACE_TOP,
@@ -2820,9 +2854,11 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                 else if (model == BLOCK_RENDER_TORCH)
                     emit_torch_block_face_lit(ctx, id, block_pos,
                                               face->face, light_flags);
-                else
+                else if (model == BLOCK_RENDER_DOOR)
                     emit_door_block_face_lit(ctx, id, block_pos,
                                              face->face, light_flags);
+                else
+                    emit_flat_block_face_lit(ctx, id, block_pos, light_flags);
                 if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                     ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                     return ctx->n_quads - before;

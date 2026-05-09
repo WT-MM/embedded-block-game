@@ -42,7 +42,7 @@
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 #define HOTBAR_SLOT_COUNT 9
-#define HOTBAR_PAGE_COUNT 3
+#define HOTBAR_PAGE_COUNT 4
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
@@ -184,6 +184,17 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
         BLOCK_DIAMOND_BLOCK,
         BLOCK_RED_FLOWER,
         BLOCK_YELLOW_FLOWER,
+    },
+    {
+        BLOCK_CRAFTING_TABLE,
+        BLOCK_DOOR,
+        BLOCK_RED_FLOWER,
+        BLOCK_YELLOW_FLOWER,
+        BLOCK_AIR,
+        BLOCK_AIR,
+        BLOCK_AIR,
+        BLOCK_AIR,
+        BLOCK_AIR,
     },
 };
 
@@ -1133,13 +1144,13 @@ static ItemEntity *item_entity_find_spawn_slot(ItemEntityPool *pool)
 }
 
 static void item_entity_spawn_stack(ItemEntityPool *pool,
-                                   BlockID block,
+                                   ItemID item,
                                    int count,
                                    Vec3 position,
                                    Vec3 velocity,
                                    float pickup_delay)
 {
-    while (pool && count > 0 && block > BLOCK_AIR && block < NUM_BLOCK_TYPES) {
+    while (pool && count > 0 && item != ITEM_NONE && item < NUM_ITEM_TYPES) {
         ItemEntity *entity = item_entity_find_spawn_slot(pool);
         int stack_count = count > ITEM_STACK_MAX ? ITEM_STACK_MAX : count;
 
@@ -1148,7 +1159,7 @@ static void item_entity_spawn_stack(ItemEntityPool *pool,
 
         memset(entity, 0, sizeof(*entity));
         entity->active = true;
-        entity->stack.block = block;
+        entity->stack.item = item;
         entity->stack.count = (uint8_t)stack_count;
         entity->position = position;
         entity->velocity = velocity;
@@ -1166,7 +1177,7 @@ static void item_entity_spawn_block_drop(ItemEntityPool *pool,
                                         int wz,
                                         const Camera *cam)
 {
-    BlockID drop = survival_drop_for_block(broken_block);
+    ItemID drop = survival_drop_for_block(broken_block);
     Vec3 dir = cam ? camera_forward(cam) : (Vec3){ 0.0f, 0.0f, 0.0f };
     Vec3 pos = {
         (float)wx + 0.5f,
@@ -1179,7 +1190,7 @@ static void item_entity_spawn_block_drop(ItemEntityPool *pool,
         dir.z * 1.2f,
     };
 
-    if (drop == BLOCK_AIR)
+    if (drop == ITEM_NONE)
         return;
 
     item_entity_spawn_stack(pool, drop, 1, pos, vel,
@@ -1200,7 +1211,7 @@ static void item_entity_spawn_near_player(ItemEntityPool *pool,
     };
     Vec3 vel = { 0.0f, 2.0f, 0.0f };
 
-    item_entity_spawn_stack(pool, stack->block, stack->count, pos, vel, 0.0f);
+    item_entity_spawn_stack(pool, stack->item, stack->count, pos, vel, 0.0f);
 }
 
 static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
@@ -1213,9 +1224,9 @@ static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
     if (!inv || item_stack_is_empty(stack))
         return;
 
-    leftover = survival_inventory_add_block(inv, stack->block, stack->count);
+    leftover = survival_inventory_add_item(inv, stack->item, stack->count);
     if (leftover > 0) {
-        ItemStack drop = { stack->block, (uint8_t)leftover };
+        ItemStack drop = { stack->item, (uint8_t)leftover };
         item_entity_spawn_near_player(drops, player, &drop);
     }
     item_stack_clear(stack);
@@ -1316,9 +1327,9 @@ static void item_entities_update(ItemEntityPool *pool,
             float pickup_sq = ITEM_ENTITY_PICKUP_RADIUS * ITEM_ENTITY_PICKUP_RADIUS;
 
             if (dist_sq <= pickup_sq) {
-                int leftover = survival_inventory_add_block(inventory,
-                                                            entity->stack.block,
-                                                            entity->stack.count);
+                int leftover = survival_inventory_add_item(inventory,
+                                                           entity->stack.item,
+                                                           entity->stack.count);
                 if (leftover <= 0) {
                     entity->active = false;
                 } else {
@@ -1348,7 +1359,7 @@ static void item_entities_draw(RenderContext *ctx,
         pos.y += sinf(world_time * 4.0f + entity->bob_seed) * 0.05f;
         renderer_draw_world_billboard_tile(
             ctx, pos, ITEM_ENTITY_SIZE_WORLD,
-            block_face_texture_id(entity->stack.block, FACE_FRONT),
+            item_texture_id(entity->stack.item),
             QUAD_FLAG_ALPHA_KEY | QUAD_FLAG_ZTEST);
     }
 }
@@ -1569,8 +1580,10 @@ static void draw_item_stack_icon(RenderContext *ctx,
     renderer_draw_screen_tile(ctx,
                               x0 + 4.0f, y0 + 4.0f,
                               x1 - 4.0f, y1 - 4.0f,
-                              block_face_texture_id(stack->block, FACE_FRONT),
-                              block_render_model(stack->block) == BLOCK_RENDER_CROSS ?
+                              item_texture_id(stack->item),
+                              item_is_placeable_block(stack->item) &&
+                              block_render_model(item_place_block(stack->item)) ==
+                                  BLOCK_RENDER_CROSS ?
                                   QUAD_FLAG_ALPHA_KEY : 0);
     if (stack->count > 1) {
         char count[4];
@@ -2373,6 +2386,7 @@ int main(void)
                 }
             }
         }
+        world_update_falling_blocks(&world, frame_dt);
 
         input_update(&inp);
 
@@ -2492,8 +2506,8 @@ int main(void)
          * stays still in the pause view, but we still drain mouse state
          * so a held mouse doesn't accumulate deltas across the pause. */
         if (inventory_open) {
-            inventory_cursor_x += inp.mouse_dx * INVENTORY_CURSOR_SPEED;
-            inventory_cursor_y += inp.mouse_dy * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_x += inp.cursor_dx * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_y += inp.cursor_dy * INVENTORY_CURSOR_SPEED;
             if (inventory_cursor_x < INVENTORY_CURSOR_MIN_X)
                 inventory_cursor_x = INVENTORY_CURSOR_MIN_X;
             if (inventory_cursor_y < INVENTORY_CURSOR_MIN_Y)
@@ -2731,7 +2745,7 @@ int main(void)
                     } else {
                         chat_log(&chat, "selected: %d %s x%u",
                                  selected_hotbar_slot + 1,
-                                 BlockRegistry[stack->block].name,
+                                 item_name(stack->item),
                                  (unsigned)stack->count);
                     }
                 } else {
@@ -2832,18 +2846,26 @@ int main(void)
                                                         selected_hotbar_slot);
 
                     if (!item_stack_is_empty(held_stack)) {
-                        BlockID held = held_stack->block;
-                        PlaceResult pr = try_place_targeted_block(&world, &cam,
-                                                                  &player, held);
+                        ItemID held_item = held_stack->item;
 
-                        if (pr == PLACE_OK) {
-                            survival_inventory_remove_storage(&survival_inventory,
-                                                              selected_hotbar_slot,
-                                                              1);
+                        if (item_is_placeable_block(held_item)) {
+                            BlockID held = item_place_block(held_item);
+                            PlaceResult pr =
+                                try_place_targeted_block(&world, &cam,
+                                                        &player, held);
+
+                            if (pr == PLACE_OK) {
+                                survival_inventory_remove_storage(&survival_inventory,
+                                                                  selected_hotbar_slot,
+                                                                  1);
+                            } else if (debug_enabled) {
+                                chat_log(&chat, "place %s -> %s",
+                                         item_name(held_item),
+                                         place_result_name(pr));
+                            }
                         } else if (debug_enabled) {
-                            chat_log(&chat, "place %s -> %s",
-                                     BlockRegistry[held].name,
-                                     place_result_name(pr));
+                            chat_log(&chat, "%s is not placeable",
+                                     item_name(held_item));
                         }
                     }
                 }
@@ -2902,8 +2924,8 @@ int main(void)
          * next frame's normal input handling. */
         if (!paused && inventory_open) {
             input_update(&inp);
-            inventory_cursor_x += inp.mouse_dx * INVENTORY_CURSOR_SPEED;
-            inventory_cursor_y += inp.mouse_dy * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_x += inp.cursor_dx * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_y += inp.cursor_dy * INVENTORY_CURSOR_SPEED;
             if (inventory_cursor_x < INVENTORY_CURSOR_MIN_X)
                 inventory_cursor_x = INVENTORY_CURSOR_MIN_X;
             if (inventory_cursor_y < INVENTORY_CURSOR_MIN_Y)

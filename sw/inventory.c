@@ -5,8 +5,8 @@
 typedef struct {
     uint8_t width;
     uint8_t height;
-    BlockID inputs[SURVIVAL_CRAFT_SLOT_COUNT];
-    BlockID output;
+    ItemID inputs[SURVIVAL_CRAFT_SLOT_COUNT];
+    ItemID output;
     uint8_t output_count;
 } CraftRecipe;
 
@@ -14,56 +14,88 @@ static const CraftRecipe CRAFT_RECIPES[] = {
     {
         .width = 1,
         .height = 1,
-        .inputs = { BLOCK_WOOD, BLOCK_AIR, BLOCK_AIR, BLOCK_AIR },
-        .output = BLOCK_PLANKS,
+        .inputs = { (ItemID)BLOCK_WOOD, ITEM_NONE, ITEM_NONE, ITEM_NONE },
+        .output = (ItemID)BLOCK_PLANKS,
+        .output_count = 4,
+    },
+    {
+        .width = 1,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    ITEM_NONE, ITEM_NONE },
+        .output = ITEM_STICK,
         .output_count = 4,
     },
     {
         .width = 2,
         .height = 2,
-        .inputs = { BLOCK_SAND, BLOCK_SAND, BLOCK_SAND, BLOCK_SAND },
-        .output = BLOCK_SANDSTONE,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS },
+        .output = (ItemID)BLOCK_CRAFTING_TABLE,
+        .output_count = 1,
+    },
+    {
+        .width = 2,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_PLANKS, ITEM_STICK,
+                    (ItemID)BLOCK_PLANKS, ITEM_STICK },
+        .output = (ItemID)BLOCK_DOOR,
+        .output_count = 1,
+    },
+    {
+        .width = 2,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND,
+                    (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND },
+        .output = (ItemID)BLOCK_SANDSTONE,
         .output_count = 1,
     },
 };
+
+static bool item_id_valid(ItemID item)
+{
+    if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
+        return true;
+
+    return item == ITEM_STICK;
+}
 
 void item_stack_clear(ItemStack *stack)
 {
     if (!stack)
         return;
 
-    stack->block = BLOCK_AIR;
+    stack->item = ITEM_NONE;
     stack->count = 0;
 }
 
 bool item_stack_is_empty(const ItemStack *stack)
 {
-    return !stack || stack->count == 0 || stack->block <= BLOCK_AIR ||
-           stack->block >= NUM_BLOCK_TYPES;
+    return !stack || stack->count == 0 || !item_id_valid(stack->item);
 }
 
-bool item_stack_can_merge(const ItemStack *stack, BlockID block)
+bool item_stack_can_merge(const ItemStack *stack, ItemID item)
 {
-    if (block <= BLOCK_AIR || block >= NUM_BLOCK_TYPES)
+    if (!item_id_valid(item))
         return false;
     if (item_stack_is_empty(stack))
         return true;
 
-    return stack->block == block && stack->count < ITEM_STACK_MAX;
+    return stack->item == item && stack->count < ITEM_STACK_MAX;
 }
 
-int item_stack_add(ItemStack *stack, BlockID block, int count)
+int item_stack_add(ItemStack *stack, ItemID item, int count)
 {
     int room;
     int moved;
 
-    if (!stack || block <= BLOCK_AIR || block >= NUM_BLOCK_TYPES || count <= 0)
+    if (!stack || !item_id_valid(item) || count <= 0)
         return count;
-    if (!item_stack_can_merge(stack, block))
+    if (!item_stack_can_merge(stack, item))
         return count;
 
     if (item_stack_is_empty(stack)) {
-        stack->block = block;
+        stack->item = item;
         stack->count = 0;
     }
 
@@ -89,6 +121,39 @@ int item_stack_remove(ItemStack *stack, int count)
     return removed;
 }
 
+const char *item_name(ItemID item)
+{
+    if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
+        return BlockRegistry[(BlockID)item].name;
+    if (item == ITEM_STICK)
+        return "Stick";
+
+    return "Unknown";
+}
+
+uint8_t item_texture_id(ItemID item)
+{
+    if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
+        return block_face_texture_id((BlockID)item, FACE_FRONT);
+    if (item == ITEM_STICK)
+        return TEX_TILE_WOOD_PLANK;
+
+    return 0;
+}
+
+bool item_is_placeable_block(ItemID item)
+{
+    return item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES;
+}
+
+BlockID item_place_block(ItemID item)
+{
+    if (!item_is_placeable_block(item))
+        return BLOCK_AIR;
+
+    return (BlockID)item;
+}
+
 void survival_inventory_init(SurvivalInventory *inv)
 {
     if (!inv)
@@ -103,23 +168,31 @@ void survival_inventory_init(SurvivalInventory *inv)
     item_stack_clear(&inv->cursor);
 }
 
-int survival_inventory_add_block(SurvivalInventory *inv, BlockID block, int count)
+int survival_inventory_add_item(SurvivalInventory *inv, ItemID item, int count)
 {
-    if (!inv || block <= BLOCK_AIR || block >= NUM_BLOCK_TYPES || count <= 0)
+    if (!inv || !item_id_valid(item) || count <= 0)
         return count;
 
     for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT && count > 0; i++) {
         if (!item_stack_is_empty(&inv->storage[i]) &&
-            inv->storage[i].block == block)
-            count = item_stack_add(&inv->storage[i], block, count);
+            inv->storage[i].item == item)
+            count = item_stack_add(&inv->storage[i], item, count);
     }
 
     for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT && count > 0; i++) {
         if (item_stack_is_empty(&inv->storage[i]))
-            count = item_stack_add(&inv->storage[i], block, count);
+            count = item_stack_add(&inv->storage[i], item, count);
     }
 
     return count;
+}
+
+int survival_inventory_add_block(SurvivalInventory *inv, BlockID block, int count)
+{
+    if (block <= BLOCK_AIR || block >= NUM_BLOCK_TYPES)
+        return count;
+
+    return survival_inventory_add_item(inv, (ItemID)block, count);
 }
 
 bool survival_inventory_remove_storage(SurvivalInventory *inv, int slot, int count)
@@ -145,7 +218,7 @@ static bool craft_recipe_matches_at(const SurvivalInventory *inv,
             bool inside =
                 x >= offset_x && x < offset_x + recipe->width &&
                 y >= offset_y && y < offset_y + recipe->height;
-            BlockID want = BLOCK_AIR;
+            ItemID want = ITEM_NONE;
             const ItemStack *have = &inv->craft[grid_index];
 
             if (inside) {
@@ -154,10 +227,10 @@ static bool craft_recipe_matches_at(const SurvivalInventory *inv,
                 want = recipe->inputs[ry * recipe->width + rx];
             }
 
-            if (want == BLOCK_AIR) {
+            if (want == ITEM_NONE) {
                 if (!item_stack_is_empty(have))
                     return false;
-            } else if (item_stack_is_empty(have) || have->block != want) {
+            } else if (item_stack_is_empty(have) || have->item != want) {
                 return false;
             }
         }
@@ -195,7 +268,7 @@ void survival_inventory_refresh_craft_output(SurvivalInventory *inv)
         if (!craft_recipe_matches(inv, recipe))
             continue;
 
-        inv->craft_output.block = recipe->output;
+        inv->craft_output.item = recipe->output;
         inv->craft_output.count = recipe->output_count;
         return;
     }
@@ -228,7 +301,7 @@ static bool cursor_accepts_stack(const ItemStack *cursor, const ItemStack *stack
         return false;
     if (item_stack_is_empty(cursor))
         return true;
-    if (cursor->block != stack->block)
+    if (cursor->item != stack->item)
         return false;
 
     return (int)cursor->count + (int)stack->count <= ITEM_STACK_MAX;
@@ -274,8 +347,8 @@ static bool click_stack_left(SurvivalInventory *inv, ItemStack *slot)
         return true;
     }
 
-    if (slot->block == inv->cursor.block && slot->count < ITEM_STACK_MAX) {
-        int remaining = item_stack_add(slot, inv->cursor.block, inv->cursor.count);
+    if (slot->item == inv->cursor.item && slot->count < ITEM_STACK_MAX) {
+        int remaining = item_stack_add(slot, inv->cursor.item, inv->cursor.count);
 
         inv->cursor.count = (uint8_t)remaining;
         if (remaining == 0)
@@ -301,22 +374,22 @@ static bool click_stack_right(SurvivalInventory *inv, ItemStack *slot)
             return false;
 
         take = ((int)slot->count + 1) / 2;
-        inv->cursor.block = slot->block;
+        inv->cursor.item = slot->item;
         inv->cursor.count = 0;
-        item_stack_add(&inv->cursor, slot->block, take);
+        item_stack_add(&inv->cursor, slot->item, take);
         item_stack_remove(slot, take);
         return true;
     }
 
     if (item_stack_is_empty(slot)) {
-        slot->block = inv->cursor.block;
+        slot->item = inv->cursor.item;
         slot->count = 1;
         item_stack_remove(&inv->cursor, 1);
         return true;
     }
 
-    if (slot->block == inv->cursor.block && slot->count < ITEM_STACK_MAX) {
-        item_stack_add(slot, inv->cursor.block, 1);
+    if (slot->item == inv->cursor.item && slot->count < ITEM_STACK_MAX) {
+        item_stack_add(slot, inv->cursor.item, 1);
         item_stack_remove(&inv->cursor, 1);
         return true;
     }
@@ -365,7 +438,7 @@ const ItemStack *survival_inventory_hotbar_stack(const SurvivalInventory *inv,
     return &inv->storage[slot];
 }
 
-BlockID survival_drop_for_block(BlockID block)
+ItemID survival_drop_for_block(BlockID block)
 {
     switch (block) {
     case BLOCK_AIR:
@@ -373,14 +446,14 @@ BlockID survival_drop_for_block(BlockID block)
     case BLOCK_WATER_FLOW:
     case BLOCK_LAVA:
     case BLOCK_LAVA_FLOW:
-        return BLOCK_AIR;
+        return ITEM_NONE;
     case BLOCK_GRASS:
-        return BLOCK_DIRT;
+        return (ItemID)BLOCK_DIRT;
     case BLOCK_STONE:
-        return BLOCK_COBBLESTONE;
+        return (ItemID)BLOCK_COBBLESTONE;
     default:
         if (block > BLOCK_AIR && block < NUM_BLOCK_TYPES)
-            return block;
-        return BLOCK_AIR;
+            return (ItemID)block;
+        return ITEM_NONE;
     }
 }

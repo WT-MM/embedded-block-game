@@ -192,6 +192,20 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_YELLOW_FLOWER], TEX_TILE_YELLOW_FLOWER);
     BlockRegistry[BLOCK_YELLOW_FLOWER].hardness_seconds = 0.1f;
     BlockRegistry[BLOCK_YELLOW_FLOWER].render_model = BLOCK_RENDER_CROSS;
+
+    BlockRegistry[BLOCK_CRAFTING_TABLE].id = BLOCK_CRAFTING_TABLE;
+    BlockRegistry[BLOCK_CRAFTING_TABLE].name = "Crafting Table";
+    set_all_faces(&BlockRegistry[BLOCK_CRAFTING_TABLE], TEX_TILE_WOOD_PLANK);
+    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_TOP] = TEX_TILE_WOOD_TOP;
+    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_FRONT] = TEX_TILE_WOOD_SIDE;
+    BlockRegistry[BLOCK_CRAFTING_TABLE].hardness_seconds = 1.05f;
+
+    BlockRegistry[BLOCK_DOOR].id = BLOCK_DOOR;
+    BlockRegistry[BLOCK_DOOR].name = "Door";
+    set_all_faces(&BlockRegistry[BLOCK_DOOR], TEX_TILE_WOOD_PLANK);
+    BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_FRONT] = TEX_TILE_WOOD_SIDE;
+    BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_BACK] = TEX_TILE_WOOD_SIDE;
+    BlockRegistry[BLOCK_DOOR].hardness_seconds = 0.9f;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)

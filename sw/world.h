@@ -13,6 +13,7 @@
 #define WORLD_SAVE_PATH_MAX 512
 #define CHUNK_FACE_CROSS_A ((uint8_t)NUM_FACES)
 #define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
+#define WORLD_MAX_FALLING_BLOCKS 256
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
@@ -99,6 +100,15 @@ typedef struct {
     _Atomic(ChunkMesh *) retired_mesh;
 } Chunk;
 
+typedef struct {
+    bool active;
+    BlockID type;
+    int wx;
+    int origin_y;
+    int wz;
+    float y;
+} FallingBlock;
+
 typedef struct VoxelWorld {
     Chunk *chunks;
     int chunk_count;
@@ -131,6 +141,8 @@ typedef struct VoxelWorld {
     _Atomic int foreground_lock_requests;
     uint64_t last_stream_lock_wait_ns;
     uint64_t last_stream_body_ns;
+    FallingBlock falling_blocks[WORLD_MAX_FALLING_BLOCKS];
+    int falling_block_count;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting
@@ -178,9 +190,12 @@ const char *world_biome_name(WorldBiome biome);
 /* Minecraft-style environment simulation tick. Call every ~250 ms (5 game
  * ticks). Water/lava sources spread to adjacent air downward then laterally
  * up to 7 blocks. Flow blocks evaporate when they lose upstream support from
- * fluid above, a source, or a lower-level flow. Gravity blocks (sand/gravel)
- * fall one voxel per tick. Returns true if any block changed. */
+ * fluid above, a source, or a lower-level flow. Unsupported gravity blocks
+ * (sand/gravel) leave the integer grid and become smooth falling entities.
+ * Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
+bool world_update_falling_blocks(VoxelWorld *world, float dt);
+int world_falling_block_count(const VoxelWorld *world);
 
 /* Diagnostic counters from the most recent world_water_tick. Useful for
  * verifying on hardware whether the simulation finds sources / spreads /

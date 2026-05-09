@@ -19,6 +19,7 @@
 #define HW_BAND_HASH_OFFSET UINT64_C(14695981039346656037)
 #define HW_BAND_HASH_PRIME  UINT64_C(1099511628211)
 #define HW_RECT_STRIDE_MAX_WIDTH 320u
+#define HW_SCENE_RECT_PAD_PIXELS 1
 
 typedef enum {
     GPU_BACKEND_HW = 0,
@@ -787,6 +788,22 @@ static void bin_note_scene_rect(struct descriptor_bin *bin, unsigned band,
     int clipped_x_min = diag_clamp_x((int16_t)x_min);
     int clipped_x_max = diag_clamp_x((int16_t)x_max);
 
+    /* The SDRAM dirty-rect path reuses unchanged rows from the physical back
+     * buffer. A one-sample mismatch between descriptor bbox math and the RTL's
+     * edge/depth pipeline can otherwise leave a stale one-pixel scanline at the
+     * top or bottom of a moving rect, which appears as a perfect horizontal
+     * streak across the final display once wide rects are expanded to full
+     * width. Flush a 1px safety border; the extra area is tiny compared with
+     * falling back to full-band submits. */
+    clipped_x_min -= HW_SCENE_RECT_PAD_PIXELS;
+    clipped_x_max += HW_SCENE_RECT_PAD_PIXELS;
+    local_min -= HW_SCENE_RECT_PAD_PIXELS;
+    local_max += HW_SCENE_RECT_PAD_PIXELS;
+
+    if (clipped_x_min < 0)
+        clipped_x_min = 0;
+    if (clipped_x_max >= (int)VOXEL_RENDER_WIDTH)
+        clipped_x_max = (int)VOXEL_RENDER_WIDTH - 1;
     if (local_min < 0)
         local_min = 0;
     if (local_max >= (int)VOXEL_BAND_CACHE_HEIGHT)

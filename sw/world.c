@@ -3358,6 +3358,9 @@ bool world_flush(VoxelWorld *world)
     if (!world || !world->persistence_enabled)
         return true;
 
+    if (world->falling_block_count > 0)
+        world_update_falling_blocks(world, 60.0f);
+
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
 
@@ -3569,10 +3572,10 @@ int world_chunk_capacity(const VoxelWorld *world)
  * cells push fluid out by one ring. New flows placed during this tick are NOT
  * in the snapshot, so they wait until the next tick to spread.
  *
- * Sand and gravel are updated after fluids and fall by one voxel per tick.
+ * Sand and gravel are updated after fluids and become smooth falling entities.
  * ----------------------------------------------------------------------- */
 #define WATER_MAX_LEVEL          7   /* Minecraft level cap; level 7 = terminal */
-#define FALLING_BLOCK_STEPS_PER_TICK 2
+#define FALLING_BLOCK_SPEED_BLOCKS_PER_SEC (2.0f / 0.75f)
 /* Active-cell snapshot capacity. Each entry is 16 bytes, so 4096 entries =
  * 64 KB of static .bss - cheap, and well over the ~225 cells of a fully-
  * developed 7-radius pool plus typical natural-ocean coastline. */
@@ -3879,6 +3882,105 @@ static bool fluid_tick_locked(VoxelWorld *world,
     return changed;
 }
 
+static bool falling_block_active_below_locked(const VoxelWorld *world,
+                                              int wx, int wy, int wz)
+{
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+        const FallingBlock *block = &world->falling_blocks[i];
+
+        if (!block->active)
+            continue;
+        if (block->wx == wx && block->wz == wz && block->y < (float)wy)
+            return true;
+    }
+
+    return false;
+}
+
+static FallingBlock *falling_block_alloc_locked(VoxelWorld *world)
+{
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+        if (!world->falling_blocks[i].active)
+            return &world->falling_blocks[i];
+    }
+
+    return NULL;
+}
+
+static bool falling_block_spawn_locked(VoxelWorld *world,
+                                       int wx, int wy, int wz,
+                                       BlockID type)
+{
+    FallingBlock *falling = falling_block_alloc_locked(world);
+
+    if (!falling)
+        return false;
+    if (!world_set_block_locked(world, wx, wy, wz, BLOCK_AIR))
+        return false;
+
+    *falling = (FallingBlock){
+        .active = true,
+        .type = type,
+        .wx = wx,
+        .origin_y = wy,
+        .wz = wz,
+        .y = (float)wy,
+    };
+    world->falling_block_count++;
+    return true;
+}
+
+static int falling_block_target_y_locked(const VoxelWorld *world,
+                                         const FallingBlock *falling)
+{
+    int target_y = (int)floorf(falling->y);
+
+    if (target_y >= WORLD_CHUNK_HEIGHT)
+        target_y = WORLD_CHUNK_HEIGHT - 1;
+    if (target_y < 0)
+        target_y = 0;
+
+    while (target_y > 0 &&
+           world_get_block(world, falling->wx, target_y - 1,
+                           falling->wz) == BLOCK_AIR) {
+        target_y--;
+    }
+
+    while (target_y < WORLD_CHUNK_HEIGHT &&
+           world_get_block(world, falling->wx, target_y, falling->wz) !=
+               BLOCK_AIR) {
+        target_y++;
+    }
+
+    return target_y < WORLD_CHUNK_HEIGHT ? target_y : -1;
+}
+
+static bool falling_block_deactivate_locked(VoxelWorld *world,
+                                            FallingBlock *falling)
+{
+    if (!falling->active)
+        return false;
+
+    falling->active = false;
+    if (world->falling_block_count > 0)
+        world->falling_block_count--;
+    return true;
+}
+
+static bool falling_block_settle_locked(VoxelWorld *world,
+                                        FallingBlock *falling)
+{
+    int target_y = falling_block_target_y_locked(world, falling);
+    BlockID type = falling->type;
+    int wx = falling->wx;
+    int wz = falling->wz;
+
+    falling_block_deactivate_locked(world, falling);
+    if (target_y < 0)
+        return false;
+    return world_set_block_locked(world, wx, target_y, wz, type);
+}
+
 static bool falling_blocks_tick_locked(VoxelWorld *world, WaterTickStats *stats)
 {
     bool changed = false;
@@ -3902,13 +4004,11 @@ static bool falling_blocks_tick_locked(VoxelWorld *world, WaterTickStats *stats)
                     int wz = oz + z;
                     if (world_get_block(world, wx, y - 1, wz) != BLOCK_AIR)
                         continue;
+                    if (falling_block_active_below_locked(world, wx, y, wz))
+                        continue;
 
-                    if (!world_set_block_locked(world, wx, y - 1, wz, id))
+                    if (!falling_block_spawn_locked(world, wx, y, wz, id))
                         continue;
-                    if (!world_set_block_locked(world, wx, y, wz, BLOCK_AIR)) {
-                        world_set_block_locked(world, wx, y - 1, wz, BLOCK_AIR);
-                        continue;
-                    }
 
                     changed = true;
                     if (stats)
@@ -3932,10 +4032,66 @@ bool world_water_tick(VoxelWorld *world)
     world_lock(world);
     changed |= fluid_tick_locked(world, &WATER_FLUID, &stats);
     changed |= fluid_tick_locked(world, &LAVA_FLUID, &stats);
-    for (int i = 0; i < FALLING_BLOCK_STEPS_PER_TICK; i++)
-        changed |= falling_blocks_tick_locked(world, &stats);
+    changed |= falling_blocks_tick_locked(world, &stats);
     world_unlock(world);
 
     g_water_tick_stats = stats;
     return changed;
+}
+
+bool world_update_falling_blocks(VoxelWorld *world, float dt)
+{
+    bool changed = false;
+
+    if (!world || dt <= 0.0f)
+        return false;
+
+    world_lock(world);
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+        FallingBlock *falling = &world->falling_blocks[i];
+        int chunk_x;
+        int chunk_z;
+        const Chunk *chunk;
+        int target_y;
+        float next_y;
+
+        if (!falling->active)
+            continue;
+
+        chunk_x = floor_div(falling->wx, WORLD_CHUNK_SIZE);
+        chunk_z = floor_div(falling->wz, WORLD_CHUNK_SIZE);
+        chunk = world_get_chunk(world, chunk_x, chunk_z);
+        if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED)) {
+            falling_block_deactivate_locked(world, falling);
+            changed = true;
+            continue;
+        }
+
+        target_y = falling_block_target_y_locked(world, falling);
+        if (target_y < 0) {
+            falling_block_deactivate_locked(world, falling);
+            changed = true;
+            continue;
+        }
+
+        next_y = falling->y - FALLING_BLOCK_SPEED_BLOCKS_PER_SEC * dt;
+        if (next_y <= (float)target_y) {
+            falling->y = (float)target_y;
+            changed |= falling_block_settle_locked(world, falling);
+            continue;
+        }
+
+        falling->y = next_y;
+        changed = true;
+    }
+    world_unlock(world);
+
+    return changed;
+}
+
+int world_falling_block_count(const VoxelWorld *world)
+{
+    if (!world)
+        return 0;
+    return world->falling_block_count;
 }

@@ -1485,16 +1485,6 @@ static bool merged_emit_repeat_uv_enabled(void)
     return cached != 0;
 }
 
-static bool adaptive_merged_split_enabled(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        const char *env = getenv("BLOCK_GAME_ADAPTIVE_MERGED_SPLIT");
-        cached = !(env && env[0] == '0' && env[1] == '\0');
-    }
-    return cached != 0;
-}
-
 static Vec3 merged_face_sub_origin(Vec3 block_pos, BlockFace face,
                                    int du, int dv)
 {
@@ -1520,110 +1510,11 @@ static Vec3 merged_face_sub_origin(Vec3 block_pos, BlockFace face,
     return block_pos;
 }
 
-static float projected_quad_area_abs(const Vertex2D v[4])
-{
-    return fabsf(quad_signed_area(v));
-}
-
-static bool projected_face_bbox(RenderContext *ctx, const CameraVertex face_cam[4],
-                                float *width, float *height, float *bbox_area,
-                                float *poly_area)
-{
-    Vertex2D projected[4];
-    float x_min, x_max, y_min, y_max;
-
-    for (int i = 0; i < 4; i++) {
-        if (!project_camera_vertex(ctx, &face_cam[i], &projected[i]))
-            return false;
-    }
-
-    x_min = x_max = projected[0].x;
-    y_min = y_max = projected[0].y;
-    for (int i = 1; i < 4; i++) {
-        if (projected[i].x < x_min) x_min = projected[i].x;
-        if (projected[i].x > x_max) x_max = projected[i].x;
-        if (projected[i].y < y_min) y_min = projected[i].y;
-        if (projected[i].y > y_max) y_max = projected[i].y;
-    }
-
-    if (x_min < VIEW_X_MIN) x_min = VIEW_X_MIN;
-    if (y_min < VIEW_Y_MIN) y_min = VIEW_Y_MIN;
-    if (x_max > VIEW_X_MAX) x_max = VIEW_X_MAX;
-    if (y_max > VIEW_Y_MAX) y_max = VIEW_Y_MAX;
-
-    if (x_max <= x_min || y_max <= y_min)
-        return false;
-
-    *width = x_max - x_min;
-    *height = y_max - y_min;
-    *bbox_area = *width * *height;
-    *poly_area = projected_quad_area_abs(projected);
-    return *poly_area > 1.0f;
-}
-
-static bool should_split_merged_face(RenderContext *ctx,
-                                     const CameraVertex face_cam[4],
-                                     BlockID type,
-                                     int u_size, int v_size,
-                                     int *split_u, int *split_v)
-{
-    enum {
-        MIN_BBOX_AREA = 8192,
-        TARGET_SPAN_PX = 96,
-        MAX_AXIS_SPLITS = 4,
-    };
-    float width, height, bbox_area, poly_area;
-    float waste_ratio;
-    int su = 1, sv = 1;
-
-    *split_u = 1;
-    *split_v = 1;
-
-    if (!adaptive_merged_split_enabled())
-        return false;
-    if (block_is_translucent(type))
-        return false;
-    if (u_size <= 1 && v_size <= 1)
-        return false;
-    if (!projected_face_bbox(ctx, face_cam, &width, &height,
-                             &bbox_area, &poly_area))
-        return false;
-
-    waste_ratio = bbox_area / poly_area;
-    if (bbox_area < (float)MIN_BBOX_AREA || waste_ratio < 1.20f)
-        return false;
-
-    if (u_size > 1 && width > (float)TARGET_SPAN_PX)
-        su = (int)ceilf(width / (float)TARGET_SPAN_PX);
-    if (v_size > 1 && height > (float)TARGET_SPAN_PX)
-        sv = (int)ceilf(height / (float)TARGET_SPAN_PX);
-
-    if (su > MAX_AXIS_SPLITS) su = MAX_AXIS_SPLITS;
-    if (sv > MAX_AXIS_SPLITS) sv = MAX_AXIS_SPLITS;
-    if (su > u_size) su = u_size;
-    if (sv > v_size) sv = v_size;
-    if (su * sv <= 1)
-        return false;
-    if (ctx->n_quads + su * sv > MAX_QUADS_IN_FLIGHT)
-        return false;
-
-    *split_u = su;
-    *split_v = sv;
-    return true;
-}
-
 static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
                                        Vec3 block_pos, BlockFace face,
                                        int u_size, int v_size,
                                        uint8_t height_eighths,
                                        uint8_t light_flags);
-
-static void emit_merged_block_face_lit_inner(RenderContext *ctx, BlockID type,
-                                             Vec3 block_pos, BlockFace face,
-                                             int u_size, int v_size,
-                                             uint8_t height_eighths,
-                                             uint8_t light_flags,
-                                             bool allow_adaptive_split);
 
 static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
                                              Vec3 block_pos, BlockFace face,
@@ -1633,49 +1524,19 @@ static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
     for (int dv = 0; dv < v_size; dv++) {
         for (int du = 0; du < u_size; du++) {
             Vec3 unit = merged_face_sub_origin(block_pos, face, du, dv);
-            emit_merged_block_face_lit_inner(ctx, type, unit, face,
-                                             1, 1, 8, light_flags, false);
+            emit_merged_block_face_lit(ctx, type, unit, face,
+                                       1, 1, 8, light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return;
         }
     }
 }
 
-static void split_merged_face(RenderContext *ctx, BlockID type,
-                              Vec3 block_pos, BlockFace face,
-                              int u_size, int v_size,
-                              uint8_t height_eighths,
-                              uint8_t light_flags,
-                              int split_u, int split_v)
-{
-    int step_u = (u_size + split_u - 1) / split_u;
-    int step_v = (v_size + split_v - 1) / split_v;
-
-    for (int dv = 0; dv < v_size; dv += step_v) {
-        int sub_v = v_size - dv;
-        if (sub_v > step_v)
-            sub_v = step_v;
-        for (int du = 0; du < u_size; du += step_u) {
-            int sub_u = u_size - du;
-            Vec3 sub_origin;
-            if (sub_u > step_u)
-                sub_u = step_u;
-            sub_origin = merged_face_sub_origin(block_pos, face, du, dv);
-            emit_merged_block_face_lit_inner(ctx, type, sub_origin, face,
-                                             sub_u, sub_v, height_eighths,
-                                             light_flags, false);
-            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
-                return;
-        }
-    }
-}
-
-static void emit_merged_block_face_lit_inner(RenderContext *ctx, BlockID type,
-                                             Vec3 block_pos, BlockFace face,
-                                             int u_size, int v_size,
-                                             uint8_t height_eighths,
-                                             uint8_t light_flags,
-                                             bool allow_adaptive_split)
+static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
+                                       Vec3 block_pos, BlockFace face,
+                                       int u_size, int v_size,
+                                       uint8_t height_eighths,
+                                       uint8_t light_flags)
 {
     static const float tile_span = 16.0f;
     Vec3 face_world[4];
@@ -1683,7 +1544,6 @@ static void emit_merged_block_face_lit_inner(RenderContext *ctx, BlockID type,
     uint8_t face_flags;
     uint8_t texture_id;
     uint8_t base_tile;
-    int split_u, split_v;
 
     if (type == BLOCK_AIR)
         return;
@@ -1725,14 +1585,6 @@ static void emit_merged_block_face_lit_inner(RenderContext *ctx, BlockID type,
     if (camera_quad_outside_view(ctx, face_cam))
         return;
 
-    if (allow_adaptive_split &&
-        should_split_merged_face(ctx, face_cam, type, u_size, v_size,
-                                 &split_u, &split_v)) {
-        split_merged_face(ctx, type, block_pos, face, u_size, v_size,
-                          height_eighths, light_flags, split_u, split_v);
-        return;
-    }
-
     base_tile = block_face_texture_id(type, face);
     texture_id = choose_face_texture_lod(ctx, base_tile, face_cam);
     if (u_size > 1 || v_size > 1)
@@ -1759,17 +1611,6 @@ static void emit_merged_block_face_lit_inner(RenderContext *ctx, BlockID type,
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
-}
-
-static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
-                                       Vec3 block_pos, BlockFace face,
-                                       int u_size, int v_size,
-                                       uint8_t height_eighths,
-                                       uint8_t light_flags)
-{
-    emit_merged_block_face_lit_inner(ctx, type, block_pos, face,
-                                     u_size, v_size, height_eighths,
-                                     light_flags, true);
 }
 
 static void cross_face_vertices(Vec3 block_pos, uint8_t face,
@@ -2373,6 +2214,48 @@ int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
     return ctx->n_quads - before;
 }
 
+static bool falling_block_hides_mesh_cell(const VoxelWorld *world,
+                                          int wx, int wy, int wz)
+{
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+        const FallingBlock *falling = &world->falling_blocks[i];
+
+        if (!falling->active)
+            continue;
+        if (falling->wx == wx &&
+            falling->origin_y == wy &&
+            falling->wz == wz)
+            return true;
+    }
+
+    return false;
+}
+
+static int renderer_draw_falling_blocks(RenderContext *ctx,
+                                        const VoxelWorld *world)
+{
+    int before = ctx->n_quads;
+
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+        const FallingBlock *falling = &world->falling_blocks[i];
+        if (!falling->active)
+            continue;
+
+        Vec3 block_pos = {
+            (float)falling->wx,
+            falling->y,
+            (float)falling->wz,
+        };
+        for (int f = 0; f < NUM_FACES; f++) {
+            emit_block_face(ctx, falling->type, block_pos, (BlockFace)f);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                return ctx->n_quads - before;
+        }
+    }
+
+    return ctx->n_quads - before;
+}
+
 int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                         float time_seconds)
 {
@@ -2439,19 +2322,22 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
         const ChunkMesh *mesh = candidates[i].mesh;
-        const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
-        const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
 
         for (int face_index = 0; face_index < mesh->face_count; face_index++) {
             const ChunkFace *face = &mesh->faces[face_index];
             BlockID id = (BlockID)face->type;
+            int wxi = chunk->chunk_x * WORLD_CHUNK_SIZE + (int)face->x;
+            int wyi = (int)face->y;
+            int wzi = chunk->chunk_z * WORLD_CHUNK_SIZE + (int)face->z;
 
             if (block_is_translucent(id))
                 continue;
+            if (falling_block_hides_mesh_cell(world, wxi, wyi, wzi))
+                continue;
 
-            float wx = chunk_ox + (float)face->x;
-            float wy = (float)face->y;
-            float wz = chunk_oz + (float)face->z;
+            float wx = (float)wxi;
+            float wy = (float)wyi;
+            float wz = (float)wzi;
             if (block_render_model(id) == BLOCK_RENDER_CROSS) {
                 Vec3 block_pos = { wx, wy, wz };
                 uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
@@ -2493,6 +2379,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                 return ctx->n_quads - before;
         }
     }
+
+    renderer_draw_falling_blocks(ctx, world);
+    if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+        return ctx->n_quads - before;
 
     /*
      * Translucent pass: collect every glass face, sort back-to-front by

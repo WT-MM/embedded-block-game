@@ -13,8 +13,14 @@
     (SURVIVAL_HOTBAR_SLOT_COUNT + SURVIVAL_MAIN_SLOT_COUNT)
 #define SURVIVAL_CRAFT_SLOT_COUNT 4
 
+typedef enum {
+    ITEM_NONE = 0,
+    ITEM_STICK = NUM_BLOCK_TYPES,
+    NUM_ITEM_TYPES,
+} ItemID;
+
 typedef struct {
-    BlockID block;
+    ItemID item;
     uint8_t count;
 } ItemStack;
 
@@ -34,11 +40,16 @@ typedef struct {
 
 void item_stack_clear(ItemStack *stack);
 bool item_stack_is_empty(const ItemStack *stack);
-bool item_stack_can_merge(const ItemStack *stack, BlockID block);
-int item_stack_add(ItemStack *stack, BlockID block, int count);
+bool item_stack_can_merge(const ItemStack *stack, ItemID item);
+int item_stack_add(ItemStack *stack, ItemID item, int count);
 int item_stack_remove(ItemStack *stack, int count);
+const char *item_name(ItemID item);
+uint8_t item_texture_id(ItemID item);
+bool item_is_placeable_block(ItemID item);
+BlockID item_place_block(ItemID item);
 
 void survival_inventory_init(SurvivalInventory *inv);
+int survival_inventory_add_item(SurvivalInventory *inv, ItemID item, int count);
 int survival_inventory_add_block(SurvivalInventory *inv, BlockID block, int count);
 bool survival_inventory_remove_storage(SurvivalInventory *inv, int slot, int count);
 void survival_inventory_refresh_craft_output(SurvivalInventory *inv);
@@ -49,6 +60,6 @@ bool survival_inventory_click(SurvivalInventory *inv,
 const ItemStack *survival_inventory_hotbar_stack(const SurvivalInventory *inv,
                                                  int slot);
 
-BlockID survival_drop_for_block(BlockID block);
+ItemID survival_drop_for_block(BlockID block);
 
 #endif

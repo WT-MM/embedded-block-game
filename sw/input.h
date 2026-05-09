@@ -54,6 +54,8 @@ typedef struct {
 
     float mouse_dx;
     float mouse_dy;
+    float cursor_dx;
+    float cursor_dy;
 
     /* Bytes captured while text mode is on. Printable ASCII or one of
      * INPUT_TEXT_BACKSPACE / INPUT_TEXT_ENTER. */
@@ -73,6 +75,8 @@ typedef struct {
     int _pointer_count;
     float _mouse_scale_x;
     float _mouse_scale_y;
+    float _cursor_scale_x;
+    float _cursor_scale_y;
     InputPointer _pointers[INPUT_MAX_POINTERS];
 } InputState;
 

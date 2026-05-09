@@ -186,6 +186,8 @@ static void clear_pointer_motion_state(InputState *inp)
 
     inp->mouse_dx = 0.0f;
     inp->mouse_dy = 0.0f;
+    inp->cursor_dx = 0.0f;
+    inp->cursor_dy = 0.0f;
     inp->_last_relative_motion_ns = 0;
 
     for (int i = 0; i < inp->_pointer_count; i++) {
@@ -396,6 +398,10 @@ int input_init(InputState *inp)
     inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
     inp->_mouse_scale_y =
         env_flag_enabled_default_true("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
+    inp->_cursor_scale_x =
+        env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
+    inp->_cursor_scale_y =
+        env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
         inp->_pointers[i].fd = -1;
 
@@ -413,6 +419,9 @@ int input_init(InputState *inp)
     fprintf(stderr, "input: mouse invert x=%s y=%s\n",
             inp->_mouse_scale_x < 0.0f ? "on" : "off",
             inp->_mouse_scale_y < 0.0f ? "on" : "off");
+    fprintf(stderr, "input: cursor invert x=%s y=%s\n",
+            inp->_cursor_scale_x < 0.0f ? "on" : "off",
+            inp->_cursor_scale_y < 0.0f ? "on" : "off");
     fprintf(stderr, "input: mouse capture=%s\n",
             inp->_grab_pointers ? "on" : "off");
 
@@ -552,44 +561,68 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             if (ev.value != 0)
                 inp->_last_relative_motion_ns = monotonic_time_ns();
 
-            if (ev.code == REL_X)
+            if (ev.code == REL_X) {
                 inp->mouse_dx += (float)ev.value * inp->_mouse_scale_x;
-            if (ev.code == REL_Y)
+                inp->cursor_dx += (float)ev.value * inp->_cursor_scale_x;
+            }
+            if (ev.code == REL_Y) {
                 inp->mouse_dy += (float)ev.value * inp->_mouse_scale_y;
+                inp->cursor_dy += (float)ev.value * inp->_cursor_scale_y;
+            }
         } else if (pointer && pointer->mode == INPUT_POINTER_ABS && ev.type == EV_ABS) {
             if (ev.code == ABS_X) {
                 float delta = 0.0f;
+                float cursor_delta = 0.0f;
                 bool have_delta = false;
 
                 if (pointer->have_abs_x) {
-                    delta = scale_abs_delta(ev.value - pointer->last_abs_x,
+                    int raw_delta = ev.value - pointer->last_abs_x;
+
+                    delta = scale_abs_delta(raw_delta,
                                             pointer->abs_x_min,
                                             pointer->abs_x_max,
                                             ABS_MOUSE_SPAN_X) *
                             inp->_mouse_scale_x;
+                    cursor_delta = scale_abs_delta(raw_delta,
+                                                   pointer->abs_x_min,
+                                                   pointer->abs_x_max,
+                                                   ABS_MOUSE_SPAN_X) *
+                                   inp->_cursor_scale_x;
                     have_delta = true;
                 }
                 pointer->last_abs_x = ev.value;
                 pointer->have_abs_x = true;
-                if (have_delta && absolute_motion_allowed(inp))
+                if (have_delta && absolute_motion_allowed(inp)) {
                     inp->mouse_dx += delta;
+                    inp->cursor_dx += cursor_delta;
+                }
             }
             if (ev.code == ABS_Y) {
                 float delta = 0.0f;
+                float cursor_delta = 0.0f;
                 bool have_delta = false;
 
                 if (pointer->have_abs_y) {
-                    delta = scale_abs_delta(ev.value - pointer->last_abs_y,
+                    int raw_delta = ev.value - pointer->last_abs_y;
+
+                    delta = scale_abs_delta(raw_delta,
                                             pointer->abs_y_min,
                                             pointer->abs_y_max,
                                             ABS_MOUSE_SPAN_Y) *
                             inp->_mouse_scale_y;
+                    cursor_delta = scale_abs_delta(raw_delta,
+                                                   pointer->abs_y_min,
+                                                   pointer->abs_y_max,
+                                                   ABS_MOUSE_SPAN_Y) *
+                                   inp->_cursor_scale_y;
                     have_delta = true;
                 }
                 pointer->last_abs_y = ev.value;
                 pointer->have_abs_y = true;
-                if (have_delta && absolute_motion_allowed(inp))
+                if (have_delta && absolute_motion_allowed(inp)) {
                     inp->mouse_dy += delta;
+                    inp->cursor_dy += cursor_delta;
+                }
             }
         }
     }
@@ -610,6 +643,8 @@ void input_clear_mouse(InputState *inp)
 {
     inp->mouse_dx = 0.0f;
     inp->mouse_dy = 0.0f;
+    inp->cursor_dx = 0.0f;
+    inp->cursor_dy = 0.0f;
 }
 
 bool input_consume_jump(InputState *inp)

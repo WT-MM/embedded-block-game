@@ -102,13 +102,14 @@ module voxel_gpu (
      * Tier-1 SDRAM-arbitration plan: bg flush stages words into the WR FIFO
      * during scanout-read windows, then drains them via WR_LENGTH bursts the
      * moment scanout_write_slack opens. The Sdram_WR_FIFO IP is 512 deep
-     * (sdram_local_test/Sdram_WR_FIFO.v: lpm_numwords = 512); 224 leaves
-     * 288 words of headroom for in-flight pushes after !sdram_wr_full
-     * deasserts. flush_active stays high until sdram_wr_use==0 + post-empty
-     * settling (COPY_DRAIN_CYCLES), so the back-buffer flip cannot race
-     * with words still queued in the FIFO regardless of the high-water.
+     * (sdram_local_test/Sdram_WR_FIFO.v: lpm_numwords = 512); 320 still
+     * leaves 192 words of headroom, more than a full 128-word write burst,
+     * after !sdram_wr_full deasserts. flush_active stays high until
+     * sdram_wr_use==0 + post-empty settling (COPY_DRAIN_CYCLES), so the
+     * back-buffer flip cannot race with words still queued in the FIFO
+     * regardless of the high-water.
      */
-    localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd224;
+    localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd320;
     localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
     localparam int SDRAM_ADDR_W    = 25;
     /* Flush cycles required to drain the rasterizer pipeline before
@@ -1238,9 +1239,8 @@ module voxel_gpu (
      * scanout_write_slack. The FIFO push is internal (M10K) and uses no
      * external SDRAM bus cycles — the bus only sees writes when WR_LENGTH
      * fires below, and that signal is still gated by scanout_write_slack.
-     * !sdram_wr_full is the hard backpressure gate; combined with the
-     * raised COPY_WR_FIFO_HIGH_WATER, this lets bg flush stage during
-     * scanout reads and drain in burst-ready chunks during write windows.
+     * !sdram_wr_full is the hard backpressure gate; COPY_WR_FIFO_HIGH_WATER
+     * keeps one full burst plus margin available for any in-flight pushes.
      */
     wire        bg_flush_wr_push   = bg_flush_stream_active && flush_word_pending_valid &&
                                      !cache_flush_state &&

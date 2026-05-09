@@ -20,7 +20,7 @@ reg     [`DSIZE/8-1:0]          DQM;
 
 
 // Allign the input and output data to the SDRAM control path
-always @(posedge CLK or negedge RESET_N)
+always @(posedge CLK)
 begin
         if (RESET_N == 0) 
 			DQM		<= {(`DSIZE/8){1'b1}};

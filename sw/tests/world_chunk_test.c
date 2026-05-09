@@ -441,17 +441,23 @@ int main(void)
         !world_set_block(&world, gravity_x + 1, 22, gravity_z, BLOCK_GRAVEL))
         return check_failed("gravity test fixture build failed");
     world_water_tick(&world);
-    if (world_get_block(&world, gravity_x, 22, gravity_z) != BLOCK_SAND ||
-        world_get_block(&world, gravity_x, 24, gravity_z) != BLOCK_AIR)
-        return check_failed("sand did not fall two blocks");
-    if (world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL ||
+    if (world_get_block(&world, gravity_x, 24, gravity_z) != BLOCK_AIR ||
         world_get_block(&world, gravity_x + 1, 22, gravity_z) != BLOCK_AIR)
-        return check_failed("gravel did not settle after two-block fall");
-    for (int i = 0; i < 2; i++)
-        world_water_tick(&world);
+        return check_failed("gravity blocks did not leave the integer grid");
+    if (world_falling_block_count(&world) != 2)
+        return check_failed("gravity blocks did not become falling entities");
+    world_update_falling_blocks(&world, 0.75f);
+    if (world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL)
+        return check_failed("gravel did not settle after smooth fall");
+    if (world_get_block(&world, gravity_x, 21, gravity_z) != BLOCK_AIR ||
+        world_falling_block_count(&world) != 1)
+        return check_failed("sand settled too early during smooth fall");
+    world_update_falling_blocks(&world, 0.40f);
     if (world_get_block(&world, gravity_x, 21, gravity_z) != BLOCK_SAND ||
         world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL)
         return check_failed("falling blocks did not settle above solid ground");
+    if (world_falling_block_count(&world) != 0)
+        return check_failed("falling entities did not clear after settling");
     if (!world_set_block(&world, gravity_x, 21, gravity_z, BLOCK_AIR) ||
         !world_set_block(&world, gravity_x + 1, 21, gravity_z, BLOCK_AIR) ||
         !world_set_block(&world, gravity_x, 20, gravity_z, BLOCK_AIR) ||

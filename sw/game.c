@@ -43,7 +43,7 @@
 #define HOTBAR_SLOT_COUNT 9
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
-#define SURVIVAL_BLOCK_BREAK_SECONDS 0.3f
+#define HAND_SWING_SECONDS 0.26f
 #define COMMAND_TIME_DAY_SECONDS   0.0f
 #define COMMAND_TIME_NIGHT_SECONDS 90.0f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -784,6 +784,25 @@ static bool player_intersects_block(const Player *player, int wx, int wy, int wz
            player_max_z > block_min_z && player_min_z < block_max_z;
 }
 
+static bool break_block_target(VoxelWorld *world, const BlockTarget *target)
+{
+    if (!target || !target->hit)
+        return false;
+    if (world_get_block(world, target->hit_x, target->hit_y, target->hit_z) == BLOCK_AIR)
+        return false;
+
+    if (!world_set_block(world,
+                         target->hit_x, target->hit_y, target->hit_z,
+                         BLOCK_AIR))
+        return false;
+
+    /* Route the edited chunk through the mesh worker's priority lane so
+     * the broken-block visual lands on the next frame even if the main
+     * queue carries a backlog. */
+    world_mark_chunk_mesh_edit_priority(world, target->hit_x, target->hit_z);
+    return true;
+}
+
 static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
 {
     BlockTarget target = {0};
@@ -791,15 +810,9 @@ static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
 
-    if (!world_set_block(world,
-                         target.hit_x, target.hit_y, target.hit_z,
-                         BLOCK_AIR))
+    if (!break_block_target(world, &target))
         return false;
 
-    /* Route the edited chunk through the mesh worker's priority lane so
-     * the broken-block visual lands on the next frame even if the main
-     * queue carries a backlog. */
-    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
     return true;
 }
 
@@ -1079,98 +1092,69 @@ static void draw_hungerbar(RenderContext *ctx)
     }
 }
 
-/* Map break_timer to a single-shot Minecraft-style swing curve.
- * Returns swing in [0,1] tracing 0 -> 1 -> 0 over the 0.3 s break window. */
-static float hand_swing_phase(float break_timer)
+/* Map a short input-driven timer to a single Minecraft-style swing curve.
+ * Returns swing in [0,1] tracing 0 -> 1 -> 0 over HAND_SWING_SECONDS. */
+static float hand_swing_phase(float swing_timer)
 {
-    float t = break_timer / SURVIVAL_BLOCK_BREAK_SECONDS;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
+    float t = swing_timer / HAND_SWING_SECONDS;
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 0.0f;
     return sinf(t * (float)M_PI);
 }
 
-/* Bare hand for survival: a Minecraft-like block arm angled out from the
- * lower-right. The swing follows the punch arc: down and inward, then home. */
-static void draw_bare_hand(RenderContext *ctx, float break_timer)
+/* Bare hand for survival: a chunky first-person rectangle arm. Keep the
+ * silhouette simple; the blockiness reads better than pseudo-anatomy here. */
+static void draw_bare_hand(RenderContext *ctx, float swing_timer)
 {
     const float s = HUD_SCALE;
     const uint8_t skin_light = 20;
     const uint8_t skin_mid = 15;
-    const uint8_t skin_shade = 21;
-    const uint8_t skin_dark = 19;
-    const uint8_t sleeve = 7;
-    const uint8_t sleeve_dark = 25;
+    const uint8_t skin_shadow = 19;
 
-    float swing = hand_swing_phase(break_timer);
-    float punch_x = -18.0f * s * swing;
-    float punch_y = 18.0f * s * swing;
-    float wrist_dip = 6.0f * s * swing;
+    float swing = hand_swing_phase(swing_timer);
+    float punch_x = -15.0f * s * swing;
+    float punch_y = 16.0f * s * swing;
+    float hand_x = SCREEN_WIDTH - 76.0f * s + punch_x;
+    float hand_y = SCREEN_HEIGHT - 90.0f * s + punch_y;
 
-    float shoulder_x = SCREEN_WIDTH - 30.0f * s + punch_x * 0.30f;
-    float shoulder_y = SCREEN_HEIGHT + 8.0f * s + punch_y * 0.45f;
-    float elbow_x = SCREEN_WIDTH - 54.0f * s + punch_x * 0.65f;
-    float elbow_y = SCREEN_HEIGHT - 26.0f * s + punch_y * 0.55f;
-    float hand_x = SCREEN_WIDTH - 78.0f * s + punch_x;
-    float hand_y = SCREEN_HEIGHT - 62.0f * s + punch_y + wrist_dip;
-
-    /* Sleeve at the base, clipped by the bottom edge. */
+    /* Forearm, partially hidden behind the hotbar. */
     draw_screen_solid_quad(ctx,
-        shoulder_x - 18.0f * s, shoulder_y - 52.0f * s,
-        shoulder_x + 15.0f * s, shoulder_y - 43.0f * s,
-        shoulder_x + 34.0f * s, shoulder_y + 4.0f * s,
-        shoulder_x - 7.0f * s, shoulder_y + 4.0f * s,
-        sleeve_dark);
-    draw_screen_solid_quad(ctx,
-        shoulder_x - 22.0f * s, shoulder_y - 56.0f * s,
-        shoulder_x + 9.0f * s, shoulder_y - 48.0f * s,
-        shoulder_x + 18.0f * s, shoulder_y + 4.0f * s,
-        shoulder_x - 23.0f * s, shoulder_y + 4.0f * s,
-        sleeve);
-
-    /* Exposed forearm: broad top plane plus right/bottom shading. */
-    draw_screen_solid_quad(ctx,
-        hand_x + 4.0f * s, hand_y + 20.0f * s,
-        hand_x + 36.0f * s, hand_y + 27.0f * s,
-        elbow_x + 25.0f * s, elbow_y + 56.0f * s,
-        elbow_x - 11.0f * s, elbow_y + 47.0f * s,
-        skin_shade);
-    draw_screen_solid_quad(ctx,
-        hand_x - 5.0f * s, hand_y + 15.0f * s,
-        hand_x + 27.0f * s, hand_y + 22.0f * s,
-        elbow_x + 12.0f * s, elbow_y + 49.0f * s,
-        elbow_x - 20.0f * s, elbow_y + 41.0f * s,
+        hand_x + 20.0f * s, hand_y + 37.0f * s,
+        hand_x + 49.0f * s, hand_y + 43.0f * s,
+        SCREEN_WIDTH + 9.0f * s, SCREEN_HEIGHT + 8.0f * s,
+        SCREEN_WIDTH - 29.0f * s, SCREEN_HEIGHT + 8.0f * s,
         skin_mid);
     draw_screen_solid_quad(ctx,
-        hand_x - 5.0f * s, hand_y + 15.0f * s,
-        hand_x + 2.0f * s, hand_y + 17.0f * s,
-        elbow_x - 15.0f * s, elbow_y + 42.0f * s,
-        elbow_x - 20.0f * s, elbow_y + 41.0f * s,
+        hand_x + 20.0f * s, hand_y + 37.0f * s,
+        hand_x + 28.0f * s, hand_y + 39.0f * s,
+        SCREEN_WIDTH - 18.0f * s, SCREEN_HEIGHT + 8.0f * s,
+        SCREEN_WIDTH - 29.0f * s, SCREEN_HEIGHT + 8.0f * s,
         skin_light);
-
-    /* Square fist at the end of the arm. */
     draw_screen_solid_quad(ctx,
-        hand_x - 7.0f * s, hand_y,
-        hand_x + 28.0f * s, hand_y + 7.0f * s,
-        hand_x + 35.0f * s, hand_y + 33.0f * s,
-        hand_x - 4.0f * s, hand_y + 29.0f * s,
+        hand_x + 42.0f * s, hand_y + 42.0f * s,
+        hand_x + 49.0f * s, hand_y + 43.0f * s,
+        SCREEN_WIDTH + 9.0f * s, SCREEN_HEIGHT + 8.0f * s,
+        SCREEN_WIDTH - 4.0f * s, SCREEN_HEIGHT + 8.0f * s,
+        skin_shadow);
+
+    /* Fist block. */
+    draw_screen_solid_quad(ctx,
+        hand_x - 1.0f * s, hand_y,
+        hand_x + 38.0f * s, hand_y + 7.0f * s,
+        hand_x + 42.0f * s, hand_y + 40.0f * s,
+        hand_x + 1.0f * s, hand_y + 34.0f * s,
         skin_mid);
     draw_screen_solid_quad(ctx,
-        hand_x + 26.0f * s, hand_y + 8.0f * s,
-        hand_x + 35.0f * s, hand_y + 33.0f * s,
-        hand_x + 25.0f * s, hand_y + 39.0f * s,
-        hand_x + 16.0f * s, hand_y + 14.0f * s,
-        skin_dark);
+        hand_x + 32.0f * s, hand_y + 8.0f * s,
+        hand_x + 38.0f * s, hand_y + 7.0f * s,
+        hand_x + 42.0f * s, hand_y + 40.0f * s,
+        hand_x + 34.0f * s, hand_y + 39.0f * s,
+        skin_shadow);
     draw_screen_solid_quad(ctx,
-        hand_x - 4.0f * s, hand_y + 29.0f * s,
-        hand_x + 35.0f * s, hand_y + 33.0f * s,
-        hand_x + 25.0f * s, hand_y + 39.0f * s,
-        hand_x - 14.0f * s, hand_y + 35.0f * s,
-        skin_shade);
-    draw_screen_solid_quad(ctx,
-        hand_x - 7.0f * s, hand_y,
-        hand_x + 2.0f * s, hand_y + 2.0f * s,
-        hand_x + 1.0f * s, hand_y + 27.0f * s,
-        hand_x - 4.0f * s, hand_y + 29.0f * s,
+        hand_x + 1.0f * s, hand_y + 2.0f * s,
+        hand_x + 15.0f * s, hand_y + 4.0f * s,
+        hand_x + 16.0f * s, hand_y + 32.0f * s,
+        hand_x + 1.0f * s, hand_y + 34.0f * s,
         skin_light);
 }
 
@@ -1178,7 +1162,7 @@ static void draw_bare_hand(RenderContext *ctx, float break_timer)
  * The swing translates the cube down and adds a small clockwise tilt by
  * shifting the diamond's top apex, mimicking the wrist-rotation arc you see
  * in Minecraft when you punch with a held block. */
-static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float break_timer)
+static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float swing_timer)
 {
     BlockID type = HOTBAR_BLOCKS[selected_slot];
     if (type == BLOCK_AIR)
@@ -1193,7 +1177,7 @@ static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float brea
     const float margin_right  = 14.0f * s;
     const float margin_bottom = 14.0f * s;
 
-    float swing = hand_swing_phase(break_timer);
+    float swing = hand_swing_phase(swing_timer);
     /* Translate down and slightly forward (right). Tilt: a small clockwise
      * rotation of the top apex (left + down) gives the cube the "wrist
      * swinging through" silhouette without needing real 2D rotation. */
@@ -1396,6 +1380,8 @@ int main(void)
     float physics_accumulator = 0.0f;
     float water_tick_accumulator = 0.0f;
     float break_timer = 0.0f;
+    float break_duration = 0.0f;
+    float hand_swing_timer = HAND_SWING_SECONDS;
     BlockTarget break_target = {0};
     bool break_target_valid = false;
 #define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
@@ -1605,6 +1591,11 @@ int main(void)
 
         if (!paused && !chat_is_open(&chat)) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
+            bool break_pressed = input_consume_break(&inp);
+            bool place_pressed = input_consume_place(&inp);
+
+            if (break_pressed || place_pressed)
+                hand_swing_timer = 0.0f;
 
             if (hotbar_slot >= 0 && hotbar_slot < HOTBAR_SLOT_COUNT &&
                 hotbar_slot != selected_hotbar_slot) {
@@ -1615,40 +1606,59 @@ int main(void)
             }
 
             if (player.mode == PLAYER_MODE_CREATIVE) {
-                if (input_consume_break(&inp))
+                if (break_pressed)
                     try_break_targeted_block(&world, &cam);
                 break_timer = 0.0f;
+                break_duration = 0.0f;
                 break_target_valid = false;
             } else {
                 if (inp.break_down) {
                     BlockTarget target = {0};
                     if (trace_target_block(&world, &cam, BLOCK_REACH_DISTANCE, &target)) {
-                        if (break_target_valid &&
+                        BlockID target_block = world_get_block(&world,
+                                                               target.hit_x,
+                                                               target.hit_y,
+                                                               target.hit_z);
+                        float target_break_duration = block_break_seconds(target_block);
+                        bool same_target =
+                            break_target_valid &&
                             target.hit_x == break_target.hit_x &&
                             target.hit_y == break_target.hit_y &&
-                            target.hit_z == break_target.hit_z) {
-                            break_timer += frame_dt;
-                            if (break_timer >= SURVIVAL_BLOCK_BREAK_SECONDS) {
-                                try_break_targeted_block(&world, &cam);
+                            target.hit_z == break_target.hit_z;
+
+                        if (target_break_duration > 0.0f) {
+                            if (!same_target) {
+                                break_target = target;
+                                break_target_valid = true;
                                 break_timer = 0.0f;
+                            }
+                            break_duration = target_break_duration;
+                            break_timer += frame_dt;
+                            if (hand_swing_timer >= HAND_SWING_SECONDS)
+                                hand_swing_timer = 0.0f;
+                            if (break_timer >= break_duration) {
+                                break_block_target(&world, &break_target);
+                                break_timer = 0.0f;
+                                break_duration = 0.0f;
                                 break_target_valid = false;
                             }
                         } else {
-                            break_target = target;
-                            break_target_valid = true;
-                            break_timer = frame_dt;
+                            break_timer = 0.0f;
+                            break_duration = 0.0f;
+                            break_target_valid = false;
                         }
                     } else {
                         break_timer = 0.0f;
+                        break_duration = 0.0f;
                         break_target_valid = false;
                     }
                 } else {
                     break_timer = 0.0f;
+                    break_duration = 0.0f;
                     break_target_valid = false;
-                    (void)input_consume_break(&inp);
                 }
             }
-            if (input_consume_place(&inp)) {
+            if (place_pressed) {
                 /* Survival has no inventory in this game, so block placement
                  * is creative-only. Spectator never collides anyway. */
                 if (player.mode == PLAYER_MODE_CREATIVE) {
@@ -1664,10 +1674,17 @@ int main(void)
             }
         } else {
             break_timer = 0.0f;
+            break_duration = 0.0f;
             break_target_valid = false;
+            hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_break(&inp);
             (void)input_consume_place(&inp);
+        }
+        if (hand_swing_timer < HAND_SWING_SECONDS) {
+            hand_swing_timer += frame_dt;
+            if (hand_swing_timer > HAND_SWING_SECONDS)
+                hand_swing_timer = HAND_SWING_SECONDS;
         }
 
         double lighting_ns = 0.0;
@@ -1722,20 +1739,20 @@ int main(void)
         int quads = renderer_draw_world(ctx, &world, world_time);
         if (!paused && !chat_open &&
             player.mode == PLAYER_MODE_SURVIVAL &&
-            break_target_valid && break_timer > 0.0f) {
+            break_target_valid && break_timer > 0.0f && break_duration > 0.0f) {
             quads += renderer_draw_block_break_overlay(
                 ctx,
                 break_target.hit_x, break_target.hit_y, break_target.hit_z,
-                break_timer / SURVIVAL_BLOCK_BREAK_SECONDS);
+                break_timer / break_duration);
         }
         chat_draw(&chat, ctx);
         if (!paused && !chat_is_open(&chat)) {
             if (player.mode == PLAYER_MODE_CREATIVE) {
-                draw_block_in_hand(ctx, selected_hotbar_slot, break_timer);
+                draw_block_in_hand(ctx, selected_hotbar_slot, hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 renderer_draw_crosshair(ctx);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
-                draw_bare_hand(ctx, break_timer);
+                draw_bare_hand(ctx, hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 draw_healthbar(ctx);
                 draw_hungerbar(ctx);

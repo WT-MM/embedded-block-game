@@ -442,6 +442,12 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 if (press_edge && !inp->_text_mode)
                     inp->chat_toggle_pressed = true;
                 break;
+            case KEY_SLASH:
+                if (press_edge && !inp->_text_mode && !inp->_shift_down) {
+                    inp->chat_toggle_pressed = true;
+                    text_queue_push(inp, '/');
+                }
+                break;
             case KEY_LEFT:   inp->look_left  = down; break;
             case KEY_RIGHT:  inp->look_right = down; break;
             case KEY_UP:     inp->look_up    = down; break;

@@ -46,6 +46,7 @@ typedef struct {
     const char *name;
     uint8_t face_texture_ids[NUM_FACES];
     uint8_t emission_level;
+    float hardness_seconds;
     bool self_lit;
 } BlockDescriptor;
 
@@ -55,6 +56,7 @@ void init_block_types(void);
 uint8_t block_face_texture_id(BlockID id, BlockFace face);
 uint8_t texture_lod_tile_id(uint8_t tile_id, int lod);
 uint8_t block_emission_level(BlockID id);
+float block_break_seconds(BlockID id);
 bool block_is_self_lit(BlockID id);
 bool block_blocks_light(BlockID id);
 

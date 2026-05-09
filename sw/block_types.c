@@ -30,55 +30,66 @@ void init_block_types(void)
 
     BlockRegistry[BLOCK_AIR].id = BLOCK_AIR;
     BlockRegistry[BLOCK_AIR].name = "Air";
+    BlockRegistry[BLOCK_AIR].hardness_seconds = 0.0f;
 
     BlockRegistry[BLOCK_DIRT].id = BLOCK_DIRT;
     BlockRegistry[BLOCK_DIRT].name = "Dirt";
     set_all_faces(&BlockRegistry[BLOCK_DIRT], TEX_TILE_DIRT);
+    BlockRegistry[BLOCK_DIRT].hardness_seconds = 0.55f;
 
     BlockRegistry[BLOCK_WOOD].id = BLOCK_WOOD;
     BlockRegistry[BLOCK_WOOD].name = "Wood";
     set_all_faces(&BlockRegistry[BLOCK_WOOD], TEX_TILE_WOOD_SIDE);
     BlockRegistry[BLOCK_WOOD].face_texture_ids[FACE_TOP] = TEX_TILE_WOOD_TOP;
     BlockRegistry[BLOCK_WOOD].face_texture_ids[FACE_BOTTOM] = TEX_TILE_WOOD_TOP;
+    BlockRegistry[BLOCK_WOOD].hardness_seconds = 1.35f;
 
     BlockRegistry[BLOCK_STONE].id = BLOCK_STONE;
     BlockRegistry[BLOCK_STONE].name = "Stone";
     set_all_faces(&BlockRegistry[BLOCK_STONE], TEX_TILE_STONE);
+    BlockRegistry[BLOCK_STONE].hardness_seconds = 2.25f;
 
     BlockRegistry[BLOCK_GRASS].id = BLOCK_GRASS;
     BlockRegistry[BLOCK_GRASS].name = "Grass";
     set_all_faces(&BlockRegistry[BLOCK_GRASS], TEX_TILE_GRASS_SIDE);
     BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_TOP] = TEX_TILE_GRASS_TOP;
     BlockRegistry[BLOCK_GRASS].face_texture_ids[FACE_BOTTOM] = TEX_TILE_DIRT;
+    BlockRegistry[BLOCK_GRASS].hardness_seconds = 0.6f;
 
     BlockRegistry[BLOCK_GLASS].id = BLOCK_GLASS;
     BlockRegistry[BLOCK_GLASS].name = "Glass";
     set_all_faces(&BlockRegistry[BLOCK_GLASS], TEX_TILE_GLASS);
+    BlockRegistry[BLOCK_GLASS].hardness_seconds = 0.35f;
     BlockRegistry[BLOCK_GLASS].self_lit = false;
 
     BlockRegistry[BLOCK_LAMP].id = BLOCK_LAMP;
     BlockRegistry[BLOCK_LAMP].name = "Lamp";
     set_all_faces(&BlockRegistry[BLOCK_LAMP], TEX_TILE_LAMP);
     BlockRegistry[BLOCK_LAMP].emission_level = 15;
+    BlockRegistry[BLOCK_LAMP].hardness_seconds = 0.8f;
     BlockRegistry[BLOCK_LAMP].self_lit = true;
 
     BlockRegistry[BLOCK_PLANKS].id = BLOCK_PLANKS;
     BlockRegistry[BLOCK_PLANKS].name = "Planks";
     set_all_faces(&BlockRegistry[BLOCK_PLANKS], TEX_TILE_WOOD_PLANK);
+    BlockRegistry[BLOCK_PLANKS].hardness_seconds = 1.05f;
 
     BlockRegistry[BLOCK_LEAVES].id = BLOCK_LEAVES;
     BlockRegistry[BLOCK_LEAVES].name = "Leaves";
     set_all_faces(&BlockRegistry[BLOCK_LEAVES], TEX_TILE_LEAVES);
+    BlockRegistry[BLOCK_LEAVES].hardness_seconds = 0.25f;
     BlockRegistry[BLOCK_LEAVES].self_lit = false;
 
     BlockRegistry[BLOCK_WATER].id = BLOCK_WATER;
     BlockRegistry[BLOCK_WATER].name = "Water";
     set_all_faces(&BlockRegistry[BLOCK_WATER], TEX_TILE_WATER);
+    BlockRegistry[BLOCK_WATER].hardness_seconds = 0.0f;
     BlockRegistry[BLOCK_WATER].self_lit = false;
 
     BlockRegistry[BLOCK_WATER_FLOW].id = BLOCK_WATER_FLOW;
     BlockRegistry[BLOCK_WATER_FLOW].name = "Water (flowing)";
     set_all_faces(&BlockRegistry[BLOCK_WATER_FLOW], TEX_TILE_WATER);
+    BlockRegistry[BLOCK_WATER_FLOW].hardness_seconds = 0.0f;
     BlockRegistry[BLOCK_WATER_FLOW].self_lit = false;
 }
 
@@ -111,6 +122,14 @@ uint8_t block_emission_level(BlockID id)
         return 0;
 
     return BlockRegistry[id].emission_level;
+}
+
+float block_break_seconds(BlockID id)
+{
+    if (id <= BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return 0.0f;
+
+    return BlockRegistry[id].hardness_seconds;
 }
 
 bool block_is_self_lit(BlockID id)

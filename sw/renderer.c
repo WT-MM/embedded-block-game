@@ -1286,33 +1286,6 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
     return renderer_push_quad(ctx, &q);
 }
 
-static bool emit_camera_flat_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
-                                  uint8_t palette_index, uint8_t extra_flags)
-{
-    Vertex2D verts[4];
-    uint8_t flags = QUAD_FLAG_ZTEST | extra_flags;
-
-    for (int i = 0; i < 4; i++) {
-        if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
-            return false;
-    }
-
-    if (projected_quad_fully_inside_viewport(verts)) {
-        RenderQuad q = {0};
-
-        memcpy(q.vertices, verts, sizeof(verts));
-        q.color_tint = palette_index;
-        q.flags = flags;
-        return stage_projected_quad_no_clip(ctx, &q);
-    }
-
-    RenderQuad q = {0};
-    memcpy(q.vertices, verts, sizeof(verts));
-    q.color_tint = palette_index;
-    q.flags = flags;
-    return renderer_push_quad(ctx, &q);
-}
-
 static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
                               int count, uint8_t texture_id, uint8_t extra_flags)
 {
@@ -1334,31 +1307,6 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
     for (int i = 1; i + 1 < count; i++) {
         CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
         emit_camera_quad(ctx, tri, texture_id, extra_flags);
-    }
-}
-
-static void emit_clipped_flat_face(RenderContext *ctx, const CameraVertex *poly,
-                                   int count, uint8_t palette_index,
-                                   uint8_t extra_flags)
-{
-    if (count < 3)
-        return;
-
-    if (count == 3) {
-        CameraVertex tri[4] = { poly[0], poly[1], poly[2], poly[2] };
-        emit_camera_flat_quad(ctx, tri, palette_index, extra_flags);
-        return;
-    }
-
-    if (count == 4) {
-        CameraVertex quad[4] = { poly[0], poly[1], poly[2], poly[3] };
-        emit_camera_flat_quad(ctx, quad, palette_index, extra_flags);
-        return;
-    }
-
-    for (int i = 1; i + 1 < count; i++) {
-        CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
-        emit_camera_flat_quad(ctx, tri, palette_index, extra_flags);
     }
 }
 
@@ -1617,87 +1565,26 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
     emit_merged_block_face(ctx, type, block_pos, face, 1, 1);
 }
 
-typedef struct {
-    float u0, v0;
-    float u1, v1;
-} BreakCrackSegment;
-
-static const BreakCrackSegment BREAK_CRACK_SEGMENTS[] = {
-    { 0.50f, 0.16f, 0.50f, 0.52f },
-    { 0.50f, 0.36f, 0.27f, 0.24f },
-    { 0.53f, 0.37f, 0.74f, 0.18f },
-    { 0.48f, 0.52f, 0.31f, 0.76f },
-    { 0.53f, 0.55f, 0.79f, 0.72f },
-    { 0.49f, 0.18f, 0.35f, 0.06f },
-    { 0.69f, 0.22f, 0.84f, 0.35f },
-    { 0.34f, 0.71f, 0.18f, 0.88f },
-};
-
-static Vec3 face_point_from_uv(const Vec3 corners[4], float u, float v)
-{
-    float u0 = 1.0f - u;
-    float v0 = 1.0f - v;
-    float w0 = u0 * v0;
-    float w1 = u * v0;
-    float w2 = u * v;
-    float w3 = u0 * v;
-
-    return (Vec3){
-        corners[0].x * w0 + corners[1].x * w1 +
-            corners[2].x * w2 + corners[3].x * w3,
-        corners[0].y * w0 + corners[1].y * w1 +
-            corners[2].y * w2 + corners[3].y * w3,
-        corners[0].z * w0 + corners[1].z * w1 +
-            corners[2].z * w2 + corners[3].z * w3,
-    };
-}
-
-static bool emit_break_crack_segment(RenderContext *ctx,
-                                     const Vec3 corners[4],
-                                     const BreakCrackSegment *segment,
-                                     float half_width)
-{
-    float du = segment->u1 - segment->u0;
-    float dv = segment->v1 - segment->v0;
-    float len = sqrtf(du * du + dv * dv);
-    CameraVertex cam[4];
-    CameraVertex clipped[6];
-
-    if (len <= 0.0001f)
-        return false;
-
-    float nu = -dv / len * half_width;
-    float nv =  du / len * half_width;
-    Vec3 world[4] = {
-        face_point_from_uv(corners, clamp01(segment->u0 + nu), clamp01(segment->v0 + nv)),
-        face_point_from_uv(corners, clamp01(segment->u0 - nu), clamp01(segment->v0 - nv)),
-        face_point_from_uv(corners, clamp01(segment->u1 - nu), clamp01(segment->v1 - nv)),
-        face_point_from_uv(corners, clamp01(segment->u1 + nu), clamp01(segment->v1 + nv)),
-    };
-
-    for (int i = 0; i < 4; i++) {
-        world_to_camera(ctx, world[i], &cam[i]);
-        cam[i].u = 0.0f;
-        cam[i].v = 0.0f;
-    }
-
-    if (camera_quad_outside_view(ctx, cam))
-        return false;
-
-    int clipped_count = clip_face_to_near_plane(cam, clipped);
-    int before = ctx->n_quads;
-    emit_clipped_flat_face(ctx, clipped, clipped_count, 14, QUAD_ALPHA_75);
-    return ctx->n_quads > before;
-}
-
 int renderer_draw_block_break_overlay(RenderContext *ctx,
                                       int block_x, int block_y, int block_z,
                                       float progress)
 {
     const float face_epsilon = 0.004f;
+    static const uint8_t break_tiles[] = {
+        TEX_TILE_BREAK_0,
+        TEX_TILE_BREAK_1,
+        TEX_TILE_BREAK_2,
+        TEX_TILE_BREAK_3,
+        TEX_TILE_BREAK_4,
+        TEX_TILE_BREAK_5,
+        TEX_TILE_BREAK_6,
+        TEX_TILE_BREAK_7,
+        TEX_TILE_BREAK_8,
+        TEX_TILE_BREAK_9,
+    };
     int before;
-    int segment_count;
-    float half_width;
+    int stage;
+    uint8_t texture_id;
     Vec3 block_pos;
 
     if (!ctx)
@@ -1708,18 +1595,19 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
         return 0;
 
     before = ctx->n_quads;
-    segment_count = (int)ceilf(progress *
-        (float)(sizeof(BREAK_CRACK_SEGMENTS) / sizeof(BREAK_CRACK_SEGMENTS[0])));
-    if (segment_count < 1)
-        segment_count = 1;
-    if (segment_count > (int)(sizeof(BREAK_CRACK_SEGMENTS) / sizeof(BREAK_CRACK_SEGMENTS[0])))
-        segment_count = (int)(sizeof(BREAK_CRACK_SEGMENTS) / sizeof(BREAK_CRACK_SEGMENTS[0]));
-    half_width = 0.013f + 0.006f * progress;
+    stage = (int)floorf(progress * (float)(sizeof(break_tiles) / sizeof(break_tiles[0])));
+    if (stage < 0)
+        stage = 0;
+    if (stage >= (int)(sizeof(break_tiles) / sizeof(break_tiles[0])))
+        stage = (int)(sizeof(break_tiles) / sizeof(break_tiles[0])) - 1;
+    texture_id = break_tiles[stage];
     block_pos = (Vec3){ (float)block_x, (float)block_y, (float)block_z };
 
     for (int face = 0; face < NUM_FACES; face++) {
         Vec3 corners[4];
         Vec3 normal = face_normals[face];
+        CameraVertex face_cam[4];
+        CameraVertex clipped[6];
 
         if (!is_face_visible(block_pos, normal, ctx->current_camera.position))
             continue;
@@ -1731,11 +1619,18 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
             corners[i].z += normal.z * face_epsilon;
         }
 
-        for (int segment = 0; segment < segment_count; segment++) {
-            emit_break_crack_segment(ctx, corners,
-                                     &BREAK_CRACK_SEGMENTS[segment],
-                                     half_width);
+        for (int i = 0; i < 4; i++) {
+            world_to_camera(ctx, corners[i], &face_cam[i]);
+            face_cam[i].u = (i == 1 || i == 2) ? 16.0f : 0.0f;
+            face_cam[i].v = (i == 2 || i == 3) ? 0.0f : 16.0f;
         }
+
+        if (camera_quad_outside_view(ctx, face_cam))
+            continue;
+
+        int clipped_count = clip_face_to_near_plane(face_cam, clipped);
+        emit_clipped_face(ctx, clipped, clipped_count, texture_id,
+                          QUAD_FLAG_ALPHA_KEY);
     }
 
     return ctx->n_quads - before;

@@ -82,6 +82,19 @@ for tile in TEXTURE_TILES:
         globals()[f"TEX_TILE_{tile.name}_MIP1"] = tile.mip1
         globals()[f"TEX_TILE_{tile.name}_MIP2"] = tile.mip2
 
+BREAK_STAGE_TILES = (
+    TEX_TILE_BREAK_0,
+    TEX_TILE_BREAK_1,
+    TEX_TILE_BREAK_2,
+    TEX_TILE_BREAK_3,
+    TEX_TILE_BREAK_4,
+    TEX_TILE_BREAK_5,
+    TEX_TILE_BREAK_6,
+    TEX_TILE_BREAK_7,
+    TEX_TILE_BREAK_8,
+    TEX_TILE_BREAK_9,
+)
+
 PAL_TRANSPARENT = 0
 PAL_GRASS_TOP = 1
 PAL_DIRT = 2
@@ -347,6 +360,11 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_DRUMSTICK: (14, 2, 11, 15, 16, 24, 5),
 }
 
+HUD_SOURCE_TILES = {
+    TEX_TILE_HEART,
+    TEX_TILE_DRUMSTICK,
+}
+
 # Vanilla grass/leaves/water textures are grayscale masks intended for biome tinting.
 # Apply fixed tints in this project since we do not have biome maps.
 # Leaves use a darker forest-green than grass so trees read as a distinct,
@@ -477,6 +495,15 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
 
     with Image.open(source_path) as image:
         rgba = image.convert("RGBA")
+        if tile in HUD_SOURCE_TILES:
+            # Vanilla HUD icons are 9x9 sprites pasted into a 16x16 file.
+            # Our screen-tile path samples the whole atlas tile, so expand
+            # the non-transparent bounds to the full tile; otherwise hearts
+            # and hunger icons render as tiny top-left crumbs.
+            bbox = rgba.getbbox()
+            if bbox is not None:
+                nearest = getattr(Image, "Resampling", Image).NEAREST
+                rgba = rgba.crop(bbox).resize((TILE_SIZE, TILE_SIZE), nearest)
         if rgba.size != (TILE_SIZE, TILE_SIZE):
             raise ValueError(f"{source_path} must be {TILE_SIZE}x{TILE_SIZE}, got {rgba.size}")
         pixels = list(rgba.getdata())
@@ -651,6 +678,65 @@ def crosshair(x: int, y: int) -> int:
         return PAL_WHITE
     return PAL_TRANSPARENT
 
+
+BREAK_CRACK_SEGMENTS: tuple[tuple[int, float, float, float, float], ...] = (
+    (0, 7.5, 7.5, 7.5, 4.8),
+    (1, 7.5, 5.4, 4.8, 4.0),
+    (2, 7.3, 6.0, 10.5, 4.2),
+    (3, 7.5, 7.2, 5.3, 10.4),
+    (4, 8.0, 7.5, 11.6, 9.7),
+    (5, 5.6, 10.0, 3.4, 13.2),
+    (6, 10.8, 4.5, 13.5, 2.2),
+    (6, 10.9, 9.4, 13.7, 12.2),
+    (7, 4.9, 4.2, 2.2, 2.0),
+    (7, 7.5, 4.8, 7.0, 1.7),
+    (8, 13.2, 12.0, 15.0, 14.5),
+    (8, 3.5, 13.0, 1.2, 15.0),
+    (9, 2.5, 2.4, 0.4, 0.9),
+    (9, 13.0, 2.6, 15.0, 0.8),
+)
+
+
+def distance_to_segment(px: float, py: float,
+                        x0: float, y0: float,
+                        x1: float, y1: float) -> float:
+    dx = x1 - x0
+    dy = y1 - y0
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0.0001:
+        return ((px - x0) * (px - x0) + (py - y0) * (py - y0)) ** 0.5
+
+    t = ((px - x0) * dx + (py - y0) * dy) / length_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+
+    cx = x0 + dx * t
+    cy = y0 + dy * t
+    return ((px - cx) * (px - cx) + (py - cy) * (py - cy)) ** 0.5
+
+
+def break_stage(stage: int, x: int, y: int) -> int:
+    px = float(x) + 0.5
+    py = float(y) + 0.5
+    width = 0.34 + 0.035 * float(stage)
+    nearest = 99.0
+
+    for unlock_stage, x0, y0, x1, y1 in BREAK_CRACK_SEGMENTS:
+        if unlock_stage > stage:
+            continue
+        dist = distance_to_segment(px, py, x0, y0, x1, y1)
+        if dist < nearest:
+            nearest = dist
+
+    if nearest <= width:
+        return PAL_STONE_DARK
+    if stage >= 5 and nearest <= width + 0.22 and noise(x, y, 991 + stage) > 170:
+        return PAL_STONE_DARK
+    return PAL_TRANSPARENT
+
+
 def sky(x: int, y: int) -> int:
     if y <= 2:
         return PAL_TRANSPARENT
@@ -769,6 +855,8 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return stars(x, y)
     if tile == TEX_TILE_CROSSHAIR:
         return crosshair(x, y)
+    if tile in BREAK_STAGE_TILES:
+        return break_stage(BREAK_STAGE_TILES.index(tile), x, y)
     return PAL_TRANSPARENT
 
 

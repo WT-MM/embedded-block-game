@@ -29,6 +29,20 @@ Run the virtual GPU headless and dump frames:
     cd virtual_hw
     uv run virtualhw --headless --dump-dir /tmp/voxel_frames
 
+Chat Commands
+-------------
+
+Press `T` in-game to open chat, or press `/` to open chat already seeded with
+a slash. Lines starting with `/` are parsed as commands:
+
+- `/time set day` or `/time day`
+- `/time set night` or `/time night`
+- `/gamemode set survival` or `/gamemode survival`
+- `/gamemode set creative` or `/gamemode creative`
+- `/gamemode set spectator` or `/gamemode spectator`
+- `/gm ...` and `/mode ...` are shorthand aliases for `/gamemode ...`.
+- `/help` prints the supported command forms in chat.
+
 Notes
 -----
 

@@ -720,7 +720,7 @@ void chat_draw(const Chat *chat, RenderContext *ctx)
 
     if (chat->open) {
         char line[CHAT_LINE_MAX + 4];
-        int n = snprintf(line, sizeof(line), "> %s_", chat->input);
+        int n = snprintf(line, sizeof(line), "%s_", chat->input);
         if (n < 0) n = 0;
         draw_line(ctx, line, n, CHAT_MARGIN_X, input_y, PAL_TEXT);
     }

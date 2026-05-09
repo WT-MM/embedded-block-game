@@ -103,6 +103,7 @@ PAL_STONE = 4
 PAL_WHITE = 5
 PAL_GRASS_SIDE = 9
 PAL_WOOD_TOP = 11
+PAL_UI_DARK = 14
 PAL_GRASS_DARK = 17
 PAL_GRASS_LIGHT = 18
 PAL_DIRT_DARK = 19
@@ -328,8 +329,14 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_GLASS: "glass.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
     TEX_TILE_WATER: "water_still.png",
-    TEX_TILE_HEART: "heart.png",
+    TEX_TILE_HEART_CONTAINER: "container.png",
+    TEX_TILE_HEART: "full.png",
     TEX_TILE_DRUMSTICK: "drumstick.png",
+    TEX_TILE_AIR_BUBBLE: "air.png",
+    TEX_TILE_AIR_BUBBLE_POP: "air_bursting.png",
+    TEX_TILE_HEART_HALF: "heart_half.png",
+    TEX_TILE_HEART_BLINK: "heart_full_blinking.png",
+    TEX_TILE_HEART_HALF_BLINK: "heart_half_blinking.png",
 }
 
 # Restrict quantization per tile so imported textures remain faithful while
@@ -356,13 +363,25 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
     # this list because the quantizer early-exits to PAL_TRANSPARENT first.
     TEX_TILE_WATER: (64, 65, 66),
+    TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
+    TEX_TILE_HEART_HALF: (14, 6, 5),
+    TEX_TILE_HEART_BLINK: (14, 6, 5),
+    TEX_TILE_HEART_HALF_BLINK: (14, 6, 5),
     TEX_TILE_DRUMSTICK: (14, 2, 11, 15, 16, 24, 5),
+    TEX_TILE_AIR_BUBBLE: (14, 64, 65, 66, 5),
+    TEX_TILE_AIR_BUBBLE_POP: (14, 64, 65, 66, 5),
 }
 
 HUD_SOURCE_TILES = {
     TEX_TILE_HEART,
+    TEX_TILE_HEART_CONTAINER,
     TEX_TILE_DRUMSTICK,
+    TEX_TILE_AIR_BUBBLE,
+    TEX_TILE_AIR_BUBBLE_POP,
+    TEX_TILE_HEART_HALF,
+    TEX_TILE_HEART_BLINK,
+    TEX_TILE_HEART_HALF_BLINK,
 }
 
 # Vanilla grass/leaves/water textures are grayscale masks intended for biome tinting.
@@ -438,6 +457,15 @@ def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int], x: int, y: 
             return PAL_WATER_MID        # mid-level water body
         return PAL_WATER_DEEP           # darkest troughs
 
+    if tile == TEX_TILE_AIR_BUBBLE or tile == TEX_TILE_AIR_BUBBLE_POP:
+        luma = (r * 30 + g * 59 + b * 11) // 100
+        if luma < 20:
+            return PAL_UI_DARK
+        if r >= 180:
+            return PAL_WHITE
+        if r >= 40:
+            return PAL_WATER_HIGHLIGHT
+        return PAL_WATER_MID
 
     tint = SOURCE_TILE_TINT.get(tile)
     if tint is not None:
@@ -496,14 +524,13 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
     with Image.open(source_path) as image:
         rgba = image.convert("RGBA")
         if tile in HUD_SOURCE_TILES:
-            # Vanilla HUD icons are 9x9 sprites pasted into a 16x16 file.
-            # Our screen-tile path samples the whole atlas tile, so expand
-            # the non-transparent bounds to the full tile; otherwise hearts
-            # and hunger icons render as tiny top-left crumbs.
-            bbox = rgba.getbbox()
-            if bbox is not None:
+            # Modern vanilla HUD sprites are usually 9x9 standalone images.
+            # Resize the whole sprite frame, not the non-transparent bounds:
+            # half-heart and bursting-bubble sprites rely on empty pixels for
+            # their actual shape and position.
+            if rgba.size != (TILE_SIZE, TILE_SIZE):
                 nearest = getattr(Image, "Resampling", Image).NEAREST
-                rgba = rgba.crop(bbox).resize((TILE_SIZE, TILE_SIZE), nearest)
+                rgba = rgba.resize((TILE_SIZE, TILE_SIZE), nearest)
         if rgba.size != (TILE_SIZE, TILE_SIZE):
             raise ValueError(f"{source_path} must be {TILE_SIZE}x{TILE_SIZE}, got {rgba.size}")
         pixels = list(rgba.getdata())
@@ -677,6 +704,63 @@ def crosshair(x: int, y: int) -> int:
     if (x == 8 and 5 <= y <= 10) or (y == 8 and 5 <= x <= 10):
         return PAL_WHITE
     return PAL_TRANSPARENT
+
+
+AIR_BUBBLE_ROWS = [
+    "tttttwwwwttttttt",
+    "tttwwbbbbwwttttt",
+    "ttwbwwbbbbbwtttt",
+    "twbwwbbbbbbbwttt",
+    "twbbbbbbbbbbbwtt",
+    "wbbbbbbbbbbbbwtt",
+    "wbbbbbbbbbbbbwtt",
+    "wbbbbbbbbbbbbwtt",
+    "wbbbbbbbbbbbbwtt",
+    "twbbbbbbbbbbwttt",
+    "twbbbbbbbbbwtttt",
+    "ttwbbbbbbwtttttt",
+    "tttwbbbbwttttttt",
+    "ttttwwwwtttttttt",
+    "tttttttttttttttt",
+    "tttttttttttttttt",
+]
+
+AIR_BUBBLE_POP_ROWS = [
+    "ttttttwwtttttttt",
+    "tttwttttttwttttt",
+    "ttttwttttwtttttt",
+    "tttttttttttttttt",
+    "ttwtttttttttwttt",
+    "ttttttwwtttttttt",
+    "tttttwbbwwtttttt",
+    "tttttwbbbwtttttt",
+    "ttttttwwwttttttt",
+    "tttttttttttttttt",
+    "tttwttttttwttttt",
+    "ttttwttttwtttttt",
+    "ttttttwwtttttttt",
+    "tttttttttttttttt",
+    "tttttttttttttttt",
+    "tttttttttttttttt",
+]
+
+
+def air_bubble(x: int, y: int) -> int:
+    return pattern_texel(
+        AIR_BUBBLE_ROWS,
+        {"t": PAL_TRANSPARENT, "b": PAL_WATER_MID, "w": PAL_WHITE},
+        x,
+        y,
+    )
+
+
+def air_bubble_pop(x: int, y: int) -> int:
+    return pattern_texel(
+        AIR_BUBBLE_POP_ROWS,
+        {"t": PAL_TRANSPARENT, "b": PAL_WATER_MID, "w": PAL_WHITE},
+        x,
+        y,
+    )
 
 
 BREAK_CRACK_SEGMENTS: tuple[tuple[int, float, float, float, float], ...] = (
@@ -853,6 +937,10 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return moon(x, y)
     if tile == TEX_TILE_STARS:
         return stars(x, y)
+    if tile == TEX_TILE_AIR_BUBBLE:
+        return air_bubble(x, y)
+    if tile == TEX_TILE_AIR_BUBBLE_POP:
+        return air_bubble_pop(x, y)
     if tile == TEX_TILE_CROSSHAIR:
         return crosshair(x, y)
     if tile in BREAK_STAGE_TILES:

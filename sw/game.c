@@ -46,10 +46,16 @@
 #define HAND_SWING_SECONDS 0.26f
 #define CREATIVE_BLOCK_BREAK_REPEAT_SECONDS 0.12f
 #define PLAYER_MAX_HEALTH_UNITS 20
-#define PLAYER_MAX_AIR_SECONDS 10.0f
+#define PLAYER_MAX_AIR_SECONDS 15.0f
 #define PLAYER_AIR_REFILL_PER_SECOND 5.0f
 #define DROWN_DAMAGE_INTERVAL_SECONDS 1.0f
 #define DROWN_DAMAGE_UNITS 2
+#define AIR_BUBBLE_COUNT 10
+#define AIR_BUBBLE_POP_WINDOW_SECONDS 0.10f
+#define DAMAGE_FLASH_SECONDS 0.50f
+#define FALL_DAMAGE_SAFE_DISTANCE 3.0f
+#define FALL_DAMAGE_MULTIPLIER 1.0f
+#define CREATIVE_FLIGHT_DOUBLE_TAP_SECONDS 0.35f
 #define PLAYER_SPAWN_X 0.0f
 #define PLAYER_SPAWN_Y ((float)(WORLD_CHUNK_HEIGHT - 2))
 #define PLAYER_SPAWN_Z -1.5f
@@ -737,6 +743,20 @@ static void respawn_player(Player *player, Camera *cam)
     }
 }
 
+static bool apply_survival_damage(int *health_units, int damage_units,
+                                  float *damage_flash_timer)
+{
+    if (!health_units || damage_units <= 0)
+        return false;
+
+    *health_units -= damage_units;
+    if (*health_units < 0)
+        *health_units = 0;
+    if (damage_flash_timer)
+        *damage_flash_timer = DAMAGE_FLASH_SECONDS;
+    return *health_units <= 0;
+}
+
 static int game_floor_div_i(int value, int divisor)
 {
     int q = value / divisor;
@@ -805,6 +825,17 @@ static void draw_underwater_overlay(RenderContext *ctx)
                        64, QUAD_ALPHA_50);
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
                        65, QUAD_ALPHA_25);
+}
+
+static void draw_damage_overlay(RenderContext *ctx, float damage_flash_timer)
+{
+    if (damage_flash_timer <= 0.0f)
+        return;
+
+    uint8_t alpha = (damage_flash_timer > DAMAGE_FLASH_SECONDS * 0.55f) ?
+        QUAD_ALPHA_50 : QUAD_ALPHA_25;
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                       6, alpha);
 }
 
 static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
@@ -1164,27 +1195,47 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
     }
 }
 
-static void draw_healthbar(RenderContext *ctx, int health_units)
+static void draw_healthbar(RenderContext *ctx, int health_units,
+                           float damage_flash_timer)
 {
     float slot_left, slot_top;
     const float icon = 8.0f * HUD_SCALE;
     const float step = 8.0f * HUD_SCALE;
-    int hearts = (health_units + 1) / 2;
+    int full_hearts = health_units / 2;
+    bool half_heart = (health_units & 1) != 0;
+    bool blink = damage_flash_timer > 0.0f &&
+        (((int)(damage_flash_timer * 16.0f)) & 1);
 
     hotbar_metrics(&slot_left, &slot_top, NULL, NULL, NULL);
     const float health_top = slot_top - icon - 7.0f;
 
-    if (hearts < 0)
-        hearts = 0;
-    if (hearts > 10)
-        hearts = 10;
+    if (full_hearts < 0)
+        full_hearts = 0;
+    if (full_hearts > 10)
+        full_hearts = 10;
 
-    for (int i = 0; i < hearts; i++) {
+    for (int i = 0; i < 10; i++) {
         float x0 = slot_left + (float)i * step;
+        uint8_t tile;
+
         renderer_draw_screen_tile(ctx,
                                   x0, health_top,
                                   x0 + icon, health_top + icon,
-                                  TEX_TILE_HEART, QUAD_FLAG_ALPHA_KEY);
+                                  TEX_TILE_HEART_CONTAINER,
+                                  QUAD_FLAG_ALPHA_KEY);
+
+        if (i < full_hearts) {
+            tile = blink ? TEX_TILE_HEART_BLINK : TEX_TILE_HEART;
+        } else if (i == full_hearts && half_heart) {
+            tile = blink ? TEX_TILE_HEART_HALF_BLINK : TEX_TILE_HEART_HALF;
+        } else {
+            continue;
+        }
+
+        renderer_draw_screen_tile(ctx,
+                                  x0, health_top,
+                                  x0 + icon, health_top + icon,
+                                  tile, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
@@ -1207,69 +1258,45 @@ static void draw_hungerbar(RenderContext *ctx)
     }
 }
 
-static void draw_bubble_icon(RenderContext *ctx, float x, float y,
-                             float size, bool filled)
-{
-    uint8_t edge = filled ? 66 : 36;
-    uint8_t body = filled ? 65 : 0;
-    uint8_t edge_alpha = filled ? QUAD_ALPHA_75 : QUAD_ALPHA_50;
-    uint8_t body_alpha = QUAD_ALPHA_25;
-    float one = HUD_SCALE * 0.5f;
-    float two = HUD_SCALE;
-    float inset = 2.0f * HUD_SCALE;
-    float shine = 1.5f * HUD_SCALE;
-
-    if (one < 1.0f)
-        one = 1.0f;
-
-    renderer_fill_rect(ctx, x + inset, y,
-                       x + size - inset, y + one,
-                       edge, edge_alpha);
-    renderer_fill_rect(ctx, x + inset, y + size - one,
-                       x + size - inset, y + size,
-                       edge, edge_alpha);
-    renderer_fill_rect(ctx, x, y + inset,
-                       x + one, y + size - inset,
-                       edge, edge_alpha);
-    renderer_fill_rect(ctx, x + size - one, y + inset,
-                       x + size, y + size - inset,
-                       edge, edge_alpha);
-    renderer_fill_rect(ctx, x + one, y + one,
-                       x + size - one, y + size - one,
-                       body, body_alpha);
-    if (filled) {
-        renderer_fill_rect(ctx, x + two, y + two,
-                           x + two + shine, y + two + shine,
-                           5, QUAD_ALPHA_75);
-    }
-}
-
 static void draw_oxygenbar(RenderContext *ctx, float air_seconds)
 {
     float slot_left, slot_top, total_width;
-    const float icon = 7.0f * HUD_SCALE;
+    const float icon = 8.0f * HUD_SCALE;
     const float step = 8.0f * HUD_SCALE;
-    int bubbles;
+    int full_bubbles;
+    int shown_bubbles;
 
     if (air_seconds < 0.0f)
         air_seconds = 0.0f;
     if (air_seconds > PLAYER_MAX_AIR_SECONDS)
         air_seconds = PLAYER_MAX_AIR_SECONDS;
 
-    bubbles = (int)ceilf((air_seconds / PLAYER_MAX_AIR_SECONDS) * 10.0f);
-    if (bubbles < 0)
-        bubbles = 0;
-    if (bubbles > 10)
-        bubbles = 10;
+    full_bubbles = (int)ceilf(
+        ((air_seconds - AIR_BUBBLE_POP_WINDOW_SECONDS) *
+         (float)AIR_BUBBLE_COUNT) / PLAYER_MAX_AIR_SECONDS);
+    shown_bubbles = (int)ceilf(
+        (air_seconds * (float)AIR_BUBBLE_COUNT) / PLAYER_MAX_AIR_SECONDS);
+    if (full_bubbles < 0)
+        full_bubbles = 0;
+    if (shown_bubbles < full_bubbles)
+        shown_bubbles = full_bubbles;
+    if (shown_bubbles > AIR_BUBBLE_COUNT)
+        shown_bubbles = AIR_BUBBLE_COUNT;
 
     hotbar_metrics(&slot_left, &slot_top, NULL, NULL, &total_width);
     const float health_top = slot_top - 8.0f * HUD_SCALE - 7.0f;
     const float bubble_top = health_top - icon - 4.0f;
     const float right = slot_left + total_width;
 
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < shown_bubbles; i++) {
         float x0 = right - icon - (float)i * step;
-        draw_bubble_icon(ctx, x0, bubble_top, icon, i < bubbles);
+        uint8_t tile = (i < full_bubbles) ?
+            TEX_TILE_AIR_BUBBLE : TEX_TILE_AIR_BUBBLE_POP;
+
+        renderer_draw_screen_tile(ctx,
+                                  x0, bubble_top,
+                                  x0 + icon, bubble_top + icon,
+                                  tile, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
@@ -1543,8 +1570,8 @@ int main(void)
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
-        printf("Mode: %s (survival=gravity+collision, creative=fly+collision, spectator=fly+no-collision)\n",
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
                selected_world.name,
@@ -1583,9 +1610,32 @@ int main(void)
     int player_health_units = PLAYER_MAX_HEALTH_UNITS;
     float player_air_seconds = PLAYER_MAX_AIR_SECONDS;
     float drown_timer = 0.0f;
+    float damage_flash_timer = 0.0f;
+    bool creative_flight_enabled = false;
+    float creative_jump_tap_timer = 0.0f;
+    PlayerMode last_player_mode = player.mode;
+    bool fall_tracking = false;
+    bool fall_damage_armed = false;
+    float fall_start_y = player.y;
     BlockTarget break_target = {0};
     bool break_target_valid = false;
 #define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
+#define RESET_PLAYER_AFTER_DEATH(message) do { \
+        respawn_player(&player, &cam); \
+        player_health_units = PLAYER_MAX_HEALTH_UNITS; \
+        player_air_seconds = PLAYER_MAX_AIR_SECONDS; \
+        drown_timer = 0.0f; \
+        damage_flash_timer = 0.0f; \
+        physics_accumulator = 0.0f; \
+        break_timer = 0.0f; \
+        break_duration = 0.0f; \
+        break_target_valid = false; \
+        hand_swing_timer = HAND_SWING_SECONDS; \
+        fall_tracking = false; \
+        fall_damage_armed = false; \
+        fall_start_y = player.y; \
+        chat_log(&chat, "%s", (message)); \
+    } while (0)
     int perf_frames = 0;
     int perf_quads = 0;
     int perf_sky_quads = 0;
@@ -1641,6 +1691,16 @@ int main(void)
         input_update(&inp);
 
         chat_tick(&chat, frame_dt);
+        if (damage_flash_timer > 0.0f) {
+            damage_flash_timer -= frame_dt;
+            if (damage_flash_timer < 0.0f)
+                damage_flash_timer = 0.0f;
+        }
+        if (creative_jump_tap_timer > 0.0f) {
+            creative_jump_tap_timer -= frame_dt;
+            if (creative_jump_tap_timer < 0.0f)
+                creative_jump_tap_timer = 0.0f;
+        }
 
         /* ESC: close chat first, otherwise toggle the pause overlay. The
          * chat branch already consumes ESC while text mode is on, so any
@@ -1705,6 +1765,16 @@ int main(void)
             chat_log(&chat, "mode: %s", player_mode_name(player.mode));
         }
 
+        if (player.mode != last_player_mode) {
+            creative_flight_enabled = false;
+            creative_jump_tap_timer = 0.0f;
+            fall_tracking = false;
+            fall_start_y = player.y;
+            if (player.mode != PLAYER_MODE_SURVIVAL)
+                fall_damage_armed = false;
+            last_player_mode = player.mode;
+        }
+
         /* Look: mouse + arrow keys. Muted while paused so the camera
          * stays still in the pause view, but we still drain mouse state
          * so a held mouse doesn't accumulate deltas across the pause. */
@@ -1750,9 +1820,25 @@ int main(void)
         if (paused)
             jump_pressed = false;
 
+        if (!paused && player.mode == PLAYER_MODE_CREATIVE && jump_pressed) {
+            if (creative_jump_tap_timer > 0.0f) {
+                creative_flight_enabled = !creative_flight_enabled;
+                creative_jump_tap_timer = 0.0f;
+                player.vy = 0.0f;
+                player.is_grounded = false;
+                fall_tracking = false;
+                fall_start_y = player.y;
+                jump_pressed = false;
+            } else {
+                creative_jump_tap_timer = CREATIVE_FLIGHT_DOUBLE_TAP_SECONDS;
+            }
+        }
+
         /* In fly modes Space/Shift are held to ascend/descend, so pass the
-         * held state rather than the edge-triggered jump. */
-        bool flying = (player.mode != PLAYER_MODE_SURVIVAL);
+         * held state rather than the edge-triggered jump. Creative toggles
+         * this with double-Space; spectator always flies. */
+        bool flight_controls = (player.mode == PLAYER_MODE_SPECTATOR) ||
+            (player.mode == PLAYER_MODE_CREATIVE && creative_flight_enabled);
         bool up_input    = paused ? false : inp.up;
         bool down_input  = paused ? false : inp.down;
         bool sprint_input = paused ? false : inp.sprint;
@@ -1762,9 +1848,45 @@ int main(void)
         while (physics_accumulator >= PHYSICS_DT &&
                (max_physics_steps_per_frame <= 0 ||
                 physics_steps < max_physics_steps_per_frame)) {
-            bool jump_input = flying ? up_input : jump_pressed;
+            bool jump_input = flight_controls ? up_input : jump_pressed;
+            bool was_grounded = player.is_grounded;
+            float before_y = player.y;
             player_update(&player, &world, wish_x, wish_z,
-                          jump_input, up_input, down_input, sprint_input, PHYSICS_DT);
+                          jump_input, up_input, down_input, sprint_input,
+                          flight_controls, PHYSICS_DT);
+
+            if (!paused && player.mode == PLAYER_MODE_SURVIVAL) {
+                if (player.is_in_water) {
+                    fall_tracking = false;
+                    fall_start_y = player.y;
+                } else if (player.is_grounded) {
+                    if (fall_tracking && !was_grounded && fall_damage_armed) {
+                        float fall_distance = fall_start_y - player.y;
+                        int fall_damage = (int)ceilf(
+                            (fall_distance - FALL_DAMAGE_SAFE_DISTANCE) *
+                            FALL_DAMAGE_MULTIPLIER);
+                        if (apply_survival_damage(&player_health_units,
+                                                  fall_damage,
+                                                  &damage_flash_timer)) {
+                            RESET_PLAYER_AFTER_DEATH("fell from a high place");
+                            break;
+                        }
+                    }
+                    fall_tracking = false;
+                    fall_start_y = player.y;
+                    fall_damage_armed = true;
+                } else {
+                    if (!fall_tracking || was_grounded)
+                        fall_start_y = before_y;
+                    if (player.y > fall_start_y)
+                        fall_start_y = player.y;
+                    fall_tracking = true;
+                }
+            } else {
+                fall_tracking = false;
+                fall_start_y = player.y;
+            }
+
             jump_pressed = false;
             physics_accumulator -= PHYSICS_DT;
             physics_steps++;
@@ -1801,19 +1923,11 @@ int main(void)
                     drown_timer += frame_dt;
                     while (drown_timer >= DROWN_DAMAGE_INTERVAL_SECONDS) {
                         drown_timer -= DROWN_DAMAGE_INTERVAL_SECONDS;
-                        player_health_units -= DROWN_DAMAGE_UNITS;
-                        if (player_health_units <= 0) {
-                            respawn_player(&player, &cam);
-                            player_health_units = PLAYER_MAX_HEALTH_UNITS;
-                            player_air_seconds = PLAYER_MAX_AIR_SECONDS;
-                            drown_timer = 0.0f;
-                            physics_accumulator = 0.0f;
-                            break_timer = 0.0f;
-                            break_duration = 0.0f;
-                            break_target_valid = false;
-                            hand_swing_timer = HAND_SWING_SECONDS;
+                        if (apply_survival_damage(&player_health_units,
+                                                  DROWN_DAMAGE_UNITS,
+                                                  &damage_flash_timer)) {
+                            RESET_PLAYER_AFTER_DEATH("drowned");
                             camera_underwater = false;
-                            chat_log(&chat, "drowned");
                             break;
                         }
                     }
@@ -1990,6 +2104,8 @@ int main(void)
         int quads = renderer_draw_world(ctx, &world, world_time);
         if (camera_underwater)
             draw_underwater_overlay(ctx);
+        if (player.mode == PLAYER_MODE_SURVIVAL)
+            draw_damage_overlay(ctx, damage_flash_timer);
         if (!paused && !chat_open &&
             player.mode == PLAYER_MODE_SURVIVAL &&
             break_target_valid && break_timer > 0.0f && break_duration > 0.0f) {
@@ -2007,7 +2123,7 @@ int main(void)
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
                 draw_bare_hand(ctx, hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
-                draw_healthbar(ctx, player_health_units);
+                draw_healthbar(ctx, player_health_units, damage_flash_timer);
                 draw_hungerbar(ctx);
                 if (camera_underwater ||
                     player_air_seconds < PLAYER_MAX_AIR_SECONDS)
@@ -2148,6 +2264,9 @@ int main(void)
             perf_max_work_ns = 0.0;
         }
     }
+
+#undef RESET_PLAYER_AFTER_DEATH
+#undef WATER_TICK_INTERVAL
 
     if (status_log_enabled)
         printf("\n");

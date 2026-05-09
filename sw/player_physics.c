@@ -189,12 +189,14 @@ static bool player_water_contact(VoxelWorld *world, const Player *p,
 }
 
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
-                   bool jump, bool up_held, bool shift, bool sprint, float dt) {
-    bool apply_gravity   = (p->mode == PLAYER_MODE_SURVIVAL);
+                   bool jump, bool up_held, bool shift, bool sprint,
+                   bool flight_enabled, float dt) {
+    bool fly_controls = (p->mode == PLAYER_MODE_SPECTATOR) ||
+                        (p->mode == PLAYER_MODE_CREATIVE && flight_enabled);
+    bool apply_gravity   = !fly_controls;
     bool apply_collision = (p->mode != PLAYER_MODE_SPECTATOR);
-    /* Water physics is a survival-mode feature: creative/spectator keep
-     * their normal fly controls so the player can plow through water at
-     * full speed when building. */
+    /* Water physics applies to grounded movement. Creative flight and
+     * spectator still plow through water at full speed while building. */
     bool in_water = false;
     if (apply_gravity && apply_collision) {
         /* Re-check immediately if the player is moving vertically (entering
@@ -226,7 +228,7 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
     p->vx = approach(p->vx, target_vx, accel_rate * dt);
     p->vz = approach(p->vz, target_vz, accel_rate * dt);
 
-    /* Vertical control: gravity + jump in survival, direct fly in creative/spectator.
+    /* Vertical control: gravity + jump while grounded, direct fly when enabled.
      * In flying modes jump=ascend, shift=descend, and eye-height crouch is disabled.
      * Water replaces gravity with a slow sink + held-Space swim-up. */
     if (apply_gravity) {

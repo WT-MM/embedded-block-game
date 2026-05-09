@@ -35,7 +35,7 @@
 
 typedef enum {
     PLAYER_MODE_SURVIVAL  = 0, /* gravity + collision */
-    PLAYER_MODE_CREATIVE  = 1, /* fly, no gravity, collision */
+    PLAYER_MODE_CREATIVE  = 1, /* building mode, optional flight, collision */
     PLAYER_MODE_SPECTATOR = 2, /* fly, no gravity, no collision */
     PLAYER_MODE_COUNT     = 3,
 } PlayerMode;
@@ -57,7 +57,8 @@ typedef struct {
 
 void player_init(Player *p, float start_x, float start_y, float start_z);
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
-                   bool jump, bool up_held, bool shift, bool sprint, float dt);
+                   bool jump, bool up_held, bool shift, bool sprint,
+                   bool flight_enabled, float dt);
 float player_get_eye_height(const Player *p);
 void player_set_mode(Player *p, PlayerMode mode);
 void player_cycle_mode(Player *p);

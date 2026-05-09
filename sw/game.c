@@ -796,31 +796,56 @@ static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
     return true;
 }
 
-static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
-                                     const Player *player, BlockID type)
+typedef enum {
+    PLACE_OK = 0,
+    PLACE_FAIL_BAD_TYPE,
+    PLACE_FAIL_NO_TRACE,
+    PLACE_FAIL_NO_AIR_NEAR_HIT,
+    PLACE_FAIL_TARGET_OCCUPIED,
+    PLACE_FAIL_PLAYER_BLOCKED,
+    PLACE_FAIL_WORLD_REJECTED,
+} PlaceResult;
+
+static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam,
+                                            const Player *player, BlockID type)
 {
     BlockTarget target = {0};
 
     if (type <= BLOCK_AIR || type >= NUM_BLOCK_TYPES)
-        return false;
-    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target) ||
-        !target.place_valid)
-        return false;
+        return PLACE_FAIL_BAD_TYPE;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return PLACE_FAIL_NO_TRACE;
+    if (!target.place_valid)
+        return PLACE_FAIL_NO_AIR_NEAR_HIT;
     /* Allow overwriting passable blocks (water) so players can fill water
      * with solids or replace water-flow with a fresh source. */
     BlockID at_place = world_get_block(world, target.place_x, target.place_y, target.place_z);
     if (!block_is_passable(at_place))
-        return false;
+        return PLACE_FAIL_TARGET_OCCUPIED;
     if (!block_is_passable(type) && player_intersects_block(player, target.place_x, target.place_y, target.place_z))
-        return false;
+        return PLACE_FAIL_PLAYER_BLOCKED;
 
     if (!world_set_block(world,
                          target.place_x, target.place_y, target.place_z,
                          type))
-        return false;
+        return PLACE_FAIL_WORLD_REJECTED;
 
     world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
-    return true;
+    return PLACE_OK;
+}
+
+static const char *place_result_name(PlaceResult r)
+{
+    switch (r) {
+    case PLACE_OK:                    return "ok";
+    case PLACE_FAIL_BAD_TYPE:         return "bad-type";
+    case PLACE_FAIL_NO_TRACE:         return "no-trace";
+    case PLACE_FAIL_NO_AIR_NEAR_HIT:  return "no-air-near-hit";
+    case PLACE_FAIL_TARGET_OCCUPIED:  return "target-occupied";
+    case PLACE_FAIL_PLAYER_BLOCKED:   return "player-blocked";
+    case PLACE_FAIL_WORLD_REJECTED:   return "world-rejected";
+    default:                          return "unknown";
+    }
 }
 
 static void draw_hotbar_digit(RenderContext *ctx, int digit,
@@ -932,61 +957,107 @@ static void draw_hungerbar(RenderContext *ctx)
     }
 }
 
-static void draw_player_hand(RenderContext *ctx, int selected_slot, float break_timer)
+/* Map break_timer to a single-shot Minecraft-style swing curve.
+ * Returns swing in [0,1] tracing 0 -> 1 -> 0 over the 0.3 s break window. */
+static float hand_swing_phase(float break_timer)
+{
+    float t = break_timer / 0.3f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return sinf(t * (float)M_PI);
+}
+
+/* Bare hand for survival: a tan forearm + fist anchored at the bottom-right
+ * corner. Swings down and slightly forward (right) when LMB is held — never
+ * sliding inward toward the hotbar. */
+static void draw_bare_hand(RenderContext *ctx, float break_timer)
+{
+    const float s = HUD_SCALE;
+    const uint8_t skin = 15;        /* warmest tan in the palette */
+    const uint8_t skin_shade = 10;  /* darker brown for shadow side */
+
+    float swing = hand_swing_phase(break_timer);
+    float swing_y = swing * 18.0f * s;
+    float swing_x = swing * 6.0f * s;  /* forward (right), away from hotbar */
+
+    /* Forearm: tall rectangle in the corner, tilted slightly by drawing a
+     * highlight stripe on the left edge. */
+    float arm_right  = SCREEN_WIDTH  - 6.0f * s + swing_x;
+    float arm_bottom = SCREEN_HEIGHT + swing_y;
+    float arm_w      = 22.0f * s;
+    float arm_h      = 56.0f * s;
+    float arm_left   = arm_right - arm_w;
+    float arm_top    = arm_bottom - arm_h;
+
+    renderer_fill_rect(ctx, arm_left,             arm_top, arm_right, arm_bottom, skin, 0);
+    renderer_fill_rect(ctx, arm_right - 4.0f * s, arm_top, arm_right, arm_bottom, skin_shade, 0);
+
+    /* Fist: wider, sits just above the forearm. */
+    float fist_w     = 30.0f * s;
+    float fist_h     = 22.0f * s;
+    float fist_right = arm_right + 2.0f * s;
+    float fist_top   = arm_top - fist_h + 4.0f * s;
+    float fist_left  = fist_right - fist_w;
+    float fist_bottom = fist_top + fist_h;
+
+    renderer_fill_rect(ctx, fist_left,             fist_top, fist_right, fist_bottom,             skin, 0);
+    renderer_fill_rect(ctx, fist_right - 4.0f * s, fist_top, fist_right, fist_bottom,             skin_shade, 0);
+}
+
+/* Block-in-hand for creative: isometric cube tilted into the bottom-right.
+ * The swing translates the cube down and adds a small clockwise tilt by
+ * shifting the diamond's top apex, mimicking the wrist-rotation arc you see
+ * in Minecraft when you punch with a held block. */
+static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float break_timer)
 {
     BlockID type = HOTBAR_BLOCKS[selected_slot];
     if (type == BLOCK_AIR)
         return;
 
     const float s = HUD_SCALE;
-    /* Half-widths of the isometric cube on screen. The "diamond" top face
-     * spans (-w,+w) horizontally and (-h,+h) vertically around the apex;
-     * h2 is the vertical extent of the side faces. */
-    const float w  = 22.0f * s;
-    const float h  = 11.0f * s;
-    const float h2 = 22.0f * s;
-    const float margin_right  = 12.0f * s;
-    const float margin_bottom = 12.0f * s;
+    /* Half-widths of the isometric cube. The diamond top spans (-w,+w) and
+     * (-h,+h) around the center; h2 is the side-face vertical extent. */
+    const float w  = 24.0f * s;
+    const float h  = 12.0f * s;
+    const float h2 = 24.0f * s;
+    const float margin_right  = 14.0f * s;
+    const float margin_bottom = 14.0f * s;
 
-    /* Single-shot swing arc: 0..1 over the 0.3 s break window, eased so the
-     * hand dips down/inward then returns. Using a half-sine keeps motion
-     * unidirectional instead of oscillating both ways. */
-    float t = break_timer / 0.3f;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    float swing = sinf(t * (float)M_PI);
-    float swing_offset_y = swing * 14.0f * s;
-    float swing_offset_x = swing * -8.0f * s;
+    float swing = hand_swing_phase(break_timer);
+    /* Translate down and slightly forward (right). Tilt: a small clockwise
+     * rotation of the top apex (left + down) gives the cube the "wrist
+     * swinging through" silhouette without needing real 2D rotation. */
+    float swing_y = swing * 16.0f * s;
+    float swing_x = swing * 4.0f * s;
+    float tilt    = swing * 6.0f * s;
 
-    /* Anchor the cube against the bottom-right of the screen with margins,
-     * so the entire diamond+sides assembly stays inside the viewport. */
-    float cx = SCREEN_WIDTH  - w  - margin_right  + swing_offset_x;
-    float cy = SCREEN_HEIGHT - h2 - margin_bottom + swing_offset_y;
+    float cx = SCREEN_WIDTH  - w  - margin_right  + swing_x;
+    float cy = SCREEN_HEIGHT - h2 - margin_bottom + swing_y;
 
-    /* Top diamond. UV winding: top apex -> right -> bottom apex -> left,
-     * which rotates the texture 45 degrees CW into the diamond shape. */
+    /* Top diamond. Vertex order top -> right -> bottom -> left with the
+     * UV winding hardcoded in renderer.c rotates the texture 45 deg CW
+     * into the diamond shape. The tilt biases the top and right apex. */
     renderer_draw_custom_screen_quad(ctx,
-        cx,     cy - h,            /* top apex     UV(0,0)   */
-        cx + w, cy,                /* right apex   UV(16,0)  */
-        cx,     cy + h,            /* bottom apex  UV(16,16) */
-        cx - w, cy,                /* left apex    UV(0,16)  */
+        cx - tilt,        cy - h + tilt * 0.3f,  /* top apex (rotated CW) */
+        cx + w,           cy - tilt * 0.3f,      /* right apex             */
+        cx + tilt,        cy + h - tilt * 0.3f,  /* bottom apex            */
+        cx - w,           cy + tilt * 0.3f,      /* left apex              */
         block_face_texture_id(type, FACE_TOP), 0);
 
-    /* Right side face. Vertices in TL,TR,BR,BL order to match the
-     * UV(0,0)(16,0)(16,16)(0,16) winding hardcoded in renderer.c. */
+    /* Right side face, TL,TR,BR,BL to match UV(0,0)(16,0)(16,16)(0,16). */
     renderer_draw_custom_screen_quad(ctx,
-        cx,     cy + h,            /* TL */
-        cx + w, cy,                /* TR */
-        cx + w, cy + h2,           /* BR */
-        cx,     cy + h + h2,       /* BL */
+        cx + tilt,        cy + h - tilt * 0.3f,  /* TL */
+        cx + w,           cy - tilt * 0.3f,      /* TR */
+        cx + w,           cy + h2,               /* BR */
+        cx + tilt,        cy + h + h2,           /* BL */
         block_face_texture_id(type, FACE_RIGHT), QUAD_LIGHT_LEVEL(2));
 
     /* Left/front face, same TL,TR,BR,BL winding. */
     renderer_draw_custom_screen_quad(ctx,
-        cx - w, cy,                /* TL */
-        cx,     cy + h,            /* TR */
-        cx,     cy + h + h2,       /* BR */
-        cx - w, cy + h2,           /* BL */
+        cx - w,           cy + tilt * 0.3f,      /* TL */
+        cx + tilt,        cy + h - tilt * 0.3f,  /* TR */
+        cx + tilt,        cy + h + h2,           /* BR */
+        cx - w,           cy + h2,               /* BL */
         block_face_texture_id(type, FACE_FRONT), QUAD_LIGHT_LEVEL(1));
 }
 
@@ -1198,6 +1269,14 @@ int main(void)
         if (water_tick_accumulator >= WATER_TICK_INTERVAL) {
             water_tick_accumulator -= WATER_TICK_INTERVAL;
             world_water_tick(&world);
+            if (debug_enabled) {
+                WaterTickStats ws = world_water_tick_stats();
+                if (ws.sources_seen || ws.flows_seen || ws.spread_placed || ws.evaporated) {
+                    chat_log(&chat, "water: src=%d flow=%d +%d -%d",
+                             ws.sources_seen, ws.flows_seen,
+                             ws.spread_placed, ws.evaporated);
+                }
+            }
         }
 
         input_update(&inp);
@@ -1386,8 +1465,18 @@ int main(void)
                 }
             }
             if (input_consume_place(&inp)) {
-                try_place_targeted_block(&world, &cam, &player,
-                                         HOTBAR_BLOCKS[selected_hotbar_slot]);
+                /* Survival has no inventory in this game, so block placement
+                 * is creative-only. Spectator never collides anyway. */
+                if (player.mode == PLAYER_MODE_CREATIVE) {
+                    BlockID held = HOTBAR_BLOCKS[selected_hotbar_slot];
+                    PlaceResult pr = try_place_targeted_block(&world, &cam,
+                                                              &player, held);
+                    if (pr != PLACE_OK && debug_enabled) {
+                        chat_log(&chat, "place %s -> %s",
+                                 BlockRegistry[held].name,
+                                 place_result_name(pr));
+                    }
+                }
             }
         } else {
             (void)input_consume_hotbar_slot(&inp);
@@ -1450,13 +1539,13 @@ int main(void)
             if (player.mode == PLAYER_MODE_CREATIVE) {
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 renderer_draw_crosshair(ctx);
-                draw_player_hand(ctx, selected_hotbar_slot, break_timer);
+                draw_block_in_hand(ctx, selected_hotbar_slot, break_timer);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 draw_healthbar(ctx);
                 draw_hungerbar(ctx);
                 renderer_draw_crosshair(ctx);
-                draw_player_hand(ctx, selected_hotbar_slot, break_timer);
+                draw_bare_hand(ctx, break_timer);
             }
         }
         pause_menu_draw(&pause, ctx, &pause_settings);

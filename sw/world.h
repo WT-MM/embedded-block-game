@@ -161,6 +161,16 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
  * up to 7 blocks. Flow blocks (BLOCK_WATER_FLOW) evaporate when they lose
  * all water neighbors. Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
+
+/* Diagnostic counters from the most recent world_water_tick. Useful for
+ * verifying on hardware whether the BFS actually finds sources / spreads. */
+typedef struct {
+    int sources_seen;
+    int flows_seen;
+    int spread_placed;
+    int evaporated;
+} WaterTickStats;
+WaterTickStats world_water_tick_stats(void);
 int world_total_faces(const VoxelWorld *world);
 int world_total_blocks(const VoxelWorld *world);
 int world_loaded_chunk_count(const VoxelWorld *world);

@@ -3178,6 +3178,13 @@ static bool block_is_any_water(BlockID id)
     return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
+static WaterTickStats g_water_tick_stats = {0};
+
+WaterTickStats world_water_tick_stats(void)
+{
+    return g_water_tick_stats;
+}
+
 bool world_water_tick(VoxelWorld *world)
 {
     if (!world)
@@ -3188,6 +3195,7 @@ bool world_water_tick(VoxelWorld *world)
     static WaterNode queue[WATER_TICK_MAX_BLOCKS];
     int head = 0, tail = 0;
     bool changed = false;
+    WaterTickStats stats = {0};
 
     world_lock(world);
 
@@ -3206,6 +3214,7 @@ bool world_water_tick(VoxelWorld *world)
                     if (chunk->blocks[y][z][x] != BLOCK_WATER_FLOW)
                         continue;
 
+                    stats.flows_seen++;
                     int wx = ox + x, wy = y, wz = oz + z;
                     bool has_neighbor = false;
 
@@ -3223,6 +3232,7 @@ bool world_water_tick(VoxelWorld *world)
                     if (!has_neighbor) {
                         world_set_block_locked(world, wx, wy, wz, BLOCK_AIR);
                         changed = true;
+                        stats.evaporated++;
                     }
                 }
             }
@@ -3244,6 +3254,7 @@ bool world_water_tick(VoxelWorld *world)
                     if (chunk->blocks[y][z][x] != BLOCK_WATER)
                         continue;
 
+                    stats.sources_seen++;
                     if (tail >= WATER_TICK_MAX_BLOCKS)
                         goto spread_done;
 
@@ -3267,6 +3278,7 @@ spread_done:
             if (below == BLOCK_AIR) {
                 world_set_block_locked(world, wx, wy - 1, wz, BLOCK_WATER_FLOW);
                 changed = true;
+                stats.spread_placed++;
                 /* Falling water resets lateral distance. */
                 if (tail < WATER_TICK_MAX_BLOCKS)
                     queue[tail++] = (WaterNode){wx, wy - 1, wz, 0};
@@ -3288,11 +3300,13 @@ spread_done:
                 continue;
             world_set_block_locked(world, nx, wy, nz, BLOCK_WATER_FLOW);
             changed = true;
+            stats.spread_placed++;
             if (tail < WATER_TICK_MAX_BLOCKS)
                 queue[tail++] = (WaterNode){nx, wy, nz, dist + 1};
         }
     }
 
     world_unlock(world);
+    g_water_tick_stats = stats;
     return changed;
 }

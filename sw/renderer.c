@@ -129,9 +129,22 @@ static void upload_default_palette(GPUTransport *transport)
         { 37, 0xff, 0xff, 0xff }, /* glass highlight */
         { 38, 0xff, 0xd7, 0x79 }, /* lamp glow */
         { 39, 0x6d, 0x53, 0x30 }, /* lamp frame */
-        { 64, 0x2a, 0x52, 0x9c }, /* water deep */
-        { 65, 0x3a, 0x6c, 0xc4 }, /* water mid */
-        { 66, 0x6f, 0x9d, 0xe4 }, /* water highlight */
+        { 40, 0x2a, 0x52, 0x9c }, /* banked water deep */
+        { 41, 0x3a, 0x6c, 0xc4 }, /* banked water mid */
+        { 42, 0x6f, 0x9d, 0xe4 }, /* banked water highlight */
+        { 43, 0x7a, 0x20, 0x10 }, /* lava dark */
+        { 44, 0xe8, 0x5c, 0x18 }, /* lava orange */
+        { 45, 0xff, 0xd8, 0x5a }, /* lava hot */
+        { 46, 0xd8, 0xc0, 0x74 }, /* sand */
+        { 47, 0xa8, 0x90, 0x50 }, /* sand dark */
+        { 48, 0xa0, 0x3f, 0x32 }, /* brick */
+        { 49, 0x62, 0x24, 0x24 }, /* brick dark */
+        { 50, 0x20, 0x1b, 0x2c }, /* obsidian */
+        { 51, 0x43, 0x36, 0x58 }, /* obsidian edge */
+        { 52, 0x72, 0x82, 0x91 }, /* clay */
+        { 64, 0x2a, 0x52, 0x9c }, /* unbanked underwater overlay deep */
+        { 65, 0x3a, 0x6c, 0xc4 }, /* unbanked underwater overlay mid */
+        { 66, 0x6f, 0x9d, 0xe4 }, /* unbanked underwater overlay highlight */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -241,6 +254,19 @@ static RGB24 default_palette_color(uint8_t index)
     case 37: return rgb24(0xff, 0xff, 0xff);
     case 38: return rgb24(0xff, 0xd7, 0x79);
     case 39: return rgb24(0x6d, 0x53, 0x30);
+    case 40: return rgb24(0x2a, 0x52, 0x9c);
+    case 41: return rgb24(0x3a, 0x6c, 0xc4);
+    case 42: return rgb24(0x6f, 0x9d, 0xe4);
+    case 43: return rgb24(0x7a, 0x20, 0x10);
+    case 44: return rgb24(0xe8, 0x5c, 0x18);
+    case 45: return rgb24(0xff, 0xd8, 0x5a);
+    case 46: return rgb24(0xd8, 0xc0, 0x74);
+    case 47: return rgb24(0xa8, 0x90, 0x50);
+    case 48: return rgb24(0xa0, 0x3f, 0x32);
+    case 49: return rgb24(0x62, 0x24, 0x24);
+    case 50: return rgb24(0x20, 0x1b, 0x2c);
+    case 51: return rgb24(0x43, 0x36, 0x58);
+    case 52: return rgb24(0x72, 0x82, 0x91);
     case 64: return rgb24(0x2a, 0x52, 0x9c);
     case 65: return rgb24(0x3a, 0x6c, 0xc4);
     case 66: return rgb24(0x6f, 0x9d, 0xe4);
@@ -1547,6 +1573,59 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
     emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
 }
 
+static void cross_face_vertices(Vec3 block_pos, uint8_t face,
+                                Vec3 out[4])
+{
+    const float inset = 0.08f;
+    float x = block_pos.x;
+    float y = block_pos.y;
+    float z = block_pos.z;
+
+    if (face == CHUNK_FACE_CROSS_B) {
+        out[0] = (Vec3){ x + 1.0f - inset, y,        z + inset };
+        out[1] = (Vec3){ x + inset,        y,        z + 1.0f - inset };
+        out[2] = (Vec3){ x + inset,        y + 1.0f, z + 1.0f - inset };
+        out[3] = (Vec3){ x + 1.0f - inset, y + 1.0f, z + inset };
+        return;
+    }
+
+    out[0] = (Vec3){ x + inset,        y,        z + inset };
+    out[1] = (Vec3){ x + 1.0f - inset, y,        z + 1.0f - inset };
+    out[2] = (Vec3){ x + 1.0f - inset, y + 1.0f, z + 1.0f - inset };
+    out[3] = (Vec3){ x + inset,        y + 1.0f, z + inset };
+}
+
+static void emit_cross_block_face_lit(RenderContext *ctx, BlockID type,
+                                      Vec3 block_pos, uint8_t face,
+                                      uint8_t light_flags)
+{
+    static const float tile_span = 16.0f;
+    Vec3 face_world[4];
+    CameraVertex face_cam[4];
+    uint8_t texture_id;
+    uint8_t face_flags = light_flags | QUAD_FLAG_FOG | QUAD_FLAG_ALPHA_KEY;
+
+    if (type == BLOCK_AIR)
+        return;
+
+    cross_face_vertices(block_pos, face, face_world);
+    for (int i = 0; i < 4; i++) {
+        world_to_camera(ctx, face_world[i], &face_cam[i]);
+        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
+        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
+    }
+    if (camera_quad_outside_view(ctx, face_cam))
+        return;
+
+    texture_id = choose_face_texture_lod(ctx,
+                                         block_face_texture_id(type, FACE_FRONT),
+                                         face_cam);
+
+    CameraVertex clipped[6];
+    int clipped_count = clip_face_to_near_plane(face_cam, clipped);
+    emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
+}
+
 static void emit_merged_block_face(RenderContext *ctx, BlockID type,
                                    Vec3 block_pos, BlockFace face,
                                    int u_size, int v_size)
@@ -2170,10 +2249,24 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
             if (block_is_translucent(id))
                 continue;
 
-            /* Early back-face cull using axis-aligned normal. */
             float wx = chunk_ox + (float)face->x;
             float wy = (float)face->y;
             float wz = chunk_oz + (float)face->z;
+            if (block_render_model(id) == BLOCK_RENDER_CROSS) {
+                Vec3 block_pos = { wx, wy, wz };
+                uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
+                                                                    FACE_TOP,
+                                                                    face->sky_light,
+                                                                    face->block_light);
+
+                emit_cross_block_face_lit(ctx, id, block_pos,
+                                          face->face, light_flags);
+                if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                    return ctx->n_quads - before;
+                continue;
+            }
+
+            /* Early back-face cull using axis-aligned normal. */
             switch ((BlockFace)face->face) {
             case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
             case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;

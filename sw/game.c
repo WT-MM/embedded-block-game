@@ -41,6 +41,7 @@
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
 #define HOTBAR_SLOT_COUNT 9
+#define HOTBAR_PAGE_COUNT 3
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
@@ -54,6 +55,7 @@
 #define AIR_BUBBLE_POP_WINDOW_SECONDS 0.10f
 #define DAMAGE_FLASH_SECONDS 0.50f
 #define FALL_DAMAGE_SAFE_DISTANCE 3.0f
+#define FALL_DAMAGE_EPSILON 0.01f
 #define FALL_DAMAGE_MULTIPLIER 1.0f
 #define CREATIVE_FLIGHT_DOUBLE_TAP_SECONDS 0.35f
 #define PLAYER_SPAWN_X 0.0f
@@ -102,17 +104,50 @@ typedef struct {
     int place_z;
 } BlockTarget;
 
-static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
-    BLOCK_GRASS,
-    BLOCK_DIRT,
-    BLOCK_STONE,
-    BLOCK_WOOD,
-    BLOCK_PLANKS,
-    BLOCK_GLASS,
-    BLOCK_LAMP,
-    BLOCK_LEAVES,
-    BLOCK_WATER,
+static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
+    {
+        BLOCK_GRASS,
+        BLOCK_DIRT,
+        BLOCK_STONE,
+        BLOCK_WOOD,
+        BLOCK_PLANKS,
+        BLOCK_GLASS,
+        BLOCK_LAMP,
+        BLOCK_LEAVES,
+        BLOCK_WATER,
+    },
+    {
+        BLOCK_SAND,
+        BLOCK_GRAVEL,
+        BLOCK_COBBLESTONE,
+        BLOCK_BRICKS,
+        BLOCK_OBSIDIAN,
+        BLOCK_SANDSTONE,
+        BLOCK_CLAY,
+        BLOCK_REDSTONE_BLOCK,
+        BLOCK_LAVA,
+    },
+    {
+        BLOCK_COAL_ORE,
+        BLOCK_IRON_ORE,
+        BLOCK_GOLD_ORE,
+        BLOCK_DIAMOND_ORE,
+        BLOCK_REDSTONE_ORE,
+        BLOCK_GOLD_BLOCK,
+        BLOCK_DIAMOND_BLOCK,
+        BLOCK_RED_FLOWER,
+        BLOCK_YELLOW_FLOWER,
+    },
 };
+
+static BlockID hotbar_block_at(int page, int slot)
+{
+    if (page < 0 || page >= HOTBAR_PAGE_COUNT ||
+        slot < 0 || slot >= HOTBAR_SLOT_COUNT)
+        return BLOCK_AIR;
+
+    return HOTBAR_BLOCKS[page][slot];
+}
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
     { 0x2, 0x6, 0x2, 0x2, 0x7 }, /* 1 */
@@ -781,6 +816,12 @@ static bool game_block_is_water(BlockID id)
     return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
+static bool game_block_is_trace_passable(BlockID id)
+{
+    return id == BLOCK_AIR || id == BLOCK_WATER ||
+           id == BLOCK_WATER_FLOW || id == BLOCK_LAVA;
+}
+
 static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
 {
     int wx = (int)floorf(cam->position.x);
@@ -877,10 +918,10 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
         have_prev_cell = true;
 
         block = world_get_block(world, block_x, block_y, block_z);
-        /* Treat passable blocks (air, water) as see-through so the player can
-         * target solid blocks while standing in or looking through water.
-         * The last passable cell traversed becomes the placement position. */
-        if (!block_is_passable(block)) {
+        /* Treat liquids as see-through for targeting, but let passable
+         * placeables like flowers still be hit and broken. The last
+         * trace-passable cell becomes the placement position. */
+        if (!game_block_is_trace_passable(block)) {
             if (!out)
                 return true;
 
@@ -1145,7 +1186,26 @@ static void hotbar_metrics(float *slot_left_out, float *slot_top_out,
         *total_width_out = total_width;
 }
 
-static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
+static void draw_hotbar_page_pips(RenderContext *ctx, float slot_left,
+                                  float slot_top, float total_width,
+                                  int selected_page)
+{
+    const float s = HUD_SCALE;
+    const float pip = 2.0f * s;
+    const float gap = 2.0f * s;
+    const float total = HOTBAR_PAGE_COUNT * pip + (HOTBAR_PAGE_COUNT - 1) * gap;
+    float x = slot_left + (total_width - total) * 0.5f;
+    float y = slot_top - 4.0f * s;
+
+    for (int i = 0; i < HOTBAR_PAGE_COUNT; i++) {
+        uint8_t color = (i == selected_page) ? 8 : 14;
+        renderer_fill_rect(ctx, x, y, x + pip, y + pip, color, 0);
+        x += pip + gap;
+    }
+}
+
+static void draw_hotbar(RenderContext *ctx, int selected_slot,
+                        int selected_page, PlayerMode mode)
 {
     const float s = HUD_SCALE;
     float slot_left, slot_top, slot_size, gap, total_width;
@@ -1175,11 +1235,12 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
         renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
                            x1 - 1.0f, y1 - 1.0f, 0, 0);
 
-        if (mode != PLAYER_MODE_SURVIVAL && HOTBAR_BLOCKS[i] != BLOCK_AIR) {
+        BlockID block = hotbar_block_at(selected_page, i);
+        if (mode != PLAYER_MODE_SURVIVAL && block != BLOCK_AIR) {
             renderer_draw_screen_tile(ctx,
                                       x0 + 3.0f, y0 + 3.0f,
                                       x1 - 3.0f, y1 - 3.0f,
-                                      block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
+                                      block_face_texture_id(block, FACE_FRONT),
                                       0);
         }
         renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
@@ -1193,6 +1254,10 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
                                8, 0);
         }
     }
+
+    if (mode == PLAYER_MODE_CREATIVE)
+        draw_hotbar_page_pips(ctx, slot_left, slot_top, total_width,
+                              selected_page);
 }
 
 static void draw_healthbar(RenderContext *ctx, int health_units,
@@ -1387,13 +1452,29 @@ static void draw_bare_hand(RenderContext *ctx, float swing_timer)
  * The swing translates the cube down and adds a small clockwise tilt by
  * shifting the diamond's top apex, mimicking the wrist-rotation arc you see
  * in Minecraft when you punch with a held block. */
-static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float swing_timer)
+static void draw_block_in_hand(RenderContext *ctx, BlockID type, float swing_timer)
 {
-    BlockID type = HOTBAR_BLOCKS[selected_slot];
     if (type == BLOCK_AIR)
         return;
 
     const float s = HUD_SCALE;
+    float swing = hand_swing_phase(swing_timer);
+
+    if (block_render_model(type) == BLOCK_RENDER_CROSS) {
+        float size = 22.0f * s;
+        float x0 = SCREEN_WIDTH - 42.0f * s - swing * 7.0f * s;
+        float y0 = SCREEN_HEIGHT - 58.0f * s + swing * 12.0f * s;
+
+        renderer_draw_custom_screen_quad(ctx,
+            x0,                 y0,
+            x0 + size,          y0 + 3.0f * s,
+            x0 + size * 0.85f,  y0 + size + 7.0f * s,
+            x0 - size * 0.15f,  y0 + size + 4.0f * s,
+            block_face_texture_id(type, FACE_FRONT),
+            QUAD_FLAG_ALPHA_KEY);
+        return;
+    }
+
     /* Half-widths of the isometric cube. The diamond top spans (-w,+w) and
      * (-h,+h) around the center; h2 is the side-face vertical extent. */
     const float w  = 24.0f * s;
@@ -1402,7 +1483,6 @@ static void draw_block_in_hand(RenderContext *ctx, int selected_slot, float swin
     const float margin_right  = 14.0f * s;
     const float margin_bottom = 14.0f * s;
 
-    float swing = hand_swing_phase(swing_timer);
     /* Translate down and slightly forward (right). Tilt: a small clockwise
      * rotation of the top apex (left + down) gives the cube the "wrist
      * swinging through" silhouette without needing real 2D rotation. */
@@ -1521,6 +1601,7 @@ int main(void)
     int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
     SelectedWorld selected_world = {0};
     int selected_hotbar_slot = 0;
+    int selected_hotbar_page = 0;
     PauseMenuSettings pause_settings = {0};
 
     if (!run_home_menu(ctx, &inp, target_fps, &selected_world)) {
@@ -1570,7 +1651,7 @@ int main(void)
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-6=hotbar  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
         printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
@@ -1862,14 +1943,18 @@ int main(void)
                 } else if (player.is_grounded) {
                     if (fall_tracking && !was_grounded && fall_damage_armed) {
                         float fall_distance = fall_start_y - player.y;
-                        int fall_damage = (int)ceilf(
-                            (fall_distance - FALL_DAMAGE_SAFE_DISTANCE) *
-                            FALL_DAMAGE_MULTIPLIER);
-                        if (apply_survival_damage(&player_health_units,
-                                                  fall_damage,
-                                                  &damage_flash_timer)) {
-                            RESET_PLAYER_AFTER_DEATH("fell from a high place");
-                            break;
+                        float damage_distance =
+                            fall_distance - FALL_DAMAGE_SAFE_DISTANCE;
+
+                        if (damage_distance > FALL_DAMAGE_EPSILON) {
+                            int fall_damage = (int)ceilf(
+                                damage_distance * FALL_DAMAGE_MULTIPLIER);
+                            if (apply_survival_damage(&player_health_units,
+                                                      fall_damage,
+                                                      &damage_flash_timer)) {
+                                RESET_PLAYER_AFTER_DEATH("fell from a high place");
+                                break;
+                            }
                         }
                     }
                     fall_tracking = false;
@@ -1947,18 +2032,33 @@ int main(void)
 
         if (!paused && !chat_is_open(&chat)) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
+            bool hotbar_page_pressed = input_consume_hotbar_page(&inp);
             bool break_pressed = input_consume_break(&inp);
             bool place_pressed = input_consume_place(&inp);
 
             if (break_pressed || place_pressed)
                 hand_swing_timer = 0.0f;
 
+            if (hotbar_page_pressed &&
+                player.mode == PLAYER_MODE_CREATIVE) {
+                selected_hotbar_page =
+                    (selected_hotbar_page + 1) % HOTBAR_PAGE_COUNT;
+                BlockID selected = hotbar_block_at(selected_hotbar_page,
+                                                   selected_hotbar_slot);
+                chat_log(&chat, "hotbar page: %d  selected: %d %s",
+                         selected_hotbar_page + 1,
+                         selected_hotbar_slot + 1,
+                         BlockRegistry[selected].name);
+            }
+
             if (hotbar_slot >= 0 && hotbar_slot < HOTBAR_SLOT_COUNT &&
                 hotbar_slot != selected_hotbar_slot) {
                 selected_hotbar_slot = hotbar_slot;
+                BlockID selected = hotbar_block_at(selected_hotbar_page,
+                                                   selected_hotbar_slot);
                 chat_log(&chat, "selected: %d %s",
                          selected_hotbar_slot + 1,
-                         BlockRegistry[HOTBAR_BLOCKS[selected_hotbar_slot]].name);
+                         BlockRegistry[selected].name);
             }
 
             if (player.mode == PLAYER_MODE_CREATIVE) {
@@ -2027,7 +2127,8 @@ int main(void)
                 /* Survival has no inventory in this game, so block placement
                  * is creative-only. Spectator never collides anyway. */
                 if (player.mode == PLAYER_MODE_CREATIVE) {
-                    BlockID held = HOTBAR_BLOCKS[selected_hotbar_slot];
+                    BlockID held = hotbar_block_at(selected_hotbar_page,
+                                                   selected_hotbar_slot);
                     PlaceResult pr = try_place_targeted_block(&world, &cam,
                                                               &player, held);
                     if (pr != PLACE_OK && debug_enabled) {
@@ -2043,6 +2144,7 @@ int main(void)
             break_target_valid = false;
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
+            (void)input_consume_hotbar_page(&inp);
             (void)input_consume_break(&inp);
             (void)input_consume_place(&inp);
         }
@@ -2117,12 +2219,16 @@ int main(void)
         chat_draw(&chat, ctx);
         if (!paused && !chat_is_open(&chat)) {
             if (player.mode == PLAYER_MODE_CREATIVE) {
-                draw_block_in_hand(ctx, selected_hotbar_slot, hand_swing_timer);
-                draw_hotbar(ctx, selected_hotbar_slot, player.mode);
+                draw_block_in_hand(ctx,
+                                   hotbar_block_at(selected_hotbar_page,
+                                                   selected_hotbar_slot),
+                                   hand_swing_timer);
+                draw_hotbar(ctx, selected_hotbar_slot,
+                            selected_hotbar_page, player.mode);
                 renderer_draw_crosshair(ctx);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
                 draw_bare_hand(ctx, hand_swing_timer);
-                draw_hotbar(ctx, selected_hotbar_slot, player.mode);
+                draw_hotbar(ctx, selected_hotbar_slot, 0, player.mode);
                 draw_healthbar(ctx, player_health_units, damage_flash_timer);
                 draw_hungerbar(ctx);
                 if (camera_underwater ||

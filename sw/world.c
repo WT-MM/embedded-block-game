@@ -1172,6 +1172,11 @@ static bool block_is_any_water(BlockID id)
     return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
+static bool block_uses_cube_mesh(BlockID id)
+{
+    return block_render_model(id) == BLOCK_RENDER_CUBE;
+}
+
 void world_init(VoxelWorld *world)
 {
     memset(world, 0, sizeof(*world));
@@ -1982,6 +1987,11 @@ static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk
                 if (id == BLOCK_AIR)
                     continue;
 
+                if (!block_uses_cube_mesh(id)) {
+                    count += 2;
+                    continue;
+                }
+
                 int wx = ccx * WORLD_CHUNK_SIZE + x;
                 int wz = ccz * WORLD_CHUNK_SIZE + z;
 
@@ -2058,7 +2068,7 @@ static void face_grid_dims(BlockFace face, int *layers, int *width, int *height)
 
 static void append_chunk_face(ChunkFace *faces, int *out,
                               int x, int y, int z,
-                              BlockFace face, BlockID type,
+                              uint8_t face, BlockID type,
                               int u_size, int v_size,
                               uint8_t sky_light, uint8_t block_light,
                               uint8_t height)
@@ -2067,7 +2077,7 @@ static void append_chunk_face(ChunkFace *faces, int *out,
         .x = (uint8_t)x,
         .y = (uint8_t)y,
         .z = (uint8_t)z,
-        .face = (uint8_t)face,
+        .face = face,
         .type = (uint8_t)type,
         .u_size = (uint8_t)u_size,
         .v_size = (uint8_t)v_size,
@@ -2143,7 +2153,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
 
                     BlockID id = chunk->blocks[y][z][x];
-                    if (id == BLOCK_AIR)
+                    if (id == BLOCK_AIR || !block_uses_cube_mesh(id))
                         continue;
 
                     int wx = ccx * WORLD_CHUNK_SIZE + x;
@@ -2237,9 +2247,37 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                     }
 
                     append_chunk_face(chunk->faces, &out, x, y, z,
-                                      (BlockFace)f, id, merge_w, merge_h,
+                                      (uint8_t)f, id, merge_w, merge_h,
                                       sky_light, block_light, 8);
                 }
+            }
+        }
+    }
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                BlockID id = chunk->blocks[y][z][x];
+
+                if (id == BLOCK_AIR || block_uses_cube_mesh(id))
+                    continue;
+
+                int wx = ccx * WORLD_CHUNK_SIZE + x;
+                int wz = ccz * WORLD_CHUNK_SIZE + z;
+                uint8_t sky_light = read_sky_light_cached(nb, ccx, ccz,
+                                                          wx, y, wz);
+                uint8_t block_light = read_block_light_cached(nb, ccx, ccz,
+                                                              wx, y, wz);
+
+                if (block_emission_level(id) > block_light)
+                    block_light = block_emission_level(id);
+
+                append_chunk_face(chunk->faces, &out, x, y, z,
+                                  CHUNK_FACE_CROSS_A, id, 1, 1,
+                                  sky_light, block_light, 8);
+                append_chunk_face(chunk->faces, &out, x, y, z,
+                                  CHUNK_FACE_CROSS_B, id, 1, 1,
+                                  sky_light, block_light, 8);
             }
         }
     }

@@ -26,8 +26,31 @@ typedef enum {
     BLOCK_LEAVES,
     BLOCK_WATER,
     BLOCK_WATER_FLOW,  /* auto-spread flowing water; evaporates when source removed */
+    BLOCK_SAND,
+    BLOCK_GRAVEL,
+    BLOCK_COBBLESTONE,
+    BLOCK_BRICKS,
+    BLOCK_OBSIDIAN,
+    BLOCK_SANDSTONE,
+    BLOCK_CLAY,
+    BLOCK_REDSTONE_BLOCK,
+    BLOCK_LAVA,
+    BLOCK_COAL_ORE,
+    BLOCK_IRON_ORE,
+    BLOCK_GOLD_ORE,
+    BLOCK_DIAMOND_ORE,
+    BLOCK_REDSTONE_ORE,
+    BLOCK_GOLD_BLOCK,
+    BLOCK_DIAMOND_BLOCK,
+    BLOCK_RED_FLOWER,
+    BLOCK_YELLOW_FLOWER,
     NUM_BLOCK_TYPES
 } BlockID;
+
+typedef enum {
+    BLOCK_RENDER_CUBE = 0,
+    BLOCK_RENDER_CROSS,
+} BlockRenderModel;
 
 typedef enum {
 #define TEXTURE_TILE(name, base) TEX_TILE_##name = base,
@@ -48,6 +71,7 @@ typedef struct {
     uint8_t emission_level;
     float hardness_seconds;
     bool self_lit;
+    BlockRenderModel render_model;
 } BlockDescriptor;
 
 extern BlockDescriptor BlockRegistry[NUM_BLOCK_TYPES];
@@ -68,5 +92,6 @@ bool block_is_translucent(BlockID id);
 bool block_is_alpha_keyed(BlockID id);
 /* True for blocks the player walks through without colliding (water). */
 bool block_is_passable(BlockID id);
+BlockRenderModel block_render_model(BlockID id);
 
 #endif

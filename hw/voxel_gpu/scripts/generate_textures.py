@@ -101,6 +101,9 @@ PAL_DIRT = 2
 PAL_WOOD = 3
 PAL_STONE = 4
 PAL_WHITE = 5
+PAL_RED = 6
+PAL_BLUE = 7
+PAL_YELLOW = 8
 PAL_GRASS_SIDE = 9
 PAL_WOOD_TOP = 11
 PAL_UI_DARK = 14
@@ -127,9 +130,19 @@ PAL_GLASS_EDGE = 36
 PAL_GLASS_HIGHLIGHT = 37
 PAL_LAMP_GLOW = 38
 PAL_LAMP_FRAME = 39
-PAL_WATER_DEEP = 64
-PAL_WATER_MID = 65
-PAL_WATER_HIGHLIGHT = 66
+PAL_WATER_DEEP = 40
+PAL_WATER_MID = 41
+PAL_WATER_HIGHLIGHT = 42
+PAL_LAVA_DARK = 43
+PAL_LAVA_ORANGE = 44
+PAL_LAVA_HOT = 45
+PAL_SAND = 46
+PAL_SAND_DARK = 47
+PAL_BRICK = 48
+PAL_BRICK_DARK = 49
+PAL_OBSIDIAN = 50
+PAL_OBSIDIAN_EDGE = 51
+PAL_CLAY = 52
 
 
 # RGB values for each palette index. Mirrors the table in
@@ -178,9 +191,22 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     37: (0xff, 0xff, 0xff),  # glass highlight
     38: (0xff, 0xd7, 0x79),  # lamp glow
     39: (0x6d, 0x53, 0x30),  # lamp frame
-    64: (0x2a, 0x52, 0x9c),  # water deep
-    65: (0x3a, 0x6c, 0xc4),  # water mid
-    66: (0x6f, 0x9d, 0xe4),  # water highlight
+    40: (0x2a, 0x52, 0x9c),  # banked water deep
+    41: (0x3a, 0x6c, 0xc4),  # banked water mid
+    42: (0x6f, 0x9d, 0xe4),  # banked water highlight
+    43: (0x7a, 0x20, 0x10),  # lava dark
+    44: (0xe8, 0x5c, 0x18),  # lava orange
+    45: (0xff, 0xd8, 0x5a),  # lava hot
+    46: (0xd8, 0xc0, 0x74),  # sand
+    47: (0xa8, 0x90, 0x50),  # sand dark
+    48: (0xa0, 0x3f, 0x32),  # brick
+    49: (0x62, 0x24, 0x24),  # brick dark
+    50: (0x20, 0x1b, 0x2c),  # obsidian
+    51: (0x43, 0x36, 0x58),  # obsidian edge
+    52: (0x72, 0x82, 0x91),  # clay
+    64: (0x2a, 0x52, 0x9c),  # unbanked underwater overlay deep
+    65: (0x3a, 0x6c, 0xc4),  # unbanked underwater overlay mid
+    66: (0x6f, 0x9d, 0xe4),  # unbanked underwater overlay highlight
 }
 
 # Tiles shown in the preview, one column per block type, one row per LOD.
@@ -362,15 +388,15 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # Map bright pixels to highlight and dark pixels to deep blue. The mid
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
     # this list because the quantizer early-exits to PAL_TRANSPARENT first.
-    TEX_TILE_WATER: (64, 65, 66),
+    TEX_TILE_WATER: (PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT),
     TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
     TEX_TILE_HEART_HALF: (14, 6, 5),
     TEX_TILE_HEART_BLINK: (14, 6, 5),
     TEX_TILE_HEART_HALF_BLINK: (14, 6, 5),
     TEX_TILE_DRUMSTICK: (14, 2, 11, 15, 16, 24, 5),
-    TEX_TILE_AIR_BUBBLE: (14, 64, 65, 66, 5),
-    TEX_TILE_AIR_BUBBLE_POP: (14, 64, 65, 66, 5),
+    TEX_TILE_AIR_BUBBLE: (14, PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT, 5),
+    TEX_TILE_AIR_BUBBLE_POP: (14, PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT, 5),
 }
 
 HUD_SOURCE_TILES = {
@@ -707,6 +733,157 @@ def water(x: int, y: int) -> int:
     return PAL_WATER_MID
 
 
+def sand(x: int, y: int) -> int:
+    n = noise(x, y, 421)
+    if n < 34 or ((x + y * 3) & 0x0F) == 0:
+        return PAL_SAND_DARK
+    if n > 218:
+        return PAL_SUN_CORE
+    return PAL_SAND
+
+
+def gravel(x: int, y: int) -> int:
+    n = noise(x, y, 433)
+    if n < 72:
+        return PAL_STONE_DARK
+    if n > 196:
+        return PAL_STONE_LIGHT
+    if ((x * 5 + y * 3) & 7) == 0:
+        return PAL_UI_DARK
+    return PAL_STONE
+
+
+def cobblestone(x: int, y: int) -> int:
+    cell_x = x // 4
+    cell_y = y // 4
+    local_x = x & 3
+    local_y = y & 3
+    offset = (cell_y & 1) * 2
+    seam = local_y == 0 or ((x + offset) & 3) == 0
+
+    if seam:
+        return PAL_STONE_DARK
+    if noise(cell_x, cell_y, 467) > 170:
+        return PAL_STONE_LIGHT
+    return PAL_STONE
+
+
+def bricks(x: int, y: int) -> int:
+    row = y // 4
+    shifted_x = (x + ((row & 1) * 4)) & 15
+    mortar = (y & 3) == 0 or (shifted_x & 7) == 0
+
+    if mortar:
+        return PAL_BRICK_DARK
+    if noise(x, y, 479) > 204:
+        return PAL_DIRT_LIGHT
+    return PAL_BRICK
+
+
+def obsidian(x: int, y: int) -> int:
+    n = noise(x, y, 491)
+    if x == 0 or y == 0 or x == 15 or y == 15:
+        return PAL_OBSIDIAN_EDGE
+    if n > 232:
+        return PAL_OBSIDIAN_EDGE
+    if ((x + 2 * y) & 15) == 0:
+        return PAL_UI_DARK
+    return PAL_OBSIDIAN
+
+
+def sandstone(x: int, y: int) -> int:
+    if y in (0, 7, 15):
+        return PAL_SAND_DARK
+    if y == 8 and 3 <= x <= 12:
+        return PAL_SAND_DARK
+    if noise(x, y, 503) < 42:
+        return PAL_SAND_DARK
+    return PAL_SAND
+
+
+def clay(x: int, y: int) -> int:
+    n = noise(x, y, 521)
+    if n < 64:
+        return PAL_GLASS_EDGE
+    if n > 220:
+        return PAL_STONE_LIGHT
+    return PAL_CLAY
+
+
+def redstone_block(x: int, y: int) -> int:
+    if x == 0 or y == 0 or x == 15 or y == 15:
+        return PAL_BRICK_DARK
+    if x in (4, 11) or y in (4, 11):
+        return PAL_RED
+    if noise(x, y, 541) > 220:
+        return PAL_LAVA_ORANGE
+    return PAL_BRICK
+
+
+def lava(x: int, y: int) -> int:
+    n = noise(x, y, 557)
+    vein_a = (x + y + (noise(y, x, 563) >> 6)) & 7
+    vein_b = (x * 2 - y + 16 + (noise(x, y, 569) >> 7)) & 15
+
+    if vein_a <= 1 or vein_b <= 1:
+        return PAL_LAVA_HOT if n > 64 else PAL_SUN_GLOW
+    if n > 190:
+        return PAL_LAVA_HOT
+    if n < 42:
+        return PAL_LAVA_DARK
+    return PAL_LAVA_ORANGE
+
+
+def ore_texture(x: int, y: int, accent: int, highlight: int, seed: int) -> int:
+    n = noise(x, y, seed)
+    cluster = ((x - 5) * (x - 5) + (y - 5) * (y - 5) <= 9 or
+               (x - 11) * (x - 11) + (y - 10) * (y - 10) <= 8 or
+               (x - 4) * (x - 4) + (y - 12) * (y - 12) <= 5)
+
+    if cluster and n > 72:
+        return highlight if n > 196 else accent
+    if n < 26:
+        return PAL_STONE_DARK
+    if n > 236:
+        return PAL_STONE_LIGHT
+    return PAL_STONE
+
+
+def gold_block(x: int, y: int) -> int:
+    if x == 0 or y == 0 or x == 15 or y == 15:
+        return PAL_LAMP_GLOW
+    if x in (5, 10) or y in (5, 10):
+        return PAL_YELLOW
+    if noise(x, y, 587) > 220:
+        return PAL_SUN_CORE
+    return PAL_LAMP_GLOW
+
+
+def diamond_block(x: int, y: int) -> int:
+    if x == 0 or y == 0 or x == 15 or y == 15:
+        return PAL_BLUE
+    if x in (4, 11) or y in (4, 11):
+        return PAL_GLASS_HIGHLIGHT
+    if noise(x, y, 599) > 218:
+        return PAL_WHITE
+    return PAL_GLASS
+
+
+def flower(x: int, y: int, petal: int, petal_highlight: int) -> int:
+    stem = x in (7, 8) and 7 <= y <= 15
+    leaf = ((4 <= x <= 7 and y in (11, 12) and x + y <= 18) or
+            (8 <= x <= 12 and y in (10, 11) and x - y <= 1))
+    petal_shape = ((x - 7) * (x - 7) + (y - 4) * (y - 4) <= 8 or
+                   (x - 5) * (x - 5) + (y - 5) * (y - 5) <= 4 or
+                   (x - 10) * (x - 10) + (y - 5) * (y - 5) <= 4)
+
+    if petal_shape:
+        return petal_highlight if noise(x, y, 613) > 210 else petal
+    if stem or leaf:
+        return PAL_GRASS_DARK if noise(x, y, 617) < 92 else PAL_GRASS_SIDE
+    return PAL_TRANSPARENT
+
+
 def crosshair(x: int, y: int) -> int:
     if (x == 7 and 4 <= y <= 11) or (y == 7 and 4 <= x <= 11):
         return PAL_WHITE
@@ -936,6 +1113,42 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return leaves(x, y)
     if tile == TEX_TILE_WATER:
         return water(x, y)
+    if tile == TEX_TILE_SAND:
+        return sand(x, y)
+    if tile == TEX_TILE_GRAVEL:
+        return gravel(x, y)
+    if tile == TEX_TILE_COBBLESTONE:
+        return cobblestone(x, y)
+    if tile == TEX_TILE_BRICKS:
+        return bricks(x, y)
+    if tile == TEX_TILE_OBSIDIAN:
+        return obsidian(x, y)
+    if tile == TEX_TILE_SANDSTONE:
+        return sandstone(x, y)
+    if tile == TEX_TILE_CLAY:
+        return clay(x, y)
+    if tile == TEX_TILE_REDSTONE_BLOCK:
+        return redstone_block(x, y)
+    if tile == TEX_TILE_LAVA:
+        return lava(x, y)
+    if tile == TEX_TILE_COAL_ORE:
+        return ore_texture(x, y, PAL_UI_DARK, PAL_STONE_DARK, 631)
+    if tile == TEX_TILE_IRON_ORE:
+        return ore_texture(x, y, PAL_DIRT_LIGHT, PAL_SAND, 641)
+    if tile == TEX_TILE_GOLD_ORE:
+        return ore_texture(x, y, PAL_YELLOW, PAL_SUN_CORE, 643)
+    if tile == TEX_TILE_DIAMOND_ORE:
+        return ore_texture(x, y, PAL_BLUE, PAL_GLASS_HIGHLIGHT, 647)
+    if tile == TEX_TILE_REDSTONE_ORE:
+        return ore_texture(x, y, PAL_RED, PAL_LAVA_ORANGE, 653)
+    if tile == TEX_TILE_GOLD_BLOCK:
+        return gold_block(x, y)
+    if tile == TEX_TILE_DIAMOND_BLOCK:
+        return diamond_block(x, y)
+    if tile == TEX_TILE_RED_FLOWER:
+        return flower(x, y, PAL_RED, PAL_WHITE)
+    if tile == TEX_TILE_YELLOW_FLOWER:
+        return flower(x, y, PAL_YELLOW, PAL_SUN_CORE)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:

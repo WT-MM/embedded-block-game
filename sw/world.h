@@ -11,6 +11,8 @@
 #define WORLD_CHUNK_SIZE 16
 #define WORLD_CHUNK_HEIGHT 32
 #define WORLD_SAVE_PATH_MAX 512
+#define CHUNK_FACE_CROSS_A ((uint8_t)NUM_FACES)
+#define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
 
 typedef struct {
     uint8_t x;

@@ -518,6 +518,10 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 if (press_edge)
                     inp->mode_toggle_pressed = true;
                 break;
+            case KEY_TAB:
+                if (press_edge)
+                    inp->hotbar_page_pressed = true;
+                break;
             case KEY_F:
             case BTN_LEFT:
                 inp->break_down = down;
@@ -667,6 +671,13 @@ int input_consume_hotbar_slot(InputState *inp)
     return slot;
 }
 
+bool input_consume_hotbar_page(InputState *inp)
+{
+    bool pressed = inp->hotbar_page_pressed;
+    inp->hotbar_page_pressed = false;
+    return pressed;
+}
+
 void input_set_pointer_capture(InputState *inp, bool on)
 {
     uint64_t now_ns;
@@ -712,6 +723,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->place_pressed = false;
         inp->menu_select_pressed = false;
         inp->hotbar_slot_pressed = -1;
+        inp->hotbar_page_pressed = false;
         inp->_forward_tap_armed = false;
         inp->_last_forward_press_ns = 0;
     }

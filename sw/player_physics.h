@@ -11,8 +11,8 @@
 #define EYE_HEIGHT_NORMAL  1.5f
 #define EYE_HEIGHT_SHIFT   1.3f
 
-#define GRAVITY            32.0f /* Minecraft-like blocks per second squared */
-#define JUMP_VELOCITY      8.4f  /* ~1.1 block jump with the gravity above */
+#define GRAVITY            30.0f /* Minecraft-like blocks per second squared */
+#define JUMP_VELOCITY      8.8f  /* ~1.3 block jump with the gravity above */
 #define MAX_SPEED          4.0f  /* blocks per second */
 #define SPRINT_MULTIPLIER  1.6f  /* scales horizontal target speed while sprinting */
 #define ACCELERATION       15.0f /* rate of slewing/acceleration */

@@ -91,6 +91,100 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_WATER_FLOW], TEX_TILE_WATER);
     BlockRegistry[BLOCK_WATER_FLOW].hardness_seconds = 0.0f;
     BlockRegistry[BLOCK_WATER_FLOW].self_lit = false;
+
+    BlockRegistry[BLOCK_SAND].id = BLOCK_SAND;
+    BlockRegistry[BLOCK_SAND].name = "Sand";
+    set_all_faces(&BlockRegistry[BLOCK_SAND], TEX_TILE_SAND);
+    BlockRegistry[BLOCK_SAND].hardness_seconds = 0.5f;
+
+    BlockRegistry[BLOCK_GRAVEL].id = BLOCK_GRAVEL;
+    BlockRegistry[BLOCK_GRAVEL].name = "Gravel";
+    set_all_faces(&BlockRegistry[BLOCK_GRAVEL], TEX_TILE_GRAVEL);
+    BlockRegistry[BLOCK_GRAVEL].hardness_seconds = 0.6f;
+
+    BlockRegistry[BLOCK_COBBLESTONE].id = BLOCK_COBBLESTONE;
+    BlockRegistry[BLOCK_COBBLESTONE].name = "Cobblestone";
+    set_all_faces(&BlockRegistry[BLOCK_COBBLESTONE], TEX_TILE_COBBLESTONE);
+    BlockRegistry[BLOCK_COBBLESTONE].hardness_seconds = 2.0f;
+
+    BlockRegistry[BLOCK_BRICKS].id = BLOCK_BRICKS;
+    BlockRegistry[BLOCK_BRICKS].name = "Bricks";
+    set_all_faces(&BlockRegistry[BLOCK_BRICKS], TEX_TILE_BRICKS);
+    BlockRegistry[BLOCK_BRICKS].hardness_seconds = 2.0f;
+
+    BlockRegistry[BLOCK_OBSIDIAN].id = BLOCK_OBSIDIAN;
+    BlockRegistry[BLOCK_OBSIDIAN].name = "Obsidian";
+    set_all_faces(&BlockRegistry[BLOCK_OBSIDIAN], TEX_TILE_OBSIDIAN);
+    BlockRegistry[BLOCK_OBSIDIAN].hardness_seconds = 8.0f;
+
+    BlockRegistry[BLOCK_SANDSTONE].id = BLOCK_SANDSTONE;
+    BlockRegistry[BLOCK_SANDSTONE].name = "Sandstone";
+    set_all_faces(&BlockRegistry[BLOCK_SANDSTONE], TEX_TILE_SANDSTONE);
+    BlockRegistry[BLOCK_SANDSTONE].hardness_seconds = 0.8f;
+
+    BlockRegistry[BLOCK_CLAY].id = BLOCK_CLAY;
+    BlockRegistry[BLOCK_CLAY].name = "Clay";
+    set_all_faces(&BlockRegistry[BLOCK_CLAY], TEX_TILE_CLAY);
+    BlockRegistry[BLOCK_CLAY].hardness_seconds = 0.7f;
+
+    BlockRegistry[BLOCK_REDSTONE_BLOCK].id = BLOCK_REDSTONE_BLOCK;
+    BlockRegistry[BLOCK_REDSTONE_BLOCK].name = "Redstone Block";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_BLOCK], TEX_TILE_REDSTONE_BLOCK);
+    BlockRegistry[BLOCK_REDSTONE_BLOCK].hardness_seconds = 2.0f;
+
+    BlockRegistry[BLOCK_LAVA].id = BLOCK_LAVA;
+    BlockRegistry[BLOCK_LAVA].name = "Lava";
+    set_all_faces(&BlockRegistry[BLOCK_LAVA], TEX_TILE_LAVA);
+    BlockRegistry[BLOCK_LAVA].emission_level = 15;
+    BlockRegistry[BLOCK_LAVA].hardness_seconds = 0.0f;
+    BlockRegistry[BLOCK_LAVA].self_lit = true;
+
+    BlockRegistry[BLOCK_COAL_ORE].id = BLOCK_COAL_ORE;
+    BlockRegistry[BLOCK_COAL_ORE].name = "Coal Ore";
+    set_all_faces(&BlockRegistry[BLOCK_COAL_ORE], TEX_TILE_COAL_ORE);
+    BlockRegistry[BLOCK_COAL_ORE].hardness_seconds = 2.4f;
+
+    BlockRegistry[BLOCK_IRON_ORE].id = BLOCK_IRON_ORE;
+    BlockRegistry[BLOCK_IRON_ORE].name = "Iron Ore";
+    set_all_faces(&BlockRegistry[BLOCK_IRON_ORE], TEX_TILE_IRON_ORE);
+    BlockRegistry[BLOCK_IRON_ORE].hardness_seconds = 2.4f;
+
+    BlockRegistry[BLOCK_GOLD_ORE].id = BLOCK_GOLD_ORE;
+    BlockRegistry[BLOCK_GOLD_ORE].name = "Gold Ore";
+    set_all_faces(&BlockRegistry[BLOCK_GOLD_ORE], TEX_TILE_GOLD_ORE);
+    BlockRegistry[BLOCK_GOLD_ORE].hardness_seconds = 2.4f;
+
+    BlockRegistry[BLOCK_DIAMOND_ORE].id = BLOCK_DIAMOND_ORE;
+    BlockRegistry[BLOCK_DIAMOND_ORE].name = "Diamond Ore";
+    set_all_faces(&BlockRegistry[BLOCK_DIAMOND_ORE], TEX_TILE_DIAMOND_ORE);
+    BlockRegistry[BLOCK_DIAMOND_ORE].hardness_seconds = 2.6f;
+
+    BlockRegistry[BLOCK_REDSTONE_ORE].id = BLOCK_REDSTONE_ORE;
+    BlockRegistry[BLOCK_REDSTONE_ORE].name = "Redstone Ore";
+    set_all_faces(&BlockRegistry[BLOCK_REDSTONE_ORE], TEX_TILE_REDSTONE_ORE);
+    BlockRegistry[BLOCK_REDSTONE_ORE].hardness_seconds = 2.4f;
+
+    BlockRegistry[BLOCK_GOLD_BLOCK].id = BLOCK_GOLD_BLOCK;
+    BlockRegistry[BLOCK_GOLD_BLOCK].name = "Gold Block";
+    set_all_faces(&BlockRegistry[BLOCK_GOLD_BLOCK], TEX_TILE_GOLD_BLOCK);
+    BlockRegistry[BLOCK_GOLD_BLOCK].hardness_seconds = 2.8f;
+
+    BlockRegistry[BLOCK_DIAMOND_BLOCK].id = BLOCK_DIAMOND_BLOCK;
+    BlockRegistry[BLOCK_DIAMOND_BLOCK].name = "Diamond Block";
+    set_all_faces(&BlockRegistry[BLOCK_DIAMOND_BLOCK], TEX_TILE_DIAMOND_BLOCK);
+    BlockRegistry[BLOCK_DIAMOND_BLOCK].hardness_seconds = 2.8f;
+
+    BlockRegistry[BLOCK_RED_FLOWER].id = BLOCK_RED_FLOWER;
+    BlockRegistry[BLOCK_RED_FLOWER].name = "Red Flower";
+    set_all_faces(&BlockRegistry[BLOCK_RED_FLOWER], TEX_TILE_RED_FLOWER);
+    BlockRegistry[BLOCK_RED_FLOWER].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_RED_FLOWER].render_model = BLOCK_RENDER_CROSS;
+
+    BlockRegistry[BLOCK_YELLOW_FLOWER].id = BLOCK_YELLOW_FLOWER;
+    BlockRegistry[BLOCK_YELLOW_FLOWER].name = "Yellow Flower";
+    set_all_faces(&BlockRegistry[BLOCK_YELLOW_FLOWER], TEX_TILE_YELLOW_FLOWER);
+    BlockRegistry[BLOCK_YELLOW_FLOWER].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_YELLOW_FLOWER].render_model = BLOCK_RENDER_CROSS;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -148,20 +242,31 @@ bool block_blocks_light(BlockID id)
 bool block_is_transparent(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_GLASS || id == BLOCK_LEAVES ||
-           id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+           id == BLOCK_WATER || id == BLOCK_WATER_FLOW || id == BLOCK_LAVA ||
+           block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
 bool block_is_translucent(BlockID id)
 {
-    return id == BLOCK_GLASS || id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+    return id == BLOCK_GLASS || id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
+           id == BLOCK_LAVA;
 }
 
 bool block_is_alpha_keyed(BlockID id)
 {
-    return id == BLOCK_LEAVES;
+    return id == BLOCK_LEAVES || block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
 bool block_is_passable(BlockID id)
 {
-    return id == BLOCK_AIR || id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+    return id == BLOCK_AIR || id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
+           id == BLOCK_LAVA || block_render_model(id) == BLOCK_RENDER_CROSS;
+}
+
+BlockRenderModel block_render_model(BlockID id)
+{
+    if (id < BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return BLOCK_RENDER_CUBE;
+
+    return BlockRegistry[id].render_model;
 }

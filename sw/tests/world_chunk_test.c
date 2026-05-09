@@ -173,6 +173,66 @@ int main(void)
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-cleanup mesh rebuild failed");
 
+    if (block_emission_level(BLOCK_LAVA) != 15 ||
+        !block_is_self_lit(BLOCK_LAVA) ||
+        !block_is_translucent(BLOCK_LAVA) ||
+        !block_is_passable(BLOCK_LAVA))
+        return check_failed("lava metadata missing");
+    const int lava_x = 6;
+    const int lava_y = 26;
+    const int lava_z = 2;
+    const int lava_gap_x = lava_x + 1;
+    const int lava_stone_x = lava_x + 2;
+    if (!world_set_block(&world, lava_gap_x, lava_y, lava_z, BLOCK_AIR))
+        return check_failed("lava air gap clear failed");
+    if (!world_set_block(&world, lava_x, lava_y, lava_z, BLOCK_LAVA))
+        return check_failed("lava placement failed");
+    if (!world_set_block(&world, lava_stone_x, lava_y, lava_z, BLOCK_STONE))
+        return check_failed("stone placement near lava failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-lava mesh rebuild failed");
+    const Chunk *lava_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *lava_lit_stone = find_chunk_face(lava_chunk,
+                                                      lava_stone_x, lava_y, lava_z,
+                                                      FACE_LEFT, BLOCK_STONE);
+    if (!lava_lit_stone || lava_lit_stone->block_light < 14)
+        return check_failed("nearby visible face did not receive lava light");
+    if (!world_set_block(&world, lava_x, lava_y, lava_z, BLOCK_AIR) ||
+        !world_set_block(&world, lava_stone_x, lava_y, lava_z, BLOCK_AIR))
+        return check_failed("lava cleanup failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-lava-cleanup mesh rebuild failed");
+
+    if (block_render_model(BLOCK_RED_FLOWER) != BLOCK_RENDER_CROSS ||
+        !block_is_alpha_keyed(BLOCK_RED_FLOWER) ||
+        !block_is_passable(BLOCK_RED_FLOWER))
+        return check_failed("flower metadata missing");
+    const int flower_x = 9;
+    const int flower_y = 26;
+    const int flower_z = 2;
+    if (!world_set_block(&world, flower_x, flower_y, flower_z, BLOCK_RED_FLOWER))
+        return check_failed("flower placement failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-flower mesh rebuild failed");
+    const Chunk *flower_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *flower_cross_a = find_chunk_face(flower_chunk,
+                                                      flower_x, flower_y, flower_z,
+                                                      (BlockFace)CHUNK_FACE_CROSS_A,
+                                                      BLOCK_RED_FLOWER);
+    const ChunkFace *flower_cross_b = find_chunk_face(flower_chunk,
+                                                      flower_x, flower_y, flower_z,
+                                                      (BlockFace)CHUNK_FACE_CROSS_B,
+                                                      BLOCK_RED_FLOWER);
+    const ChunkFace *flower_cube_top = find_chunk_face(flower_chunk,
+                                                       flower_x, flower_y, flower_z,
+                                                       FACE_TOP, BLOCK_RED_FLOWER);
+    if (!flower_cross_a || !flower_cross_b || flower_cube_top)
+        return check_failed("flower did not mesh as crossed planes");
+    if (!world_set_block(&world, flower_x, flower_y, flower_z, BLOCK_AIR))
+        return check_failed("flower cleanup failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-flower-cleanup mesh rebuild failed");
+
     const int water_x = 4;
     const int water_y = 24;
     const int water_z = 4;

@@ -45,6 +45,14 @@
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
 #define CREATIVE_BLOCK_BREAK_REPEAT_SECONDS 0.12f
+#define PLAYER_MAX_HEALTH_UNITS 20
+#define PLAYER_MAX_AIR_SECONDS 10.0f
+#define PLAYER_AIR_REFILL_PER_SECOND 5.0f
+#define DROWN_DAMAGE_INTERVAL_SECONDS 1.0f
+#define DROWN_DAMAGE_UNITS 2
+#define PLAYER_SPAWN_X 0.0f
+#define PLAYER_SPAWN_Y ((float)(WORLD_CHUNK_HEIGHT - 2))
+#define PLAYER_SPAWN_Z -1.5f
 #define COMMAND_TIME_DAY_SECONDS   0.0f
 #define COMMAND_TIME_NIGHT_SECONDS 90.0f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -699,6 +707,36 @@ static Vec3 camera_forward(const Camera *cam)
     };
 }
 
+static void respawn_player(Player *player, Camera *cam)
+{
+    PlayerMode mode;
+    float yaw = 0.0f;
+    float pitch = -0.3f;
+    float depth = compute_camera_focal_px();
+
+    if (!player)
+        return;
+
+    mode = player->mode;
+    if (cam) {
+        yaw = cam->yaw;
+        pitch = cam->pitch;
+        depth = cam->depth;
+    }
+
+    player_init(player, PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z);
+    player_set_mode(player, mode);
+
+    if (cam) {
+        cam->position.x = player->x;
+        cam->position.y = player_get_eye_height(player);
+        cam->position.z = player->z;
+        cam->yaw = yaw;
+        cam->pitch = pitch;
+        cam->depth = depth;
+    }
+}
+
 static int game_floor_div_i(int value, int divisor)
 {
     int q = value / divisor;
@@ -761,21 +799,12 @@ static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
     return cam->position.y < water_top - 0.02f;
 }
 
-static void draw_underwater_overlay(RenderContext *ctx, float world_time)
+static void draw_underwater_overlay(RenderContext *ctx)
 {
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
                        64, QUAD_ALPHA_50);
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
                        65, QUAD_ALPHA_25);
-
-    float drift = fmodf(world_time * 18.0f, 32.0f);
-    for (int i = -1; i < 16; i++) {
-        float y = (float)i * 32.0f + drift;
-
-        renderer_fill_rect(ctx, 0.0f, y,
-                           SCREEN_WIDTH, y + 3.0f,
-                           66, QUAD_ALPHA_25);
-    }
 }
 
 static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
@@ -1135,16 +1164,22 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
     }
 }
 
-static void draw_healthbar(RenderContext *ctx)
+static void draw_healthbar(RenderContext *ctx, int health_units)
 {
     float slot_left, slot_top;
     const float icon = 8.0f * HUD_SCALE;
     const float step = 8.0f * HUD_SCALE;
+    int hearts = (health_units + 1) / 2;
 
     hotbar_metrics(&slot_left, &slot_top, NULL, NULL, NULL);
     const float health_top = slot_top - icon - 7.0f;
 
-    for (int i = 0; i < 10; i++) {
+    if (hearts < 0)
+        hearts = 0;
+    if (hearts > 10)
+        hearts = 10;
+
+    for (int i = 0; i < hearts; i++) {
         float x0 = slot_left + (float)i * step;
         renderer_draw_screen_tile(ctx,
                                   x0, health_top,
@@ -1169,6 +1204,72 @@ static void draw_hungerbar(RenderContext *ctx)
                                   x0, health_top,
                                   x0 + icon, health_top + icon,
                                   TEX_TILE_DRUMSTICK, QUAD_FLAG_ALPHA_KEY);
+    }
+}
+
+static void draw_bubble_icon(RenderContext *ctx, float x, float y,
+                             float size, bool filled)
+{
+    uint8_t edge = filled ? 66 : 36;
+    uint8_t body = filled ? 65 : 0;
+    uint8_t edge_alpha = filled ? QUAD_ALPHA_75 : QUAD_ALPHA_50;
+    uint8_t body_alpha = QUAD_ALPHA_25;
+    float one = HUD_SCALE * 0.5f;
+    float two = HUD_SCALE;
+    float inset = 2.0f * HUD_SCALE;
+    float shine = 1.5f * HUD_SCALE;
+
+    if (one < 1.0f)
+        one = 1.0f;
+
+    renderer_fill_rect(ctx, x + inset, y,
+                       x + size - inset, y + one,
+                       edge, edge_alpha);
+    renderer_fill_rect(ctx, x + inset, y + size - one,
+                       x + size - inset, y + size,
+                       edge, edge_alpha);
+    renderer_fill_rect(ctx, x, y + inset,
+                       x + one, y + size - inset,
+                       edge, edge_alpha);
+    renderer_fill_rect(ctx, x + size - one, y + inset,
+                       x + size, y + size - inset,
+                       edge, edge_alpha);
+    renderer_fill_rect(ctx, x + one, y + one,
+                       x + size - one, y + size - one,
+                       body, body_alpha);
+    if (filled) {
+        renderer_fill_rect(ctx, x + two, y + two,
+                           x + two + shine, y + two + shine,
+                           5, QUAD_ALPHA_75);
+    }
+}
+
+static void draw_oxygenbar(RenderContext *ctx, float air_seconds)
+{
+    float slot_left, slot_top, total_width;
+    const float icon = 7.0f * HUD_SCALE;
+    const float step = 8.0f * HUD_SCALE;
+    int bubbles;
+
+    if (air_seconds < 0.0f)
+        air_seconds = 0.0f;
+    if (air_seconds > PLAYER_MAX_AIR_SECONDS)
+        air_seconds = PLAYER_MAX_AIR_SECONDS;
+
+    bubbles = (int)ceilf((air_seconds / PLAYER_MAX_AIR_SECONDS) * 10.0f);
+    if (bubbles < 0)
+        bubbles = 0;
+    if (bubbles > 10)
+        bubbles = 10;
+
+    hotbar_metrics(&slot_left, &slot_top, NULL, NULL, &total_width);
+    const float health_top = slot_top - 8.0f * HUD_SCALE - 7.0f;
+    const float bubble_top = health_top - icon - 4.0f;
+    const float right = slot_left + total_width;
+
+    for (int i = 0; i < 10; i++) {
+        float x0 = right - icon - (float)i * step;
+        draw_bubble_icon(ctx, x0, bubble_top, icon, i < bubbles);
     }
 }
 
@@ -1407,7 +1508,7 @@ int main(void)
     /* Spawn above the tallest possible heightmap surface + tree canopy so
      * the player drops cleanly onto whatever terrain happens to be at the
      * origin column - tall hills, beaches, or treetops. */
-    player_init(&player, 0.0f, (float)(WORLD_CHUNK_HEIGHT - 2), -1.5f);
+    player_init(&player, PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z);
 
     Camera cam = {
         .position = { player.x, player_get_eye_height(&player), player.z },
@@ -1479,6 +1580,9 @@ int main(void)
     float break_timer = 0.0f;
     float break_duration = 0.0f;
     float hand_swing_timer = HAND_SWING_SECONDS;
+    int player_health_units = PLAYER_MAX_HEALTH_UNITS;
+    float player_air_seconds = PLAYER_MAX_AIR_SECONDS;
+    float drown_timer = 0.0f;
     BlockTarget break_target = {0};
     bool break_target_valid = false;
 #define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
@@ -1686,6 +1790,47 @@ int main(void)
         }
         clock_gettime(CLOCK_MONOTONIC, &stream_end);
 
+        bool camera_underwater = camera_is_underwater(&world, &cam);
+        if (!paused && player.mode == PLAYER_MODE_SURVIVAL) {
+            if (camera_underwater) {
+                player_air_seconds -= frame_dt;
+                if (player_air_seconds < 0.0f)
+                    player_air_seconds = 0.0f;
+
+                if (player_air_seconds <= 0.0f) {
+                    drown_timer += frame_dt;
+                    while (drown_timer >= DROWN_DAMAGE_INTERVAL_SECONDS) {
+                        drown_timer -= DROWN_DAMAGE_INTERVAL_SECONDS;
+                        player_health_units -= DROWN_DAMAGE_UNITS;
+                        if (player_health_units <= 0) {
+                            respawn_player(&player, &cam);
+                            player_health_units = PLAYER_MAX_HEALTH_UNITS;
+                            player_air_seconds = PLAYER_MAX_AIR_SECONDS;
+                            drown_timer = 0.0f;
+                            physics_accumulator = 0.0f;
+                            break_timer = 0.0f;
+                            break_duration = 0.0f;
+                            break_target_valid = false;
+                            hand_swing_timer = HAND_SWING_SECONDS;
+                            camera_underwater = false;
+                            chat_log(&chat, "drowned");
+                            break;
+                        }
+                    }
+                } else {
+                    drown_timer = 0.0f;
+                }
+            } else {
+                player_air_seconds += PLAYER_AIR_REFILL_PER_SECOND * frame_dt;
+                if (player_air_seconds > PLAYER_MAX_AIR_SECONDS)
+                    player_air_seconds = PLAYER_MAX_AIR_SECONDS;
+                drown_timer = 0.0f;
+            }
+        } else if (player.mode != PLAYER_MODE_SURVIVAL) {
+            player_air_seconds = PLAYER_MAX_AIR_SECONDS;
+            drown_timer = 0.0f;
+        }
+
         if (!paused && !chat_is_open(&chat)) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
             bool break_pressed = input_consume_break(&inp);
@@ -1843,8 +1988,8 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
-        if (camera_is_underwater(&world, &cam))
-            draw_underwater_overlay(ctx, world_time);
+        if (camera_underwater)
+            draw_underwater_overlay(ctx);
         if (!paused && !chat_open &&
             player.mode == PLAYER_MODE_SURVIVAL &&
             break_target_valid && break_timer > 0.0f && break_duration > 0.0f) {
@@ -1862,8 +2007,11 @@ int main(void)
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
                 draw_bare_hand(ctx, hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
-                draw_healthbar(ctx);
+                draw_healthbar(ctx, player_health_units);
                 draw_hungerbar(ctx);
+                if (camera_underwater ||
+                    player_air_seconds < PLAYER_MAX_AIR_SECONDS)
+                    draw_oxygenbar(ctx, player_air_seconds);
                 renderer_draw_crosshair(ctx);
             }
         }

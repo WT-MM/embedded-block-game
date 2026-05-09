@@ -17,6 +17,7 @@
 #include "thread_affinity.h"
 #include "player_physics.h"
 #include "chat.h"
+#include "command_parser.h"
 #include "pause_menu.h"
 
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
@@ -42,10 +43,16 @@
 #define HOTBAR_SLOT_COUNT 9
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
+#define SURVIVAL_BLOCK_BREAK_SECONDS 0.3f
+#define COMMAND_TIME_DAY_SECONDS   0.0f
+#define COMMAND_TIME_NIGHT_SECONDS 90.0f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
 #define DEFAULT_WORLDS_DIR "../worlds"
 #define HOME_MAX_WORLDS 10
 #define HOME_NAME_MAX 64
+#define HOTBAR_SLOT_PIXELS (17.0f * HUD_SCALE)
+#define HOTBAR_GAP_PIXELS (2.0f * HUD_SCALE)
+#define HOTBAR_BOTTOM_MARGIN_PIXELS (4.0f * HUD_SCALE + 1.0f)
 
 typedef struct {
     char name[HOME_NAME_MAX];
@@ -848,6 +855,81 @@ static const char *place_result_name(PlaceResult r)
     }
 }
 
+static bool command_gamemode_to_player(GameCommandGameModeValue value,
+                                       PlayerMode *out)
+{
+    if (!out)
+        return false;
+
+    switch (value) {
+    case GAME_COMMAND_GAMEMODE_SURVIVAL:
+        *out = PLAYER_MODE_SURVIVAL;
+        return true;
+    case GAME_COMMAND_GAMEMODE_CREATIVE:
+        *out = PLAYER_MODE_CREATIVE;
+        return true;
+    case GAME_COMMAND_GAMEMODE_SPECTATOR:
+        *out = PLAYER_MODE_SPECTATOR;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static float command_time_seconds(GameCommandTimeValue value)
+{
+    switch (value) {
+    case GAME_COMMAND_TIME_DAY:
+        return COMMAND_TIME_DAY_SECONDS;
+    case GAME_COMMAND_TIME_NIGHT:
+        return COMMAND_TIME_NIGHT_SECONDS;
+    default:
+        return COMMAND_TIME_DAY_SECONDS;
+    }
+}
+
+static bool execute_chat_command(Chat *chat, Player *player,
+                                 float *world_time, const char *line)
+{
+    GameCommandParseResult parsed;
+    GameCommandParseStatus status = game_command_parse(line, &parsed);
+
+    if (status == GAME_COMMAND_PARSE_NOT_COMMAND)
+        return false;
+    if (status != GAME_COMMAND_PARSE_OK) {
+        chat_log(chat, "%s", parsed.error[0] ? parsed.error :
+                 game_command_parse_status_name(status));
+        return true;
+    }
+
+    switch (parsed.ast.kind) {
+    case GAME_COMMAND_KIND_TIME:
+        if (parsed.ast.action == GAME_COMMAND_ACTION_SET && world_time) {
+            *world_time = command_time_seconds(parsed.ast.value.time);
+            chat_log(chat, "time: %s",
+                     game_command_time_value_name(parsed.ast.value.time));
+        }
+        return true;
+    case GAME_COMMAND_KIND_GAMEMODE: {
+        PlayerMode mode;
+
+        if (parsed.ast.action == GAME_COMMAND_ACTION_SET &&
+            command_gamemode_to_player(parsed.ast.value.gamemode, &mode)) {
+            player_set_mode(player, mode);
+            chat_log(chat, "mode: %s", player_mode_name(player->mode));
+        }
+        return true;
+    }
+    case GAME_COMMAND_KIND_HELP:
+        chat_log(chat, "/time set day|night");
+        chat_log(chat, "/gamemode set survival|creative|spectator");
+        return true;
+    default:
+        chat_log(chat, "unknown command");
+        return true;
+    }
+}
+
 static void draw_hotbar_digit(RenderContext *ctx, int digit,
                               float x, float y, uint8_t palette_index)
 {
@@ -872,25 +954,60 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
     }
 }
 
+static bool draw_screen_solid_quad(RenderContext *ctx,
+                                   float x0, float y0,
+                                   float x1, float y1,
+                                   float x2, float y2,
+                                   float x3, float y3,
+                                   uint8_t palette_index)
+{
+    RenderQuad q = {0};
+
+    q.color_tint = palette_index;
+    q.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f, 0.0f, 1.0f };
+    q.vertices[1] = (Vertex2D){ x1, y1, 0.0f, 0.0f, 0.0f, 1.0f };
+    q.vertices[2] = (Vertex2D){ x2, y2, 0.0f, 0.0f, 0.0f, 1.0f };
+    q.vertices[3] = (Vertex2D){ x3, y3, 0.0f, 0.0f, 0.0f, 1.0f };
+    return renderer_push_quad(ctx, &q);
+}
+
+static void hotbar_metrics(float *slot_left_out, float *slot_top_out,
+                           float *slot_size_out, float *gap_out,
+                           float *total_width_out)
+{
+    const float slot_size = HOTBAR_SLOT_PIXELS;
+    const float gap = HOTBAR_GAP_PIXELS;
+    const float total_width =
+        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+
+    if (slot_left_out)
+        *slot_left_out = floorf((SCREEN_WIDTH - total_width) * 0.5f);
+    if (slot_top_out)
+        *slot_top_out = SCREEN_HEIGHT - slot_size - HOTBAR_BOTTOM_MARGIN_PIXELS;
+    if (slot_size_out)
+        *slot_size_out = slot_size;
+    if (gap_out)
+        *gap_out = gap;
+    if (total_width_out)
+        *total_width_out = total_width;
+}
+
 static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
 {
     const float s = HUD_SCALE;
-    const float slot_size = 20.0f * s;
-    const float gap = 4.0f * s;
-    const float slot_top = SCREEN_HEIGHT - slot_size - 8.0f * s;
-    const float total_width =
-        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
-    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
+    float slot_left, slot_top, slot_size, gap, total_width;
+
+    hotbar_metrics(&slot_left, &slot_top, &slot_size, &gap, &total_width);
 
     renderer_fill_rect(ctx,
-                       slot_left - 4.0f * s, slot_top - 4.0f * s,
-                       slot_left + total_width + 4.0f * s,
-                       slot_top + slot_size + 4.0f * s,
+                       slot_left - 2.0f * s, slot_top - 2.0f * s,
+                       slot_left + total_width + 2.0f * s,
+                       slot_top + slot_size + 2.0f * s,
                        14, 0); // Palette 14 is dark grey, good for background outline
     renderer_fill_rect(ctx,
-                       slot_left - 3.0f * s, slot_top - 3.0f * s,
-                       slot_left + total_width + 3.0f * s,
-                       slot_top + slot_size + 3.0f * s,
+                       slot_left - 1.0f * s, slot_top - 1.0f * s,
+                       slot_left + total_width + 1.0f * s,
+                       slot_top + slot_size + 1.0f * s,
                        0, 0); // Palette 0 is probably black or transparent bg
 
     for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
@@ -902,24 +1019,24 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
         uint8_t number = (i == selected_slot) ? 8 : 5;
 
         renderer_fill_rect(ctx, x0, y0, x1, y1, border, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
-                           x1 - 1.0f * s, y1 - 1.0f * s, 0, 0);
-        
+        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
+                           x1 - 1.0f, y1 - 1.0f, 0, 0);
+
         if (mode != PLAYER_MODE_SURVIVAL && HOTBAR_BLOCKS[i] != BLOCK_AIR) {
             renderer_draw_screen_tile(ctx,
-                                      x0 + 2.0f * s, y0 + 2.0f * s,
-                                      x1 - 2.0f * s, y1 - 2.0f * s,
+                                      x0 + 3.0f, y0 + 3.0f,
+                                      x1 - 3.0f, y1 - 3.0f,
                                       block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
                                       0);
         }
-        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+        renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
                            x0 + 5.0f * s, y0 + 7.0f * s, 0, 0);
-        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f * s, y0 + 2.0f * s, number);
+        draw_hotbar_digit(ctx, i + 1, x0 + 2.0f, y0 + 2.0f, number);
 
         if (i == selected_slot) {
             renderer_fill_rect(ctx,
-                               x0 + 2.0f * s, y1 - 3.0f * s,
-                               x1 - 2.0f * s, y1 - 1.0f * s,
+                               x0 + 3.0f, y1 - 3.0f,
+                               x1 - 3.0f, y1 - 1.0f,
                                8, 0);
         }
     }
@@ -927,33 +1044,38 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
 
 static void draw_healthbar(RenderContext *ctx)
 {
-    const float s = HUD_SCALE;
-    const float slot_size = 20.0f * s;
-    const float gap = 4.0f * s;
-    const float total_width = HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
-    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
-    const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
+    float slot_left, slot_top;
+    const float icon = 9.0f * HUD_SCALE;
+    const float step = 10.0f * HUD_SCALE;
+
+    hotbar_metrics(&slot_left, &slot_top, NULL, NULL, NULL);
+    const float health_top = slot_top - icon - 8.0f;
 
     for (int i = 0; i < 10; i++) {
-        float x0 = slot_left + (float)i * 9.0f * s;
-        renderer_draw_screen_tile(ctx, x0, health_top, x0 + 8.0f * s, health_top + 8.0f * s, TEX_TILE_HEART, QUAD_FLAG_ALPHA_KEY);
+        float x0 = slot_left + (float)i * step;
+        renderer_draw_screen_tile(ctx,
+                                  x0, health_top,
+                                  x0 + icon, health_top + icon,
+                                  TEX_TILE_HEART, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
 static void draw_hungerbar(RenderContext *ctx)
 {
-    const float s = HUD_SCALE;
-    const float slot_size = 20.0f * s;
-    const float gap = 4.0f * s;
-    const float total_width = HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
-    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
-    const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
+    float slot_left, slot_top, total_width;
+    const float icon = 9.0f * HUD_SCALE;
+    const float step = 10.0f * HUD_SCALE;
 
-    float hunger_right = slot_left + total_width;
+    hotbar_metrics(&slot_left, &slot_top, NULL, NULL, &total_width);
+    const float health_top = slot_top - icon - 8.0f;
+    const float hunger_right = slot_left + total_width;
 
     for (int i = 0; i < 10; i++) {
-        float x0 = hunger_right - (float)(i + 1) * 9.0f * s;
-        renderer_draw_screen_tile(ctx, x0, health_top, x0 + 8.0f * s, health_top + 8.0f * s, TEX_TILE_DRUMSTICK, QUAD_FLAG_ALPHA_KEY);
+        float x0 = hunger_right - icon - (float)i * step;
+        renderer_draw_screen_tile(ctx,
+                                  x0, health_top,
+                                  x0 + icon, health_top + icon,
+                                  TEX_TILE_DRUMSTICK, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
@@ -961,47 +1083,95 @@ static void draw_hungerbar(RenderContext *ctx)
  * Returns swing in [0,1] tracing 0 -> 1 -> 0 over the 0.3 s break window. */
 static float hand_swing_phase(float break_timer)
 {
-    float t = break_timer / 0.3f;
+    float t = break_timer / SURVIVAL_BLOCK_BREAK_SECONDS;
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     return sinf(t * (float)M_PI);
 }
 
-/* Bare hand for survival: a tan forearm + fist anchored at the bottom-right
- * corner. Swings down and slightly forward (right) when LMB is held — never
- * sliding inward toward the hotbar. */
+/* Bare hand for survival: a Minecraft-like block arm angled out from the
+ * lower-right. The swing follows the punch arc: down and inward, then home. */
 static void draw_bare_hand(RenderContext *ctx, float break_timer)
 {
     const float s = HUD_SCALE;
-    const uint8_t skin = 15;        /* warmest tan in the palette */
-    const uint8_t skin_shade = 10;  /* darker brown for shadow side */
+    const uint8_t skin_light = 20;
+    const uint8_t skin_mid = 15;
+    const uint8_t skin_shade = 21;
+    const uint8_t skin_dark = 19;
+    const uint8_t sleeve = 7;
+    const uint8_t sleeve_dark = 25;
 
     float swing = hand_swing_phase(break_timer);
-    float swing_y = swing * 18.0f * s;
-    float swing_x = swing * 6.0f * s;  /* forward (right), away from hotbar */
+    float punch_x = -18.0f * s * swing;
+    float punch_y = 18.0f * s * swing;
+    float wrist_dip = 6.0f * s * swing;
 
-    /* Forearm: tall rectangle in the corner, tilted slightly by drawing a
-     * highlight stripe on the left edge. */
-    float arm_right  = SCREEN_WIDTH  - 6.0f * s + swing_x;
-    float arm_bottom = SCREEN_HEIGHT + swing_y;
-    float arm_w      = 22.0f * s;
-    float arm_h      = 56.0f * s;
-    float arm_left   = arm_right - arm_w;
-    float arm_top    = arm_bottom - arm_h;
+    float shoulder_x = SCREEN_WIDTH - 30.0f * s + punch_x * 0.30f;
+    float shoulder_y = SCREEN_HEIGHT + 8.0f * s + punch_y * 0.45f;
+    float elbow_x = SCREEN_WIDTH - 54.0f * s + punch_x * 0.65f;
+    float elbow_y = SCREEN_HEIGHT - 26.0f * s + punch_y * 0.55f;
+    float hand_x = SCREEN_WIDTH - 78.0f * s + punch_x;
+    float hand_y = SCREEN_HEIGHT - 62.0f * s + punch_y + wrist_dip;
 
-    renderer_fill_rect(ctx, arm_left,             arm_top, arm_right, arm_bottom, skin, 0);
-    renderer_fill_rect(ctx, arm_right - 4.0f * s, arm_top, arm_right, arm_bottom, skin_shade, 0);
+    /* Sleeve at the base, clipped by the bottom edge. */
+    draw_screen_solid_quad(ctx,
+        shoulder_x - 18.0f * s, shoulder_y - 52.0f * s,
+        shoulder_x + 15.0f * s, shoulder_y - 43.0f * s,
+        shoulder_x + 34.0f * s, shoulder_y + 4.0f * s,
+        shoulder_x - 7.0f * s, shoulder_y + 4.0f * s,
+        sleeve_dark);
+    draw_screen_solid_quad(ctx,
+        shoulder_x - 22.0f * s, shoulder_y - 56.0f * s,
+        shoulder_x + 9.0f * s, shoulder_y - 48.0f * s,
+        shoulder_x + 18.0f * s, shoulder_y + 4.0f * s,
+        shoulder_x - 23.0f * s, shoulder_y + 4.0f * s,
+        sleeve);
 
-    /* Fist: wider, sits just above the forearm. */
-    float fist_w     = 30.0f * s;
-    float fist_h     = 22.0f * s;
-    float fist_right = arm_right + 2.0f * s;
-    float fist_top   = arm_top - fist_h + 4.0f * s;
-    float fist_left  = fist_right - fist_w;
-    float fist_bottom = fist_top + fist_h;
+    /* Exposed forearm: broad top plane plus right/bottom shading. */
+    draw_screen_solid_quad(ctx,
+        hand_x + 4.0f * s, hand_y + 20.0f * s,
+        hand_x + 36.0f * s, hand_y + 27.0f * s,
+        elbow_x + 25.0f * s, elbow_y + 56.0f * s,
+        elbow_x - 11.0f * s, elbow_y + 47.0f * s,
+        skin_shade);
+    draw_screen_solid_quad(ctx,
+        hand_x - 5.0f * s, hand_y + 15.0f * s,
+        hand_x + 27.0f * s, hand_y + 22.0f * s,
+        elbow_x + 12.0f * s, elbow_y + 49.0f * s,
+        elbow_x - 20.0f * s, elbow_y + 41.0f * s,
+        skin_mid);
+    draw_screen_solid_quad(ctx,
+        hand_x - 5.0f * s, hand_y + 15.0f * s,
+        hand_x + 2.0f * s, hand_y + 17.0f * s,
+        elbow_x - 15.0f * s, elbow_y + 42.0f * s,
+        elbow_x - 20.0f * s, elbow_y + 41.0f * s,
+        skin_light);
 
-    renderer_fill_rect(ctx, fist_left,             fist_top, fist_right, fist_bottom,             skin, 0);
-    renderer_fill_rect(ctx, fist_right - 4.0f * s, fist_top, fist_right, fist_bottom,             skin_shade, 0);
+    /* Square fist at the end of the arm. */
+    draw_screen_solid_quad(ctx,
+        hand_x - 7.0f * s, hand_y,
+        hand_x + 28.0f * s, hand_y + 7.0f * s,
+        hand_x + 35.0f * s, hand_y + 33.0f * s,
+        hand_x - 4.0f * s, hand_y + 29.0f * s,
+        skin_mid);
+    draw_screen_solid_quad(ctx,
+        hand_x + 26.0f * s, hand_y + 8.0f * s,
+        hand_x + 35.0f * s, hand_y + 33.0f * s,
+        hand_x + 25.0f * s, hand_y + 39.0f * s,
+        hand_x + 16.0f * s, hand_y + 14.0f * s,
+        skin_dark);
+    draw_screen_solid_quad(ctx,
+        hand_x - 4.0f * s, hand_y + 29.0f * s,
+        hand_x + 35.0f * s, hand_y + 33.0f * s,
+        hand_x + 25.0f * s, hand_y + 39.0f * s,
+        hand_x - 14.0f * s, hand_y + 35.0f * s,
+        skin_shade);
+    draw_screen_solid_quad(ctx,
+        hand_x - 7.0f * s, hand_y,
+        hand_x + 2.0f * s, hand_y + 2.0f * s,
+        hand_x + 1.0f * s, hand_y + 27.0f * s,
+        hand_x - 4.0f * s, hand_y + 29.0f * s,
+        skin_light);
 }
 
 /* Block-in-hand for creative: isometric cube tilted into the bottom-right.
@@ -1096,8 +1266,8 @@ static void draw_debug_hud(RenderContext *ctx, const Player *player,
              world_loaded_chunk_count(world),
              world_chunk_capacity(world));
 
-    /* Position below the FPS counter (top-left, same x=12). */
-    float y = 12.0f + (float)line_step;
+    /* Position below the enlarged FPS counter (top-left, same x=12). */
+    float y = 12.0f + (float)(chat_font_cell_h() * HUD_SCALE_I) + 4.0f;
     for (int i = 0; i < line_count; i++) {
         int len = (int)strlen(lines[i]);
         /* Drop shadow + foreground, left-aligned under FPS */
@@ -1227,6 +1397,7 @@ int main(void)
     float water_tick_accumulator = 0.0f;
     float break_timer = 0.0f;
     BlockTarget break_target = {0};
+    bool break_target_valid = false;
 #define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
     int perf_frames = 0;
     int perf_quads = 0;
@@ -1328,10 +1499,16 @@ int main(void)
                 char ch = inp.text_queue[i];
                 if (ch == INPUT_TEXT_BACKSPACE)
                     chat_handle_backspace(&chat);
-                else if (ch == INPUT_TEXT_ENTER)
+                else if (ch == INPUT_TEXT_ENTER) {
+                    char submitted[CHAT_LINE_MAX + 1];
+
+                    snprintf(submitted, sizeof(submitted), "%s", chat.input);
                     chat_handle_enter(&chat);
-                else
+                    execute_chat_command(&chat, &player, &world_time,
+                                         submitted);
+                } else {
                     chat_handle_char(&chat, ch);
+                }
             }
         }
         input_clear_text_queue(&inp);
@@ -1441,27 +1618,33 @@ int main(void)
                 if (input_consume_break(&inp))
                     try_break_targeted_block(&world, &cam);
                 break_timer = 0.0f;
+                break_target_valid = false;
             } else {
                 if (inp.break_down) {
                     BlockTarget target = {0};
                     if (trace_target_block(&world, &cam, BLOCK_REACH_DISTANCE, &target)) {
-                        if (target.hit_x == break_target.hit_x &&
+                        if (break_target_valid &&
+                            target.hit_x == break_target.hit_x &&
                             target.hit_y == break_target.hit_y &&
                             target.hit_z == break_target.hit_z) {
                             break_timer += frame_dt;
-                            if (break_timer >= 0.3f) {
+                            if (break_timer >= SURVIVAL_BLOCK_BREAK_SECONDS) {
                                 try_break_targeted_block(&world, &cam);
                                 break_timer = 0.0f;
+                                break_target_valid = false;
                             }
                         } else {
                             break_target = target;
-                            break_timer = 0.0f;
+                            break_target_valid = true;
+                            break_timer = frame_dt;
                         }
                     } else {
                         break_timer = 0.0f;
+                        break_target_valid = false;
                     }
                 } else {
                     break_timer = 0.0f;
+                    break_target_valid = false;
                     (void)input_consume_break(&inp);
                 }
             }
@@ -1480,6 +1663,8 @@ int main(void)
                 }
             }
         } else {
+            break_timer = 0.0f;
+            break_target_valid = false;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_break(&inp);
             (void)input_consume_place(&inp);
@@ -1535,24 +1720,34 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
+        if (!paused && !chat_open &&
+            player.mode == PLAYER_MODE_SURVIVAL &&
+            break_target_valid && break_timer > 0.0f) {
+            quads += renderer_draw_block_break_overlay(
+                ctx,
+                break_target.hit_x, break_target.hit_y, break_target.hit_z,
+                break_timer / SURVIVAL_BLOCK_BREAK_SECONDS);
+        }
         chat_draw(&chat, ctx);
         if (!paused && !chat_is_open(&chat)) {
             if (player.mode == PLAYER_MODE_CREATIVE) {
+                draw_block_in_hand(ctx, selected_hotbar_slot, break_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 renderer_draw_crosshair(ctx);
-                draw_block_in_hand(ctx, selected_hotbar_slot, break_timer);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
+                draw_bare_hand(ctx, break_timer);
                 draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 draw_healthbar(ctx);
                 draw_hungerbar(ctx);
                 renderer_draw_crosshair(ctx);
-                draw_bare_hand(ctx, break_timer);
             }
         }
         pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
-            chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);
-            chat_draw_text(ctx, fps_text, fps_text_len, 12.0f, 12.0f, 5);
+            chat_draw_text_scaled(ctx, fps_text, fps_text_len,
+                                  13.0f, 13.0f, 0, HUD_SCALE_I);
+            chat_draw_text_scaled(ctx, fps_text, fps_text_len,
+                                  12.0f, 12.0f, 5, HUD_SCALE_I);
         }
         if (debug_hud_enabled)
             draw_debug_hud(ctx, &player, &cam, &world);

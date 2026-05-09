@@ -25,13 +25,22 @@ void player_init(Player *p, float start_x, float start_y, float start_z) {
     p->water_flow_z = 0.0f;
 }
 
-void player_cycle_mode(Player *p) {
-    p->mode = (PlayerMode)(((int)p->mode + 1) % PLAYER_MODE_COUNT);
+void player_set_mode(Player *p, PlayerMode mode) {
+    if (!p || mode < 0 || mode >= PLAYER_MODE_COUNT)
+        return;
+
+    p->mode = mode;
     /* Reset vertical velocity so the player doesn't keep falling after
      * toggling into a flying mode, or blast off after toggling out. */
     p->vy = 0.0f;
     p->is_grounded = false;
     p->is_shifting = false;
+}
+
+void player_cycle_mode(Player *p) {
+    if (!p)
+        return;
+    player_set_mode(p, (PlayerMode)(((int)p->mode + 1) % PLAYER_MODE_COUNT));
 }
 
 const char *player_mode_name(PlayerMode mode) {

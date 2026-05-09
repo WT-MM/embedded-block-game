@@ -59,6 +59,7 @@ void player_init(Player *p, float start_x, float start_y, float start_z);
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
                    bool jump, bool up_held, bool shift, bool sprint, float dt);
 float player_get_eye_height(const Player *p);
+void player_set_mode(Player *p, PlayerMode mode);
 void player_cycle_mode(Player *p);
 const char *player_mode_name(PlayerMode mode);
 

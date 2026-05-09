@@ -11,14 +11,10 @@ typedef struct VoxelWorld VoxelWorld;
 /* --- Constants --- */
 #define SCREEN_WIDTH ((float)VOXEL_RENDER_WIDTH)
 #define SCREEN_HEIGHT ((float)VOXEL_RENDER_HEIGHT)
-/* Multiplier for HUD elements that were originally laid out for the 320x240
- * design res. Integer-only — fractional scales would create sub-pixel seams
- * in the bitmap digits and rect borders. */
-#if VOXEL_RENDER_WIDTH >= 640u
-#  define HUD_SCALE_I  2
-#else
-#  define HUD_SCALE_I  1
-#endif
+/* 640x480 is now the only supported FPGA render target. Keep the HUD scale
+ * fixed so text, digits, and pixel-art UI do not silently shrink if old
+ * 320x240 assumptions reappear elsewhere. */
+#define HUD_SCALE_I  2
 #define HUD_SCALE     ((float)HUD_SCALE_I)
 /*
  * A 3-chunk render radius over 16x16 grass terrain already exceeds 2k
@@ -81,6 +77,9 @@ int renderer_draw_chunk(RenderContext* ctx, const Block* blocks, int num_blocks)
 int renderer_draw_sky(RenderContext* ctx, float time_seconds);
 int renderer_draw_world(RenderContext* ctx, const VoxelWorld* world,
                         float time_seconds);
+int renderer_draw_block_break_overlay(RenderContext *ctx,
+                                      int block_x, int block_y, int block_z,
+                                      float progress);
 bool renderer_draw_crosshair(RenderContext* ctx);
 bool renderer_draw_screen_tile(RenderContext* ctx,
                                float x0, float y0, float x1, float y1,

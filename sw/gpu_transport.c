@@ -18,6 +18,7 @@
 #define SOCKET_MAGIC "VGPU"
 #define HW_BAND_HASH_OFFSET UINT64_C(14695981039346656037)
 #define HW_BAND_HASH_PRIME  UINT64_C(1099511628211)
+#define HW_RECT_STRIDE_MAX_WIDTH 320u
 
 typedef enum {
     GPU_BACKEND_HW = 0,
@@ -32,7 +33,9 @@ struct hw_band_cache_entry {
     size_t bytes;
     uint32_t render_epoch;
     uint32_t sky_epoch;
-    int has_scene_rows;
+    int has_scene_rect;
+    uint16_t scene_x_min;
+    uint16_t scene_x_max;
     uint8_t scene_y_min;
     uint8_t scene_y_max;
 };
@@ -76,7 +79,9 @@ struct descriptor_bin {
     uint8_t *flat_buf;
     size_t flat_used;
     size_t flat_capacity;
-    int has_scene_rows;
+    int has_scene_rect;
+    uint16_t scene_x_min;
+    uint16_t scene_x_max;
     uint8_t scene_y_min;
     uint8_t scene_y_max;
 };
@@ -351,19 +356,23 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
     cost->flush_words[band] += pixels;
 }
 
-static void diag_set_band_fixed_window_cost(struct diag_cost *cost,
-                                            unsigned band,
-                                            unsigned y_min,
-                                            unsigned y_max)
+static void diag_set_band_fixed_rect_cost(struct diag_cost *cost,
+                                          unsigned band,
+                                          unsigned x_min,
+                                          unsigned x_max,
+                                          unsigned y_min,
+                                          unsigned y_max)
 {
     uint64_t rows;
+    uint64_t width;
     uint64_t pixels;
 
-    if (!cost || band >= VOXEL_BAND_COUNT || y_min > y_max)
+    if (!cost || band >= VOXEL_BAND_COUNT || x_min > x_max || y_min > y_max)
         return;
 
+    width = (uint64_t)(x_max - x_min + 1);
     rows = (uint64_t)(y_max - y_min + 1);
-    pixels = rows * VOXEL_RENDER_WIDTH;
+    pixels = rows * width;
     cost->init_cycles[band] = (pixels + 1) / 2;
     cost->flush_words[band] = pixels;
 }
@@ -686,11 +695,14 @@ static void rewrite_clipped(uint8_t *dst, const uint8_t *src, size_t len,
 
 static int submit_hw_band_flat(GPUTransport *transport, unsigned band_index,
                                const void *buf, size_t buf_bytes,
+                               unsigned flush_x_min, unsigned flush_x_max,
                                unsigned flush_y_min, unsigned flush_y_max,
                                struct diag_band_submit *diag)
 {
     struct voxel_band_state band = {
         .band_index = band_index,
+        .flush_x_min = flush_x_min,
+        .flush_x_max = flush_x_max,
         .flush_y_min = flush_y_min,
         .flush_y_max = flush_y_max,
     };
@@ -766,27 +778,35 @@ static int bin_append_descriptor(struct descriptor_bin *bin,
     return 0;
 }
 
-static void bin_note_scene_rows(struct descriptor_bin *bin, unsigned band,
-                                int y_min, int y_max)
+static void bin_note_scene_rect(struct descriptor_bin *bin, unsigned band,
+                                int x_min, int x_max, int y_min, int y_max)
 {
     int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
     int local_min = y_min - band_y_min;
     int local_max = y_max - band_y_min;
+    int clipped_x_min = diag_clamp_x((int16_t)x_min);
+    int clipped_x_max = diag_clamp_x((int16_t)x_max);
 
     if (local_min < 0)
         local_min = 0;
     if (local_max >= (int)VOXEL_BAND_CACHE_HEIGHT)
         local_max = (int)VOXEL_BAND_CACHE_HEIGHT - 1;
-    if (local_min > local_max)
+    if (local_min > local_max || clipped_x_min > clipped_x_max)
         return;
 
-    if (!bin->has_scene_rows) {
+    if (!bin->has_scene_rect) {
+        bin->scene_x_min = (uint16_t)clipped_x_min;
+        bin->scene_x_max = (uint16_t)clipped_x_max;
         bin->scene_y_min = (uint8_t)local_min;
         bin->scene_y_max = (uint8_t)local_max;
-        bin->has_scene_rows = 1;
+        bin->has_scene_rect = 1;
         return;
     }
 
+    if (clipped_x_min < bin->scene_x_min)
+        bin->scene_x_min = (uint16_t)clipped_x_min;
+    if (clipped_x_max > bin->scene_x_max)
+        bin->scene_x_max = (uint16_t)clipped_x_max;
     if (local_min < bin->scene_y_min)
         bin->scene_y_min = (uint8_t)local_min;
     if (local_max > bin->scene_y_max)
@@ -803,7 +823,9 @@ static int reset_bins_and_prime(struct descriptor_bin bins[VOXEL_BAND_COUNT],
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         int ret;
         bins[band].flat_used = 0;
-        bins[band].has_scene_rows = 0;
+        bins[band].has_scene_rect = 0;
+        bins[band].scene_x_min = 0;
+        bins[band].scene_x_max = 0;
         bins[band].scene_y_min = 0;
         bins[band].scene_y_max = 0;
         ret = bin_append_descriptor(&bins[band], &g_band_primers[band],
@@ -835,6 +857,7 @@ static int bin_one_descriptor(GPUTransport *transport,
                               int16_t *diag_y_min, int16_t *diag_y_max)
 {
     const struct quad_desc *desc = desc_bytes;
+    int x_min, x_max;
     int y_min, y_max;
     unsigned first_band, last_band;
 
@@ -846,6 +869,8 @@ static int bin_one_descriptor(GPUTransport *transport,
         if (diag_y_max && desc->y_max > *diag_y_max) *diag_y_max = desc->y_max;
     }
 
+    x_min = desc->x_min;
+    x_max = desc->x_max;
     y_min = desc->y_min;
     y_max = desc->y_max;
     if (y_max < 0 || y_min >= (int)VOXEL_RENDER_HEIGHT || y_min > y_max)
@@ -874,7 +899,7 @@ static int bin_one_descriptor(GPUTransport *transport,
         int ret = bin_append_descriptor(bin, desc_bytes, desc_size);
         if (ret < 0)
             return ret;
-        bin_note_scene_rows(bin, first_band, y_min, y_max);
+        bin_note_scene_rect(bin, first_band, x_min, x_max, y_min, y_max);
         if (g_diag_bbox && diag_cost)
             diag_add_band_descriptor(diag_cost, first_band, desc,
                                      y_min, y_max, desc_size);
@@ -896,7 +921,8 @@ static int bin_one_descriptor(GPUTransport *transport,
         rewrite_clipped(dst, desc_bytes, desc_size,
                         clipped_y_min, clipped_y_max);
         bin->flat_used += desc_size;
-        bin_note_scene_rows(bin, band, clipped_y_min, clipped_y_max);
+        bin_note_scene_rect(bin, band, x_min, x_max,
+                            clipped_y_min, clipped_y_max);
         if (g_diag_bbox && diag_cost)
             diag_add_band_descriptor(diag_cost, band, desc,
                                      clipped_y_min, clipped_y_max,
@@ -1033,7 +1059,9 @@ static int submit_hw_prebinned(GPUTransport *transport,
                 band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
                 band_cache->sky_epoch = transport->hw_sky_epoch;
-                band_cache->has_scene_rows = 0;
+                band_cache->has_scene_rect = 0;
+                band_cache->scene_x_min = 0;
+                band_cache->scene_x_max = 0;
                 band_cache->scene_y_min = 0;
                 band_cache->scene_y_max = 0;
             }
@@ -1056,13 +1084,21 @@ static int submit_hw_prebinned(GPUTransport *transport,
             primer_only ? NULL : bins[band].flat_buf;
         size_t submit_bytes =
             primer_only ? 0 : bins[band].flat_used;
+        unsigned flush_x_min = 0;
+        unsigned flush_x_max = VOXEL_RENDER_WIDTH - 1;
 
-        if (!primer_only && bins[band].has_scene_rows && band_cache &&
+        if (!primer_only && bins[band].has_scene_rect && band_cache &&
             (!transport->hw_sky_gradient_clear_enabled ||
              band_cache->sky_epoch == transport->hw_sky_epoch)) {
+            flush_x_min = bins[band].scene_x_min;
+            flush_x_max = bins[band].scene_x_max;
             flush_y_min = bins[band].scene_y_min;
             flush_y_max = bins[band].scene_y_max;
-            if (band_cache->has_scene_rows) {
+            if (band_cache->has_scene_rect) {
+                if (band_cache->scene_x_min < flush_x_min)
+                    flush_x_min = band_cache->scene_x_min;
+                if (band_cache->scene_x_max > flush_x_max)
+                    flush_x_max = band_cache->scene_x_max;
                 if (band_cache->scene_y_min < flush_y_min)
                     flush_y_min = band_cache->scene_y_min;
                 if (band_cache->scene_y_max > flush_y_max)
@@ -1071,12 +1107,19 @@ static int submit_hw_prebinned(GPUTransport *transport,
             full_band_flush = 0;
         }
 
+        if ((flush_x_max - flush_x_min + 1) > HW_RECT_STRIDE_MAX_WIDTH) {
+            flush_x_min = 0;
+            flush_x_max = VOXEL_RENDER_WIDTH - 1;
+        }
+
         if (g_diag_bbox && !full_band_flush)
-            diag_set_band_fixed_window_cost(diag_cost, band,
-                                            flush_y_min, flush_y_max);
+            diag_set_band_fixed_rect_cost(diag_cost, band,
+                                          flush_x_min, flush_x_max,
+                                          flush_y_min, flush_y_max);
 
         ret = submit_hw_band_flat(transport, band,
                                   submit_buf, submit_bytes,
+                                  flush_x_min, flush_x_max,
                                   flush_y_min, flush_y_max,
                                   diag_log_frame ? &diag_bands[band] : NULL);
         if (ret < 0)
@@ -1113,8 +1156,10 @@ static int submit_hw_prebinned(GPUTransport *transport,
                 band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
                 band_cache->sky_epoch = transport->hw_sky_epoch;
-                band_cache->has_scene_rows =
-                    !primer_only && bins[band].has_scene_rows;
+                band_cache->has_scene_rect =
+                    !primer_only && bins[band].has_scene_rect;
+                band_cache->scene_x_min = bins[band].scene_x_min;
+                band_cache->scene_x_max = bins[band].scene_x_max;
                 band_cache->scene_y_min = bins[band].scene_y_min;
                 band_cache->scene_y_max = bins[band].scene_y_max;
             }

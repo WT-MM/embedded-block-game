@@ -147,6 +147,8 @@ int main(int argc, char **argv)
         for (unsigned b = 0; b < VOXEL_BAND_COUNT; b++) {
             struct voxel_band_state bs = {
                 .band_index = b,
+                .flush_x_min = 0,
+                .flush_x_max = VOXEL_RENDER_WIDTH - 1,
                 .flush_y_min = 0,
                 .flush_y_max = VOXEL_BAND_CACHE_HEIGHT - 1,
             };

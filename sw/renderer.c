@@ -1978,8 +1978,10 @@ void renderer_set_camera(RenderContext *ctx, const Camera *camera)
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
 {
     const bool input_textured = (quad.flags & QUAD_FLAG_TEX) != 0;
-    const size_t max_descriptor_bytes = sizeof(struct quad_desc) +
-        (input_textured ? sizeof(struct quad_desc_uv) : 0);
+    const size_t textured_descriptor_bytes =
+        gpu_transport_textured_descriptor_size(ctx->transport);
+    const size_t max_descriptor_bytes =
+        input_textured ? textured_descriptor_bytes : sizeof(struct quad_desc);
 
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
         return false;
@@ -2080,10 +2082,11 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     if (d->flags & QUAD_FLAG_TEX) {
         struct quad_desc_uv *uv = (struct quad_desc_uv *)
             (ctx->submit_buffer + ctx->submit_bytes + sizeof(*d));
+        size_t uv_payload_bytes = textured_descriptor_bytes - sizeof(*d);
 
-        memset(uv, 0, sizeof(*uv));
+        memset(uv, 0, uv_payload_bytes);
         fit_uv_plane(v, &basis, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
-        emitted_size = sizeof(*d) + sizeof(*uv);
+        emitted_size = textured_descriptor_bytes;
     } else {
         emitted_size = sizeof(*d);
     }

@@ -355,6 +355,24 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_GLASS: "glass.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
     TEX_TILE_WATER: "water_still.png",
+    TEX_TILE_SAND: "sand.png",
+    TEX_TILE_GRAVEL: "gravel.png",
+    TEX_TILE_COBBLESTONE: "cobblestone.png",
+    TEX_TILE_BRICKS: "brick.png",
+    TEX_TILE_OBSIDIAN: "obsidian.png",
+    TEX_TILE_SANDSTONE: "sandstone_normal.png",
+    TEX_TILE_CLAY: "clay.png",
+    TEX_TILE_REDSTONE_BLOCK: "redstone_block.png",
+    TEX_TILE_LAVA: "lava_still.png",
+    TEX_TILE_COAL_ORE: "coal_ore.png",
+    TEX_TILE_IRON_ORE: "iron_ore.png",
+    TEX_TILE_GOLD_ORE: "gold_ore.png",
+    TEX_TILE_DIAMOND_ORE: "diamond_ore.png",
+    TEX_TILE_REDSTONE_ORE: "redstone_ore.png",
+    TEX_TILE_GOLD_BLOCK: "gold_block.png",
+    TEX_TILE_DIAMOND_BLOCK: "diamond_block.png",
+    TEX_TILE_RED_FLOWER: "flower_rose.png",
+    TEX_TILE_YELLOW_FLOWER: "flower_dandelion.png",
     TEX_TILE_HEART_CONTAINER: "container.png",
     TEX_TILE_HEART: "full.png",
     TEX_TILE_DRUMSTICK: "food_full.png",
@@ -389,6 +407,24 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
     # this list because the quantizer early-exits to PAL_TRANSPARENT first.
     TEX_TILE_WATER: (PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT),
+    TEX_TILE_SAND: (PAL_SAND, PAL_SAND_DARK, PAL_SUN_CORE, PAL_DIRT_LIGHT),
+    TEX_TILE_GRAVEL: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_COBBLESTONE: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_BRICKS: (PAL_BRICK_DARK, PAL_BRICK, PAL_DIRT, PAL_DIRT_LIGHT),
+    TEX_TILE_OBSIDIAN: (PAL_UI_DARK, PAL_OBSIDIAN, PAL_OBSIDIAN_EDGE),
+    TEX_TILE_SANDSTONE: (PAL_SAND, PAL_SAND_DARK, PAL_SUN_CORE, PAL_DIRT_LIGHT),
+    TEX_TILE_CLAY: (PAL_GLASS_EDGE, PAL_CLAY, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_REDSTONE_BLOCK: (PAL_BRICK_DARK, PAL_BRICK, PAL_RED, PAL_LAVA_ORANGE),
+    TEX_TILE_LAVA: (PAL_LAVA_DARK, PAL_LAVA_ORANGE, PAL_LAVA_HOT, PAL_SUN_GLOW, PAL_SUN_CORE),
+    TEX_TILE_COAL_ORE: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_IRON_ORE: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_DIRT_LIGHT, PAL_SAND),
+    TEX_TILE_GOLD_ORE: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_YELLOW, PAL_SUN_CORE),
+    TEX_TILE_DIAMOND_ORE: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_BLUE, PAL_GLASS_HIGHLIGHT, PAL_WHITE),
+    TEX_TILE_REDSTONE_ORE: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_RED, PAL_LAVA_ORANGE),
+    TEX_TILE_GOLD_BLOCK: (PAL_LAMP_GLOW, PAL_YELLOW, PAL_SUN_CORE, PAL_WHITE),
+    TEX_TILE_DIAMOND_BLOCK: (PAL_BLUE, PAL_GLASS, PAL_GLASS_HIGHLIGHT, PAL_WHITE),
+    TEX_TILE_RED_FLOWER: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_RED, PAL_WHITE),
+    TEX_TILE_YELLOW_FLOWER: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_YELLOW, PAL_SUN_CORE),
     TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
     TEX_TILE_HEART_HALF: (14, 6, 5),
@@ -566,6 +602,11 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
             if rgba.size != (TILE_SIZE, TILE_SIZE):
                 nearest = getattr(Image, "Resampling", Image).NEAREST
                 rgba = rgba.resize((TILE_SIZE, TILE_SIZE), nearest)
+        elif rgba.size[0] == TILE_SIZE and rgba.size[1] > TILE_SIZE and rgba.size[1] % TILE_SIZE == 0:
+            # Animated vanilla block textures, such as lava_still.png, are
+            # vertical frame strips. Our hardware atlas stores one static
+            # tile, so use the first frame.
+            rgba = rgba.crop((0, 0, TILE_SIZE, TILE_SIZE))
         if rgba.size != (TILE_SIZE, TILE_SIZE):
             raise ValueError(f"{source_path} must be {TILE_SIZE}x{TILE_SIZE}, got {rgba.size}")
         pixels = list(rgba.getdata())

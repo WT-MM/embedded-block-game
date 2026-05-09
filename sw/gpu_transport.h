@@ -20,6 +20,7 @@ int gpu_transport_set_fog(GPUTransport *transport,
 int gpu_transport_submit_descriptors(GPUTransport *transport,
                                      const void *descriptors,
                                      size_t descriptor_bytes);
+size_t gpu_transport_textured_descriptor_size(const GPUTransport *transport);
 
 /* Bin-during-emit: the renderer calls begin at frame start, then bin once
  * per finished descriptor. submit_descriptors will then skip its second-pass

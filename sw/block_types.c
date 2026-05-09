@@ -139,6 +139,13 @@ void init_block_types(void)
     BlockRegistry[BLOCK_LAVA].hardness_seconds = 0.0f;
     BlockRegistry[BLOCK_LAVA].self_lit = true;
 
+    BlockRegistry[BLOCK_LAVA_FLOW].id = BLOCK_LAVA_FLOW;
+    BlockRegistry[BLOCK_LAVA_FLOW].name = "Lava (flowing)";
+    set_all_faces(&BlockRegistry[BLOCK_LAVA_FLOW], TEX_TILE_LAVA);
+    BlockRegistry[BLOCK_LAVA_FLOW].emission_level = 15;
+    BlockRegistry[BLOCK_LAVA_FLOW].hardness_seconds = 0.0f;
+    BlockRegistry[BLOCK_LAVA_FLOW].self_lit = true;
+
     BlockRegistry[BLOCK_COAL_ORE].id = BLOCK_COAL_ORE;
     BlockRegistry[BLOCK_COAL_ORE].name = "Coal Ore";
     set_all_faces(&BlockRegistry[BLOCK_COAL_ORE], TEX_TILE_COAL_ORE);
@@ -242,14 +249,15 @@ bool block_blocks_light(BlockID id)
 bool block_is_transparent(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_GLASS || id == BLOCK_LEAVES ||
-           id == BLOCK_WATER || id == BLOCK_WATER_FLOW || id == BLOCK_LAVA ||
+           id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
+           id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
            block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
 bool block_is_translucent(BlockID id)
 {
     return id == BLOCK_GLASS || id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
-           id == BLOCK_LAVA;
+           id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW;
 }
 
 bool block_is_alpha_keyed(BlockID id)
@@ -260,7 +268,8 @@ bool block_is_alpha_keyed(BlockID id)
 bool block_is_passable(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
-           id == BLOCK_LAVA || block_render_model(id) == BLOCK_RENDER_CROSS;
+           id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
+           block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
 BlockRenderModel block_render_model(BlockID id)

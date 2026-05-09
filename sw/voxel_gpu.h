@@ -21,6 +21,7 @@
  *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
  *   0x0034  BAND_INDEX   active 60-line render band index          (R/W)
  *   0x0038  BAND_CTRL    [1]=FLUSH [0]=BEGIN band command pulses   (W)
+ *   0x003C  BAND_WINDOW  [5:0]=flush local y0 [13:8]=flush local y1 (R/W)
  *   0x0068  SKY_PALETTE_ADDR [4:0] = generated sky gradient index  (W)
  *   0x006C  SKY_PALETTE_DATA [23:16]=R [15:8]=G [7:0]=B            (W)
  *   0x1000..0x1FFF  FIFO_WINDOW (4 KB / 1024 words)              (W)
@@ -62,6 +63,7 @@ typedef int32_t  __s32;
 #define VOXEL_REG_EXTMEM_STAT   0x0030
 #define VOXEL_REG_BAND_INDEX    0x0034
 #define VOXEL_REG_BAND_CTRL     0x0038
+#define VOXEL_REG_BAND_WINDOW   0x003C
 #define VOXEL_REG_PERF_DRAW_ACT  0x0040
 #define VOXEL_REG_PERF_DRAW_IDLE 0x0044
 #define VOXEL_REG_PERF_FLUSH_ACT 0x0048
@@ -157,6 +159,8 @@ struct voxel_extmem_state {
 
 struct voxel_band_state {
 	__u32 band_index;       /* 0..VOXEL_BAND_COUNT-1 */
+	__u32 flush_y_min;      /* local row inside band, normally 0..59 */
+	__u32 flush_y_max;      /* inclusive local row inside band */
 };
 
 struct voxel_perf_counters {
@@ -276,6 +280,6 @@ _Static_assert(sizeof(struct quad_desc_uv) == 36, "quad_desc_uv must be 9 words"
 _Static_assert(QUAD_DESC_UV_BYTES == 36, "UV payload must be 9 words");
 _Static_assert(sizeof(struct voxel_fog_state) == 8, "voxel_fog_state must be 8 bytes");
 _Static_assert(sizeof(struct voxel_extmem_state) == 24, "voxel_extmem_state must be 24 bytes");
-_Static_assert(sizeof(struct voxel_band_state) == 4, "voxel_band_state must be 4 bytes");
+_Static_assert(sizeof(struct voxel_band_state) == 12, "voxel_band_state must be 12 bytes");
 
 #endif /* _VOXEL_GPU_H */

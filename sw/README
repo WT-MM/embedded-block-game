@@ -145,14 +145,14 @@ ioctl(fd, VOXEL_IOC_GET_STATUS, &s)      Snapshot of STATUS register.
 ioctl(fd, VOXEL_IOC_GET_FRAME_COUNT, &n) Read free-running frame counter.
 ioctl(fd, VOXEL_IOC_SET_EXTMEM, &x)      Program future SDRAM color-path regs.
 ioctl(fd, VOXEL_IOC_GET_EXTMEM, &x)      Read back SDRAM color-path regs.
-ioctl(fd, VOXEL_IOC_BEGIN_BAND, &b)      Clear/select one 60-line render band.
+ioctl(fd, VOXEL_IOC_BEGIN_BAND, &b)      Clear/select one band and flush row window.
 ioctl(fd, VOXEL_IOC_END_BAND)            Drain and flush that band to SDRAM.
 
 The MVP render loop is therefore:
 
     ioctl(CLEAR_FRAME);
     for each 60-line band:
-        ioctl(BEGIN_BAND, band_index);
+        ioctl(BEGIN_BAND, { band_index, flush_y_min, flush_y_max });
         write(quad_descriptors_for_that_band, n_bytes);
         ioctl(END_BAND);
     ioctl(FLIP);

@@ -66,6 +66,7 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_EXTMEM_STAT = 13'h00C;
     localparam logic [12:0] ADDR_BAND_INDEX = 13'h00D;
     localparam logic [12:0] ADDR_BAND_CTRL = 13'h00E;
+    localparam logic [12:0] ADDR_BAND_WINDOW = 13'h00F;
     localparam logic [12:0] ADDR_PERF_DRAW_ACT  = 13'h010;
     localparam logic [12:0] ADDR_PERF_DRAW_IDLE = 13'h011;
     localparam logic [12:0] ADDR_PERF_FLUSH_ACT = 13'h012;
@@ -785,6 +786,12 @@ module voxel_gpu (
     logic  [2:0] cache_band_index;
     logic  [2:0] cache_target_band;
     logic  [2:0] band_index_cfg;
+    logic  [5:0] band_flush_y_min_cfg;
+    logic  [5:0] band_flush_y_max_cfg;
+    logic  [5:0] cache_flush_y_min;
+    logic [15:0] cache_window_start;
+    logic [15:0] cache_window_pixels;
+    logic [15:0] cache_window_end;
     logic        band_begin_pending;
     logic        band_flush_pending;
     logic        cache_valid;
@@ -812,6 +819,7 @@ module voxel_gpu (
     logic        draw_cache_sel;           // 0 = A active, 1 = B active
     logic        flush_active;             // background flush running
     logic [15:0] flush_maint_addr;         // read address into inactive cache
+    logic [15:0] flush_window_start;       // first local pixel address to flush
     logic [15:0] flush_pixels_total;       // pixels in the flushing band
     logic [15:0] flush_words_issued;       // cache reads / generated words issued
     logic [15:0] flush_words_done;         // words pushed to SDRAM wr FIFO
@@ -1323,6 +1331,8 @@ module voxel_gpu (
     wire [7:0] desc_tex_or_color = desc_words[15][23:16];
     wire [7:0] desc_flags = desc_words[15][31:24];
     wire [8:0] desc_band_base_y = band_base_row(cache_band_index);
+    wire [4:0] desc_sky_index =
+        desc_tex_or_color[4:0] - PAL_SKY_GRADIENT_BASE[4:0];
     wire       desc_redundant_sky_clear =
         sky_gradient_clear_enabled &&
         (desc_flags == 8'd0) &&
@@ -1700,6 +1710,22 @@ module voxel_gpu (
         end
     endfunction
 
+    function automatic [15:0] band_local_row_offset(input logic [5:0] local_y);
+        begin
+            /* local_y * 640 == local_y*512 + local_y*128 */
+            band_local_row_offset = {local_y, 9'd0} + {3'd0, local_y, 7'd0};
+        end
+    endfunction
+
+    function automatic [15:0] band_row_window_count(input logic [5:0] y_min,
+                                                    input logic [5:0] y_max);
+        logic [6:0] rows;
+        begin
+            rows = {1'b0, y_max} - {1'b0, y_min} + 7'd1;
+            band_row_window_count = {rows, 9'd0} + {2'd0, rows, 7'd0};
+        end
+    endfunction
+
     function automatic [24:0] band_word_count(input logic [2:0] band);
         begin
             band_word_count = {9'd0, band_pixel_count(band)};
@@ -1737,6 +1763,36 @@ module voxel_gpu (
                 3'd6: sky_clear_start_index = 5'd18;  // row 360
                 default: sky_clear_start_index = 5'd21; // row 420
             endcase
+        end
+    endfunction
+
+    function automatic [4:0] sky_row_count_for_local_y(input logic [5:0] local_y);
+        logic [4:0] local_mod;
+        begin
+            local_mod = local_y[4:0];
+            if (local_y >= 6'd40)
+                sky_row_count_for_local_y = local_mod - 5'd8;
+            else if (local_y >= 6'd32)
+                sky_row_count_for_local_y = local_mod + 5'd12;
+            else if (local_y >= 6'd20)
+                sky_row_count_for_local_y = local_mod - 5'd20;
+            else
+                sky_row_count_for_local_y = local_mod;
+        end
+    endfunction
+
+    function automatic [4:0] sky_clear_index_for_local_y(input logic [2:0] band,
+                                                         input logic [5:0] local_y);
+        logic [5:0] pal;
+        begin
+            pal = {1'b0, sky_clear_start_index(band)};
+            if (local_y >= 6'd40)
+                pal = pal + 6'd2;
+            else if (local_y >= 6'd20)
+                pal = pal + 6'd1;
+            sky_clear_index_for_local_y =
+                (pal >= SKY_GRADIENT_COLORS_6) ?
+                SKY_GRADIENT_LAST_INDEX : pal[4:0];
         end
     endfunction
 
@@ -2391,6 +2447,12 @@ module voxel_gpu (
         sdram_rd_load_hold  = 4'd0;
         cache_band_index = 3'd0;
         cache_target_band = 3'd0;
+        band_flush_y_min_cfg = 6'd0;
+        band_flush_y_max_cfg = 6'd59;
+        cache_flush_y_min = 6'd0;
+        cache_window_start = 16'd0;
+        cache_window_pixels = 16'd38400;
+        cache_window_end = 16'd38400;
         cache_valid = 1'b0;
         cache_dirty = 1'b0;
         cache_draw_dirty = 1'b0;
@@ -2412,6 +2474,7 @@ module voxel_gpu (
         sdram_wr_load_pulse = 1'b0;
         flush_active = 1'b0;
         flush_maint_addr = 16'd0;
+        flush_window_start = 16'd0;
         flush_pixels_total = 16'd0;
         flush_words_issued = 16'd0;
         flush_words_done = 16'd0;
@@ -2553,7 +2616,7 @@ module voxel_gpu (
             ST_FETCH: begin
                 if (cache_sky_patch_state) begin
                     fb_wr_addr = band_local_addr(desc_x_min, desc_y_min, cache_band_index);
-                    fb_wr_data = rgb888_to_rgb565(palette[desc_tex_or_color]);
+                    fb_wr_data = rgb888_to_rgb565(sky_palette[desc_sky_index]);
                     fb_back_wr_en = 1'b1;
                     z_wr_addr = fb_wr_addr;
                     z_wr_data = Z_VALID_FAR;
@@ -3067,6 +3130,12 @@ module voxel_gpu (
             cache_band_index <= 3'd0;
             cache_target_band <= 3'd0;
             band_index_cfg <= 3'd0;
+            band_flush_y_min_cfg <= 6'd0;
+            band_flush_y_max_cfg <= 6'd59;
+            cache_flush_y_min <= 6'd0;
+            cache_window_start <= 16'd0;
+            cache_window_pixels <= 16'd38400;
+            cache_window_end <= 16'd38400;
             band_begin_pending <= 1'b0;
             band_flush_pending <= 1'b0;
             cache_valid <= 1'b0;
@@ -3097,6 +3166,7 @@ module voxel_gpu (
             z_B_rd_sel_q <= 1'b0;
             flush_active <= 1'b0;
             flush_maint_addr <= 16'd0;
+            flush_window_start <= 16'd0;
             flush_pixels_total <= 16'd0;
             flush_words_issued <= 16'd0;
             flush_words_done <= 16'd0;
@@ -3273,6 +3343,10 @@ module voxel_gpu (
                     ADDR_EXTMEM_TILE: extmem_tile_cfg <= writedata;
                     ADDR_BAND_INDEX: begin
                         band_index_cfg <= writedata[2:0];
+                    end
+                    ADDR_BAND_WINDOW: begin
+                        band_flush_y_min_cfg <= writedata[5:0];
+                        band_flush_y_max_cfg <= writedata[13:8];
                     end
                     ADDR_BAND_CTRL: begin
                         if (writedata[0])
@@ -3525,7 +3599,7 @@ module voxel_gpu (
 
                 /* Issue next read from inactive cache */
                 if (!flush_generated_sky && flush_can_issue_read) begin
-                    flush_maint_addr <= flush_words_issued;
+                    flush_maint_addr <= flush_window_start + flush_words_issued;
                     flush_words_issued <= flush_words_issued + 16'd1;
                     flush_fetch_inflight <= 1'b1;
                     flush_fetch_clear_rgb565 <= flush_clear_rgb565;
@@ -3781,7 +3855,15 @@ module voxel_gpu (
                         cache_target_band <= band_index_cfg;
                         cache_band_index <= band_index_cfg;
                         cache_pixels_total <= band_pixel_count(band_index_cfg);
-                        cache_maint_addr <= 16'd0;
+                        cache_flush_y_min <= band_flush_y_min_cfg;
+                        cache_window_start <= band_local_row_offset(band_flush_y_min_cfg);
+                        cache_window_pixels <= band_row_window_count(
+                            band_flush_y_min_cfg, band_flush_y_max_cfg);
+                        cache_window_end <= band_local_row_offset(band_flush_y_min_cfg) +
+                                            band_row_window_count(
+                                                band_flush_y_min_cfg,
+                                                band_flush_y_max_cfg);
+                        cache_maint_addr <= band_local_row_offset(band_flush_y_min_cfg);
                         cache_valid <= 1'b0;
                         cache_dirty <= 1'b0;
                         cache_draw_dirty <= 1'b0;
@@ -3814,8 +3896,9 @@ module voxel_gpu (
                              * while this one flushes in the background. */
                             flush_active <= 1'b1;
                             flush_band_index <= cache_band_index;
-                            flush_pixels_total <= band_pixel_count(cache_band_index);
-                            flush_maint_addr <= 16'd0;
+                            flush_pixels_total <= cache_window_pixels;
+                            flush_window_start <= cache_window_start;
+                            flush_maint_addr <= cache_window_start;
                             flush_words_issued <= 16'd0;
                             flush_words_done <= 16'd0;
                             flush_fetch_inflight <= 1'b0;
@@ -3826,13 +3909,18 @@ module voxel_gpu (
                             flush_generated_sky <= sky_gradient_clear_enabled &&
                                                    !cache_draw_dirty;
                             flush_sky_x <= 10'd0;
-                            flush_sky_row_count <= 5'd0;
-                            flush_sky_palette <= sky_clear_start_index(cache_band_index);
+                            flush_sky_row_count <=
+                                sky_row_count_for_local_y(cache_flush_y_min);
+                            flush_sky_palette <=
+                                sky_clear_index_for_local_y(cache_band_index,
+                                                            cache_flush_y_min);
                             flush_sdram_wr_addr <= copy_target_base_words +
-                                                   band_word_offset(cache_band_index);
+                                                   band_word_offset(cache_band_index) +
+                                                   {9'd0, cache_window_start};
                             flush_sdram_wr_max_addr <= copy_target_base_words +
                                                        band_word_offset(cache_band_index) +
-                                                       band_word_count(cache_band_index);
+                                                       {9'd0, cache_window_start} +
+                                                       {9'd0, cache_window_pixels};
                             cache_valid <= 1'b0;
                             cache_dirty <= 1'b0;
                             cache_draw_dirty <= 1'b0;
@@ -3877,6 +3965,10 @@ module voxel_gpu (
                     cache_dirty <= 1'b0;
                     cache_draw_dirty <= 1'b0;
                     cache_band_valid <= 8'h00;
+                    cache_flush_y_min <= 6'd0;
+                    cache_window_start <= 16'd0;
+                    cache_window_pixels <= 16'd38400;
+                    cache_window_end <= 16'd38400;
                     cache_resume_draw <= 1'b0;
                     cache_final_flush <= 1'b0;
                     band_begin_pending <= 1'b0;
@@ -4536,6 +4628,10 @@ module voxel_gpu (
                 ST_CACHE_SELECT_FILL: begin
                     cache_band_index <= cache_target_band;
                     cache_pixels_total <= band_pixel_count(cache_target_band);
+                    cache_window_start <= 16'd0;
+                    cache_window_pixels <= band_pixel_count(cache_target_band);
+                    cache_window_end <= band_pixel_count(cache_target_band);
+                    cache_maint_addr <= 16'd0;
                     cache_words_done <= 16'd0;
                     if (cache_band_valid[cache_target_band] && cache_read_start_ok) begin
                         sdram_rd_addr_cfg <= copy_target_base_words +
@@ -4554,12 +4650,12 @@ module voxel_gpu (
                 end
 
                 ST_CACHE_INIT: begin
-                    if (cache_maint_addr == cache_pixels_total - 16'd2) begin
+                    if (cache_maint_addr == cache_window_end - 16'd2) begin
                         cache_valid <= 1'b1;
                         cache_dirty <= 1'b1;
                         cache_draw_dirty <= 1'b0;
                         cache_band_index <= cache_target_band;
-                        cache_maint_addr <= 16'd0;
+                        cache_maint_addr <= cache_window_start;
                         cache_resume_draw <= 1'b0;
                         state <= ST_IDLE;
                     end else begin
@@ -4661,6 +4757,10 @@ module voxel_gpu (
                 cache_dirty <= 1'b0;
                 cache_draw_dirty <= 1'b0;
                 cache_band_valid <= 8'h00;
+                cache_flush_y_min <= 6'd0;
+                cache_window_start <= 16'd0;
+                cache_window_pixels <= 16'd38400;
+                cache_window_end <= 16'd38400;
                 band_begin_pending <= 1'b0;
                 band_flush_pending <= 1'b0;
                 cache_resume_draw <= 1'b0;
@@ -4833,6 +4933,8 @@ module voxel_gpu (
             ADDR_EXTMEM_STAT: readdata = extmem_dma_status;
             ADDR_BAND_INDEX: readdata = {29'h0, band_index_cfg};
             ADDR_BAND_CTRL: readdata = {30'h0, band_flush_pending, band_begin_pending};
+            ADDR_BAND_WINDOW: readdata = {18'd0, band_flush_y_max_cfg,
+                                          2'd0, band_flush_y_min_cfg};
             ADDR_PERF_DRAW_ACT : readdata = perf_draw_active;
             ADDR_PERF_DRAW_IDLE: readdata = perf_draw_idle;
             ADDR_PERF_FLUSH_ACT: readdata = perf_flush_active;

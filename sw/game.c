@@ -819,7 +819,8 @@ static bool game_block_is_water(BlockID id)
 static bool game_block_is_trace_passable(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_WATER ||
-           id == BLOCK_WATER_FLOW || id == BLOCK_LAVA;
+           id == BLOCK_WATER_FLOW || id == BLOCK_LAVA ||
+           id == BLOCK_LAVA_FLOW;
 }
 
 static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
@@ -1684,7 +1685,7 @@ int main(void)
     struct timespec perf_window_start;
     float world_time = 0.0f;
     float physics_accumulator = 0.0f;
-    float water_tick_accumulator = 0.0f;
+    float environment_tick_accumulator = 0.0f;
     float break_timer = 0.0f;
     float break_duration = 0.0f;
     float hand_swing_timer = HAND_SWING_SECONDS;
@@ -1700,7 +1701,7 @@ int main(void)
     float fall_start_y = player.y;
     BlockTarget break_target = {0};
     bool break_target_valid = false;
-#define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
+#define ENVIRONMENT_TICK_INTERVAL 0.75f  /* One fluid/gravity step every 750 ms. */
 #define RESET_PLAYER_AFTER_DEATH(message) do { \
         respawn_player(&player, &cam); \
         player_health_units = PLAYER_MAX_HEALTH_UNITS; \
@@ -1752,19 +1753,21 @@ int main(void)
         prev = now;
         world_time += frame_dt;
         physics_accumulator += frame_dt;
-        water_tick_accumulator += frame_dt;
+        environment_tick_accumulator += frame_dt;
 
-        /* Minecraft-style water simulation: intentionally slower than block
-         * placement so streams grow visibly instead of flooding instantly. */
-        if (water_tick_accumulator >= WATER_TICK_INTERVAL) {
-            water_tick_accumulator -= WATER_TICK_INTERVAL;
+        /* Minecraft-style environment simulation: intentionally slower than
+         * placement so fluids and falling blocks move visibly. */
+        if (environment_tick_accumulator >= ENVIRONMENT_TICK_INTERVAL) {
+            environment_tick_accumulator -= ENVIRONMENT_TICK_INTERVAL;
             world_water_tick(&world);
             if (debug_enabled) {
                 WaterTickStats ws = world_water_tick_stats();
-                if (ws.sources_seen || ws.flows_seen || ws.spread_placed || ws.evaporated) {
-                    chat_log(&chat, "water: src=%d flow=%d +%d -%d",
+                if (ws.sources_seen || ws.flows_seen || ws.spread_placed ||
+                    ws.evaporated || ws.falling_moved) {
+                    chat_log(&chat, "sim: src=%d flow=%d +%d -%d fall=%d",
                              ws.sources_seen, ws.flows_seen,
-                             ws.spread_placed, ws.evaporated);
+                             ws.spread_placed, ws.evaporated,
+                             ws.falling_moved);
                 }
             }
         }
@@ -2372,7 +2375,7 @@ int main(void)
     }
 
 #undef RESET_PLAYER_AFTER_DEATH
-#undef WATER_TICK_INTERVAL
+#undef ENVIRONMENT_TICK_INTERVAL
 
     if (status_log_enabled)
         printf("\n");

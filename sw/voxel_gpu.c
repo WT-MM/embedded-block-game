@@ -379,6 +379,10 @@ static long voxel_ioc_begin_band(void __user *uarg)
 		return -EFAULT;
 	if (band.band_index > 7)
 		return -EINVAL;
+	if (band.flush_y_min >= VOXEL_BAND_CACHE_HEIGHT ||
+	    band.flush_y_max >= VOXEL_BAND_CACHE_HEIGHT ||
+	    band.flush_y_min > band.flush_y_max)
+		return -EINVAL;
 
 	mutex_lock(&voxdev.lock);
 
@@ -391,6 +395,9 @@ static long voxel_ioc_begin_band(void __user *uarg)
 		goto out;
 
 	voxel_wr(VOXEL_REG_BAND_INDEX, band.band_index);
+	voxel_wr(VOXEL_REG_BAND_WINDOW,
+		 (band.flush_y_min & 0x3fu) |
+		 ((band.flush_y_max & 0x3fu) << 8));
 	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_BEGIN);
 	/*
 	 * Do not wait for the band cache init here. The command FIFO can be

@@ -106,6 +106,53 @@ static const int FACE_NX[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
 static const int FACE_NY[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
 static const int FACE_NZ[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
 
+typedef struct {
+    BlockID source;
+    BlockID flow;
+} FluidDef;
+
+static const FluidDef WATER_FLUID = { BLOCK_WATER, BLOCK_WATER_FLOW };
+static const FluidDef LAVA_FLUID = { BLOCK_LAVA, BLOCK_LAVA_FLOW };
+
+static bool block_is_fluid_source(BlockID id)
+{
+    return id == BLOCK_WATER || id == BLOCK_LAVA;
+}
+
+static bool block_is_fluid_flow(BlockID id)
+{
+    return id == BLOCK_WATER_FLOW || id == BLOCK_LAVA_FLOW;
+}
+
+static int block_fluid_family(BlockID id)
+{
+    switch (id) {
+    case BLOCK_WATER:
+    case BLOCK_WATER_FLOW:
+        return 1;
+    case BLOCK_LAVA:
+    case BLOCK_LAVA_FLOW:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+static bool block_is_any_fluid(BlockID id)
+{
+    return block_fluid_family(id) != 0;
+}
+
+static bool block_is_fluid_kind(BlockID id, const FluidDef *fluid)
+{
+    return fluid && (id == fluid->source || id == fluid->flow);
+}
+
+static bool block_is_gravity_affected(BlockID id)
+{
+    return id == BLOCK_SAND || id == BLOCK_GRAVEL;
+}
+
 static bool greedy_meshing_enabled(void)
 {
     static int cached = -1;
@@ -503,11 +550,13 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                 if (id >= NUM_BLOCK_TYPES)
                     return false;
                 chunk->blocks[y][z][x] = (BlockID)id;
-                /* Sanitize water_level: only meaningful for water blocks. */
-                if (id == BLOCK_WATER)
+                /* Sanitize water_level: only meaningful for fluid blocks. */
+                if (block_is_fluid_source((BlockID)id))
                     chunk->water_level[y][z][x] = 0;
-                else if (id != BLOCK_WATER_FLOW)
+                else if (!block_is_fluid_flow((BlockID)id))
                     chunk->water_level[y][z][x] = 0;
+                else if (chunk->water_level[y][z][x] < 1)
+                    chunk->water_level[y][z][x] = 1;
                 else if (chunk->water_level[y][z][x] > 7)
                     chunk->water_level[y][z][x] = 7;
             }
@@ -1144,9 +1193,9 @@ static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
  * A face between `current` and `neighbor` should be emitted when the
  * neighbor doesn't fully occlude it:
  *   - Any face next to air is visible.
- *   - An opaque block's face next to glass / water / leaves is visible:
+ *   - An opaque block's face next to glass / fluid / leaves is visible:
  *     you can see the opaque surface through the transparent neighbor.
- *   - A translucent block (glass, water) next to anything but air is
+ *   - A translucent block (glass, fluid) next to anything but air is
  *     hidden, which collapses interior walls of solid translucent volumes
  *     into a single hull and avoids alpha-over-alpha overdraw artefacts
  *     when looking at translucent stacks.
@@ -1165,11 +1214,6 @@ static bool face_should_render(BlockID current, BlockID neighbor)
     if (current == neighbor && block_is_alpha_keyed(current))
         return false;
     return block_is_transparent(neighbor);
-}
-
-static bool block_is_any_water(BlockID id)
-{
-    return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
 static bool block_uses_cube_mesh(BlockID id)
@@ -1463,7 +1507,7 @@ static uint8_t read_water_level_cached(const Chunk *nb[3][3], int ccx, int ccz,
     return c->water_level[wy][lz][lx];
 }
 
-static uint8_t water_flow_height_from_level(uint8_t level)
+static uint8_t fluid_flow_height_from_level(uint8_t level)
 {
     if (level > 7)
         level = 7;
@@ -1472,21 +1516,23 @@ static uint8_t water_flow_height_from_level(uint8_t level)
     return height ? height : 1;
 }
 
-static uint8_t water_height_cached(const Chunk *nb[3][3], int ccx, int ccz,
+static uint8_t fluid_height_cached(const Chunk *nb[3][3], int ccx, int ccz,
                                    int wx, int wy, int wz)
 {
     BlockID id = read_block_cached(nb, ccx, ccz, wx, wy, wz);
+    int family = block_fluid_family(id);
 
-    if (id == BLOCK_WATER)
+    if (block_is_fluid_source(id))
         return 8;
-    if (id != BLOCK_WATER_FLOW)
+    if (!block_is_fluid_flow(id))
         return 0;
 
     if (wy + 1 < WORLD_CHUNK_HEIGHT &&
-        block_is_any_water(read_block_cached(nb, ccx, ccz, wx, wy + 1, wz)))
+        block_fluid_family(read_block_cached(nb, ccx, ccz,
+                                             wx, wy + 1, wz)) == family)
         return 8;
 
-    return water_flow_height_from_level(
+    return fluid_flow_height_from_level(
         read_water_level_cached(nb, ccx, ccz, wx, wy, wz));
 }
 
@@ -1499,21 +1545,21 @@ static bool mesh_face_should_render(const Chunk *nb[3][3], int ccx, int ccz,
                                          wy + FACE_NY[face],
                                          wz + FACE_NZ[face]);
 
-    if (!block_is_any_water(current))
+    if (!block_is_any_fluid(current))
         return face_should_render(current, neighbor);
 
     if (neighbor == BLOCK_AIR)
         return true;
-    if (!block_is_any_water(neighbor))
-        return false;
+    if (block_fluid_family(neighbor) != block_fluid_family(current))
+        return block_is_transparent(neighbor);
 
     switch (face) {
     case FACE_LEFT:
     case FACE_RIGHT:
     case FACE_FRONT:
     case FACE_BACK: {
-        uint8_t current_height = water_height_cached(nb, ccx, ccz, wx, wy, wz);
-        uint8_t neighbor_height = water_height_cached(nb, ccx, ccz,
+        uint8_t current_height = fluid_height_cached(nb, ccx, ccz, wx, wy, wz);
+        uint8_t neighbor_height = fluid_height_cached(nb, ccx, ccz,
                                                       wx + FACE_NX[face],
                                                       wy + FACE_NY[face],
                                                       wz + FACE_NZ[face]);
@@ -2189,13 +2235,13 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
                     if (block_is_translucent(id)) {
-                        /* Water flow renders at a partial height set by
-                         * its water_level (0..7, where higher = thinner).
-                         * Sources and all other translucent blocks get
-                         * the full 8/8 height. */
+                        /* Fluid flows render at a partial height set by
+                         * their water_level (0..7, where higher = thinner).
+                         * Sources and all other translucent blocks get the
+                         * full 8/8 height. */
                         uint8_t h = 8;
-                        if (id == BLOCK_WATER_FLOW) {
-                            h = water_height_cached(nb, ccx, ccz,
+                        if (block_is_fluid_flow(id)) {
+                            h = fluid_height_cached(nb, ccx, ccz,
                                                     ccx * WORLD_CHUNK_SIZE + x,
                                                     y,
                                                     ccz * WORLD_CHUNK_SIZE + z);
@@ -3169,13 +3215,13 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
     chunk->flags |= CHUNK_FLAG_MODIFIED;
     chunk->generation++;
 
-    /* Maintain water_level on type changes. Sources are always level 0;
+    /* Maintain fluid level on type changes. Sources are always level 0;
      * flow placed via the public API defaults to level 1 (caller is the
      * player or a tool, not the tick - the tick uses its own internal
      * helper that picks a level explicitly); anything else clears it. */
-    if (type == BLOCK_WATER)
+    if (block_is_fluid_source(type))
         chunk->water_level[wy][lz][lx] = 0;
-    else if (type == BLOCK_WATER_FLOW)
+    else if (block_is_fluid_flow(type))
         chunk->water_level[wy][lz][lx] = 1;
     else
         chunk->water_level[wy][lz][lx] = 0;
@@ -3317,30 +3363,18 @@ int world_chunk_capacity(const VoxelWorld *world)
 }
 
 /* -----------------------------------------------------------------------
- * Minecraft-style water simulation
+ * Minecraft-style environment simulation
  * -----------------------------------------------------------------------
- * Sources (BLOCK_WATER) carry water_level=0 and stay alive forever.
- * Flows (BLOCK_WATER_FLOW) carry water_level 1..7, where higher = thinner.
- * A flow at level 7 is "terminal" and never spreads further.
+ * Fluid sources carry water_level=0 and stay alive forever. Fluid flows carry
+ * water_level 1..7, where higher = thinner. A flow at level 7 is terminal and
+ * never spreads further.
  *
  * Spread is GRADUAL: each tick we take an immutable snapshot of the
  * currently-existing source/flow cells (the "active" set), and only those
- * cells push water out by one ring. New flows placed during this tick are
- * NOT in the snapshot, so they wait until the next tick to spread - which
- * gives the visible "Minecraft pool grows over ~7 ticks" behavior instead
- * of the previous instant fill.
+ * cells push fluid out by one ring. New flows placed during this tick are NOT
+ * in the snapshot, so they wait until the next tick to spread.
  *
- * Each tick:
- *   Pass 1 - Evaporate flows that no longer have an upstream support
- *            (same-level source/lower-level flow or water above).
- *   Pass 2 - Snapshot every source / non-terminal supported flow that can
- *            place water into air. Falling columns are not lateral spreaders.
- *   Pass 3 - For each snapshot cell: try to flow straight down (gravity
- *            priority, places a level-1 flow); otherwise spread laterally
- *            into air at level+1. If any immediate side cell drops downward,
- *            only those drop cells receive water, and they get the first
- *            falling-column block in the same tick so water never exists as a
- *            suspended surface over an empty hole.
+ * Sand and gravel are updated after fluids and fall by one voxel per tick.
  * ----------------------------------------------------------------------- */
 #define WATER_MAX_LEVEL          7   /* Minecraft level cap; level 7 = terminal */
 /* Active-cell snapshot capacity. Each entry is 16 bytes, so 4096 entries =
@@ -3355,16 +3389,19 @@ WaterTickStats world_water_tick_stats(void)
     return g_water_tick_stats;
 }
 
-/* Place a flow at (wx, wy, wz) and force its water_level to the given
- * value. world_set_block_locked() defaults water-flow placements to
- * level 1 (the public-API meaning "freshly placed flow"); the tick needs
- * to override that with the actual propagated level. */
-static bool water_set_flow_locked(VoxelWorld *world,
+/* Place a flow at (wx, wy, wz) and force its water_level to the given value.
+ * world_set_block_locked() defaults flow placements to level 1 (the
+ * public-API meaning "freshly placed flow"); the tick needs to override that
+ * with the actual propagated level. */
+static bool fluid_set_flow_locked(VoxelWorld *world,
+                                  const FluidDef *fluid,
                                   int wx, int wy, int wz, uint8_t level)
 {
     if (level < 1 || level > WATER_MAX_LEVEL)
         return false;
-    if (!world_set_block_locked(world, wx, wy, wz, BLOCK_WATER_FLOW))
+    if (!fluid)
+        return false;
+    if (!world_set_block_locked(world, wx, wy, wz, fluid->flow))
         return false;
 
     int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
@@ -3378,7 +3415,8 @@ static bool water_set_flow_locked(VoxelWorld *world,
     return true;
 }
 
-static uint8_t world_water_level_locked(const VoxelWorld *world,
+static uint8_t world_fluid_level_locked(const VoxelWorld *world,
+                                        const FluidDef *fluid,
                                         int wx, int wy, int wz)
 {
     if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
@@ -3393,9 +3431,9 @@ static uint8_t world_water_level_locked(const VoxelWorld *world,
         return 0;
 
     BlockID id = chunk->blocks[wy][lz][lx];
-    if (id == BLOCK_WATER)
+    if (fluid && id == fluid->source)
         return 0;
-    if (id != BLOCK_WATER_FLOW)
+    if (!fluid || id != fluid->flow)
         return WATER_MAX_LEVEL + 1;
 
     uint8_t level = chunk->water_level[wy][lz][lx];
@@ -3404,12 +3442,13 @@ static uint8_t world_water_level_locked(const VoxelWorld *world,
     return level > WATER_MAX_LEVEL ? WATER_MAX_LEVEL : level;
 }
 
-static bool water_flow_has_support_locked(const VoxelWorld *world,
+static bool fluid_flow_has_support_locked(const VoxelWorld *world,
+                                          const FluidDef *fluid,
                                           int wx, int wy, int wz,
                                           uint8_t level)
 {
     if (wy + 1 < WORLD_CHUNK_HEIGHT &&
-        block_is_any_water(world_get_block(world, wx, wy + 1, wz)))
+        block_is_fluid_kind(world_get_block(world, wx, wy + 1, wz), fluid))
         return true;
 
     const int sx[4] = {-1, 1,  0, 0};
@@ -3417,32 +3456,33 @@ static bool water_flow_has_support_locked(const VoxelWorld *world,
     for (int d = 0; d < 4; d++) {
         BlockID nb = world_get_block(world, wx + sx[d], wy, wz + sz[d]);
 
-        if (nb == BLOCK_WATER)
+        if (fluid && nb == fluid->source)
             return true;
-        if (nb == BLOCK_WATER_FLOW &&
-            world_water_level_locked(world, wx + sx[d], wy, wz + sz[d]) < level)
+        if (fluid && nb == fluid->flow &&
+            world_fluid_level_locked(world, fluid,
+                                     wx + sx[d], wy, wz + sz[d]) < level)
             return true;
     }
 
     return false;
 }
 
-static bool water_cell_rests_on_solid_locked(const VoxelWorld *world,
+static bool fluid_cell_rests_on_solid_locked(const VoxelWorld *world,
                                              int wx, int wy, int wz)
 {
     if (wy <= 0)
         return true;
 
     BlockID below = world_get_block(world, wx, wy - 1, wz);
-    return below != BLOCK_AIR && !block_is_any_water(below);
+    return below != BLOCK_AIR && !block_is_any_fluid(below);
 }
 
-static bool water_cell_can_spread_locked(const VoxelWorld *world,
+static bool fluid_cell_can_spread_locked(const VoxelWorld *world,
                                          int wx, int wy, int wz)
 {
     if (wy > 0 && world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR)
         return true;
-    if (!water_cell_rests_on_solid_locked(world, wx, wy, wz))
+    if (!fluid_cell_rests_on_solid_locked(world, wx, wy, wz))
         return false;
 
     const int sx[4] = {-1, 1,  0, 0};
@@ -3455,21 +3495,22 @@ static bool water_cell_can_spread_locked(const VoxelWorld *world,
     return false;
 }
 
-static bool water_set_falling_lateral_locked(VoxelWorld *world,
+static bool fluid_set_falling_lateral_locked(VoxelWorld *world,
+                                             const FluidDef *fluid,
                                              int wx, int wy, int wz,
                                              uint8_t lateral_level,
                                              WaterTickStats *stats)
 {
     bool placed = false;
 
-    if (water_set_flow_locked(world, wx, wy, wz, lateral_level)) {
+    if (fluid_set_flow_locked(world, fluid, wx, wy, wz, lateral_level)) {
         placed = true;
         if (stats)
             stats->spread_placed++;
     }
     if (wy > 0 &&
         world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR &&
-        water_set_flow_locked(world, wx, wy - 1, wz, 1)) {
+        fluid_set_flow_locked(world, fluid, wx, wy - 1, wz, 1)) {
         placed = true;
         if (stats)
             stats->spread_placed++;
@@ -3478,18 +3519,14 @@ static bool water_set_falling_lateral_locked(VoxelWorld *world,
     return placed;
 }
 
-bool world_water_tick(VoxelWorld *world)
+static bool fluid_tick_locked(VoxelWorld *world,
+                              const FluidDef *fluid,
+                              WaterTickStats *stats)
 {
-    if (!world)
-        return false;
-
-    typedef struct { int wx, wy, wz; uint8_t level; } WaterCell;
-    static WaterCell active[WATER_TICK_MAX_ACTIVE];
+    typedef struct { int wx, wy, wz; uint8_t level; } FluidCell;
+    static FluidCell active[WATER_TICK_MAX_ACTIVE];
     int active_count = 0;
     bool changed = false;
-    WaterTickStats stats = {0};
-
-    world_lock(world);
 
     /* ---- Pass 1: evaporate unsupported flow blocks ---- */
     for (int ci = 0; ci < world->chunk_count; ci++) {
@@ -3503,19 +3540,22 @@ bool world_water_tick(VoxelWorld *world)
         for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
             for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
                 for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
-                    if (chunk->blocks[y][z][x] != BLOCK_WATER_FLOW)
+                    if (!fluid || chunk->blocks[y][z][x] != fluid->flow)
                         continue;
 
-                    stats.flows_seen++;
+                    if (stats)
+                        stats->flows_seen++;
                     int wx = ox + x, wy = y, wz = oz + z;
                     uint8_t level = chunk->water_level[y][z][x];
                     if (level < 1 || level > WATER_MAX_LEVEL)
                         level = 1;
 
-                    if (!water_flow_has_support_locked(world, wx, wy, wz, level)) {
+                    if (!fluid_flow_has_support_locked(world, fluid,
+                                                       wx, wy, wz, level)) {
                         world_set_block_locked(world, wx, wy, wz, BLOCK_AIR);
                         changed = true;
-                        stats.evaporated++;
+                        if (stats)
+                            stats->evaporated++;
                     }
                 }
             }
@@ -3524,7 +3564,7 @@ bool world_water_tick(VoxelWorld *world)
 
     /* ---- Pass 2: snapshot active spreaders ----
      * An "active" cell is a source or non-terminal, supported flow that can
-     * place water into a face neighbour. Flows in a falling column wait until
+     * place fluid into a face neighbour. Flows in a falling column wait until
      * they rest on solid ground before spreading sideways. */
     for (int ci = 0;
          ci < world->chunk_count && active_count < WATER_TICK_MAX_ACTIVE;
@@ -3546,27 +3586,28 @@ bool world_water_tick(VoxelWorld *world)
                      x < WORLD_CHUNK_SIZE && active_count < WATER_TICK_MAX_ACTIVE;
                      x++) {
                     BlockID b = chunk->blocks[y][z][x];
-                    if (b != BLOCK_WATER && b != BLOCK_WATER_FLOW)
+                    if (!block_is_fluid_kind(b, fluid))
                         continue;
 
-                    if (b == BLOCK_WATER)
-                        stats.sources_seen++;
+                    if (fluid && b == fluid->source && stats)
+                        stats->sources_seen++;
 
-                    uint8_t lvl = (b == BLOCK_WATER)
+                    uint8_t lvl = (fluid && b == fluid->source)
                                       ? 0
                                       : chunk->water_level[y][z][x];
                     /* Terminal flows can't push further. */
-                    if (b == BLOCK_WATER_FLOW && lvl >= WATER_MAX_LEVEL)
+                    if (fluid && b == fluid->flow && lvl >= WATER_MAX_LEVEL)
                         continue;
 
                     int wx = ox + x, wy = y, wz = oz + z;
-                    if (b == BLOCK_WATER_FLOW &&
-                        !water_flow_has_support_locked(world, wx, wy, wz, lvl))
+                    if (fluid && b == fluid->flow &&
+                        !fluid_flow_has_support_locked(world, fluid,
+                                                       wx, wy, wz, lvl))
                         continue;
-                    if (!water_cell_can_spread_locked(world, wx, wy, wz))
+                    if (!fluid_cell_can_spread_locked(world, wx, wy, wz))
                         continue;
 
-                    active[active_count++] = (WaterCell){wx, wy, wz, lvl};
+                    active[active_count++] = (FluidCell){wx, wy, wz, lvl};
                 }
             }
         }
@@ -3578,20 +3619,22 @@ bool world_water_tick(VoxelWorld *world)
      * cascade further until the next tick - that's what bounds spread to
      * one ring/tick and produces the gradual pool growth. */
     for (int i = 0; i < active_count; i++) {
-        WaterCell c = active[i];
+        FluidCell c = active[i];
 
-        /* Gravity priority: falling water resets to level 1, and we skip
+        /* Gravity priority: falling fluid resets to level 1, and we skip
          * lateral spread for this cell so the column descends cleanly. */
         if (c.wy > 0 &&
             world_get_block(world, c.wx, c.wy - 1, c.wz) == BLOCK_AIR) {
-            if (water_set_flow_locked(world, c.wx, c.wy - 1, c.wz, 1)) {
+            if (fluid_set_flow_locked(world, fluid,
+                                      c.wx, c.wy - 1, c.wz, 1)) {
                 changed = true;
-                stats.spread_placed++;
+                if (stats)
+                    stats->spread_placed++;
             }
             continue;
         }
 
-        if (!water_cell_rests_on_solid_locked(world, c.wx, c.wy, c.wz))
+        if (!fluid_cell_rests_on_solid_locked(world, c.wx, c.wy, c.wz))
             continue;
 
         /* Lateral spread at one level higher than the source cell. */
@@ -3624,17 +3667,78 @@ bool world_water_tick(VoxelWorld *world)
             if (world_get_block(world, nx, c.wy, nz) != BLOCK_AIR)
                 continue;
             if (downhill[d]) {
-                if (water_set_falling_lateral_locked(world, nx, c.wy, nz,
-                                                     next_level, &stats))
+                if (fluid_set_falling_lateral_locked(world, fluid,
+                                                     nx, c.wy, nz,
+                                                     next_level, stats))
                     changed = true;
-            } else if (water_set_flow_locked(world, nx, c.wy, nz, next_level)) {
+            } else if (fluid_set_flow_locked(world, fluid,
+                                             nx, c.wy, nz, next_level)) {
                 changed = true;
-                stats.spread_placed++;
+                if (stats)
+                    stats->spread_placed++;
             }
         }
     }
 
+    return changed;
+}
+
+static bool falling_blocks_tick_locked(VoxelWorld *world, WaterTickStats *stats)
+{
+    bool changed = false;
+
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        Chunk *chunk = &world->chunks[ci];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+        for (int y = 1; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    BlockID id = chunk->blocks[y][z][x];
+                    if (!block_is_gravity_affected(id))
+                        continue;
+
+                    int wx = ox + x;
+                    int wz = oz + z;
+                    if (world_get_block(world, wx, y - 1, wz) != BLOCK_AIR)
+                        continue;
+
+                    if (!world_set_block_locked(world, wx, y - 1, wz, id))
+                        continue;
+                    if (!world_set_block_locked(world, wx, y, wz, BLOCK_AIR)) {
+                        world_set_block_locked(world, wx, y - 1, wz, BLOCK_AIR);
+                        continue;
+                    }
+
+                    changed = true;
+                    if (stats)
+                        stats->falling_moved++;
+                }
+            }
+        }
+    }
+
+    return changed;
+}
+
+bool world_water_tick(VoxelWorld *world)
+{
+    if (!world)
+        return false;
+
+    bool changed = false;
+    WaterTickStats stats = {0};
+
+    world_lock(world);
+    changed |= fluid_tick_locked(world, &WATER_FLUID, &stats);
+    changed |= fluid_tick_locked(world, &LAVA_FLUID, &stats);
+    changed |= falling_blocks_tick_locked(world, &stats);
     world_unlock(world);
+
     g_water_tick_stats = stats;
     return changed;
 }

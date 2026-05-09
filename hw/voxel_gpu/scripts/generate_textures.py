@@ -143,6 +143,10 @@ PAL_BRICK_DARK = 49
 PAL_OBSIDIAN = 50
 PAL_OBSIDIAN_EDGE = 51
 PAL_CLAY = 52
+PAL_SAND_LIGHT = 53
+PAL_SAND_SHADOW = 54
+PAL_BRICK_LIGHT = 55
+PAL_BRICK_MORTAR = 56
 
 
 # RGB values for each palette index. Mirrors the table in
@@ -199,11 +203,15 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     45: (0xff, 0xd8, 0x5a),  # lava hot
     46: (0xd8, 0xc0, 0x74),  # sand
     47: (0xa8, 0x90, 0x50),  # sand dark
-    48: (0xa0, 0x3f, 0x32),  # brick
-    49: (0x62, 0x24, 0x24),  # brick dark
+    48: (0xb8, 0x4d, 0x3f),  # brick
+    49: (0x6e, 0x2a, 0x27),  # brick dark
     50: (0x20, 0x1b, 0x2c),  # obsidian
     51: (0x43, 0x36, 0x58),  # obsidian edge
     52: (0x72, 0x82, 0x91),  # clay
+    53: (0xed, 0xdc, 0x9c),  # sand light
+    54: (0xc3, 0xac, 0x67),  # sand shadow
+    55: (0xd0, 0x68, 0x55),  # brick light
+    56: (0x8b, 0x56, 0x4e),  # brick mortar
 }
 
 # Tiles shown in the preview, one column per block type, one row per LOD.
@@ -404,12 +412,12 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
     # this list because the quantizer early-exits to PAL_TRANSPARENT first.
     TEX_TILE_WATER: (PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT),
-    TEX_TILE_SAND: (PAL_SAND, PAL_SAND_DARK, PAL_SUN_CORE, PAL_DIRT_LIGHT),
+    TEX_TILE_SAND: (PAL_SAND_DARK, PAL_SAND_SHADOW, PAL_SAND, PAL_SAND_LIGHT),
     TEX_TILE_GRAVEL: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
     TEX_TILE_COBBLESTONE: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
-    TEX_TILE_BRICKS: (PAL_BRICK_DARK, PAL_BRICK, PAL_DIRT, PAL_DIRT_LIGHT),
+    TEX_TILE_BRICKS: (PAL_BRICK_DARK, PAL_BRICK_MORTAR, PAL_BRICK, PAL_BRICK_LIGHT),
     TEX_TILE_OBSIDIAN: (PAL_UI_DARK, PAL_OBSIDIAN, PAL_OBSIDIAN_EDGE),
-    TEX_TILE_SANDSTONE: (PAL_SAND, PAL_SAND_DARK, PAL_SUN_CORE, PAL_DIRT_LIGHT),
+    TEX_TILE_SANDSTONE: (PAL_SAND_DARK, PAL_SAND_SHADOW, PAL_SAND, PAL_SAND_LIGHT),
     TEX_TILE_CLAY: (PAL_GLASS_EDGE, PAL_CLAY, PAL_STONE, PAL_STONE_LIGHT),
     TEX_TILE_REDSTONE_BLOCK: (PAL_BRICK_DARK, PAL_BRICK, PAL_RED, PAL_LAVA_ORANGE),
     TEX_TILE_LAVA: (PAL_LAVA_DARK, PAL_LAVA_ORANGE, PAL_LAVA_HOT, PAL_SUN_GLOW, PAL_SUN_CORE),
@@ -776,7 +784,9 @@ def sand(x: int, y: int) -> int:
     if n < 34 or ((x + y * 3) & 0x0F) == 0:
         return PAL_SAND_DARK
     if n > 218:
-        return PAL_SUN_CORE
+        return PAL_SAND_LIGHT
+    if n < 72:
+        return PAL_SAND_SHADOW
     return PAL_SAND
 
 
@@ -812,9 +822,11 @@ def bricks(x: int, y: int) -> int:
     mortar = (y & 3) == 0 or (shifted_x & 7) == 0
 
     if mortar:
-        return PAL_BRICK_DARK
+        return PAL_BRICK_MORTAR
     if noise(x, y, 479) > 204:
-        return PAL_DIRT_LIGHT
+        return PAL_BRICK_LIGHT
+    if noise(y, x, 481) < 40:
+        return PAL_BRICK_DARK
     return PAL_BRICK
 
 
@@ -833,9 +845,11 @@ def sandstone(x: int, y: int) -> int:
     if y in (0, 7, 15):
         return PAL_SAND_DARK
     if y == 8 and 3 <= x <= 12:
-        return PAL_SAND_DARK
+        return PAL_SAND_SHADOW
     if noise(x, y, 503) < 42:
-        return PAL_SAND_DARK
+        return PAL_SAND_SHADOW
+    if noise(y, x, 509) > 224:
+        return PAL_SAND_LIGHT
     return PAL_SAND
 
 

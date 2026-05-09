@@ -44,6 +44,7 @@ typedef enum {
     BLOCK_DIAMOND_BLOCK,
     BLOCK_RED_FLOWER,
     BLOCK_YELLOW_FLOWER,
+    BLOCK_LAVA_FLOW,   /* auto-spread flowing lava; hidden from the hotbar */
     NUM_BLOCK_TYPES
 } BlockID;
 

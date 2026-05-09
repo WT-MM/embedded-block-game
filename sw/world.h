@@ -25,9 +25,9 @@ typedef struct {
     uint8_t sky_light;
     uint8_t block_light;
     /* Vertical extent of the block in 1/8 units (1..8). 8 = full block.
-     * Only flowing water (BLOCK_WATER_FLOW) ever uses values < 8: the top
-     * Y of TOP and side faces is lowered to y + height/8. All other blocks
-     * always set this to 8 so the renderer's full-cube path is unchanged. */
+     * Flowing fluids use values < 8: the top Y of TOP and side faces is
+     * lowered to y + height/8. All other blocks always set this to 8 so the
+     * renderer's full-cube path is unchanged. */
     uint8_t height;
 } ChunkFace;
 
@@ -75,9 +75,8 @@ typedef struct {
     uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t block_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     /* 0 = source / full height. 1..7 = decreasing flow level (Minecraft
-     * encoding). Meaningful only for cells whose blocks[] entry is
-     * BLOCK_WATER (always 0) or BLOCK_WATER_FLOW. For any other block id
-     * this byte is ignored and should be left 0. */
+     * encoding). Meaningful only for fluid cells (water/lava source or flow).
+     * For any other block id this byte is ignored and should be left 0. */
     uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     /* Scratch buffer used by rebuild_chunk_faces to assemble a ChunkMesh
      * snapshot, which is then published via live_mesh. Renderer must NOT
@@ -168,20 +167,22 @@ Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);
 bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
 
-/* Minecraft-style water simulation tick. Call every ~250 ms (5 game ticks).
- * Source blocks (BLOCK_WATER) spread to adjacent air downward then laterally
- * up to 7 blocks. Flow blocks (BLOCK_WATER_FLOW) evaporate when they lose
- * upstream support from water above, a source, or a lower-level flow.
- * Returns true if any block changed. */
+/* Minecraft-style environment simulation tick. Call every ~250 ms (5 game
+ * ticks). Water/lava sources spread to adjacent air downward then laterally
+ * up to 7 blocks. Flow blocks evaporate when they lose upstream support from
+ * fluid above, a source, or a lower-level flow. Gravity blocks (sand/gravel)
+ * fall one voxel per tick. Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
 
 /* Diagnostic counters from the most recent world_water_tick. Useful for
- * verifying on hardware whether the BFS actually finds sources / spreads. */
+ * verifying on hardware whether the simulation finds sources / spreads /
+ * falling gravity blocks. */
 typedef struct {
     int sources_seen;
     int flows_seen;
     int spread_placed;
     int evaporated;
+    int falling_moved;
 } WaterTickStats;
 WaterTickStats world_water_tick_stats(void);
 int world_total_faces(const VoxelWorld *world);

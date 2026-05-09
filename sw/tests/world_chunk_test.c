@@ -176,7 +176,11 @@ int main(void)
     if (block_emission_level(BLOCK_LAVA) != 15 ||
         !block_is_self_lit(BLOCK_LAVA) ||
         !block_is_translucent(BLOCK_LAVA) ||
-        !block_is_passable(BLOCK_LAVA))
+        !block_is_passable(BLOCK_LAVA) ||
+        block_emission_level(BLOCK_LAVA_FLOW) != 15 ||
+        !block_is_self_lit(BLOCK_LAVA_FLOW) ||
+        !block_is_translucent(BLOCK_LAVA_FLOW) ||
+        !block_is_passable(BLOCK_LAVA_FLOW))
         return check_failed("lava metadata missing");
     const int lava_x = 6;
     const int lava_y = 26;
@@ -288,6 +292,70 @@ int main(void)
         return check_failed("unsupported water flow did not evaporate");
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-water-cleanup mesh rebuild failed");
+
+    const int lava_flow_x = 8;
+    const int lava_flow_y = 24;
+    const int lava_flow_z = 8;
+    const int lava_flow_floor_y = lava_flow_y - 1;
+    for (int y = lava_flow_y - 3; y <= lava_flow_y + 1; y++) {
+        for (int z = lava_flow_z - 1; z <= lava_flow_z + 1; z++) {
+            for (int x = lava_flow_x - 1; x <= lava_flow_x + 1; x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("lava-flow test volume clear failed");
+            }
+        }
+    }
+    for (int z = lava_flow_z - 1; z <= lava_flow_z + 1; z++) {
+        for (int x = lava_flow_x - 1; x <= lava_flow_x + 1; x++) {
+            if (!world_set_block(&world, x, lava_flow_floor_y, z, BLOCK_STONE))
+                return check_failed("lava-flow floor build failed");
+        }
+    }
+    if (!world_set_block(&world, lava_flow_x, lava_flow_y, lava_flow_z, BLOCK_LAVA))
+        return check_failed("lava source placement failed");
+    world_water_tick(&world);
+    if (world_get_block(&world, lava_flow_x + 1, lava_flow_y, lava_flow_z) != BLOCK_LAVA_FLOW)
+        return check_failed("lava did not spread like water");
+    if (!world_set_block(&world, lava_flow_x, lava_flow_y, lava_flow_z, BLOCK_AIR))
+        return check_failed("lava source removal failed");
+    for (int i = 0; i < 8; i++)
+        world_water_tick(&world);
+    if (world_get_block(&world, lava_flow_x + 1, lava_flow_y, lava_flow_z) != BLOCK_AIR)
+        return check_failed("unsupported lava flow did not evaporate");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-lava-flow-cleanup mesh rebuild failed");
+
+    const int gravity_x = 12;
+    const int gravity_z = 8;
+    for (int y = 20; y <= 26; y++) {
+        if (!world_set_block(&world, gravity_x, y, gravity_z, BLOCK_AIR) ||
+            !world_set_block(&world, gravity_x + 1, y, gravity_z, BLOCK_AIR))
+            return check_failed("gravity test volume clear failed");
+    }
+    if (!world_set_block(&world, gravity_x, 20, gravity_z, BLOCK_STONE) ||
+        !world_set_block(&world, gravity_x + 1, 20, gravity_z, BLOCK_STONE) ||
+        !world_set_block(&world, gravity_x, 24, gravity_z, BLOCK_SAND) ||
+        !world_set_block(&world, gravity_x + 1, 22, gravity_z, BLOCK_GRAVEL))
+        return check_failed("gravity test fixture build failed");
+    world_water_tick(&world);
+    if (world_get_block(&world, gravity_x, 23, gravity_z) != BLOCK_SAND ||
+        world_get_block(&world, gravity_x, 24, gravity_z) != BLOCK_AIR)
+        return check_failed("sand did not fall one block");
+    if (world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL ||
+        world_get_block(&world, gravity_x + 1, 22, gravity_z) != BLOCK_AIR)
+        return check_failed("gravel did not fall one block");
+    for (int i = 0; i < 3; i++)
+        world_water_tick(&world);
+    if (world_get_block(&world, gravity_x, 21, gravity_z) != BLOCK_SAND ||
+        world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL)
+        return check_failed("falling blocks did not settle above solid ground");
+    if (!world_set_block(&world, gravity_x, 21, gravity_z, BLOCK_AIR) ||
+        !world_set_block(&world, gravity_x + 1, 21, gravity_z, BLOCK_AIR) ||
+        !world_set_block(&world, gravity_x, 20, gravity_z, BLOCK_AIR) ||
+        !world_set_block(&world, gravity_x + 1, 20, gravity_z, BLOCK_AIR))
+        return check_failed("gravity cleanup failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-gravity-cleanup mesh rebuild failed");
 
     if (!world_stream_around(&world, 1.0f, 1.0f))
         return check_failed("same-center stream failed");

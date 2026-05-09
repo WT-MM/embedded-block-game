@@ -145,7 +145,11 @@ int main(int argc, char **argv)
         if (ioctl(fd, VOXEL_IOC_CLEAR_FRAME) < 0) die("ioctl(CLEAR_FRAME)");
 
         for (unsigned b = 0; b < VOXEL_BAND_COUNT; b++) {
-            struct voxel_band_state bs = { .band_index = b };
+            struct voxel_band_state bs = {
+                .band_index = b,
+                .flush_y_min = 0,
+                .flush_y_max = VOXEL_BAND_CACHE_HEIGHT - 1,
+            };
             if (ioctl(fd, VOXEL_IOC_BEGIN_BAND, &bs) < 0) die("ioctl(BEGIN_BAND)");
             struct quad_desc q;
             make_band_quad(&q, b, (uint8_t)(b + 1));

@@ -31,6 +31,10 @@ struct hw_band_cache_entry {
     uint64_t hash;
     size_t bytes;
     uint32_t render_epoch;
+    uint32_t sky_epoch;
+    int has_scene_rows;
+    uint8_t scene_y_min;
+    uint8_t scene_y_max;
 };
 
 struct GPUTransport {
@@ -72,6 +76,9 @@ struct descriptor_bin {
     uint8_t *flat_buf;
     size_t flat_used;
     size_t flat_capacity;
+    int has_scene_rows;
+    uint8_t scene_y_min;
+    uint8_t scene_y_max;
 };
 
 /* Two parallel sets of per-band bins. With frame pipelining enabled, the
@@ -224,6 +231,19 @@ static uint64_t diag_band_pixels(unsigned band)
     return (uint64_t)rows * VOXEL_RENDER_WIDTH;
 }
 
+static unsigned band_visible_rows(unsigned band)
+{
+    unsigned base = band * VOXEL_BAND_CACHE_HEIGHT;
+    unsigned rows;
+
+    if (base >= VOXEL_RENDER_HEIGHT)
+        return 0;
+    rows = VOXEL_RENDER_HEIGHT - base;
+    if (rows > VOXEL_BAND_CACHE_HEIGHT)
+        rows = VOXEL_BAND_CACHE_HEIGHT;
+    return rows;
+}
+
 static int diag_clamp_x(int x)
 {
     if (x < 0)
@@ -329,6 +349,23 @@ static void diag_add_band_fixed_cost(struct diag_cost *cost, unsigned band)
      * synthesized from sky/clear when a later blend or flush sees Z=0xFFFF. */
     cost->init_cycles[band] += (pixels + 1) / 2;
     cost->flush_words[band] += pixels;
+}
+
+static void diag_set_band_fixed_window_cost(struct diag_cost *cost,
+                                            unsigned band,
+                                            unsigned y_min,
+                                            unsigned y_max)
+{
+    uint64_t rows;
+    uint64_t pixels;
+
+    if (!cost || band >= VOXEL_BAND_COUNT || y_min > y_max)
+        return;
+
+    rows = (uint64_t)(y_max - y_min + 1);
+    pixels = rows * VOXEL_RENDER_WIDTH;
+    cost->init_cycles[band] = (pixels + 1) / 2;
+    cost->flush_words[band] = pixels;
 }
 
 static void diag_remove_cached_band_cost(struct diag_cost *cost, unsigned band)
@@ -520,6 +557,8 @@ static void gpu_transport_note_generated_sky_palette_write(GPUTransport *transpo
     if (transport->hw_sky_epoch == 0) {
         memset(transport->hw_sky_band_epoch, 0,
                sizeof(transport->hw_sky_band_epoch));
+        memset(transport->hw_band_cache, 0,
+               sizeof(transport->hw_band_cache));
         transport->hw_sky_epoch = HW_EPOCH_INITIAL;
     }
 }
@@ -647,9 +686,14 @@ static void rewrite_clipped(uint8_t *dst, const uint8_t *src, size_t len,
 
 static int submit_hw_band_flat(GPUTransport *transport, unsigned band_index,
                                const void *buf, size_t buf_bytes,
+                               unsigned flush_y_min, unsigned flush_y_max,
                                struct diag_band_submit *diag)
 {
-    struct voxel_band_state band = { .band_index = band_index };
+    struct voxel_band_state band = {
+        .band_index = band_index,
+        .flush_y_min = flush_y_min,
+        .flush_y_max = flush_y_max,
+    };
     struct timespec t0 = {0}, t_begin = {0}, t_write = {0}, t_end = {0};
     int ret;
 
@@ -722,6 +766,33 @@ static int bin_append_descriptor(struct descriptor_bin *bin,
     return 0;
 }
 
+static void bin_note_scene_rows(struct descriptor_bin *bin, unsigned band,
+                                int y_min, int y_max)
+{
+    int band_y_min = (int)(band * VOXEL_BAND_CACHE_HEIGHT);
+    int local_min = y_min - band_y_min;
+    int local_max = y_max - band_y_min;
+
+    if (local_min < 0)
+        local_min = 0;
+    if (local_max >= (int)VOXEL_BAND_CACHE_HEIGHT)
+        local_max = (int)VOXEL_BAND_CACHE_HEIGHT - 1;
+    if (local_min > local_max)
+        return;
+
+    if (!bin->has_scene_rows) {
+        bin->scene_y_min = (uint8_t)local_min;
+        bin->scene_y_max = (uint8_t)local_max;
+        bin->has_scene_rows = 1;
+        return;
+    }
+
+    if (local_min < bin->scene_y_min)
+        bin->scene_y_min = (uint8_t)local_min;
+    if (local_max > bin->scene_y_max)
+        bin->scene_y_max = (uint8_t)local_max;
+}
+
 /* Reset per-band bins, prime each, and zero the staging diag accumulators.
  * Shared by the legacy in-submit binning loop and the new bin-during-emit
  * path so both produce identical per-band content (primer first, then quads). */
@@ -732,6 +803,9 @@ static int reset_bins_and_prime(struct descriptor_bin bins[VOXEL_BAND_COUNT],
     for (unsigned band = 0; band < VOXEL_BAND_COUNT; band++) {
         int ret;
         bins[band].flat_used = 0;
+        bins[band].has_scene_rows = 0;
+        bins[band].scene_y_min = 0;
+        bins[band].scene_y_max = 0;
         ret = bin_append_descriptor(&bins[band], &g_band_primers[band],
                                     sizeof(g_band_primers[band]));
         if (ret < 0)
@@ -800,6 +874,7 @@ static int bin_one_descriptor(GPUTransport *transport,
         int ret = bin_append_descriptor(bin, desc_bytes, desc_size);
         if (ret < 0)
             return ret;
+        bin_note_scene_rows(bin, first_band, y_min, y_max);
         if (g_diag_bbox && diag_cost)
             diag_add_band_descriptor(diag_cost, first_band, desc,
                                      y_min, y_max, desc_size);
@@ -821,6 +896,7 @@ static int bin_one_descriptor(GPUTransport *transport,
         rewrite_clipped(dst, desc_bytes, desc_size,
                         clipped_y_min, clipped_y_max);
         bin->flat_used += desc_size;
+        bin_note_scene_rows(bin, band, clipped_y_min, clipped_y_max);
         if (g_diag_bbox && diag_cost)
             diag_add_band_descriptor(diag_cost, band, desc,
                                      clipped_y_min, clipped_y_max,
@@ -916,9 +992,19 @@ static int submit_hw_prebinned(GPUTransport *transport,
         struct hw_band_cache_entry *band_cache =
             (copy_target_buffer >= 0) ?
                 &transport->hw_band_cache[copy_target_buffer][band] : NULL;
+        unsigned flush_y_min = 0;
+        unsigned flush_y_max = band_visible_rows(band);
+        int full_band_flush = 1;
+
+        if (flush_y_max > 0)
+            flush_y_max--;
+        else
+            flush_y_max = 0;
 
         if (g_hw_band_reuse && band_cache &&
             band_cache->render_epoch == transport->hw_render_epoch &&
+            (!transport->hw_sky_gradient_clear_enabled ||
+             band_cache->sky_epoch == transport->hw_sky_epoch) &&
             band_cache->bytes == bins[band].flat_used &&
             band_cache->hash == band_hash) {
             if (g_diag_bbox) {
@@ -946,6 +1032,10 @@ static int submit_hw_prebinned(GPUTransport *transport,
                 band_cache->hash = band_hash;
                 band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
+                band_cache->sky_epoch = transport->hw_sky_epoch;
+                band_cache->has_scene_rows = 0;
+                band_cache->scene_y_min = 0;
+                band_cache->scene_y_max = 0;
             }
             if (g_diag_cache) {
                 fprintf(stderr,
@@ -967,8 +1057,27 @@ static int submit_hw_prebinned(GPUTransport *transport,
         size_t submit_bytes =
             primer_only ? 0 : bins[band].flat_used;
 
+        if (!primer_only && bins[band].has_scene_rows && band_cache &&
+            (!transport->hw_sky_gradient_clear_enabled ||
+             band_cache->sky_epoch == transport->hw_sky_epoch)) {
+            flush_y_min = bins[band].scene_y_min;
+            flush_y_max = bins[band].scene_y_max;
+            if (band_cache->has_scene_rows) {
+                if (band_cache->scene_y_min < flush_y_min)
+                    flush_y_min = band_cache->scene_y_min;
+                if (band_cache->scene_y_max > flush_y_max)
+                    flush_y_max = band_cache->scene_y_max;
+            }
+            full_band_flush = 0;
+        }
+
+        if (g_diag_bbox && !full_band_flush)
+            diag_set_band_fixed_window_cost(diag_cost, band,
+                                            flush_y_min, flush_y_max);
+
         ret = submit_hw_band_flat(transport, band,
                                   submit_buf, submit_bytes,
+                                  flush_y_min, flush_y_max,
                                   diag_log_frame ? &diag_bands[band] : NULL);
         if (ret < 0)
             goto done;
@@ -1003,6 +1112,11 @@ static int submit_hw_prebinned(GPUTransport *transport,
                 band_cache->hash = band_hash;
                 band_cache->bytes = bins[band].flat_used;
                 band_cache->render_epoch = transport->hw_render_epoch;
+                band_cache->sky_epoch = transport->hw_sky_epoch;
+                band_cache->has_scene_rows =
+                    !primer_only && bins[band].has_scene_rows;
+                band_cache->scene_y_min = bins[band].scene_y_min;
+                band_cache->scene_y_max = bins[band].scene_y_max;
             }
         }
     }

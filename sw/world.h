@@ -9,7 +9,7 @@
 #include "block_types.h"
 
 #define WORLD_CHUNK_SIZE 16
-#define WORLD_CHUNK_HEIGHT 16
+#define WORLD_CHUNK_HEIGHT 32
 #define WORLD_SAVE_PATH_MAX 512
 
 typedef struct {

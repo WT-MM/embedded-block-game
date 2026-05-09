@@ -51,7 +51,7 @@ static bool check_collision(VoxelWorld *world, float px, float py, float pz) {
     for (int y = min_y; y <= max_y; y++) {
         for (int z = min_z; z <= max_z; z++) {
             for (int x = min_x; x <= max_x; x++) {
-                if (world_get_block(world, x, y, z) != BLOCK_AIR) {
+                if (!block_is_passable(world_get_block(world, x, y, z))) {
                     return true;
                 }
             }

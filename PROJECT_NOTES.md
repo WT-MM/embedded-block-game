@@ -3668,3 +3668,144 @@ Hardware validation still needed: rebuild the RBF in Quartus to confirm the
 LAB fit, reload the kernel module so `VOXEL_IOC_GET_PERF2` is available, and
 check board logs for `init~=3.07ms` on uncached redraws plus the new
 `hw_flush_wait` breakdown.
+
+May 8 2026: Worldgen Overhaul (Heightmap, Trees, Water, Vertical Depth)
+=======================================================================
+
+Replaces the old "flat grass + sprinkled stone columns" generator with a
+proper Minecraft-inspired terrain pipeline: 2D value-noise heightmap,
+stratified strata, sea-level water, and forests. Also adds a darker leaf
+texture, a leaves-cutout fix carried over from the prior session, and a
+tighter `face_should_render` rule that handles the new translucent water
+block correctly.
+
+Block + texture additions
+-------------------------
+
+  * `BLOCK_WATER` added to `BlockID` (sw/block_types.h). Registered with
+    `TEX_TILE_WATER` on every face. Predicates:
+      - `block_is_transparent`: yes (lets neighbor faces show through)
+      - `block_is_translucent`: yes (rendered with `QUAD_ALPHA_50`)
+      - `block_is_passable`: new predicate, true for AIR + WATER. The
+        player AABB collision test in `sw/player_physics.c` now uses
+        `block_is_passable` instead of `!= BLOCK_AIR`, so the player
+        walks (and sinks) into water without solid-collision pushback.
+  * `TEX_TILE_WATER` added to `sw/texture_tiles.def` at slot 10
+    (mips 36, 37). Wired into `generate_textures.py::base_texel`.
+  * Three new palette entries (64-66) for `water deep / mid / highlight`,
+    a wavy diagonal-band stipple. Mirrored in `renderer.c::upload_default_palette`
+    and `default_palette_color` so the FPGA palette matches the preview
+    PNG.
+  * `BLOCK_LEAVES` palette tightened to `(0, 9, 17)` (transparent, medium
+    green, dark green) and the green tint shifted to `(52, 96, 38)` so
+    foliage reads as a distinct, slightly shadowed canopy versus grass
+    top.
+
+Vertical depth: WORLD_CHUNK_HEIGHT 16 -> 32
+-------------------------------------------
+
+  * `sw/world.h::WORLD_CHUNK_HEIGHT` doubled from 16 to 32. Per-chunk
+    block storage and lighting buffers grow proportionally
+    (Chunk struct ~+24 KB; ChunkGenResult mirrors the same).
+  * Chosen budget: at the default render distance of 3 chunks (7x7 = 49
+    chunks loaded), the increase is ~1.2 MB, fully tractable on the
+    DE1-SoC's 1 GB DDR. At max render distance 9 (19x19 = 361 chunks),
+    the increase is ~8.7 MB.
+  * Save format: `WorldSaveHeader.chunk_height` and
+    `ChunkSaveHeader.chunk_height` are validated at load time, so saves
+    written under the old height are cleanly rejected (prompts a fresh
+    procedural regen). `stone_tries_per_chunk` is retained in the save
+    header for forward/backward field stability but is now unused by the
+    heightmap-based generator.
+  * Player spawn raised from y=10 to `WORLD_CHUNK_HEIGHT - 2 = 30` so
+    the player drops cleanly onto whatever surface (hill, beach,
+    treetop) the heightmap produces at the spawn column instead of
+    materialising inside terrain.
+
+Heightmap-based terrain generator
+---------------------------------
+
+`sw/world.c::generate_chunk_terrain` was rewritten to:
+
+  1. Compute a per-(wx, wz) surface height using a 3-octave value-noise
+     sum (periods 32, 12, 4 with weights 0.60 / 0.30 / 0.10). All hashes
+     derive from world coordinates + base seed, so the surface is
+     identical across regenerations and stitches seamlessly across
+     chunk borders. Surfaces fall in `[sea_level - 4, sea_level + 8]`
+     = `[10, 22]`, leaving headroom for water and tree canopies.
+  2. Stratify each column: stone deep (`y < surface_y - 3`), dirt
+     immediately below the surface (`surface_y - 3 .. surface_y - 1`),
+     and grass on top - except underwater columns (surface < sea_level)
+     get dirt on top instead of grass and AIR above them up to
+     `WORLDGEN_SEA_LEVEL = 14` is filled with `BLOCK_WATER`.
+  3. Tree placement scans a band that extends `WORLDGEN_TREE_RADIUS = 2`
+     cells past the chunk edge, so canopies whose trunks are rooted in
+     a neighbor chunk still drop their leaves into this chunk, giving
+     seamless forests across chunk seams. A tree wants to spawn at
+     (wx, wz) iff:
+       a. a per-coord hash mod 64 == 0 (~1.6% raw density),
+       b. the cell is the local-minimum hash within its 5x5 footprint
+          (tie-break so two adjacent candidate trees never overlap), and
+       c. the surface is at or above `WORLDGEN_TREE_MIN_Y = sea_level + 1`
+          (no logs out of shallow ponds).
+     Trunk: 4 or 5 `BLOCK_WOOD` logs starting at `surface_y + 1`.
+     Canopy: 5x5 `BLOCK_LEAVES` layer at the top log (corners nipped),
+     a 3x3 layer one above (skipping the trunk's column), and a single
+     leaf cap at the very top. `worldgen_set_block_local` clips
+     out-of-chunk writes so cross-border canopies are safe.
+
+Translucent face culling
+------------------------
+
+`face_should_render` (sw/world.c) generalised from "GLASS-only" to all
+translucent blocks:
+
+  * Translucent block face vs anything but AIR is hidden. This collapses
+    interior water-water and glass-glass faces into a single hull (no
+    alpha-over-alpha overdraw), and hides the back of a translucent
+    block when it abuts an opaque neighbor. Before this change, water
+    blocks emitted faces at every internal water-water interface and
+    self-occluded into a navy soup.
+
+Mesh merging stays disabled by default
+--------------------------------------
+
+The `BLOCK_GAME_GREEDY_MESH=1` env-gated greedy face merging from the
+prior session remains the opt-in path. The new heightmap produces many
+horizontal grass and water surfaces that would otherwise show the
+"missing strip" artefact when merged faces are anchor-frustum-culled.
+
+Test coverage updates
+---------------------
+
+  * `tests/world_chunk_test.c` lifted the lamp-placement y from 8 to
+    26, above the `sea_level + 8 = 22` heightmap ceiling, so the
+    visibility/lighting checks stay deterministic now that y=8 is
+    reliably inside terrain.
+  * Removed unused `rng_next` and `chunk_seed` helpers from
+    `sw/world.c` (they were only used by the old random-stone
+    generator).
+
+Validation
+----------
+
+  * `gcc -Wall -Wextra -c` of `block_types.c`, `world.c`,
+    `player_physics.c`, and `renderer.c` is clean (only the pre-existing
+    `world.c` warnings remain).
+  * `tests/world_chunk_test` rebuilds and passes.
+  * `tests/renderer_*_test` and `tests/voxel_test` compile;
+    runtime-checked tests need the `/dev/voxel_gpu` device (DE1-SoC
+    only).
+  * `python3 hw/voxel_gpu/scripts/generate_textures.py` regenerates
+    `assets/textures.mif` and `textures_preview.png` with the water
+    tile (slot 10, mips 36/37) and the darker leaves.
+
+Hardware validation still needed
+--------------------------------
+
+  * Re-flash the texture ROM (`textures.mif` -> Quartus altsyncram
+    init) so the FPGA atlas includes the water tile and the dark leaves.
+  * Confirm in-game that water faces alpha-blend correctly through
+    `QUAD_ALPHA_50` and that water-water interfaces stay culled.
+  * Walk into a generated forest and confirm trees stitch across chunk
+    seams without partial canopies.

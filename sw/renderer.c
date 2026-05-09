@@ -129,6 +129,9 @@ static void upload_default_palette(GPUTransport *transport)
         { 37, 0xff, 0xff, 0xff }, /* glass highlight */
         { 38, 0xff, 0xd7, 0x79 }, /* lamp glow */
         { 39, 0x6d, 0x53, 0x30 }, /* lamp frame */
+        { 64, 0x2a, 0x52, 0x9c }, /* water deep */
+        { 65, 0x3a, 0x6c, 0xc4 }, /* water mid */
+        { 66, 0x6f, 0x9d, 0xe4 }, /* water highlight */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -238,6 +241,9 @@ static RGB24 default_palette_color(uint8_t index)
     case 37: return rgb24(0xff, 0xff, 0xff);
     case 38: return rgb24(0xff, 0xd7, 0x79);
     case 39: return rgb24(0x6d, 0x53, 0x30);
+    case 64: return rgb24(0x2a, 0x52, 0x9c);
+    case 65: return rgb24(0x3a, 0x6c, 0xc4);
+    case 66: return rgb24(0x6f, 0x9d, 0xe4);
     default: return rgb24(0x00, 0x00, 0x00);
     }
 }

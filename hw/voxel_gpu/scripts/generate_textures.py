@@ -113,6 +113,9 @@ PAL_GLASS_EDGE = 36
 PAL_GLASS_HIGHLIGHT = 37
 PAL_LAMP_GLOW = 38
 PAL_LAMP_FRAME = 39
+PAL_WATER_DEEP = 64
+PAL_WATER_MID = 65
+PAL_WATER_HIGHLIGHT = 66
 
 
 # RGB values for each palette index. Mirrors the table in
@@ -161,6 +164,9 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     37: (0xff, 0xff, 0xff),  # glass highlight
     38: (0xff, 0xd7, 0x79),  # lamp glow
     39: (0x6d, 0x53, 0x30),  # lamp frame
+    64: (0x2a, 0x52, 0x9c),  # water deep
+    65: (0x3a, 0x6c, 0xc4),  # water mid
+    66: (0x6f, 0x9d, 0xe4),  # water highlight
 }
 
 # Tiles shown in the preview, one column per block type, one row per LOD.
@@ -321,15 +327,21 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_WOOD_TOP: (11, 3, 21, 22),
     TEX_TILE_WOOD_PLANK: (11, 3, 21, 22),
     TEX_TILE_GLASS: (0, 35, 36, 37),
-    TEX_TILE_LEAVES: (0, 9, 17, 18, 2, 19),
+    # Drop bright-green (18) and the dirt browns from the leaf palette so
+    # quantization can only land on transparent / medium-green / dark-green.
+    # Without this the lighter source pixels would still pull a few texels
+    # into bright/brown and look washed-out next to the grass top.
+    TEX_TILE_LEAVES: (0, 9, 17),
 }
 
 # Vanilla grass/leaves textures are grayscale masks intended for biome tinting.
 # Apply a fixed lush-green tint in this project since we do not have biome maps.
+# Leaves use a darker forest-green than grass so trees read as a distinct,
+# slightly shadowed canopy against the brighter ground cover.
 SOURCE_TILE_TINT: dict[int, tuple[int, int, int]] = {
     TEX_TILE_GRASS_TOP: (121, 192, 90),
     TEX_TILE_GRASS_SIDE: (121, 192, 90),
-    TEX_TILE_LEAVES: (106, 170, 72),
+    TEX_TILE_LEAVES: (52, 96, 38),
 }
 
 
@@ -573,6 +585,21 @@ def leaves(x: int, y: int) -> int:
     )
 
 
+def water(x: int, y: int) -> int:
+    # Three-tone wavy stipple. Diagonal bands give a flowing-ripple look that
+    # tiles cleanly across face borders, with a sparse highlight pixel for
+    # specular sparkle. Translucent rendering relies on QUAD_ALPHA_50, so the
+    # body texels can stay fully opaque palette entries.
+    band = (x + y) & 7
+    if band == 0:
+        return PAL_WATER_HIGHLIGHT
+    if band in (1, 2):
+        return PAL_WATER_MID
+    if band in (3, 4, 5):
+        return PAL_WATER_DEEP
+    return PAL_WATER_MID
+
+
 def crosshair(x: int, y: int) -> int:
     if (x == 7 and 4 <= y <= 11) or (y == 7 and 4 <= x <= 11):
         return PAL_WHITE
@@ -685,6 +712,8 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return lamp(x, y)
     if tile == TEX_TILE_LEAVES:
         return leaves(x, y)
+    if tile == TEX_TILE_WATER:
+        return water(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:

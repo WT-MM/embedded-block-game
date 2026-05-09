@@ -104,6 +104,16 @@ static const int FACE_NX[NUM_FACES] = { 0, 0, -1, 1, 0, 0 };
 static const int FACE_NY[NUM_FACES] = { 1, -1, 0, 0, 0, 0 };
 static const int FACE_NZ[NUM_FACES] = { 0, 0, 0, 0, -1, 1 };
 
+static bool greedy_meshing_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("BLOCK_GAME_GREEDY_MESH");
+        cached = (env && env[0] == '1' && env[1] == '\0');
+    }
+    return cached != 0;
+}
+
 static bool chunk_is_near(const VoxelWorld *world, const Chunk *chunk)
 {
     int dx = chunk->chunk_x - world->center_chunk_x;
@@ -118,26 +128,6 @@ static bool chunk_is_near(const VoxelWorld *world, const Chunk *chunk)
         near_radius = DEFAULT_NEAR_CHUNK_RADIUS;
 
     return (dx <= near_radius) && (dz <= near_radius);
-}
-
-static uint32_t rng_next(uint32_t *state)
-{
-    *state = (*state * 1664525u) + 1013904223u;
-    return *state;
-}
-
-static uint32_t chunk_seed(uint32_t base_seed, int chunk_x, int chunk_z)
-{
-    uint32_t xbits = (uint32_t)chunk_x * 0x9e3779b9u;
-    uint32_t zbits = (uint32_t)chunk_z * 0x85ebca6bu;
-    uint32_t seed = base_seed ^ xbits ^ zbits;
-
-    seed ^= seed >> 16;
-    seed *= 0x7feb352du;
-    seed ^= seed >> 15;
-    seed *= 0x846ca68bu;
-    seed ^= seed >> 16;
-    return seed;
 }
 
 static uint32_t hash_chunk_coord(int chunk_x, int chunk_z)
@@ -924,37 +914,214 @@ static void mark_trailing_perimeter_dirty(VoxelWorld *world,
     }
 }
 
+/* Sea level: any column whose surface lands below this gets flooded with
+ * water up to (but not above) y=WORLDGEN_SEA_LEVEL. */
+#define WORLDGEN_SEA_LEVEL 14
+/* Trees only spawn on grass that is at or above this y. Slight buffer above
+ * sea level so we don't end up with logs sprouting out of shallow ponds. */
+#define WORLDGEN_TREE_MIN_Y (WORLDGEN_SEA_LEVEL + 1)
+/* Tree canopy half-width in xz; the loop below scans neighbor cells out to
+ * this radius beyond the chunk edge so canopies span chunk seams. */
+#define WORLDGEN_TREE_RADIUS 2
+
+static uint32_t hash_world_coord(int wx, int wz, uint32_t base_seed,
+                                 uint32_t salt)
+{
+    uint32_t h = base_seed ^ salt;
+
+    h ^= (uint32_t)wx * 0x9e3779b9u;
+    h ^= (uint32_t)wz * 0x85ebca6bu;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return h;
+}
+
+static float smoothstep01(float t)
+{
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static float value_noise_octave(int wx, int wz, int period, uint32_t base_seed,
+                                uint32_t salt)
+{
+    int gx = (wx >= 0) ? (wx / period) : ((wx - period + 1) / period);
+    int gz = (wz >= 0) ? (wz / period) : ((wz - period + 1) / period);
+    int rx = wx - gx * period;
+    int rz = wz - gz * period;
+    float fx = smoothstep01((float)rx / (float)period);
+    float fz = smoothstep01((float)rz / (float)period);
+
+    float c00 = (float)(hash_world_coord(gx,     gz,     base_seed, salt) & 0xFFFFu);
+    float c10 = (float)(hash_world_coord(gx + 1, gz,     base_seed, salt) & 0xFFFFu);
+    float c01 = (float)(hash_world_coord(gx,     gz + 1, base_seed, salt) & 0xFFFFu);
+    float c11 = (float)(hash_world_coord(gx + 1, gz + 1, base_seed, salt) & 0xFFFFu);
+
+    float a = c00 + (c10 - c00) * fx;
+    float b = c01 + (c11 - c01) * fx;
+    return (a + (b - a) * fz) / 65535.0f; /* 0..1 */
+}
+
+/* Height range stays well inside [0, WORLD_CHUNK_HEIGHT) so trees and the
+ * water column have headroom. Surfaces concentrate around sea level so most
+ * gameplay is shoreline / lowlands, with hills poking above. */
+static int worldgen_surface_height(int wx, int wz, uint32_t base_seed)
+{
+    float low  = value_noise_octave(wx, wz, 32, base_seed, 0xa1u);
+    float mid  = value_noise_octave(wx, wz, 12, base_seed, 0xb2u);
+    float fine = value_noise_octave(wx, wz, 4,  base_seed, 0xc3u);
+    float n = low * 0.60f + mid * 0.30f + fine * 0.10f;
+
+    int min_h = WORLDGEN_SEA_LEVEL - 4;
+    int max_h = WORLDGEN_SEA_LEVEL + 8;
+    int h = min_h + (int)(n * (float)(max_h - min_h));
+
+    if (h < 1) h = 1;
+    if (h >= WORLD_CHUNK_HEIGHT - 6) h = WORLD_CHUNK_HEIGHT - 7;
+    return h;
+}
+
+/* Deterministic per-(wx,wz) tree roll. Returns true if a tree wants to spawn
+ * here, and only if this column is the local maximum of the roll within its
+ * footprint - that way two trees never overlap into each other. */
+static bool worldgen_wants_tree(int wx, int wz, uint32_t base_seed)
+{
+    uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
+    /* ~1.6% base spawn density. */
+    if ((roll & 0x3Fu) != 0u)
+        return false;
+
+    for (int dz = -WORLDGEN_TREE_RADIUS; dz <= WORLDGEN_TREE_RADIUS; dz++) {
+        for (int dx = -WORLDGEN_TREE_RADIUS; dx <= WORLDGEN_TREE_RADIUS; dx++) {
+            if (dx == 0 && dz == 0)
+                continue;
+            uint32_t neighbor = hash_world_coord(wx + dx, wz + dz,
+                                                 base_seed, 0xd00du);
+            if ((neighbor & 0x3Fu) != 0u)
+                continue;
+            /* Tie-break by raw hash; lower wins. */
+            if (neighbor < roll)
+                return false;
+        }
+    }
+    return true;
+}
+
+static void worldgen_set_block_local(Chunk *chunk, int lx, int ly, int lz,
+                                     BlockID block, bool overwrite)
+{
+    if (lx < 0 || lx >= WORLD_CHUNK_SIZE) return;
+    if (lz < 0 || lz >= WORLD_CHUNK_SIZE) return;
+    if (ly < 0 || ly >= WORLD_CHUNK_HEIGHT) return;
+    if (!overwrite && chunk->blocks[ly][lz][lx] != BLOCK_AIR)
+        return;
+    chunk->blocks[ly][lz][lx] = block;
+}
+
+static void worldgen_place_tree(Chunk *chunk, int local_x, int trunk_top_y,
+                                int local_z, uint32_t roll)
+{
+    int trunk_height = 4 + (int)(roll & 1u); /* 4 or 5 logs */
+    int trunk_base = trunk_top_y - trunk_height + 1;
+
+    for (int y = trunk_base; y <= trunk_top_y; y++)
+        worldgen_set_block_local(chunk, local_x, y, local_z, BLOCK_WOOD, true);
+
+    /* Two-tier canopy: a 5x5 mid layer just below the top log, and a 3x3
+     * crown on top. Corners of the 5x5 layer are skipped for a softer
+     * silhouette. */
+    int canopy_y = trunk_top_y;
+    for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if ((dx == -2 || dx == 2) && (dz == -2 || dz == 2))
+                continue; /* nip corners */
+            worldgen_set_block_local(chunk, local_x + dx, canopy_y, local_z + dz,
+                                     BLOCK_LEAVES, false);
+        }
+    }
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dz == 0)
+                continue;
+            worldgen_set_block_local(chunk, local_x + dx, canopy_y + 1,
+                                     local_z + dz, BLOCK_LEAVES, false);
+        }
+    }
+    worldgen_set_block_local(chunk, local_x, canopy_y + 2, local_z,
+                             BLOCK_LEAVES, false);
+}
+
 static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
                                    int stone_tries_per_chunk)
 {
-    uint32_t seed = chunk_seed(base_seed, chunk->chunk_x, chunk->chunk_z);
+    /* stone_tries_per_chunk is retained as a save-metadata field for
+     * forward/backward compatibility with the old random-stone gen but is
+     * unused by the heightmap-driven path. */
+    (void)stone_tries_per_chunk;
 
     clear_chunk_blocks(chunk);
 
-    for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-        for (int x = 0; x < WORLD_CHUNK_SIZE; x++)
-            chunk->blocks[0][z][x] = BLOCK_GRASS;
+    int origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
+    int origin_z = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+    /* Pass 1: stratified terrain column for every (lx, lz) in this chunk. */
+    for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
+        for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
+            int wx = origin_x + lx;
+            int wz = origin_z + lz;
+            int surface_y = worldgen_surface_height(wx, wz, base_seed);
+            bool underwater = surface_y < WORLDGEN_SEA_LEVEL;
+
+            for (int y = 0; y <= surface_y; y++) {
+                BlockID b;
+                if (y == surface_y) {
+                    b = underwater ? BLOCK_DIRT : BLOCK_GRASS;
+                } else if (y >= surface_y - 3) {
+                    b = BLOCK_DIRT;
+                } else {
+                    b = BLOCK_STONE;
+                }
+                chunk->blocks[y][lz][lx] = b;
+            }
+
+            if (underwater) {
+                for (int y = surface_y + 1; y <= WORLDGEN_SEA_LEVEL; y++)
+                    chunk->blocks[y][lz][lx] = BLOCK_WATER;
+            }
+        }
     }
 
-    for (int i = 0; i < stone_tries_per_chunk; i++) {
-        int lx = (int)(rng_next(&seed) % WORLD_CHUNK_SIZE);
-        int lz = (int)(rng_next(&seed) % WORLD_CHUNK_SIZE);
-        int wx = chunk->chunk_x * WORLD_CHUNK_SIZE + lx;
-        int wz = chunk->chunk_z * WORLD_CHUNK_SIZE + lz;
-        int height = 1 + (int)(rng_next(&seed) % 3u);
-        /* Sprinkle glass columns at roughly 1-in-4 odds so we get a mix of
-         * stone and glass formations, some stacked, some standalone. Glass
-         * exercises the alpha-blend path at face edges and through-block
-         * visibility. */
-        BlockID kind = ((rng_next(&seed) & 3u) == 0u) ? BLOCK_GLASS : BLOCK_STONE;
+    /* Pass 2: trees. Scan a band that extends WORLDGEN_TREE_RADIUS past the
+     * chunk edge so canopies whose trunks are in a neighbor still drop their
+     * leaves into this chunk, giving seamless forests across chunk borders.
+     * Trunk-only blocks outside the chunk are clipped by
+     * worldgen_set_block_local. */
+    for (int lz = -WORLDGEN_TREE_RADIUS;
+         lz < WORLD_CHUNK_SIZE + WORLDGEN_TREE_RADIUS; lz++) {
+        for (int lx = -WORLDGEN_TREE_RADIUS;
+             lx < WORLD_CHUNK_SIZE + WORLDGEN_TREE_RADIUS; lx++) {
+            int wx = origin_x + lx;
+            int wz = origin_z + lz;
 
-        if (fabsf((float)wx) <= 1.0f && wz <= 5)
-            continue;
-        if (chunk->blocks[1][lz][lx] != BLOCK_AIR)
-            continue;
+            if (!worldgen_wants_tree(wx, wz, base_seed))
+                continue;
 
-        for (int y = 1; y <= height; y++)
-            chunk->blocks[y][lz][lx] = kind;
+            int surface_y = worldgen_surface_height(wx, wz, base_seed);
+            if (surface_y < WORLDGEN_TREE_MIN_Y)
+                continue;
+            int trunk_top_y = surface_y + 4 +
+                              (int)(hash_world_coord(wx, wz, base_seed,
+                                                     0xfeedu) & 1u);
+            if (trunk_top_y + 2 >= WORLD_CHUNK_HEIGHT)
+                continue;
+
+            uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
+            worldgen_place_tree(chunk, lx, trunk_top_y, lz, roll);
+        }
     }
 }
 
@@ -962,18 +1129,18 @@ static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
  * A face between `current` and `neighbor` should be emitted when the
  * neighbor doesn't fully occlude it:
  *   - Any face next to air is visible.
- *   - An opaque block's face next to glass (or any other translucent
- *     neighbor) is visible: you see the opaque surface through the glass.
- *   - A glass block's face next to another glass block is hidden, which
- *     collapses interior walls of solid glass volumes into a single hull.
- *   - A glass face next to a solid block is hidden: the solid occludes
- *     the back of the glass.
+ *   - An opaque block's face next to glass / water / leaves is visible:
+ *     you can see the opaque surface through the transparent neighbor.
+ *   - A translucent block (glass, water) next to anything but air is
+ *     hidden, which collapses interior walls of solid translucent volumes
+ *     into a single hull and avoids alpha-over-alpha overdraw artefacts
+ *     when looking at translucent stacks.
  */
 static bool face_should_render(BlockID current, BlockID neighbor)
 {
     if (neighbor == BLOCK_AIR)
         return true;
-    if (current == BLOCK_GLASS)
+    if (block_is_translucent(current))
         return false;
     return block_is_transparent(neighbor);
 }
@@ -1909,12 +2076,15 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     /*
                      * Greedy merging introduces T-junctions and wide-quad UV
-                     * shimmer. Both artifacts are conspicuous up close but
-                     * disappear into the depth/perspective noise far away, so
-                     * run the merge only on distant chunks where the face-
-                     * count win matters most.
+                     * shimmer. In some near-horizontal viewing angles the
+                     * merged-quad path also dropped whole rows of top-faces
+                     * (greedy run + frustum cull on the merged anchor combine
+                     * to hide blocks that should be visible). Default to
+                     * unit-quad emission everywhere; set BLOCK_GAME_GREEDY_MESH=1
+                     * to opt back into the far-chunk merge for raw face-count
+                     * wins on huge render distances.
                      */
-                    if (!is_near) {
+                    if (!is_near && greedy_meshing_enabled()) {
                         while (u + merge_w < width &&
                                !used[v][u + merge_w] &&
                                mask[v][u + merge_w] == id &&

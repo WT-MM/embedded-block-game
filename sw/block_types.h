@@ -24,6 +24,7 @@ typedef enum {
     BLOCK_LAMP,
     BLOCK_PLANKS,
     BLOCK_LEAVES,
+    BLOCK_WATER,
     NUM_BLOCK_TYPES
 } BlockID;
 
@@ -62,5 +63,7 @@ bool block_is_transparent(BlockID id);
 bool block_is_translucent(BlockID id);
 /* True for cutout blocks rendered with palette-0 alpha-key (leaves). */
 bool block_is_alpha_keyed(BlockID id);
+/* True for blocks the player walks through without colliding (water). */
+bool block_is_passable(BlockID id);
 
 #endif

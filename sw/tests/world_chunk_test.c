@@ -130,7 +130,10 @@ int main(void)
         return check_failed("lamp metadata missing");
 
     const int lamp_x = 2;
-    const int lamp_y = 8;
+    /* Heightmap surfaces top out at sea_level + 8 = 22, so place the lamp
+     * test cells well above any procedural geometry to keep the visibility
+     * checks deterministic across worldgen tweaks. */
+    const int lamp_y = 26;
     const int lamp_z = 2;
     const int gap_x = lamp_x + 1;
     const int stone_x = lamp_x + 2;

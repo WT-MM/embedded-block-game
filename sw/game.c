@@ -981,8 +981,10 @@ int main(void)
 
     /* Initialize Player */
     Player player;
-    /* Spawning a bit higher so the player drops onto the terrain */
-    player_init(&player, 0.0f, 10.0f, -1.5f);
+    /* Spawn above the tallest possible heightmap surface + tree canopy so
+     * the player drops cleanly onto whatever terrain happens to be at the
+     * origin column - tall hills, beaches, or treetops. */
+    player_init(&player, 0.0f, (float)(WORLD_CHUNK_HEIGHT - 2), -1.5f);
 
     Camera cam = {
         .position = { player.x, player_get_eye_height(&player), player.z },

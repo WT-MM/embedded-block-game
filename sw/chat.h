@@ -6,7 +6,7 @@
 
 #include "renderer.h"
 
-#define CHAT_HISTORY_LINES 6
+#define CHAT_HISTORY_LINES 12
 #define CHAT_LINE_MAX      48
 #define CHAT_TEXT_SCALE    1 /* 5x7 glyph pixels, 1 = native 5x7 on screen */
 

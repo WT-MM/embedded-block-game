@@ -55,6 +55,9 @@
 #define AIR_BUBBLE_COUNT 10
 #define AIR_BUBBLE_POP_WINDOW_SECONDS 0.10f
 #define DAMAGE_FLASH_SECONDS 0.50f
+#define CACTUS_DAMAGE_INTERVAL_SECONDS 0.50f
+#define CACTUS_DAMAGE_UNITS 1
+#define CACTUS_CONTACT_MARGIN 0.08f
 #define FALL_DAMAGE_SAFE_DISTANCE 3.0f
 #define FALL_DAMAGE_EPSILON 0.01f
 #define FALL_DAMAGE_MULTIPLIER 1.0f
@@ -638,6 +641,52 @@ static bool player_intersects_block(const Player *player, int wx, int wy, int wz
     return player_max_x > block_min_x && player_min_x < block_max_x &&
            player_max_y > block_min_y && player_min_y < block_max_y &&
            player_max_z > block_min_z && player_min_z < block_max_z;
+}
+
+static bool player_touches_cactus(const VoxelWorld *world, const Player *player)
+{
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float min_z;
+    float max_z;
+    int block_min_x;
+    int block_max_x;
+    int block_min_y;
+    int block_max_y;
+    int block_min_z;
+    int block_max_z;
+
+    if (!world || !player)
+        return false;
+
+    min_x = player->x - PLAYER_WIDTH * 0.5f - CACTUS_CONTACT_MARGIN;
+    max_x = player->x + PLAYER_WIDTH * 0.5f + CACTUS_CONTACT_MARGIN;
+    min_y = player->y;
+    max_y = player->y + PLAYER_HEIGHT;
+    min_z = player->z - PLAYER_DEPTH * 0.5f - CACTUS_CONTACT_MARGIN;
+    max_z = player->z + PLAYER_DEPTH * 0.5f + CACTUS_CONTACT_MARGIN;
+
+    block_min_x = (int)floorf(min_x);
+    block_max_x = (int)floorf(max_x);
+    block_min_y = (int)floorf(min_y);
+    block_max_y = (int)floorf(max_y);
+    block_min_z = (int)floorf(min_z);
+    block_max_z = (int)floorf(max_z);
+
+    for (int y = block_min_y; y <= block_max_y; y++) {
+        if (y < 0 || y >= WORLD_CHUNK_HEIGHT)
+            continue;
+        for (int z = block_min_z; z <= block_max_z; z++) {
+            for (int x = block_min_x; x <= block_max_x; x++) {
+                if (world_get_block(world, x, y, z) == BLOCK_CACTUS)
+                    return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
@@ -3398,6 +3447,7 @@ int main(void)
     float food_regen_timer = 0.0f;
     float player_air_seconds = PLAYER_MAX_AIR_SECONDS;
     float drown_timer = 0.0f;
+    float cactus_damage_timer = 0.0f;
     float damage_flash_timer = 0.0f;
     bool creative_flight_enabled = false;
     float creative_jump_tap_timer = 0.0f;
@@ -3415,6 +3465,7 @@ int main(void)
         food_regen_timer = 0.0f; \
         player_air_seconds = PLAYER_MAX_AIR_SECONDS; \
         drown_timer = 0.0f; \
+        cactus_damage_timer = 0.0f; \
         damage_flash_timer = 0.0f; \
         physics_accumulator = 0.0f; \
         break_timer = 0.0f; \
@@ -3816,7 +3867,27 @@ int main(void)
         } else if (player.mode != PLAYER_MODE_SURVIVAL) {
             player_air_seconds = PLAYER_MAX_AIR_SECONDS;
             drown_timer = 0.0f;
+            cactus_damage_timer = 0.0f;
             food_regen_timer = 0.0f;
+        }
+
+        if (!paused && player.mode == PLAYER_MODE_SURVIVAL) {
+            if (player_touches_cactus(&world, &player)) {
+                cactus_damage_timer += frame_dt;
+                while (cactus_damage_timer >= CACTUS_DAMAGE_INTERVAL_SECONDS) {
+                    cactus_damage_timer -= CACTUS_DAMAGE_INTERVAL_SECONDS;
+                    if (apply_survival_damage(&player_health_units,
+                                              CACTUS_DAMAGE_UNITS,
+                                              &damage_flash_timer)) {
+                        RESET_PLAYER_AFTER_DEATH("pricked to death");
+                        break;
+                    }
+                }
+            } else {
+                cactus_damage_timer = CACTUS_DAMAGE_INTERVAL_SECONDS;
+            }
+        } else {
+            cactus_damage_timer = 0.0f;
         }
 
         if (!paused && player.mode == PLAYER_MODE_SURVIVAL &&
@@ -4265,9 +4336,11 @@ int main(void)
                                                     selected_hotbar_slot);
 
                 if (!item_stack_is_empty(held_stack) &&
-                    item_is_tool(held_stack->item))
+                    item_is_tool(held_stack->item)) {
                     draw_tool_in_hand(ctx, held_stack->item, hand_swing_timer);
-                draw_bare_hand(ctx, hand_swing_timer);
+                } else {
+                    draw_bare_hand(ctx, hand_swing_timer);
+                }
                 draw_hotbar(ctx, selected_hotbar_slot, 0, player.mode,
                             &survival_inventory);
                 draw_healthbar(ctx, player_health_units, damage_flash_timer);

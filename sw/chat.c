@@ -16,6 +16,7 @@
 
 #define CHAT_MARGIN_X  4.0f
 #define CHAT_PAD_Y     3.0f
+#define CHAT_MAX_SCREEN_DIVISOR 3
 
 #define CHAT_FADE_SECONDS 8.0f   /* closed-chat history stays visible this long */
 
@@ -683,7 +684,21 @@ void chat_draw(const Chat *chat, RenderContext *ctx)
     if (!ctx) return;
 
     int visible_history = chat->history_count;
+    int max_total_lines;
+    int max_history_lines;
+
     if (visible_history > CHAT_HISTORY_LINES) visible_history = CHAT_HISTORY_LINES;
+
+    max_total_lines =
+        ((SCREEN_HEIGHT / CHAT_MAX_SCREEN_DIVISOR) -
+         (int)(2.0f * CHAT_PAD_Y)) / CELL_H;
+    if (max_total_lines < 1)
+        max_total_lines = 1;
+    max_history_lines = max_total_lines - (chat->open ? 1 : 0);
+    if (max_history_lines < 0)
+        max_history_lines = 0;
+    if (visible_history > max_history_lines)
+        visible_history = max_history_lines;
 
     /* When chat is closed, history stays visible only for the fade window. */
     bool show_history = chat->open || (chat->age_since_activity < CHAT_FADE_SECONDS);

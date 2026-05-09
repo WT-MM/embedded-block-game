@@ -15,8 +15,8 @@ working assumptions are:
   * Keep async mesh rebuilds and async chunk generation as the default runtime
     shape, with the pause menu exposing stream/render-distance tuning.
   * Treat `VOXEL_TARGET_FPS`, `VOXEL_PIPELINE_FRAMES`,
-    `VOXEL_SKY_PALETTE_STEP_SECONDS`, and stream/chunk env flags as supported
-    debugging knobs.
+    `VOXEL_SKY_PALETTE_STEP_SECONDS`, `VOXEL_OCCLUSION_CULL`, and stream/chunk
+    env flags as supported debugging knobs.
 
 Current Code Layout
 -------------------
@@ -45,7 +45,9 @@ Active Renderer Notes
 The current hardware path renders one 640x480 frame as eight 60-line bands.
 Userspace bins descriptors per band, the RTL draws into ping-pong local caches,
 background flush writes bands to SDRAM, and VGA scanout reads the visible SDRAM
-frame through line buffers.
+frame through line buffers. Software culls opaque world faces with a
+conservative 4x4 screen-tile occlusion grid before descriptor emission; it is
+enabled by default and can be disabled with `VOXEL_OCCLUSION_CULL=0`.
 
 The key bug classes already fixed were:
 

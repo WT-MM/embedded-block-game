@@ -23,6 +23,13 @@
 #define SKY_DAY_LENGTH_SECONDS 180.0f
 #define SKY_DOME_DISTANCE 512.0f
 #define SKY_GRADIENT_BANDS 24
+#define OCCLUSION_TILE_SIZE 4
+#define OCCLUSION_TILES_X ((VOXEL_RENDER_WIDTH + OCCLUSION_TILE_SIZE - 1u) / \
+                           OCCLUSION_TILE_SIZE)
+#define OCCLUSION_TILES_Y ((VOXEL_RENDER_HEIGHT + OCCLUSION_TILE_SIZE - 1u) / \
+                           OCCLUSION_TILE_SIZE)
+#define OCCLUSION_TILE_COUNT (OCCLUSION_TILES_X * OCCLUSION_TILES_Y)
+#define OCCLUSION_DEPTH_EPSILON (2.0f / 32768.0f)
 
 /* Quantization step for the sky-gradient palette computation. Continuous
  * world_time would re-derive every frame; even sub-pixel color drift bumps
@@ -160,6 +167,11 @@ typedef struct {
     float view_z;
 } TranslucentFaceRef;
 
+typedef enum {
+    OCCLUSION_PASS_DISABLED = 0,
+    OCCLUSION_PASS_OPAQUE_WORLD,
+} OcclusionPass;
+
 struct RenderContext {
     GPUTransport *transport;
     Camera current_camera;
@@ -192,6 +204,15 @@ struct RenderContext {
     Vec3 last_sun_dir;
     uint8_t last_sun_dir_valid;
     int n_quads;
+    uint8_t occlusion_enabled;
+    uint8_t occlusion_diag;
+    OcclusionPass occlusion_pass;
+    uint8_t occlusion_covered[OCCLUSION_TILE_COUNT];
+    float occlusion_depth[OCCLUSION_TILE_COUNT];
+    uint32_t occlusion_tested;
+    uint32_t occlusion_culled;
+    uint32_t occlusion_tiles_written;
+    uint32_t occlusion_frame_count;
 
     /* Scratch buffer reused across frames to back-to-front sort translucent
      * faces. Grown on demand; memory only leaves if the scene peaks higher
@@ -1274,6 +1295,183 @@ static void fit_uv_plane(const Vertex2D v[4], const PlaneBasis *basis,
     uv->one_over_w_dy = to_q16_16(diw_dy);
 }
 
+static int env_flag_default_on(const char *name)
+{
+    const char *value = getenv(name);
+
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+static int env_flag_default_off(const char *name)
+{
+    const char *value = getenv(name);
+
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+/* Conservative software occlusion:
+ * a tile is considered covered only when one opaque, z-tested quad contains
+ * all four extreme pixel centers. A later quad is culled only when every tile
+ * in its bbox is covered by an occluder whose farthest vertex is still closer
+ * than the candidate's nearest vertex. */
+static void occlusion_reset(RenderContext *ctx)
+{
+    memset(ctx->occlusion_covered, 0, sizeof(ctx->occlusion_covered));
+    ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
+    ctx->occlusion_tested = 0;
+    ctx->occlusion_culled = 0;
+    ctx->occlusion_tiles_written = 0;
+}
+
+static bool occlusion_quad_eligible(uint8_t flags)
+{
+    return (flags & QUAD_FLAG_ZTEST) &&
+           !(flags & QUAD_FLAG_ALPHA_KEY) &&
+           ((flags & QUAD_ALPHA_MASK) == QUAD_ALPHA_OPAQUE);
+}
+
+static int occlusion_tile_index(int tx, int ty)
+{
+    return ty * (int)OCCLUSION_TILES_X + tx;
+}
+
+static bool point_inside_convex_quad(const Vertex2D v[4], float px, float py)
+{
+    bool saw_positive = false;
+    bool saw_negative = false;
+
+    for (int i = 0; i < 4; i++) {
+        const Vertex2D *a = &v[i];
+        const Vertex2D *b = &v[(i + 1) & 3];
+        float dx = b->x - a->x;
+        float dy = b->y - a->y;
+        float cross;
+
+        if (fabsf(dx) < 1e-5f && fabsf(dy) < 1e-5f)
+            continue;
+
+        cross = dx * (py - a->y) - dy * (px - a->x);
+        if (fabsf(cross) <= 1e-4f)
+            return false;
+        if (cross > 0.0f)
+            saw_positive = true;
+        else
+            saw_negative = true;
+
+        if (saw_positive && saw_negative)
+            return false;
+    }
+
+    return true;
+}
+
+static float quad_min_depth(const Vertex2D v[4])
+{
+    float z = v[0].z;
+
+    for (int i = 1; i < 4; i++) {
+        if (v[i].z < z)
+            z = v[i].z;
+    }
+    return z;
+}
+
+static float quad_max_depth(const Vertex2D v[4])
+{
+    float z = v[0].z;
+
+    for (int i = 1; i < 4; i++) {
+        if (v[i].z > z)
+            z = v[i].z;
+    }
+    return z;
+}
+
+static void occlusion_tile_range(int x_min, int y_min, int x_max, int y_max,
+                                 int *tx_min, int *ty_min,
+                                 int *tx_max, int *ty_max)
+{
+    *tx_min = x_min / OCCLUSION_TILE_SIZE;
+    *ty_min = y_min / OCCLUSION_TILE_SIZE;
+    *tx_max = x_max / OCCLUSION_TILE_SIZE;
+    *ty_max = y_max / OCCLUSION_TILE_SIZE;
+
+    if (*tx_min < 0) *tx_min = 0;
+    if (*ty_min < 0) *ty_min = 0;
+    if (*tx_max >= (int)OCCLUSION_TILES_X)
+        *tx_max = (int)OCCLUSION_TILES_X - 1;
+    if (*ty_max >= (int)OCCLUSION_TILES_Y)
+        *ty_max = (int)OCCLUSION_TILES_Y - 1;
+}
+
+static bool occlusion_quad_hidden(RenderContext *ctx, const Vertex2D v[4],
+                                  int x_min, int y_min, int x_max, int y_max)
+{
+    int tx_min, ty_min, tx_max, ty_max;
+    float nearest_z = quad_min_depth(v);
+
+    occlusion_tile_range(x_min, y_min, x_max, y_max,
+                         &tx_min, &ty_min, &tx_max, &ty_max);
+
+    for (int ty = ty_min; ty <= ty_max; ty++) {
+        for (int tx = tx_min; tx <= tx_max; tx++) {
+            int idx = occlusion_tile_index(tx, ty);
+
+            if (!ctx->occlusion_covered[idx])
+                return false;
+            if (ctx->occlusion_depth[idx] + OCCLUSION_DEPTH_EPSILON >= nearest_z)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static bool occlusion_quad_covers_tile(const Vertex2D v[4], int tx, int ty)
+{
+    float x0 = (float)(tx * OCCLUSION_TILE_SIZE) + 0.5f;
+    float y0 = (float)(ty * OCCLUSION_TILE_SIZE) + 0.5f;
+    float x1 = (float)((tx + 1) * OCCLUSION_TILE_SIZE) - 0.5f;
+    float y1 = (float)((ty + 1) * OCCLUSION_TILE_SIZE) - 0.5f;
+
+    if (x1 > SCREEN_WIDTH - 0.5f)
+        x1 = SCREEN_WIDTH - 0.5f;
+    if (y1 > SCREEN_HEIGHT - 0.5f)
+        y1 = SCREEN_HEIGHT - 0.5f;
+
+    return point_inside_convex_quad(v, x0, y0) &&
+           point_inside_convex_quad(v, x1, y0) &&
+           point_inside_convex_quad(v, x0, y1) &&
+           point_inside_convex_quad(v, x1, y1);
+}
+
+static void occlusion_record_quad(RenderContext *ctx, const Vertex2D v[4],
+                                  int x_min, int y_min, int x_max, int y_max)
+{
+    int tx_min, ty_min, tx_max, ty_max;
+    float farthest_z = quad_max_depth(v);
+
+    occlusion_tile_range(x_min, y_min, x_max, y_max,
+                         &tx_min, &ty_min, &tx_max, &ty_max);
+
+    for (int ty = ty_min; ty <= ty_max; ty++) {
+        for (int tx = tx_min; tx <= tx_max; tx++) {
+            int idx;
+
+            if (!occlusion_quad_covers_tile(v, tx, ty))
+                continue;
+
+            idx = occlusion_tile_index(tx, ty);
+            if (!ctx->occlusion_covered[idx] ||
+                farthest_z < ctx->occlusion_depth[idx]) {
+                ctx->occlusion_covered[idx] = 1;
+                ctx->occlusion_depth[idx] = farthest_z;
+                ctx->occlusion_tiles_written++;
+            }
+        }
+    }
+}
+
 static bool projected_quad_fully_inside_viewport(const Vertex2D v[4])
 {
     for (int i = 0; i < 4; i++) {
@@ -1940,6 +2138,8 @@ RenderContext *renderer_init(void)
     ctx->lookup_capacity = 0;
     ctx->translucent_scratch = NULL;
     ctx->translucent_scratch_capacity = 0;
+    ctx->occlusion_enabled = env_flag_default_on("VOXEL_OCCLUSION_CULL") ? 1 : 0;
+    ctx->occlusion_diag = env_flag_default_off("VOXEL_DIAG_OCCLUSION") ? 1 : 0;
     if (!ctx->submit_buffer) {
         free(ctx->submit_buffer);
         gpu_transport_close(ctx->transport);
@@ -1970,6 +2170,7 @@ void renderer_begin_frame(RenderContext *ctx)
 {
     ctx->n_quads = 0;
     ctx->submit_bytes = 0;
+    occlusion_reset(ctx);
     /* Front-load the per-quad band binning into emit time: stage_prepared_quad
      * will hand each finished descriptor to gpu_transport_bin_descriptor as
      * soon as it is built (descriptor still hot in L1), and the corresponding
@@ -1979,6 +2180,15 @@ void renderer_begin_frame(RenderContext *ctx)
 
 void renderer_end_frame(RenderContext *ctx)
 {
+    if (ctx->occlusion_diag && ((ctx->occlusion_frame_count++ % 60u) == 0u)) {
+        fprintf(stderr,
+                "renderer: occlusion tested=%u culled=%u tiles=%u enabled=%u\n",
+                ctx->occlusion_tested,
+                ctx->occlusion_culled,
+                ctx->occlusion_tiles_written,
+                (unsigned)ctx->occlusion_enabled);
+    }
+
     if (gpu_transport_clear(ctx->transport) < 0)
         return;
     if (!renderer_flush_gpu_state(ctx))
@@ -2058,6 +2268,16 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     if (x_min > x_max || y_min > y_max)
         return false;   /* degenerate / off-screen */
 
+    if (ctx->occlusion_enabled &&
+        ctx->occlusion_pass == OCCLUSION_PASS_OPAQUE_WORLD &&
+        occlusion_quad_eligible(quad.flags)) {
+        ctx->occlusion_tested++;
+        if (occlusion_quad_hidden(ctx, v, x_min, y_min, x_max, y_max)) {
+            ctx->occlusion_culled++;
+            return false;
+        }
+    }
+
     struct quad_desc *d = (struct quad_desc *)(ctx->submit_buffer + ctx->submit_bytes);
     memset(d, 0, sizeof(*d));
 
@@ -2127,6 +2347,13 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
      * walk the contiguous stream a second time. No-op when the transport is
      * not in HW mode. */
     gpu_transport_bin_descriptor(ctx->transport, d, emitted_size);
+
+    if (ctx->occlusion_enabled &&
+        ctx->occlusion_pass == OCCLUSION_PASS_OPAQUE_WORLD &&
+        occlusion_quad_eligible(d->flags)) {
+        occlusion_record_quad(ctx, v, x_min, y_min, x_max, y_max);
+    }
+
     return true;
 }
 
@@ -2310,6 +2537,9 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      * Doing this before choose_chunk_face_light_flags saves the light
      * lookup + function call for all back-facing faces (~50% of faces). */
     const Vec3 cam_pos = ctx->current_camera.position;
+    ctx->occlusion_pass = ctx->occlusion_enabled ?
+                          OCCLUSION_PASS_OPAQUE_WORLD :
+                          OCCLUSION_PASS_DISABLED;
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
         const ChunkMesh *mesh = candidates[i].mesh;
@@ -2338,8 +2568,10 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
 
                 emit_cross_block_face_lit(ctx, id, block_pos,
                                           face->face, light_flags);
-                if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
+                    ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                     return ctx->n_quads - before;
+                }
                 continue;
             }
 
@@ -2366,10 +2598,13 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        face->v_size ? face->v_size : 1,
                                        face->height ? face->height : 8,
                                        light_flags);
-            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
+                ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                 return ctx->n_quads - before;
+            }
         }
     }
+    ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
 
     renderer_draw_falling_blocks(ctx, world);
     if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)

@@ -985,15 +985,9 @@ static void mark_trailing_perimeter_dirty(VoxelWorld *world,
  * this radius beyond the chunk edge so canopies span chunk seams. */
 #define WORLDGEN_TREE_RADIUS 2
 
-typedef enum {
-    WORLDGEN_BIOME_PLAINS = 0,
-    WORLDGEN_BIOME_HILLS,
-    WORLDGEN_BIOME_MOUNTAINS,
-} WorldgenBiome;
-
 typedef struct {
     int surface_y;
-    WorldgenBiome biome;
+    WorldBiome biome;
     bool underwater;
     bool beach;
     bool clay_patch;
@@ -1056,13 +1050,36 @@ static float worldgen_biome_value(int wx, int wz, uint32_t base_seed)
     return broad * 0.78f + local * 0.22f;
 }
 
-static WorldgenBiome worldgen_biome_from_value(float b)
+static WorldBiome worldgen_biome_from_value(float b)
 {
     if (b < 0.42f)
-        return WORLDGEN_BIOME_PLAINS;
+        return WORLD_BIOME_PLAINS;
     if (b < 0.62f)
-        return WORLDGEN_BIOME_HILLS;
-    return WORLDGEN_BIOME_MOUNTAINS;
+        return WORLD_BIOME_HILLS;
+    return WORLD_BIOME_MOUNTAINS;
+}
+
+const char *world_biome_name(WorldBiome biome)
+{
+    switch (biome) {
+    case WORLD_BIOME_PLAINS:
+        return "plains";
+    case WORLD_BIOME_HILLS:
+        return "hills";
+    case WORLD_BIOME_MOUNTAINS:
+        return "mountains";
+    default:
+        return "unknown";
+    }
+}
+
+WorldBiome world_biome_at(const VoxelWorld *world, int wx, int wz)
+{
+    if (!world)
+        return WORLD_BIOME_PLAINS;
+
+    return worldgen_biome_from_value(
+        worldgen_biome_value(wx, wz, world->procedural_seed));
 }
 
 static bool worldgen_clay_patch(int wx, int wz, uint32_t base_seed)
@@ -1077,7 +1094,8 @@ static bool worldgen_clay_patch(int wx, int wz, uint32_t base_seed)
  * plains/hills/mountain biome bands. Plains hover around sea level, hills
  * roll above them, and mountains use ridged noise so they read as peaks
  * instead of just taller rounded hills. */
-static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
+static int worldgen_surface_y_at(int wx, int wz, uint32_t base_seed,
+                                 float *biome_value_out)
 {
     float low  = value_noise_octave(wx, wz, 32, base_seed, 0xa1u);
     float mid  = value_noise_octave(wx, wz, 12, base_seed, 0xb2u);
@@ -1100,7 +1118,6 @@ static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
                        (fine - 0.5f) * 2.5f;
     float h_f;
     int h;
-    WorldgenColumn column;
 
     if (hills_w < 0.0f)
         hills_w = 0.0f;
@@ -1110,11 +1127,39 @@ static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
     if (h < 2) h = 2;
     if (h >= WORLD_CHUNK_HEIGHT - 1) h = WORLD_CHUNK_HEIGHT - 2;
 
+    if (biome_value_out)
+        *biome_value_out = biome_value;
+    return h;
+}
+
+static bool worldgen_column_touches_water(int wx, int wz, uint32_t base_seed)
+{
+    for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dz == 0)
+                continue;
+            if (abs(dx) + abs(dz) > 2)
+                continue;
+            if (worldgen_surface_y_at(wx + dx, wz + dz, base_seed, NULL) <
+                WORLDGEN_SEA_LEVEL)
+                return true;
+        }
+    }
+    return false;
+}
+
+static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
+{
+    float biome_value;
+    int h = worldgen_surface_y_at(wx, wz, base_seed, &biome_value);
+    WorldgenColumn column;
+
     column.surface_y = h;
     column.biome = worldgen_biome_from_value(biome_value);
     column.underwater = h < WORLDGEN_SEA_LEVEL;
-    column.beach = column.biome != WORLDGEN_BIOME_MOUNTAINS &&
-                   h <= WORLDGEN_SEA_LEVEL;
+    column.beach = column.biome != WORLD_BIOME_MOUNTAINS &&
+                   h == WORLDGEN_SEA_LEVEL &&
+                   worldgen_column_touches_water(wx, wz, base_seed);
     column.clay_patch = worldgen_clay_patch(wx, wz, base_seed);
     return column;
 }
@@ -1122,7 +1167,7 @@ static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
 static BlockID worldgen_column_block(const WorldgenColumn *column, int y)
 {
     if (y == column->surface_y) {
-        if (column->clay_patch && (column->underwater || column->beach))
+        if (column->clay_patch && column->underwater)
             return BLOCK_CLAY;
         if (column->underwater || column->beach)
             return BLOCK_SAND;
@@ -1132,7 +1177,7 @@ static BlockID worldgen_column_block(const WorldgenColumn *column, int y)
     }
 
     if (y >= column->surface_y - 3) {
-        if (column->clay_patch && (column->underwater || column->beach) &&
+        if (column->clay_patch && column->underwater &&
             y >= column->surface_y - 1)
             return BLOCK_CLAY;
         if (column->underwater || column->beach)
@@ -1156,13 +1201,13 @@ static bool worldgen_tree_candidate(int wx, int wz, uint32_t base_seed)
     uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
 
     if (column.underwater || column.beach ||
-        column.biome == WORLDGEN_BIOME_MOUNTAINS ||
+        column.biome == WORLD_BIOME_MOUNTAINS ||
         column.surface_y >= WORLDGEN_SEA_LEVEL + 8 ||
         column.surface_y < WORLDGEN_TREE_MIN_Y)
         return false;
 
     /* Plains are open, hills get occasional clusters. */
-    uint32_t spacing = (column.biome == WORLDGEN_BIOME_HILLS) ? 48u : 72u;
+    uint32_t spacing = (column.biome == WORLD_BIOME_HILLS) ? 48u : 72u;
     if ((roll % spacing) != 0u)
         return false;
     return true;
@@ -1192,15 +1237,15 @@ static bool worldgen_wants_tree(int wx, int wz, uint32_t base_seed)
 }
 
 static bool worldgen_wants_flower(int wx, int wz, uint32_t base_seed,
-                                  WorldgenBiome biome)
+                                  WorldBiome biome)
 {
     uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xf10fu);
     uint32_t threshold;
 
-    if (biome == WORLDGEN_BIOME_MOUNTAINS)
+    if (biome == WORLD_BIOME_MOUNTAINS)
         return false;
 
-    threshold = (biome == WORLDGEN_BIOME_PLAINS) ? 5u : 2u;
+    threshold = (biome == WORLD_BIOME_PLAINS) ? 5u : 2u;
     return (roll & 0xffu) < threshold;
 }
 

@@ -90,6 +90,11 @@ bool renderer_draw_custom_screen_quad(RenderContext *ctx,
                                       float x2, float y2,
                                       float x3, float y3,
                                       uint8_t texture_id, uint8_t extra_flags);
+bool renderer_draw_world_billboard_tile(RenderContext *ctx,
+                                        Vec3 center,
+                                        float size_world,
+                                        uint8_t texture_id,
+                                        uint8_t extra_flags);
 bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
 bool renderer_fill_rect(RenderContext* ctx,
                         float x0, float y0, float x1, float y1,

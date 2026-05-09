@@ -2638,6 +2638,54 @@ bool renderer_draw_custom_screen_quad(RenderContext *ctx,
     return renderer_push_quad(ctx, &quad);
 }
 
+bool renderer_draw_world_billboard_tile(RenderContext *ctx,
+                                        Vec3 center,
+                                        float size_world,
+                                        uint8_t texture_id,
+                                        uint8_t extra_flags)
+{
+    CameraVertex camera;
+    Vertex2D projected;
+    RenderQuad quad = {0};
+    float inv_w;
+    float half_px;
+
+    if (!ctx || size_world <= 0.0f)
+        return false;
+
+    world_to_camera(ctx, center, &camera);
+    if (!project_camera_vertex(ctx, &camera, &projected))
+        return false;
+
+    inv_w = 1.0f / camera.z;
+    half_px = ctx->current_camera.depth * size_world * 0.5f * inv_w;
+    if (half_px < 1.0f)
+        half_px = 1.0f;
+
+    quad.texture_id = texture_id;
+    quad.flags = QUAD_FLAG_TEX | extra_flags;
+    quad.vertices[0] = (Vertex2D){
+        projected.x - half_px, projected.y - half_px, projected.z,
+        0.0f * inv_w, 0.0f * inv_w, inv_w,
+    };
+    quad.vertices[1] = (Vertex2D){
+        projected.x + half_px, projected.y - half_px, projected.z,
+        16.0f * inv_w, 0.0f * inv_w, inv_w,
+    };
+    quad.vertices[2] = (Vertex2D){
+        projected.x + half_px, projected.y + half_px, projected.z,
+        16.0f * inv_w, 16.0f * inv_w, inv_w,
+    };
+    quad.vertices[3] = (Vertex2D){
+        projected.x - half_px, projected.y + half_px, projected.z,
+        0.0f * inv_w, 16.0f * inv_w, inv_w,
+    };
+
+    if (projected_quad_fully_inside_viewport(quad.vertices))
+        return stage_projected_quad_no_clip(ctx, &quad);
+    return renderer_push_quad(ctx, &quad);
+}
+
 bool renderer_fill_rect(RenderContext *ctx,
                         float x0, float y0, float x1, float y1,
                         uint8_t palette_index, uint8_t extra_flags)

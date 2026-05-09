@@ -14,6 +14,12 @@
 #define CHUNK_FACE_CROSS_A ((uint8_t)NUM_FACES)
 #define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
 
+typedef enum {
+    WORLD_BIOME_PLAINS = 0,
+    WORLD_BIOME_HILLS,
+    WORLD_BIOME_MOUNTAINS,
+} WorldBiome;
+
 typedef struct {
     uint8_t x;
     uint8_t y;
@@ -166,6 +172,8 @@ const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);
 bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
+WorldBiome world_biome_at(const VoxelWorld *world, int wx, int wz);
+const char *world_biome_name(WorldBiome biome);
 
 /* Minecraft-style environment simulation tick. Call every ~250 ms (5 game
  * ticks). Water/lava sources spread to adjacent air downward then laterally

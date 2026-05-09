@@ -19,6 +19,7 @@
 #include "chat.h"
 #include "command_parser.h"
 #include "pause_menu.h"
+#include "inventory.h"
 
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
 #define LOOK_SPEED   1.8f         /* radians per second (arrow keys) */
@@ -70,6 +71,15 @@
 #define HOTBAR_SLOT_PIXELS (17.0f * HUD_SCALE)
 #define HOTBAR_GAP_PIXELS (2.0f * HUD_SCALE)
 #define HOTBAR_BOTTOM_MARGIN_PIXELS (4.0f * HUD_SCALE + 1.0f)
+#define ITEM_ENTITY_MAX 128
+#define ITEM_ENTITY_SIZE_WORLD 0.42f
+#define ITEM_ENTITY_PICKUP_DELAY_SECONDS 0.35f
+#define ITEM_ENTITY_LIFETIME_SECONDS 300.0f
+#define ITEM_ENTITY_PICKUP_RADIUS 1.35f
+#define ITEM_ENTITY_GRAVITY 18.0f
+#define INVENTORY_CURSOR_MIN_X 0.0f
+#define INVENTORY_CURSOR_MIN_Y 0.0f
+#define INVENTORY_CURSOR_SPEED 1.0f
 
 typedef struct {
     char name[HOME_NAME_MAX];
@@ -103,6 +113,43 @@ typedef struct {
     int place_y;
     int place_z;
 } BlockTarget;
+
+typedef struct {
+    bool active;
+    ItemStack stack;
+    Vec3 position;
+    Vec3 velocity;
+    float age_seconds;
+    float pickup_delay_seconds;
+    float bob_seed;
+} ItemEntity;
+
+typedef struct {
+    ItemEntity items[ITEM_ENTITY_MAX];
+    uint32_t spawn_counter;
+} ItemEntityPool;
+
+typedef struct {
+    InventorySlotArea area;
+    int index;
+} InventoryHit;
+
+typedef struct {
+    float panel_x;
+    float panel_y;
+    float panel_w;
+    float panel_h;
+    float slot;
+    float gap;
+    float craft_x;
+    float craft_y;
+    float output_x;
+    float output_y;
+    float main_x;
+    float main_y;
+    float hotbar_x;
+    float hotbar_y;
+} SurvivalInventoryLayout;
 
 static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
     {
@@ -966,17 +1013,24 @@ static bool player_intersects_block(const Player *player, int wx, int wy, int wz
            player_max_z > block_min_z && player_min_z < block_max_z;
 }
 
-static bool break_block_target(VoxelWorld *world, const BlockTarget *target)
+static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
+                               BlockID *broken_block_out)
 {
+    BlockID broken;
+
     if (!target || !target->hit)
         return false;
-    if (world_get_block(world, target->hit_x, target->hit_y, target->hit_z) == BLOCK_AIR)
+    broken = world_get_block(world, target->hit_x, target->hit_y, target->hit_z);
+    if (broken == BLOCK_AIR)
         return false;
 
     if (!world_set_block(world,
                          target->hit_x, target->hit_y, target->hit_z,
                          BLOCK_AIR))
         return false;
+
+    if (broken_block_out)
+        *broken_block_out = broken;
 
     /* Route the edited chunk through the mesh worker's priority lane so
      * the broken-block visual lands on the next frame even if the main
@@ -992,7 +1046,7 @@ static bool try_break_targeted_block(VoxelWorld *world, const Camera *cam)
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return false;
 
-    if (!break_block_target(world, &target))
+    if (!break_block_target(world, &target, NULL))
         return false;
 
     return true;
@@ -1047,6 +1101,255 @@ static const char *place_result_name(PlaceResult r)
     case PLACE_FAIL_PLAYER_BLOCKED:   return "player-blocked";
     case PLACE_FAIL_WORLD_REJECTED:   return "world-rejected";
     default:                          return "unknown";
+    }
+}
+
+static void item_entities_init(ItemEntityPool *pool)
+{
+    if (!pool)
+        return;
+
+    memset(pool, 0, sizeof(*pool));
+}
+
+static ItemEntity *item_entity_find_spawn_slot(ItemEntityPool *pool)
+{
+    int oldest_index = 0;
+    float oldest_age = -1.0f;
+
+    if (!pool)
+        return NULL;
+
+    for (int i = 0; i < ITEM_ENTITY_MAX; i++) {
+        if (!pool->items[i].active)
+            return &pool->items[i];
+        if (pool->items[i].age_seconds > oldest_age) {
+            oldest_age = pool->items[i].age_seconds;
+            oldest_index = i;
+        }
+    }
+
+    return &pool->items[oldest_index];
+}
+
+static void item_entity_spawn_stack(ItemEntityPool *pool,
+                                   BlockID block,
+                                   int count,
+                                   Vec3 position,
+                                   Vec3 velocity,
+                                   float pickup_delay)
+{
+    while (pool && count > 0 && block > BLOCK_AIR && block < NUM_BLOCK_TYPES) {
+        ItemEntity *entity = item_entity_find_spawn_slot(pool);
+        int stack_count = count > ITEM_STACK_MAX ? ITEM_STACK_MAX : count;
+
+        if (!entity)
+            return;
+
+        memset(entity, 0, sizeof(*entity));
+        entity->active = true;
+        entity->stack.block = block;
+        entity->stack.count = (uint8_t)stack_count;
+        entity->position = position;
+        entity->velocity = velocity;
+        entity->age_seconds = 0.0f;
+        entity->pickup_delay_seconds = pickup_delay;
+        entity->bob_seed = (float)(pool->spawn_counter++ & 31u) * 0.37f;
+        count -= stack_count;
+    }
+}
+
+static void item_entity_spawn_block_drop(ItemEntityPool *pool,
+                                        BlockID broken_block,
+                                        int wx,
+                                        int wy,
+                                        int wz,
+                                        const Camera *cam)
+{
+    BlockID drop = survival_drop_for_block(broken_block);
+    Vec3 dir = cam ? camera_forward(cam) : (Vec3){ 0.0f, 0.0f, 0.0f };
+    Vec3 pos = {
+        (float)wx + 0.5f,
+        (float)wy + 0.55f,
+        (float)wz + 0.5f,
+    };
+    Vec3 vel = {
+        dir.x * 1.2f,
+        2.2f,
+        dir.z * 1.2f,
+    };
+
+    if (drop == BLOCK_AIR)
+        return;
+
+    item_entity_spawn_stack(pool, drop, 1, pos, vel,
+                            ITEM_ENTITY_PICKUP_DELAY_SECONDS);
+}
+
+static void item_entity_spawn_near_player(ItemEntityPool *pool,
+                                          const Player *player,
+                                          const ItemStack *stack)
+{
+    if (!pool || !player || item_stack_is_empty(stack))
+        return;
+
+    Vec3 pos = {
+        player->x,
+        player->y + PLAYER_HEIGHT * 0.55f,
+        player->z,
+    };
+    Vec3 vel = { 0.0f, 2.0f, 0.0f };
+
+    item_entity_spawn_stack(pool, stack->block, stack->count, pos, vel, 0.0f);
+}
+
+static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
+                                              ItemEntityPool *drops,
+                                              const Player *player,
+                                              ItemStack *stack)
+{
+    int leftover;
+
+    if (!inv || item_stack_is_empty(stack))
+        return;
+
+    leftover = survival_inventory_add_block(inv, stack->block, stack->count);
+    if (leftover > 0) {
+        ItemStack drop = { stack->block, (uint8_t)leftover };
+        item_entity_spawn_near_player(drops, player, &drop);
+    }
+    item_stack_clear(stack);
+}
+
+static void close_survival_inventory(SurvivalInventory *inv,
+                                     ItemEntityPool *drops,
+                                     const Player *player,
+                                     bool *inventory_open)
+{
+    if (inventory_open)
+        *inventory_open = false;
+    if (!inv)
+        return;
+
+    for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++)
+        return_stack_to_inventory_or_drop(inv, drops, player, &inv->craft[i]);
+    return_stack_to_inventory_or_drop(inv, drops, player, &inv->cursor);
+    survival_inventory_refresh_craft_output(inv);
+}
+
+static bool item_entity_floor_collision(const VoxelWorld *world,
+                                        const ItemEntity *entity,
+                                        float *floor_y_out)
+{
+    int wx;
+    int wy;
+    int wz;
+    BlockID block;
+
+    if (!world || !entity)
+        return false;
+
+    wx = (int)floorf(entity->position.x);
+    wy = (int)floorf(entity->position.y - 0.24f);
+    wz = (int)floorf(entity->position.z);
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return false;
+
+    block = world_get_block(world, wx, wy, wz);
+    if (block_is_passable(block))
+        return false;
+
+    if (floor_y_out)
+        *floor_y_out = (float)wy + 1.18f;
+    return true;
+}
+
+static void item_entities_update(ItemEntityPool *pool,
+                                 const VoxelWorld *world,
+                                 SurvivalInventory *inventory,
+                                 const Player *player,
+                                 float dt)
+{
+    if (!pool || !inventory || !player)
+        return;
+
+    if (dt < 0.0f)
+        dt = 0.0f;
+    if (dt > 0.1f)
+        dt = 0.1f;
+
+    for (int i = 0; i < ITEM_ENTITY_MAX; i++) {
+        ItemEntity *entity = &pool->items[i];
+        float floor_y;
+
+        if (!entity->active)
+            continue;
+
+        entity->age_seconds += dt;
+        if (entity->age_seconds >= ITEM_ENTITY_LIFETIME_SECONDS ||
+            item_stack_is_empty(&entity->stack)) {
+            entity->active = false;
+            continue;
+        }
+
+        entity->velocity.y -= ITEM_ENTITY_GRAVITY * dt;
+        entity->position.x += entity->velocity.x * dt;
+        entity->position.y += entity->velocity.y * dt;
+        entity->position.z += entity->velocity.z * dt;
+        entity->velocity.x *= 0.98f;
+        entity->velocity.z *= 0.98f;
+
+        if (item_entity_floor_collision(world, entity, &floor_y) &&
+            entity->position.y < floor_y) {
+            entity->position.y = floor_y;
+            if (entity->velocity.y < 0.0f)
+                entity->velocity.y = 0.0f;
+            entity->velocity.x *= 0.72f;
+            entity->velocity.z *= 0.72f;
+        }
+
+        if (entity->age_seconds >= entity->pickup_delay_seconds) {
+            float dx = entity->position.x - player->x;
+            float dy = entity->position.y - (player->y + PLAYER_HEIGHT * 0.5f);
+            float dz = entity->position.z - player->z;
+            float dist_sq = dx * dx + dy * dy + dz * dz;
+            float pickup_sq = ITEM_ENTITY_PICKUP_RADIUS * ITEM_ENTITY_PICKUP_RADIUS;
+
+            if (dist_sq <= pickup_sq) {
+                int leftover = survival_inventory_add_block(inventory,
+                                                            entity->stack.block,
+                                                            entity->stack.count);
+                if (leftover <= 0) {
+                    entity->active = false;
+                } else {
+                    entity->stack.count = (uint8_t)leftover;
+                    entity->pickup_delay_seconds = entity->age_seconds + 0.4f;
+                }
+            }
+        }
+    }
+}
+
+static void item_entities_draw(RenderContext *ctx,
+                               const ItemEntityPool *pool,
+                               float world_time)
+{
+    if (!ctx || !pool)
+        return;
+
+    for (int i = 0; i < ITEM_ENTITY_MAX; i++) {
+        const ItemEntity *entity = &pool->items[i];
+        Vec3 pos;
+
+        if (!entity->active || item_stack_is_empty(&entity->stack))
+            continue;
+
+        pos = entity->position;
+        pos.y += sinf(world_time * 4.0f + entity->bob_seed) * 0.05f;
+        renderer_draw_world_billboard_tile(
+            ctx, pos, ITEM_ENTITY_SIZE_WORLD,
+            block_face_texture_id(entity->stack.block, FACE_FRONT),
+            QUAD_FLAG_ALPHA_KEY | QUAD_FLAG_ZTEST);
     }
 }
 
@@ -1155,6 +1458,271 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
     }
 }
 
+static void survival_inventory_layout(SurvivalInventoryLayout *layout)
+{
+    const float slot = HOTBAR_SLOT_PIXELS;
+    const float gap = HOTBAR_GAP_PIXELS;
+    const float storage_w =
+        SURVIVAL_HOTBAR_SLOT_COUNT * slot +
+        (SURVIVAL_HOTBAR_SLOT_COUNT - 1) * gap;
+    const float panel_w = storage_w + 24.0f;
+    const float panel_h = 272.0f;
+    const float panel_x = floorf((SCREEN_WIDTH - panel_w) * 0.5f);
+    const float panel_y = floorf((SCREEN_HEIGHT - panel_h) * 0.5f) - 10.0f;
+
+    if (!layout)
+        return;
+
+    layout->panel_x = panel_x;
+    layout->panel_y = panel_y;
+    layout->panel_w = panel_w;
+    layout->panel_h = panel_h;
+    layout->slot = slot;
+    layout->gap = gap;
+    layout->craft_x = panel_x + 28.0f;
+    layout->craft_y = panel_y + 24.0f;
+    layout->output_x = layout->craft_x + 2.0f * (slot + gap) + 36.0f;
+    layout->output_y = layout->craft_y + (slot + gap) * 0.5f;
+    layout->main_x = panel_x + 12.0f;
+    layout->main_y = panel_y + 102.0f;
+    layout->hotbar_x = layout->main_x;
+    layout->hotbar_y = layout->main_y + 3.0f * (slot + gap) + 16.0f;
+}
+
+static bool point_in_rect(float x, float y,
+                          float x0, float y0,
+                          float x1, float y1)
+{
+    return x >= x0 && x < x1 && y >= y0 && y < y1;
+}
+
+static InventoryHit survival_inventory_hit_test(float cursor_x, float cursor_y)
+{
+    SurvivalInventoryLayout layout;
+    InventoryHit hit = { INVENTORY_SLOT_NONE, -1 };
+
+    survival_inventory_layout(&layout);
+
+    for (int row = 0; row < 2; row++) {
+        for (int col = 0; col < 2; col++) {
+            float x0 = layout.craft_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.craft_y + (layout.slot + layout.gap) * (float)row;
+
+            if (point_in_rect(cursor_x, cursor_y,
+                              x0, y0, x0 + layout.slot, y0 + layout.slot)) {
+                hit.area = INVENTORY_SLOT_CRAFT;
+                hit.index = row * 2 + col;
+                return hit;
+            }
+        }
+    }
+
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.output_x, layout.output_y,
+                      layout.output_x + layout.slot,
+                      layout.output_y + layout.slot)) {
+        hit.area = INVENTORY_SLOT_OUTPUT;
+        hit.index = 0;
+        return hit;
+    }
+
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+            float x0 = layout.main_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.main_y + (layout.slot + layout.gap) * (float)row;
+
+            if (point_in_rect(cursor_x, cursor_y,
+                              x0, y0, x0 + layout.slot, y0 + layout.slot)) {
+                hit.area = INVENTORY_SLOT_STORAGE;
+                hit.index = SURVIVAL_HOTBAR_SLOT_COUNT +
+                            row * SURVIVAL_HOTBAR_SLOT_COUNT + col;
+                return hit;
+            }
+        }
+    }
+
+    for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+        float x0 = layout.hotbar_x + (layout.slot + layout.gap) * (float)col;
+        float y0 = layout.hotbar_y;
+
+        if (point_in_rect(cursor_x, cursor_y,
+                          x0, y0, x0 + layout.slot, y0 + layout.slot)) {
+            hit.area = INVENTORY_SLOT_STORAGE;
+            hit.index = col;
+            return hit;
+        }
+    }
+
+    return hit;
+}
+
+static void draw_item_stack_icon(RenderContext *ctx,
+                                 const ItemStack *stack,
+                                 float x0,
+                                 float y0,
+                                 float x1,
+                                 float y1)
+{
+    if (!ctx || item_stack_is_empty(stack))
+        return;
+
+    renderer_draw_screen_tile(ctx,
+                              x0 + 4.0f, y0 + 4.0f,
+                              x1 - 4.0f, y1 - 4.0f,
+                              block_face_texture_id(stack->block, FACE_FRONT),
+                              block_render_model(stack->block) == BLOCK_RENDER_CROSS ?
+                                  QUAD_FLAG_ALPHA_KEY : 0);
+    if (stack->count > 1) {
+        char count[4];
+        int len;
+        float tx;
+        float ty;
+
+        snprintf(count, sizeof(count), "%u", (unsigned)stack->count);
+        len = (int)strlen(count);
+        tx = x1 - 2.0f - (float)(len * chat_font_cell_w());
+        ty = y1 - 2.0f - (float)chat_font_cell_h();
+        chat_draw_text(ctx, count, len, tx + 1.0f, ty + 1.0f, 0);
+        chat_draw_text(ctx, count, len, tx, ty, 5);
+    }
+}
+
+static void draw_inventory_slot(RenderContext *ctx,
+                                const ItemStack *stack,
+                                float x0,
+                                float y0,
+                                bool selected,
+                                bool hovered)
+{
+    const float slot = HOTBAR_SLOT_PIXELS;
+    uint8_t border = selected ? 8 : (hovered ? 5 : 14);
+
+    renderer_fill_rect(ctx, x0, y0, x0 + slot, y0 + slot, border, 0);
+    renderer_fill_rect(ctx,
+                       x0 + 1.0f, y0 + 1.0f,
+                       x0 + slot - 1.0f, y0 + slot - 1.0f,
+                       0, QUAD_ALPHA_25);
+    draw_item_stack_icon(ctx, stack, x0, y0, x0 + slot, y0 + slot);
+}
+
+static void draw_inventory_cursor(RenderContext *ctx,
+                                  const ItemStack *cursor,
+                                  float cursor_x,
+                                  float cursor_y)
+{
+    const float s = HUD_SCALE;
+
+    if (!item_stack_is_empty(cursor)) {
+        draw_item_stack_icon(ctx, cursor,
+                             cursor_x - HOTBAR_SLOT_PIXELS * 0.5f,
+                             cursor_y - HOTBAR_SLOT_PIXELS * 0.5f,
+                             cursor_x + HOTBAR_SLOT_PIXELS * 0.5f,
+                             cursor_y + HOTBAR_SLOT_PIXELS * 0.5f);
+    }
+
+    renderer_fill_rect(ctx, cursor_x, cursor_y,
+                       cursor_x + 7.0f * s, cursor_y + 1.0f * s,
+                       5, 0);
+    renderer_fill_rect(ctx, cursor_x, cursor_y,
+                       cursor_x + 1.0f * s, cursor_y + 9.0f * s,
+                       5, 0);
+    renderer_fill_rect(ctx, cursor_x + 1.0f, cursor_y + 1.0f,
+                       cursor_x + 7.0f * s + 1.0f,
+                       cursor_y + 1.0f * s + 1.0f,
+                       0, 0);
+    renderer_fill_rect(ctx, cursor_x + 1.0f, cursor_y + 1.0f,
+                       cursor_x + 1.0f * s + 1.0f,
+                       cursor_y + 9.0f * s + 1.0f,
+                       0, 0);
+}
+
+static void draw_survival_inventory(RenderContext *ctx,
+                                    const SurvivalInventory *inventory,
+                                    int selected_slot,
+                                    float cursor_x,
+                                    float cursor_y)
+{
+    SurvivalInventoryLayout layout;
+    InventoryHit hover;
+
+    if (!ctx || !inventory)
+        return;
+
+    survival_inventory_layout(&layout);
+    hover = survival_inventory_hit_test(cursor_x, cursor_y);
+
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                       0, QUAD_ALPHA_50);
+    renderer_fill_rect(ctx,
+                       layout.panel_x, layout.panel_y,
+                       layout.panel_x + layout.panel_w,
+                       layout.panel_y + layout.panel_h,
+                       14, 0);
+    renderer_fill_rect(ctx,
+                       layout.panel_x + 2.0f, layout.panel_y + 2.0f,
+                       layout.panel_x + layout.panel_w - 2.0f,
+                       layout.panel_y + layout.panel_h - 2.0f,
+                       0, QUAD_ALPHA_25);
+
+    for (int row = 0; row < 2; row++) {
+        for (int col = 0; col < 2; col++) {
+            int index = row * 2 + col;
+            float x0 = layout.craft_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.craft_y + (layout.slot + layout.gap) * (float)row;
+            bool hovered = hover.area == INVENTORY_SLOT_CRAFT &&
+                           hover.index == index;
+
+            draw_inventory_slot(ctx, &inventory->craft[index],
+                                x0, y0, false, hovered);
+        }
+    }
+
+    renderer_fill_rect(ctx,
+                       layout.output_x - 24.0f,
+                       layout.output_y + layout.slot * 0.5f - 2.0f,
+                       layout.output_x - 8.0f,
+                       layout.output_y + layout.slot * 0.5f + 2.0f,
+                       5, 0);
+    renderer_fill_rect(ctx,
+                       layout.output_x - 10.0f,
+                       layout.output_y + layout.slot * 0.5f - 6.0f,
+                       layout.output_x - 6.0f,
+                       layout.output_y + layout.slot * 0.5f + 6.0f,
+                       5, 0);
+    draw_inventory_slot(ctx, &inventory->craft_output,
+                        layout.output_x, layout.output_y,
+                        false,
+                        hover.area == INVENTORY_SLOT_OUTPUT);
+
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+            int index = SURVIVAL_HOTBAR_SLOT_COUNT +
+                        row * SURVIVAL_HOTBAR_SLOT_COUNT + col;
+            float x0 = layout.main_x + (layout.slot + layout.gap) * (float)col;
+            float y0 = layout.main_y + (layout.slot + layout.gap) * (float)row;
+            bool hovered = hover.area == INVENTORY_SLOT_STORAGE &&
+                           hover.index == index;
+
+            draw_inventory_slot(ctx, &inventory->storage[index],
+                                x0, y0, false, hovered);
+        }
+    }
+
+    for (int col = 0; col < SURVIVAL_HOTBAR_SLOT_COUNT; col++) {
+        float x0 = layout.hotbar_x + (layout.slot + layout.gap) * (float)col;
+        bool hovered = hover.area == INVENTORY_SLOT_STORAGE &&
+                       hover.index == col;
+
+        draw_inventory_slot(ctx, &inventory->storage[col],
+                            x0, layout.hotbar_y,
+                            col == selected_slot, hovered);
+        draw_hotbar_digit(ctx, col + 1, x0 + 2.0f, layout.hotbar_y + 2.0f,
+                          col == selected_slot ? 8 : 5);
+    }
+
+    draw_inventory_cursor(ctx, &inventory->cursor, cursor_x, cursor_y);
+}
+
 static bool draw_screen_solid_quad(RenderContext *ctx,
                                    float x0, float y0,
                                    float x1, float y1,
@@ -1212,7 +1780,8 @@ static void draw_hotbar_page_pips(RenderContext *ctx, float slot_left,
 }
 
 static void draw_hotbar(RenderContext *ctx, int selected_slot,
-                        int selected_page, PlayerMode mode)
+                        int selected_page, PlayerMode mode,
+                        const SurvivalInventory *survival_inventory)
 {
     const float s = HUD_SCALE;
     float slot_left, slot_top, slot_size, gap, total_width;
@@ -1242,13 +1811,24 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot,
         renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
                            x1 - 1.0f, y1 - 1.0f, 0, 0);
 
-        BlockID block = hotbar_block_at(selected_page, i);
-        if (mode != PLAYER_MODE_SURVIVAL && block != BLOCK_AIR) {
-            renderer_draw_screen_tile(ctx,
-                                      x0 + 3.0f, y0 + 3.0f,
-                                      x1 - 3.0f, y1 - 3.0f,
-                                      block_face_texture_id(block, FACE_FRONT),
-                                      0);
+        if (mode == PLAYER_MODE_SURVIVAL && survival_inventory) {
+            draw_item_stack_icon(ctx, &survival_inventory->storage[i],
+                                 x0, y0, x1, y1);
+        } else {
+            BlockID block = hotbar_block_at(selected_page, i);
+
+            if (block != BLOCK_AIR) {
+                uint8_t flags =
+                    block_render_model(block) == BLOCK_RENDER_CROSS ?
+                    QUAD_FLAG_ALPHA_KEY : 0;
+
+                renderer_draw_screen_tile(ctx,
+                                          x0 + 3.0f, y0 + 3.0f,
+                                          x1 - 3.0f, y1 - 3.0f,
+                                          block_face_texture_id(block,
+                                                               FACE_FRONT),
+                                          flags);
+            }
         }
         renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
                            x0 + 5.0f * s, y0 + 7.0f * s, 0, 0);
@@ -1533,12 +2113,15 @@ static void draw_block_in_hand(RenderContext *ctx, BlockID type, float swing_tim
 static void draw_debug_hud(RenderContext *ctx, const Player *player,
                            const Camera *cam, const VoxelWorld *world)
 {
-    char lines[8][56];
+    char lines[9][56];
     int line_count = 0;
     int cell_h = chat_font_cell_h();
     int line_step = cell_h + 2;
+    int wx = (int)floorf(player->x);
+    int wz = (int)floorf(player->z);
     int chunk_x = (int)floorf(player->x / (float)WORLD_CHUNK_SIZE);
     int chunk_z = (int)floorf(player->z / (float)WORLD_CHUNK_SIZE);
+    WorldBiome biome = world_biome_at(world, wx, wz);
 
     /* Block position within the current chunk (0..15 in each axis). */
     float local_x = player->x - (float)(chunk_x * WORLD_CHUNK_SIZE);
@@ -1549,6 +2132,8 @@ static void draw_debug_hud(RenderContext *ctx, const Player *player,
     snprintf(lines[line_count++], sizeof(lines[0]),
              "Chunk: %d, %d  [%.1f, %.1f]", chunk_x, chunk_z,
              local_x, local_z);
+    snprintf(lines[line_count++], sizeof(lines[0]),
+             "Biome: %s", world_biome_name(biome));
     snprintf(lines[line_count++], sizeof(lines[0]),
              "Facing: yaw=%.1f pitch=%.1f",
              cam->yaw * 180.0f / (float)M_PI,
@@ -1609,7 +2194,15 @@ int main(void)
     SelectedWorld selected_world = {0};
     int selected_hotbar_slot = 0;
     int selected_hotbar_page = 0;
+    SurvivalInventory survival_inventory;
+    ItemEntityPool item_drops;
+    bool inventory_open = false;
+    float inventory_cursor_x = SCREEN_WIDTH * 0.5f;
+    float inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
     PauseMenuSettings pause_settings = {0};
+
+    survival_inventory_init(&survival_inventory);
+    item_entities_init(&item_drops);
 
     if (!run_home_menu(ctx, &inp, target_fps, &selected_world)) {
         input_shutdown(&inp);
@@ -1658,7 +2251,7 @@ int main(void)
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
         printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
@@ -1800,13 +2393,20 @@ int main(void)
          * pause_toggle event that reaches us here is coming from the
          * game view. */
         if (input_consume_pause_toggle(&inp)) {
-            if (!chat_is_open(&chat))
+            if (inventory_open) {
+                close_survival_inventory(&survival_inventory, &item_drops,
+                                         &player, &inventory_open);
+            } else if (!chat_is_open(&chat)) {
                 pause_menu_toggle(&pause);
+            }
         }
         if (input_consume_debug_hud_toggle(&inp))
             debug_hud_enabled = !debug_hud_enabled;
 
         bool paused = pause_menu_is_open(&pause);
+        if (paused && inventory_open)
+            close_survival_inventory(&survival_inventory, &item_drops,
+                                     &player, &inventory_open);
         if (paused && pause_menu_update(&pause, &inp, &pause_settings)) {
             world_set_stream_chunks_per_frame(&world,
                                               pause_settings.stream_chunks_per_frame);
@@ -1825,15 +2425,29 @@ int main(void)
                 world_render_distance(&world);
         }
 
-        /* Chat toggle: ignored while paused — pause owns the overlay. */
-        if (input_consume_chat_toggle(&inp) && !paused) {
+        if (input_consume_inventory_toggle(&inp) &&
+            !paused && !chat_is_open(&chat) &&
+            player.mode == PLAYER_MODE_SURVIVAL) {
+            if (inventory_open) {
+                close_survival_inventory(&survival_inventory, &item_drops,
+                                         &player, &inventory_open);
+            } else {
+                inventory_open = true;
+                inventory_cursor_x = SCREEN_WIDTH * 0.5f;
+                inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
+            }
+        }
+
+        /* Chat toggle: ignored while paused or inventory is open — those
+         * overlays own the screen. */
+        if (input_consume_chat_toggle(&inp) && !paused && !inventory_open) {
             chat_toggle(&chat);
             input_set_text_mode(&inp, chat_is_open(&chat));
         }
 
         bool chat_open = chat_is_open(&chat);
         bool kill_requested = false;
-        input_set_pointer_capture(&inp, !paused && !chat_open);
+        input_set_pointer_capture(&inp, !paused && !chat_open && !inventory_open);
 
         if (chat_open && !paused) {
             for (int i = 0; i < inp.text_queue_len; i++) {
@@ -1868,13 +2482,27 @@ int main(void)
             fall_start_y = player.y;
             if (player.mode != PLAYER_MODE_SURVIVAL)
                 fall_damage_armed = false;
+            if (player.mode != PLAYER_MODE_SURVIVAL && inventory_open)
+                close_survival_inventory(&survival_inventory, &item_drops,
+                                         &player, &inventory_open);
             last_player_mode = player.mode;
         }
 
         /* Look: mouse + arrow keys. Muted while paused so the camera
          * stays still in the pause view, but we still drain mouse state
          * so a held mouse doesn't accumulate deltas across the pause. */
-        if (!paused) {
+        if (inventory_open) {
+            inventory_cursor_x += inp.mouse_dx * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_y += inp.mouse_dy * INVENTORY_CURSOR_SPEED;
+            if (inventory_cursor_x < INVENTORY_CURSOR_MIN_X)
+                inventory_cursor_x = INVENTORY_CURSOR_MIN_X;
+            if (inventory_cursor_y < INVENTORY_CURSOR_MIN_Y)
+                inventory_cursor_y = INVENTORY_CURSOR_MIN_Y;
+            if (inventory_cursor_x > SCREEN_WIDTH - 1.0f)
+                inventory_cursor_x = SCREEN_WIDTH - 1.0f;
+            if (inventory_cursor_y > SCREEN_HEIGHT - 1.0f)
+                inventory_cursor_y = SCREEN_HEIGHT - 1.0f;
+        } else if (!paused && !chat_open) {
             cam.yaw   += inp.mouse_dx * mouse_sens;
             cam.pitch -= inp.mouse_dy * mouse_sens;
             if (inp.look_right) cam.yaw   += LOOK_SPEED * frame_dt;
@@ -1895,7 +2523,7 @@ int main(void)
 
         /* Movement inputs are silently dropped while paused — the player
          * coasts to a stop through the normal friction path. */
-        if (!paused) {
+        if (!paused && !inventory_open && !chat_open) {
             if (inp.forward) { wish_x += fwd_x; wish_z += fwd_z; }
             if (inp.back)    { wish_x -= fwd_x; wish_z -= fwd_z; }
             if (inp.right)   { wish_x += rgt_x; wish_z += rgt_z; }
@@ -1913,10 +2541,11 @@ int main(void)
         bool jump_pressed = false;
         if (physics_accumulator >= PHYSICS_DT)
             jump_pressed = input_consume_jump(&inp);
-        if (paused)
+        if (paused || inventory_open || chat_open)
             jump_pressed = false;
 
-        if (!paused && player.mode == PLAYER_MODE_CREATIVE && jump_pressed) {
+        if (!paused && !inventory_open && !chat_open &&
+            player.mode == PLAYER_MODE_CREATIVE && jump_pressed) {
             if (creative_jump_tap_timer > 0.0f) {
                 creative_flight_enabled = !creative_flight_enabled;
                 creative_jump_tap_timer = 0.0f;
@@ -1935,9 +2564,10 @@ int main(void)
          * this with double-Space; spectator always flies. */
         bool flight_controls = (player.mode == PLAYER_MODE_SPECTATOR) ||
             (player.mode == PLAYER_MODE_CREATIVE && creative_flight_enabled);
-        bool up_input    = paused ? false : inp.up;
-        bool down_input  = paused ? false : inp.down;
-        bool sprint_input = paused ? false : inp.sprint;
+        bool controls_blocked = paused || inventory_open || chat_open;
+        bool up_input    = controls_blocked ? false : inp.up;
+        bool down_input  = controls_blocked ? false : inp.down;
+        bool sprint_input = controls_blocked ? false : inp.sprint;
 
         struct timespec physics_start, physics_end;
         clock_gettime(CLOCK_MONOTONIC, &physics_start);
@@ -2045,7 +2675,28 @@ int main(void)
             drown_timer = 0.0f;
         }
 
-        if (!paused && !chat_is_open(&chat)) {
+        if (player.mode == PLAYER_MODE_SURVIVAL)
+            item_entities_update(&item_drops, &world, &survival_inventory,
+                                 &player, frame_dt);
+
+        if (!paused && !chat_is_open(&chat) && inventory_open) {
+            bool left_click = input_consume_break(&inp);
+            bool right_click = input_consume_place(&inp);
+            InventoryHit hit = survival_inventory_hit_test(inventory_cursor_x,
+                                                           inventory_cursor_y);
+
+            break_timer = 0.0f;
+            break_duration = 0.0f;
+            break_target_valid = false;
+            hand_swing_timer = HAND_SWING_SECONDS;
+            (void)input_consume_hotbar_slot(&inp);
+            (void)input_consume_hotbar_page(&inp);
+
+            if ((left_click || right_click) && hit.area != INVENTORY_SLOT_NONE)
+                survival_inventory_click(&survival_inventory,
+                                         hit.area, hit.index, right_click);
+            inp.break_down = false;
+        } else if (!paused && !chat_is_open(&chat) && !inventory_open) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
             bool hotbar_page_pressed = input_consume_hotbar_page(&inp);
             bool break_pressed = input_consume_break(&inp);
@@ -2069,11 +2720,27 @@ int main(void)
             if (hotbar_slot >= 0 && hotbar_slot < HOTBAR_SLOT_COUNT &&
                 hotbar_slot != selected_hotbar_slot) {
                 selected_hotbar_slot = hotbar_slot;
-                BlockID selected = hotbar_block_at(selected_hotbar_page,
-                                                   selected_hotbar_slot);
-                chat_log(&chat, "selected: %d %s",
-                         selected_hotbar_slot + 1,
-                         BlockRegistry[selected].name);
+                if (player.mode == PLAYER_MODE_SURVIVAL) {
+                    const ItemStack *stack =
+                        survival_inventory_hotbar_stack(&survival_inventory,
+                                                        selected_hotbar_slot);
+
+                    if (item_stack_is_empty(stack)) {
+                        chat_log(&chat, "selected: %d empty",
+                                 selected_hotbar_slot + 1);
+                    } else {
+                        chat_log(&chat, "selected: %d %s x%u",
+                                 selected_hotbar_slot + 1,
+                                 BlockRegistry[stack->block].name,
+                                 (unsigned)stack->count);
+                    }
+                } else {
+                    BlockID selected = hotbar_block_at(selected_hotbar_page,
+                                                       selected_hotbar_slot);
+                    chat_log(&chat, "selected: %d %s",
+                             selected_hotbar_slot + 1,
+                             BlockRegistry[selected].name);
+                }
             }
 
             if (player.mode == PLAYER_MODE_CREATIVE) {
@@ -2117,7 +2784,17 @@ int main(void)
                             if (hand_swing_timer >= HAND_SWING_SECONDS)
                                 hand_swing_timer = 0.0f;
                             if (break_timer >= break_duration) {
-                                break_block_target(&world, &break_target);
+                                BlockID broken = BLOCK_AIR;
+
+                                if (break_block_target(&world, &break_target,
+                                                       &broken)) {
+                                    item_entity_spawn_block_drop(
+                                        &item_drops, broken,
+                                        break_target.hit_x,
+                                        break_target.hit_y,
+                                        break_target.hit_z,
+                                        &cam);
+                                }
                                 break_timer = 0.0f;
                                 break_duration = 0.0f;
                                 break_target_valid = false;
@@ -2139,8 +2816,6 @@ int main(void)
                 }
             }
             if (place_pressed) {
-                /* Survival has no inventory in this game, so block placement
-                 * is creative-only. Spectator never collides anyway. */
                 if (player.mode == PLAYER_MODE_CREATIVE) {
                     BlockID held = hotbar_block_at(selected_hotbar_page,
                                                    selected_hotbar_slot);
@@ -2150,6 +2825,26 @@ int main(void)
                         chat_log(&chat, "place %s -> %s",
                                  BlockRegistry[held].name,
                                  place_result_name(pr));
+                    }
+                } else if (player.mode == PLAYER_MODE_SURVIVAL) {
+                    const ItemStack *held_stack =
+                        survival_inventory_hotbar_stack(&survival_inventory,
+                                                        selected_hotbar_slot);
+
+                    if (!item_stack_is_empty(held_stack)) {
+                        BlockID held = held_stack->block;
+                        PlaceResult pr = try_place_targeted_block(&world, &cam,
+                                                                  &player, held);
+
+                        if (pr == PLACE_OK) {
+                            survival_inventory_remove_storage(&survival_inventory,
+                                                              selected_hotbar_slot,
+                                                              1);
+                        } else if (debug_enabled) {
+                            chat_log(&chat, "place %s -> %s",
+                                     BlockRegistry[held].name,
+                                     place_result_name(pr));
+                        }
                     }
                 }
             }
@@ -2205,7 +2900,20 @@ int main(void)
          * frames where update work isn't trivial. Keys are not consumed
          * here - any edge events the second poll picks up roll into the
          * next frame's normal input handling. */
-        if (!paused) {
+        if (!paused && inventory_open) {
+            input_update(&inp);
+            inventory_cursor_x += inp.mouse_dx * INVENTORY_CURSOR_SPEED;
+            inventory_cursor_y += inp.mouse_dy * INVENTORY_CURSOR_SPEED;
+            if (inventory_cursor_x < INVENTORY_CURSOR_MIN_X)
+                inventory_cursor_x = INVENTORY_CURSOR_MIN_X;
+            if (inventory_cursor_y < INVENTORY_CURSOR_MIN_Y)
+                inventory_cursor_y = INVENTORY_CURSOR_MIN_Y;
+            if (inventory_cursor_x > SCREEN_WIDTH - 1.0f)
+                inventory_cursor_x = SCREEN_WIDTH - 1.0f;
+            if (inventory_cursor_y > SCREEN_HEIGHT - 1.0f)
+                inventory_cursor_y = SCREEN_HEIGHT - 1.0f;
+            input_clear_mouse(&inp);
+        } else if (!paused && !chat_open) {
             input_update(&inp);
             cam.yaw   += inp.mouse_dx * mouse_sens;
             cam.pitch -= inp.mouse_dy * mouse_sens;
@@ -2219,6 +2927,7 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
+        item_entities_draw(ctx, &item_drops, world_time);
         if (camera_underwater)
             draw_underwater_overlay(ctx);
         if (player.mode == PLAYER_MODE_SURVIVAL)
@@ -2239,11 +2948,12 @@ int main(void)
                                                    selected_hotbar_slot),
                                    hand_swing_timer);
                 draw_hotbar(ctx, selected_hotbar_slot,
-                            selected_hotbar_page, player.mode);
+                            selected_hotbar_page, player.mode, NULL);
                 renderer_draw_crosshair(ctx);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
                 draw_bare_hand(ctx, hand_swing_timer);
-                draw_hotbar(ctx, selected_hotbar_slot, 0, player.mode);
+                draw_hotbar(ctx, selected_hotbar_slot, 0, player.mode,
+                            &survival_inventory);
                 draw_healthbar(ctx, player_health_units, damage_flash_timer);
                 draw_hungerbar(ctx);
                 if (camera_underwater ||
@@ -2252,6 +2962,11 @@ int main(void)
                 renderer_draw_crosshair(ctx);
             }
         }
+        if (!paused && inventory_open)
+            draw_survival_inventory(ctx, &survival_inventory,
+                                    selected_hotbar_slot,
+                                    inventory_cursor_x,
+                                    inventory_cursor_y);
         pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
             chat_draw_text_scaled(ctx, fps_text, fps_text_len,

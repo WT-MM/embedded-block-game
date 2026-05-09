@@ -169,7 +169,8 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
 /* Minecraft-style water simulation tick. Call every ~250 ms (5 game ticks).
  * Source blocks (BLOCK_WATER) spread to adjacent air downward then laterally
  * up to 7 blocks. Flow blocks (BLOCK_WATER_FLOW) evaporate when they lose
- * all water neighbors. Returns true if any block changed. */
+ * upstream support from water above, a source, or a lower-level flow.
+ * Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
 
 /* Diagnostic counters from the most recent world_water_tick. Useful for

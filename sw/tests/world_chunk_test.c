@@ -173,6 +173,58 @@ int main(void)
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-cleanup mesh rebuild failed");
 
+    const int water_x = 4;
+    const int water_y = 24;
+    const int water_z = 4;
+    const int water_floor_y = water_y - 1;
+    for (int y = water_y - 6; y <= water_y + 2; y++) {
+        for (int z = water_z - 1; z <= water_z + 1; z++) {
+            for (int x = water_x - 1; x <= water_x + 3; x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("water test volume clear failed");
+            }
+        }
+    }
+    if (!world_set_block(&world, water_x, water_floor_y, water_z, BLOCK_STONE) ||
+        !world_set_block(&world, water_x + 2, water_floor_y, water_z, BLOCK_STONE) ||
+        !world_set_block(&world, water_x - 1, water_y, water_z, BLOCK_STONE) ||
+        !world_set_block(&world, water_x, water_y, water_z - 1, BLOCK_STONE) ||
+        !world_set_block(&world, water_x, water_y, water_z + 1, BLOCK_STONE) ||
+        !world_set_block(&world, water_x + 1, water_y, water_z - 1, BLOCK_STONE) ||
+        !world_set_block(&world, water_x + 1, water_y, water_z + 1, BLOCK_STONE))
+        return check_failed("water test fixture build failed");
+    if (!world_set_block(&world, water_x, water_y, water_z, BLOCK_WATER))
+        return check_failed("water source placement failed");
+    for (int i = 0; i < 5; i++)
+        world_water_tick(&world);
+    if (world_get_block(&world, water_x + 1, water_y, water_z) != BLOCK_WATER_FLOW ||
+        world_get_block(&world, water_x + 1, water_floor_y, water_z) != BLOCK_WATER_FLOW)
+        return check_failed("water did not fall into the hole");
+    if (world_get_block(&world, water_x + 2, water_y, water_z) != BLOCK_AIR)
+        return check_failed("water skipped across a falling column");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-water mesh rebuild failed");
+    const Chunk *water_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *fall_side = find_chunk_face(water_chunk,
+                                                 water_x + 1, water_floor_y, water_z,
+                                                 FACE_FRONT, BLOCK_WATER_FLOW);
+    const ChunkFace *source_step = find_chunk_face(water_chunk,
+                                                   water_x, water_y, water_z,
+                                                   FACE_RIGHT, BLOCK_WATER);
+    if (!fall_side || fall_side->height != 8)
+        return check_failed("falling water side did not render full height");
+    if (!source_step || source_step->height != 8)
+        return check_failed("water step face between source and flow missing");
+    if (!world_set_block(&world, water_x, water_y, water_z, BLOCK_AIR))
+        return check_failed("water source removal failed");
+    for (int i = 0; i < 8; i++)
+        world_water_tick(&world);
+    if (world_get_block(&world, water_x + 1, water_y, water_z) != BLOCK_AIR ||
+        world_get_block(&world, water_x + 1, water_floor_y, water_z) != BLOCK_AIR)
+        return check_failed("unsupported water flow did not evaporate");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-water-cleanup mesh rebuild failed");
+
     if (!world_stream_around(&world, 1.0f, 1.0f))
         return check_failed("same-center stream failed");
     if (world.chunks_generated_last_stream != 0)

@@ -2139,59 +2139,52 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      * faces of a single glass block visible at once never overlap in
      * screen space, so their within-block order doesn't matter.
      */
-    int n_translucent_candidates = 0;
+    int w = 0;
     for (int i = 0; i < candidate_count; i++) {
+        const Chunk *chunk = candidates[i].chunk;
         const ChunkMesh *mesh = candidates[i].mesh;
+        const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+        const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
 
         for (int face_index = 0; face_index < mesh->face_count; face_index++) {
-            if (block_is_translucent((BlockID)mesh->faces[face_index].type))
-                n_translucent_candidates++;
+            const ChunkFace *face = &mesh->faces[face_index];
+            if (!block_is_translucent((BlockID)face->type))
+                continue;
+
+            float wx = chunk_ox + (float)face->x;
+            float wy = (float)face->y;
+            float wz = chunk_oz + (float)face->z;
+            switch ((BlockFace)face->face) {
+            case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
+            case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
+            case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
+            case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
+            case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
+            case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
+            default: break;
+            }
+
+            if (!ensure_translucent_scratch(ctx, w + 1))
+                continue;
+
+            Vec3 block_center = { wx + 0.5f, wy + 0.5f, wz + 0.5f };
+            CameraVertex cv;
+            world_to_camera(ctx, block_center, &cv);
+
+            ctx->translucent_scratch[w++] = (TranslucentFaceRef){
+                .chunk = chunk,
+                .face = face,
+                .view_z = cv.z,
+            };
         }
     }
 
-    if (n_translucent_candidates > 0 &&
-        ensure_translucent_scratch(ctx, n_translucent_candidates)) {
-        int w = 0;
-
-        for (int i = 0; i < candidate_count; i++) {
-            const Chunk *chunk = candidates[i].chunk;
-            const ChunkMesh *mesh = candidates[i].mesh;
-            const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
-            const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
-
-            for (int face_index = 0; face_index < mesh->face_count; face_index++) {
-                const ChunkFace *face = &mesh->faces[face_index];
-                if (!block_is_translucent((BlockID)face->type))
-                    continue;
-
-                float wx = chunk_ox + (float)face->x;
-                float wy = (float)face->y;
-                float wz = chunk_oz + (float)face->z;
-                switch ((BlockFace)face->face) {
-                case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
-                case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
-                case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
-                case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
-                case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
-                case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
-                default: break;
-                }
-
-                Vec3 block_center = { wx + 0.5f, wy + 0.5f, wz + 0.5f };
-                CameraVertex cv;
-                world_to_camera(ctx, block_center, &cv);
-
-                ctx->translucent_scratch[w++] = (TranslucentFaceRef){
-                    .chunk = chunk,
-                    .face = face,
-                    .view_z = cv.z,
-                };
-            }
+    if (w > 0) {
+        if (w > 1) {
+            qsort(ctx->translucent_scratch, (size_t)w,
+                  sizeof(*ctx->translucent_scratch),
+                  compare_translucent_back_to_front);
         }
-
-        qsort(ctx->translucent_scratch, (size_t)w,
-              sizeof(*ctx->translucent_scratch),
-              compare_translucent_back_to_front);
 
         for (int i = 0; i < w; i++) {
             const TranslucentFaceRef *ref = &ctx->translucent_scratch[i];

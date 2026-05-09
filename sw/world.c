@@ -111,7 +111,7 @@ static bool greedy_meshing_enabled(void)
     static int cached = -1;
     if (cached < 0) {
         const char *env = getenv("BLOCK_GAME_GREEDY_MESH");
-        cached = (env && env[0] == '1' && env[1] == '\0');
+        cached = !(env && env[0] == '0' && env[1] == '\0');
     }
     return cached != 0;
 }
@@ -1167,6 +1167,11 @@ static bool face_should_render(BlockID current, BlockID neighbor)
     return block_is_transparent(neighbor);
 }
 
+static bool block_is_any_water(BlockID id)
+{
+    return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+}
+
 void world_init(VoxelWorld *world)
 {
     memset(world, 0, sizeof(*world));
@@ -1426,6 +1431,92 @@ static BlockID read_block_cached(const Chunk *nb[3][3], int ccx, int ccz,
     int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
 
     return c->blocks[wy][lz][lx];
+}
+
+static uint8_t read_water_level_cached(const Chunk *nb[3][3], int ccx, int ccz,
+                                       int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int cx = floor_div(wx, WORLD_CHUNK_SIZE);
+    int cz = floor_div(wz, WORLD_CHUNK_SIZE);
+    int ix = cx - ccx + 1;
+    int iz = cz - ccz + 1;
+
+    if (ix < 0 || ix > 2 || iz < 0 || iz > 2)
+        return 0;
+
+    const Chunk *c = nb[ix][iz];
+
+    if (!c || !(c->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    return c->water_level[wy][lz][lx];
+}
+
+static uint8_t water_flow_height_from_level(uint8_t level)
+{
+    if (level > 7)
+        level = 7;
+
+    uint8_t height = (uint8_t)(8 - level);
+    return height ? height : 1;
+}
+
+static uint8_t water_height_cached(const Chunk *nb[3][3], int ccx, int ccz,
+                                   int wx, int wy, int wz)
+{
+    BlockID id = read_block_cached(nb, ccx, ccz, wx, wy, wz);
+
+    if (id == BLOCK_WATER)
+        return 8;
+    if (id != BLOCK_WATER_FLOW)
+        return 0;
+
+    if (wy + 1 < WORLD_CHUNK_HEIGHT &&
+        block_is_any_water(read_block_cached(nb, ccx, ccz, wx, wy + 1, wz)))
+        return 8;
+
+    return water_flow_height_from_level(
+        read_water_level_cached(nb, ccx, ccz, wx, wy, wz));
+}
+
+static bool mesh_face_should_render(const Chunk *nb[3][3], int ccx, int ccz,
+                                    int wx, int wy, int wz, BlockFace face,
+                                    BlockID current)
+{
+    BlockID neighbor = read_block_cached(nb, ccx, ccz,
+                                         wx + FACE_NX[face],
+                                         wy + FACE_NY[face],
+                                         wz + FACE_NZ[face]);
+
+    if (!block_is_any_water(current))
+        return face_should_render(current, neighbor);
+
+    if (neighbor == BLOCK_AIR)
+        return true;
+    if (!block_is_any_water(neighbor))
+        return false;
+
+    switch (face) {
+    case FACE_LEFT:
+    case FACE_RIGHT:
+    case FACE_FRONT:
+    case FACE_BACK: {
+        uint8_t current_height = water_height_cached(nb, ccx, ccz, wx, wy, wz);
+        uint8_t neighbor_height = water_height_cached(nb, ccx, ccz,
+                                                      wx + FACE_NX[face],
+                                                      wy + FACE_NY[face],
+                                                      wz + FACE_NZ[face]);
+        return current_height > neighbor_height;
+    }
+    default:
+        return false;
+    }
 }
 
 static uint8_t read_sky_light_cached(const Chunk *nb[3][3], int ccx, int ccz,
@@ -1895,11 +1986,8 @@ static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk
                 int wz = ccz * WORLD_CHUNK_SIZE + z;
 
                 for (int f = 0; f < NUM_FACES; f++) {
-                    BlockID neighbor = read_block_cached(nb, ccx, ccz,
-                                                         wx + FACE_NX[f],
-                                                         y + FACE_NY[f],
-                                                         wz + FACE_NZ[f]);
-                    if (face_should_render(id, neighbor))
+                    if (mesh_face_should_render(nb, ccx, ccz, wx, y, wz,
+                                                (BlockFace)f, id))
                         count++;
                 }
             }
@@ -2060,11 +2148,8 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     int wx = ccx * WORLD_CHUNK_SIZE + x;
                     int wz = ccz * WORLD_CHUNK_SIZE + z;
-                    BlockID neighbor = read_block_cached(nb, ccx, ccz,
-                                                         wx + FACE_NX[f],
-                                                         y + FACE_NY[f],
-                                                         wz + FACE_NZ[f]);
-                    if (face_should_render(id, neighbor)) {
+                    if (mesh_face_should_render(nb, ccx, ccz, wx, y, wz,
+                                                (BlockFace)f, id)) {
                         int light_wx = wx + FACE_NX[f];
                         int light_wy = y + FACE_NY[f];
                         int light_wz = wz + FACE_NZ[f];
@@ -2100,10 +2185,10 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                          * the full 8/8 height. */
                         uint8_t h = 8;
                         if (id == BLOCK_WATER_FLOW) {
-                            uint8_t lvl = chunk->water_level[y][z][x];
-                            if (lvl > 7) lvl = 7;
-                            h = (uint8_t)(8 - lvl);
-                            if (h < 1) h = 1;
+                            h = water_height_cached(nb, ccx, ccz,
+                                                    ccx * WORLD_CHUNK_SIZE + x,
+                                                    y,
+                                                    ccz * WORLD_CHUNK_SIZE + z);
                         }
                         used[v][u] = true;
                         append_chunk_face(chunk->faces, &out, x, y, z,
@@ -2113,14 +2198,11 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                     }
 
                     /*
-                     * Greedy merging introduces T-junctions and wide-quad UV
-                     * shimmer. In some near-horizontal viewing angles the
-                     * merged-quad path also dropped whole rows of top-faces
-                     * (greedy run + frustum cull on the merged anchor combine
-                     * to hide blocks that should be visible). Default to
-                     * unit-quad emission everywhere; set BLOCK_GAME_GREEDY_MESH=1
-                     * to opt back into the far-chunk merge for raw face-count
-                     * wins on huge render distances.
+                     * Keep nearby chunks as unit quads where T-junctions and
+                     * UV shimmer are visible, but merge far opaque faces by
+                     * default to keep the FPGA descriptor stream small. Set
+                     * BLOCK_GAME_GREEDY_MESH=0 to disable the far-chunk merge
+                     * while investigating mesh artifacts.
                      */
                     if (!is_near && greedy_meshing_enabled()) {
                         while (u + merge_w < width &&
@@ -3211,23 +3293,21 @@ int world_chunk_capacity(const VoxelWorld *world)
  * of the previous instant fill.
  *
  * Each tick:
- *   Pass 1 - Evaporate orphan flows whose 6 neighbours hold no water.
- *   Pass 2 - Snapshot every source / non-terminal flow that has at least
- *            one air neighbour (the only ones that can do anything).
+ *   Pass 1 - Evaporate flows that no longer have an upstream support
+ *            (same-level source/lower-level flow or water above).
+ *   Pass 2 - Snapshot every source / non-terminal supported flow that can
+ *            place water into air. Falling columns are not lateral spreaders.
  *   Pass 3 - For each snapshot cell: try to flow straight down (gravity
  *            priority, places a level-1 flow); otherwise spread laterally
- *            into air at level+1.
+ *            into air at level+1. If any immediate side cell drops downward,
+ *            only those drop cells receive water, so streams pour into holes
+ *            instead of skipping across them.
  * ----------------------------------------------------------------------- */
 #define WATER_MAX_LEVEL          7   /* Minecraft level cap; level 7 = terminal */
 /* Active-cell snapshot capacity. Each entry is 16 bytes, so 4096 entries =
  * 64 KB of static .bss - cheap, and well over the ~225 cells of a fully-
  * developed 7-radius pool plus typical natural-ocean coastline. */
 #define WATER_TICK_MAX_ACTIVE 4096
-
-static bool block_is_any_water(BlockID id)
-{
-    return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
-}
 
 static WaterTickStats g_water_tick_stats = {0};
 
@@ -3259,6 +3339,83 @@ static bool water_set_flow_locked(VoxelWorld *world,
     return true;
 }
 
+static uint8_t world_water_level_locked(const VoxelWorld *world,
+                                        int wx, int wy, int wz)
+{
+    if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    BlockID id = chunk->blocks[wy][lz][lx];
+    if (id == BLOCK_WATER)
+        return 0;
+    if (id != BLOCK_WATER_FLOW)
+        return WATER_MAX_LEVEL + 1;
+
+    uint8_t level = chunk->water_level[wy][lz][lx];
+    if (level < 1)
+        level = 1;
+    return level > WATER_MAX_LEVEL ? WATER_MAX_LEVEL : level;
+}
+
+static bool water_flow_has_support_locked(const VoxelWorld *world,
+                                          int wx, int wy, int wz,
+                                          uint8_t level)
+{
+    if (wy + 1 < WORLD_CHUNK_HEIGHT &&
+        block_is_any_water(world_get_block(world, wx, wy + 1, wz)))
+        return true;
+
+    const int sx[4] = {-1, 1,  0, 0};
+    const int sz[4] = { 0, 0, -1, 1};
+    for (int d = 0; d < 4; d++) {
+        BlockID nb = world_get_block(world, wx + sx[d], wy, wz + sz[d]);
+
+        if (nb == BLOCK_WATER)
+            return true;
+        if (nb == BLOCK_WATER_FLOW &&
+            world_water_level_locked(world, wx + sx[d], wy, wz + sz[d]) < level)
+            return true;
+    }
+
+    return false;
+}
+
+static bool water_cell_rests_on_solid_locked(const VoxelWorld *world,
+                                             int wx, int wy, int wz)
+{
+    if (wy <= 0)
+        return true;
+
+    BlockID below = world_get_block(world, wx, wy - 1, wz);
+    return below != BLOCK_AIR && !block_is_any_water(below);
+}
+
+static bool water_cell_can_spread_locked(const VoxelWorld *world,
+                                         int wx, int wy, int wz)
+{
+    if (wy > 0 && world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR)
+        return true;
+    if (!water_cell_rests_on_solid_locked(world, wx, wy, wz))
+        return false;
+
+    const int sx[4] = {-1, 1,  0, 0};
+    const int sz[4] = { 0, 0, -1, 1};
+    for (int d = 0; d < 4; d++) {
+        if (world_get_block(world, wx + sx[d], wy, wz + sz[d]) == BLOCK_AIR)
+            return true;
+    }
+
+    return false;
+}
+
 bool world_water_tick(VoxelWorld *world)
 {
     if (!world)
@@ -3272,7 +3429,7 @@ bool world_water_tick(VoxelWorld *world)
 
     world_lock(world);
 
-    /* ---- Pass 1: evaporate orphaned flow blocks ---- */
+    /* ---- Pass 1: evaporate unsupported flow blocks ---- */
     for (int ci = 0; ci < world->chunk_count; ci++) {
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
@@ -3289,19 +3446,11 @@ bool world_water_tick(VoxelWorld *world)
 
                     stats.flows_seen++;
                     int wx = ox + x, wy = y, wz = oz + z;
-                    bool has_neighbor = false;
+                    uint8_t level = chunk->water_level[y][z][x];
+                    if (level < 1 || level > WATER_MAX_LEVEL)
+                        level = 1;
 
-                    const int dx[6] = {-1,1,0,0,0,0};
-                    const int dy[6] = {0,0,-1,1,0,0};
-                    const int dz[6] = {0,0,0,0,-1,1};
-                    for (int f = 0; f < 6 && !has_neighbor; f++) {
-                        BlockID nb = world_get_block(world,
-                                         wx + dx[f], wy + dy[f], wz + dz[f]);
-                        if (block_is_any_water(nb))
-                            has_neighbor = true;
-                    }
-
-                    if (!has_neighbor) {
+                    if (!water_flow_has_support_locked(world, wx, wy, wz, level)) {
                         world_set_block_locked(world, wx, wy, wz, BLOCK_AIR);
                         changed = true;
                         stats.evaporated++;
@@ -3312,10 +3461,9 @@ bool world_water_tick(VoxelWorld *world)
     }
 
     /* ---- Pass 2: snapshot active spreaders ----
-     * An "active" cell is a source or non-terminal flow that has at least
-     * one face neighbour (down or 4 lateral) that's BLOCK_AIR. The air
-     * pre-filter skips ocean interiors so a single coast doesn't flood
-     * the snapshot. */
+     * An "active" cell is a source or non-terminal, supported flow that can
+     * place water into a face neighbour. Flows in a falling column wait until
+     * they rest on solid ground before spreading sideways. */
     for (int ci = 0;
          ci < world->chunk_count && active_count < WATER_TICK_MAX_ACTIVE;
          ci++) {
@@ -3350,21 +3498,10 @@ bool world_water_tick(VoxelWorld *world)
                         continue;
 
                     int wx = ox + x, wy = y, wz = oz + z;
-                    bool can_spread = false;
-                    if (wy > 0 &&
-                        world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR)
-                        can_spread = true;
-                    if (!can_spread) {
-                        const int sx[4] = {-1, 1,  0, 0};
-                        const int sz[4] = { 0, 0, -1, 1};
-                        for (int d = 0; d < 4 && !can_spread; d++) {
-                            if (world_get_block(world,
-                                                wx + sx[d], wy, wz + sz[d])
-                                == BLOCK_AIR)
-                                can_spread = true;
-                        }
-                    }
-                    if (!can_spread)
+                    if (b == BLOCK_WATER_FLOW &&
+                        !water_flow_has_support_locked(world, wx, wy, wz, lvl))
+                        continue;
+                    if (!water_cell_can_spread_locked(world, wx, wy, wz))
                         continue;
 
                     active[active_count++] = (WaterCell){wx, wy, wz, lvl};
@@ -3392,6 +3529,9 @@ bool world_water_tick(VoxelWorld *world)
             continue;
         }
 
+        if (!water_cell_rests_on_solid_locked(world, c.wx, c.wy, c.wz))
+            continue;
+
         /* Lateral spread at one level higher than the source cell. */
         uint8_t next_level = (uint8_t)(c.level + 1);
         if (next_level > WATER_MAX_LEVEL)
@@ -3399,9 +3539,26 @@ bool world_water_tick(VoxelWorld *world)
 
         const int sx[4] = {-1, 1,  0, 0};
         const int sz[4] = { 0, 0, -1, 1};
+        bool downhill[4] = { false, false, false, false };
+        bool has_downhill = false;
+
         for (int d = 0; d < 4; d++) {
             int nx = c.wx + sx[d];
             int nz = c.wz + sz[d];
+            if (world_get_block(world, nx, c.wy, nz) != BLOCK_AIR)
+                continue;
+            if (c.wy > 0 &&
+                world_get_block(world, nx, c.wy - 1, nz) == BLOCK_AIR) {
+                downhill[d] = true;
+                has_downhill = true;
+            }
+        }
+
+        for (int d = 0; d < 4; d++) {
+            int nx = c.wx + sx[d];
+            int nz = c.wz + sz[d];
+            if (has_downhill && !downhill[d])
+                continue;
             if (world_get_block(world, nx, c.wy, nz) != BLOCK_AIR)
                 continue;
             if (water_set_flow_locked(world, nx, c.wy, nz, next_level)) {

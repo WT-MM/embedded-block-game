@@ -26,6 +26,7 @@
 #define WATER_SINK_TERMINAL      -1.4f
 #define WATER_SWIM_UP_VELOCITY   3.2f
 #define WATER_HORIZONTAL_DRAG    0.55f
+#define WATER_FLOW_PUSH_SPEED    1.35f
 
 /* How many physics ticks between full water AABB re-checks when the player
  * is grounded and stationary. 3 ticks @ 60 Hz = ~20 Hz re-check rate.
@@ -51,6 +52,7 @@ typedef struct {
      * AABB voxel scan at 60 Hz was the dominant cost in upd_phys at idle. */
     bool is_in_water;
     int  water_check_countdown;
+    float water_flow_x, water_flow_z;
 } Player;
 
 void player_init(Player *p, float start_x, float start_y, float start_z);

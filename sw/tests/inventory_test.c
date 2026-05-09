@@ -66,7 +66,7 @@ static void test_crafting_table_and_door_recipes(void)
     inv.craft[6] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
     inv.craft[7] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
     survival_inventory_refresh_craft_output(&inv);
-    assert(item_stack_is_empty(&inv.craft_output));
+    assert(inv.craft_output.item == (ItemID)BLOCK_CRAFTING_TABLE);
 
     survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
     survival_inventory_refresh_craft_output(&inv);
@@ -142,6 +142,14 @@ static void test_food_items_and_mushroom_stew_recipe(void)
     assert(found_stew);
 }
 
+static void test_added_item_textures(void)
+{
+    assert(item_texture_id(ITEM_STICK) == TEX_TILE_STICK);
+    assert(item_texture_id((ItemID)BLOCK_DOOR) == TEX_TILE_DOOR_ITEM);
+    assert(item_texture_id((ItemID)BLOCK_CRAFTING_TABLE) ==
+           TEX_TILE_CRAFTING_TABLE_FRONT);
+}
+
 static void test_cursor_slot_clicks(void)
 {
     SurvivalInventory inv;
@@ -170,6 +178,7 @@ int main(void)
     test_table_only_block_recipes();
     test_legacy_door_recipe_removed();
     test_food_items_and_mushroom_stew_recipe();
+    test_added_item_textures();
     test_cursor_slot_clicks();
     puts("inventory_test: ok");
     return 0;

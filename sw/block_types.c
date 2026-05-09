@@ -195,9 +195,14 @@ void init_block_types(void)
 
     BlockRegistry[BLOCK_CRAFTING_TABLE].id = BLOCK_CRAFTING_TABLE;
     BlockRegistry[BLOCK_CRAFTING_TABLE].name = "Crafting Table";
-    set_all_faces(&BlockRegistry[BLOCK_CRAFTING_TABLE], TEX_TILE_WOOD_PLANK);
-    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_TOP] = TEX_TILE_WOOD_TOP;
-    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_FRONT] = TEX_TILE_WOOD_SIDE;
+    set_all_faces(&BlockRegistry[BLOCK_CRAFTING_TABLE],
+                  TEX_TILE_CRAFTING_TABLE_SIDE);
+    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_TOP] =
+        TEX_TILE_CRAFTING_TABLE_TOP;
+    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_BOTTOM] =
+        TEX_TILE_WOOD_PLANK;
+    BlockRegistry[BLOCK_CRAFTING_TABLE].face_texture_ids[FACE_FRONT] =
+        TEX_TILE_CRAFTING_TABLE_FRONT;
     BlockRegistry[BLOCK_CRAFTING_TABLE].hardness_seconds = 1.05f;
 
     BlockRegistry[BLOCK_DOOR].id = BLOCK_DOOR;
@@ -295,7 +300,8 @@ bool block_is_translucent(BlockID id)
 
 bool block_is_alpha_keyed(BlockID id)
 {
-    return id == BLOCK_LEAVES || block_render_model(id) == BLOCK_RENDER_CROSS;
+    return id == BLOCK_LEAVES || id == BLOCK_CACTUS ||
+           block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
 bool block_is_passable(BlockID id)

@@ -1252,6 +1252,8 @@ static uint8_t item_icon_flags(ItemID item)
 {
     if (!item_is_placeable_block(item))
         return QUAD_FLAG_ALPHA_KEY;
+    if (item == (ItemID)BLOCK_DOOR)
+        return QUAD_FLAG_ALPHA_KEY;
 
     {
         BlockID block = item_place_block(item);
@@ -1363,55 +1365,152 @@ static void draw_recipe_icon(RenderContext *ctx, ItemID item,
                               item_texture_id(item), item_icon_flags(item));
 }
 
-static void draw_recipe_inputs(RenderContext *ctx, const CraftRecipeView *recipe,
-                               float x, float y)
+static int recipe_lookup_page_count(int craft_grid_dim)
 {
-    const float mini = 6.0f;
-    const float gap = 1.0f;
+    int count = survival_craft_recipe_count_for_grid(craft_grid_dim);
 
-    if (!ctx || !recipe)
-        return;
+    return count > 0 ? count : 1;
+}
+
+static int clamp_recipe_lookup_page(int craft_grid_dim, int page)
+{
+    int page_count = recipe_lookup_page_count(craft_grid_dim);
+
+    if (page < 0)
+        return 0;
+    if (page >= page_count)
+        return page_count - 1;
+    return page;
+}
+
+static ItemID recipe_input_for_cell(const CraftRecipeView *recipe,
+                                    int display_dim,
+                                    int row,
+                                    int col)
+{
+    if (!recipe)
+        return ITEM_NONE;
 
     if (recipe->shapeless) {
-        int drawn = 0;
+        int cell = row * display_dim + col;
+        int seen = 0;
 
         for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++) {
             if (recipe->inputs[i] == ITEM_NONE)
                 continue;
-            draw_recipe_icon(ctx, recipe->inputs[i],
-                             x + (float)drawn * (mini + gap),
-                             y + 4.0f, mini);
-            drawn++;
+            if (seen == cell)
+                return recipe->inputs[i];
+            seen++;
         }
-        return;
+        return ITEM_NONE;
     }
 
-    for (int row = 0; row < SURVIVAL_CRAFT_GRID_TABLE; row++) {
-        for (int col = 0; col < SURVIVAL_CRAFT_GRID_TABLE; col++) {
-            int src = row < recipe->height && col < recipe->width ?
-                row * recipe->width + col : -1;
-            ItemID item = src >= 0 ? recipe->inputs[src] : ITEM_NONE;
+    if (row >= recipe->height || col >= recipe->width)
+        return ITEM_NONE;
+    return recipe->inputs[row * recipe->width + col];
+}
 
-            draw_recipe_icon(ctx, item,
-                             x + (mini + gap) * (float)col,
-                             y + (mini + gap) * (float)row, mini);
+static void draw_recipe_grid(RenderContext *ctx, const CraftRecipeView *recipe,
+                             int display_dim, float x, float y,
+                             float slot, float gap)
+{
+    for (int row = 0; row < display_dim; row++) {
+        for (int col = 0; col < display_dim; col++) {
+            float x0 = x + (slot + gap) * (float)col;
+            float y0 = y + (slot + gap) * (float)row;
+            ItemID item = recipe_input_for_cell(recipe, display_dim, row, col);
+
+            renderer_fill_rect(ctx, x0, y0, x0 + slot, y0 + slot, 14, 0);
+            renderer_fill_rect(ctx, x0 + 1.0f, y0 + 1.0f,
+                               x0 + slot - 1.0f, y0 + slot - 1.0f,
+                               0, QUAD_ALPHA_25);
+            draw_recipe_icon(ctx, item, x0, y0, slot);
         }
     }
 }
 
-static void draw_recipe_lookup(RenderContext *ctx,
-                               const SurvivalInventoryLayout *layout)
+static void draw_recipe_arrow_button(RenderContext *ctx,
+                                     float x, float y,
+                                     bool right,
+                                     bool enabled)
 {
-    int recipe_count;
-    const float row_h = 22.0f;
-    float x;
-    float y;
-    int max_rows;
+    const float size = 22.0f;
+    uint8_t frame = enabled ? 5 : 14;
+    uint8_t fill = enabled ? 14 : 0;
+
+    renderer_fill_rect(ctx, x, y, x + size, y + size, frame, 0);
+    renderer_fill_rect(ctx, x + 1.0f, y + 1.0f,
+                       x + size - 1.0f, y + size - 1.0f,
+                       fill, QUAD_ALPHA_25);
+
+    for (int i = 0; i < 5; i++) {
+        float yy = y + 6.0f + (float)i * 2.0f;
+        float len = 2.0f + (float)(i < 3 ? i : 4 - i) * 3.0f;
+        float x0 = right ? x + 7.0f : x + 15.0f - len;
+        float x1 = right ? x + 7.0f + len : x + 15.0f;
+
+        renderer_fill_rect(ctx, x0, yy, x1, yy + 2.0f, frame, 0);
+    }
+}
+
+static int recipe_lookup_nav_hit(float cursor_x,
+                                 float cursor_y,
+                                 int craft_grid_dim)
+{
+    SurvivalInventoryLayout layout;
+    int page_count = recipe_lookup_page_count(craft_grid_dim);
+    float nav_y;
+
+    if (page_count <= 1)
+        return 0;
+
+    survival_inventory_layout(&layout, craft_grid_dim);
+    nav_y = layout.recipe_y + layout.recipe_h - 30.0f;
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.recipe_x + 10.0f, nav_y,
+                      layout.recipe_x + 32.0f, nav_y + 22.0f))
+        return -1;
+    if (point_in_rect(cursor_x, cursor_y,
+                      layout.recipe_x + layout.recipe_w - 32.0f, nav_y,
+                      layout.recipe_x + layout.recipe_w - 10.0f,
+                      nav_y + 22.0f))
+        return 1;
+    return 0;
+}
+
+static void draw_recipe_lookup(RenderContext *ctx,
+                               const SurvivalInventoryLayout *layout,
+                               int recipe_page)
+{
+    CraftRecipeView recipe;
+    ItemStack output;
+    char page_text[16];
+    int page_count;
+    int label_len;
+    int page_len;
+    int display_dim;
+    float card_x;
+    float card_y;
+    float card_w;
+    float grid_slot;
+    float grid_gap = 4.0f;
+    float grid_x;
+    float grid_y;
+    float grid_span;
+    float out_x;
+    float out_y;
+    float nav_y;
 
     if (!ctx || !layout)
         return;
 
-    recipe_count = survival_craft_recipe_count_for_grid(layout->craft_grid_dim);
+    page_count = recipe_lookup_page_count(layout->craft_grid_dim);
+    recipe_page = clamp_recipe_lookup_page(layout->craft_grid_dim, recipe_page);
+    display_dim = layout->craft_grid_dim;
+    grid_slot = display_dim == SURVIVAL_CRAFT_GRID_TABLE ? 20.0f : 26.0f;
+    grid_span = (float)display_dim * grid_slot +
+                (float)(display_dim - 1) * grid_gap;
+
     draw_inventory_panel(ctx, layout->recipe_x, layout->recipe_y,
                          layout->recipe_w, layout->recipe_h);
     draw_text_shadow(ctx,
@@ -1419,52 +1518,63 @@ static void draw_recipe_lookup(RenderContext *ctx,
                      "TABLE RECIPES" : "RECIPES",
                      layout->recipe_x + 10.0f, layout->recipe_y + 12.0f, 5);
 
-    x = layout->recipe_x + 8.0f;
-    y = layout->recipe_y + 30.0f;
-    max_rows = (int)((layout->recipe_h - 38.0f) / row_h);
-    if (recipe_count > max_rows)
-        recipe_count = max_rows;
+    if (!survival_craft_recipe_view_for_grid(recipe_page,
+                                             layout->craft_grid_dim,
+                                             &recipe))
+        return;
 
-    for (int i = 0; i < recipe_count; i++) {
-        CraftRecipeView recipe;
-        ItemStack output;
-        char label[24];
-        int len;
-        float row_y = y + row_h * (float)i;
+    card_x = layout->recipe_x + 10.0f;
+    card_y = layout->recipe_y + 38.0f;
+    card_w = layout->recipe_w - 20.0f;
+    renderer_fill_rect(ctx, card_x, card_y,
+                       card_x + card_w, layout->recipe_y + layout->recipe_h - 38.0f,
+                       0, QUAD_ALPHA_25);
 
-        if (!survival_craft_recipe_view_for_grid(i, layout->craft_grid_dim,
-                                                 &recipe))
-            continue;
+    label_len = (int)strlen(item_name(recipe.output));
+    if (label_len > 22)
+        label_len = 22;
+    chat_draw_text(ctx, item_name(recipe.output), label_len,
+                   card_x + 8.0f, card_y + 10.0f, 5);
 
-        renderer_fill_rect(ctx, x, row_y,
-                           x + layout->recipe_w - 16.0f,
-                           row_y + row_h - 2.0f,
-                           0, QUAD_ALPHA_25);
-        draw_recipe_inputs(ctx, &recipe, x + 4.0f, row_y + 2.0f);
-        renderer_fill_rect(ctx, x + 50.0f, row_y + 11.0f,
-                           x + 60.0f, row_y + 13.0f, 5, 0);
-        renderer_fill_rect(ctx, x + 58.0f, row_y + 8.0f,
-                           x + 62.0f, row_y + 16.0f, 5, 0);
+    grid_x = card_x + 12.0f;
+    grid_y = card_y + 36.0f;
+    draw_recipe_grid(ctx, &recipe, display_dim, grid_x, grid_y,
+                     grid_slot, grid_gap);
 
-        output.item = recipe.output;
-        output.count = recipe.output_count;
-        draw_item_stack_icon(ctx, &output, x + 64.0f, row_y - 3.0f,
-                             x + 88.0f, row_y + 21.0f);
+    renderer_fill_rect(ctx, grid_x + grid_span + 13.0f,
+                       grid_y + grid_span * 0.5f - 2.0f,
+                       grid_x + grid_span + 35.0f,
+                       grid_y + grid_span * 0.5f + 2.0f, 5, 0);
+    renderer_fill_rect(ctx, grid_x + grid_span + 31.0f,
+                       grid_y + grid_span * 0.5f - 7.0f,
+                       grid_x + grid_span + 37.0f,
+                       grid_y + grid_span * 0.5f + 7.0f, 5, 0);
 
-        snprintf(label, sizeof(label), "%s", item_name(recipe.output));
-        len = (int)strlen(label);
-        if (len > 15)
-            len = 15;
-        chat_draw_text(ctx, label, len,
-                       x + 90.0f, row_y + 8.0f, 5);
-    }
+    output.item = recipe.output;
+    output.count = recipe.output_count;
+    out_x = card_x + card_w - 46.0f;
+    out_y = grid_y + grid_span * 0.5f - 18.0f;
+    draw_inventory_slot(ctx, &output, out_x, out_y, false, false);
+
+    nav_y = layout->recipe_y + layout->recipe_h - 30.0f;
+    draw_recipe_arrow_button(ctx, layout->recipe_x + 10.0f, nav_y,
+                             false, recipe_page > 0);
+    draw_recipe_arrow_button(ctx, layout->recipe_x + layout->recipe_w - 32.0f,
+                             nav_y, true, recipe_page < page_count - 1);
+    snprintf(page_text, sizeof(page_text), "%d/%d", recipe_page + 1, page_count);
+    page_len = (int)strlen(page_text);
+    chat_draw_text(ctx, page_text, page_len,
+                   layout->recipe_x + (layout->recipe_w -
+                   (float)(page_len * chat_font_cell_w())) * 0.5f,
+                   nav_y + 8.0f, 5);
 }
 
 static void draw_survival_inventory(RenderContext *ctx,
                                     const SurvivalInventory *inventory,
                                     int selected_slot,
                                     float cursor_x,
-                                    float cursor_y)
+                                    float cursor_y,
+                                    int recipe_page)
 {
     SurvivalInventoryLayout layout;
     InventoryHit hover;
@@ -1479,20 +1589,13 @@ static void draw_survival_inventory(RenderContext *ctx,
 
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
                        0, QUAD_ALPHA_50);
-    draw_recipe_lookup(ctx, &layout);
+    draw_recipe_lookup(ctx, &layout, recipe_page);
     draw_inventory_panel(ctx, layout.panel_x, layout.panel_y,
                          layout.panel_w, layout.panel_h);
     draw_text_shadow(ctx,
                      craft_grid_dim == SURVIVAL_CRAFT_GRID_TABLE ?
                      "CRAFTING TABLE" : "INVENTORY",
                      layout.panel_x + 12.0f, layout.panel_y + 12.0f, 5);
-    draw_text_shadow(ctx,
-                     craft_grid_dim == SURVIVAL_CRAFT_GRID_TABLE ?
-                     "3X3" : "CRAFT",
-                     layout.craft_x,
-                     layout.craft_y - 13.0f, 5);
-    draw_text_shadow(ctx, "BAG", layout.main_x,
-                     layout.main_y - 13.0f, 5);
     draw_text_shadow(ctx, "HOTBAR", layout.hotbar_x,
                      layout.hotbar_y - 13.0f, 5);
 
@@ -1757,9 +1860,11 @@ static void draw_hungerbar(RenderContext *ctx, int food_units)
         int threshold = (i + 1) * 2;
         uint8_t flags = QUAD_FLAG_ALPHA_KEY;
 
-        renderer_fill_rect(ctx, x0 + 2.0f, health_top + 2.0f,
-                           x0 + icon - 2.0f, health_top + icon - 2.0f,
-                           14, QUAD_ALPHA_50);
+        renderer_draw_screen_tile(ctx,
+                                  x0, health_top,
+                                  x0 + icon, health_top + icon,
+                                  TEX_TILE_DRUMSTICK_EMPTY,
+                                  QUAD_FLAG_ALPHA_KEY);
         if (food_units <= i * 2)
             continue;
         if (food_units < threshold)
@@ -2135,6 +2240,7 @@ int main(void)
     SurvivalInventory survival_inventory;
     ItemEntityPool item_drops;
     bool inventory_open = false;
+    int inventory_recipe_page = 0;
     float inventory_cursor_x = SCREEN_WIDTH * 0.5f;
     float inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
     PauseMenuSettings pause_settings = {0};
@@ -2378,6 +2484,7 @@ int main(void)
                 survival_inventory_set_craft_grid_dim(&survival_inventory,
                                                       SURVIVAL_CRAFT_GRID_PLAYER);
                 inventory_open = true;
+                inventory_recipe_page = 0;
                 inventory_cursor_x = SCREEN_WIDTH * 0.5f;
                 inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
             }
@@ -2644,9 +2751,14 @@ int main(void)
         if (!paused && !chat_is_open(&chat) && inventory_open) {
             bool left_click = input_consume_break(&inp);
             bool right_click = input_consume_place(&inp);
+            int craft_grid_dim =
+                survival_inventory_craft_grid_dim(&survival_inventory);
+            int recipe_nav = recipe_lookup_nav_hit(inventory_cursor_x,
+                                                   inventory_cursor_y,
+                                                   craft_grid_dim);
             InventoryHit hit = survival_inventory_hit_test(inventory_cursor_x,
                                                            inventory_cursor_y,
-                                                           survival_inventory_craft_grid_dim(&survival_inventory));
+                                                           craft_grid_dim);
 
             break_timer = 0.0f;
             break_duration = 0.0f;
@@ -2654,10 +2766,19 @@ int main(void)
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_hotbar_page(&inp);
+            inventory_recipe_page =
+                clamp_recipe_lookup_page(craft_grid_dim, inventory_recipe_page);
 
-            if ((left_click || right_click) && hit.area != INVENTORY_SLOT_NONE)
+            if ((left_click || right_click) && recipe_nav != 0) {
+                inventory_recipe_page =
+                    clamp_recipe_lookup_page(craft_grid_dim,
+                                             inventory_recipe_page +
+                                             recipe_nav);
+            } else if ((left_click || right_click) &&
+                       hit.area != INVENTORY_SLOT_NONE) {
                 survival_inventory_click(&survival_inventory,
                                          hit.area, hit.index, right_click);
+            }
             inp.break_down = false;
         } else if (!paused && !chat_is_open(&chat) && !inventory_open) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
@@ -2800,6 +2921,7 @@ int main(void)
                                                          &inventory_cursor_x,
                                                          &inventory_cursor_y,
                                                          &chat)) {
+                        inventory_recipe_page = 0;
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;
@@ -2953,7 +3075,8 @@ int main(void)
             draw_survival_inventory(ctx, &survival_inventory,
                                     selected_hotbar_slot,
                                     inventory_cursor_x,
-                                    inventory_cursor_y);
+                                    inventory_cursor_y,
+                                    inventory_recipe_page);
         pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
             chat_draw_text_scaled(ctx, fps_text, fps_text_len,

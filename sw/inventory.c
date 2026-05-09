@@ -237,10 +237,14 @@ const char *item_name(ItemID item)
 
 uint8_t item_texture_id(ItemID item)
 {
+    if (item == (ItemID)BLOCK_DOOR)
+        return TEX_TILE_DOOR_ITEM;
+    if (item == (ItemID)BLOCK_CRAFTING_TABLE)
+        return TEX_TILE_CRAFTING_TABLE_FRONT;
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return block_face_texture_id((BlockID)item, FACE_FRONT);
     if (item == ITEM_STICK)
-        return TEX_TILE_WOOD_PLANK;
+        return TEX_TILE_STICK;
     if (item == ITEM_APPLE)
         return TEX_TILE_APPLE;
     if (item == ITEM_RED_MUSHROOM)

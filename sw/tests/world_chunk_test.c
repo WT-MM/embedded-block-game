@@ -339,6 +339,7 @@ int main(void)
         !block_is_alpha_keyed(BLOCK_RED_MUSHROOM) ||
         !block_is_passable(BLOCK_RED_MUSHROOM) ||
         block_render_model(BLOCK_CACTUS) != BLOCK_RENDER_CUBE ||
+        !block_is_alpha_keyed(BLOCK_CACTUS) ||
         block_is_passable(BLOCK_CACTUS))
         return check_failed("plant metadata missing");
     const int flower_x = 9;

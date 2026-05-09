@@ -1783,8 +1783,8 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
     if (block_is_translucent(type))
         face_flags |= QUAD_ALPHA_50;
     /*
-     * Cutout foliage (leaves) carries palette index 0 for the gaps between
-     * leaf clumps. Without ALPHA_KEY those texels render as the palette-0
+     * Cutout textures (leaves, cactus edges, flowers) carry palette index 0
+     * for their holes. Without ALPHA_KEY those texels render as the palette-0
      * background color and look like solid sky-tinted blobs instead of holes.
      */
     if (block_is_alpha_keyed(type))

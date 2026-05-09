@@ -71,6 +71,8 @@
 #define INVENTORY_CURSOR_MIN_X 0.0f
 #define INVENTORY_CURSOR_MIN_Y 0.0f
 #define INVENTORY_CURSOR_SPEED 1.0f
+#define FURNACE_SMELT_SECONDS 0.75f
+#define FURNACE_MAX_ACTIVE_SMELTS 32
 
 typedef struct {
     bool hit;
@@ -87,6 +89,16 @@ typedef struct {
     InventorySlotArea area;
     int index;
 } InventoryHit;
+
+typedef struct {
+    bool active;
+    int x;
+    int y;
+    int z;
+    float timer;
+    ItemID output;
+    ItemID fuel;
+} FurnaceSmelt;
 
 typedef struct {
     float panel_x;
@@ -146,14 +158,14 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
     },
     {
         BLOCK_CRAFTING_TABLE,
+        BLOCK_FURNACE,
+        BLOCK_TORCH,
         BLOCK_DOOR,
         BLOCK_CACTUS,
         BLOCK_RED_MUSHROOM,
         BLOCK_BROWN_MUSHROOM,
         BLOCK_RED_FLOWER,
         BLOCK_YELLOW_FLOWER,
-        BLOCK_AIR,
-        BLOCK_AIR,
     },
 };
 
@@ -592,12 +604,43 @@ static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
                                BlockID *broken_block_out)
 {
     BlockID broken;
+    int lower_y;
 
     if (!target || !target->hit)
         return false;
     broken = world_get_block(world, target->hit_x, target->hit_y, target->hit_z);
     if (broken == BLOCK_AIR)
         return false;
+
+    if (block_is_door(broken)) {
+        lower_y = block_is_door_upper(broken) ?
+            target->hit_y - 1 : target->hit_y;
+
+        if (block_is_door(world_get_block(world,
+                                          target->hit_x,
+                                          lower_y,
+                                          target->hit_z))) {
+            world_set_block(world, target->hit_x, lower_y, target->hit_z,
+                            BLOCK_AIR);
+            world_mark_chunk_mesh_edit_priority(world,
+                                                target->hit_x,
+                                                target->hit_z);
+        }
+        if (block_is_door(world_get_block(world,
+                                          target->hit_x,
+                                          lower_y + 1,
+                                          target->hit_z))) {
+            world_set_block(world, target->hit_x, lower_y + 1, target->hit_z,
+                            BLOCK_AIR);
+            world_mark_chunk_mesh_edit_priority(world,
+                                                target->hit_x,
+                                                target->hit_z);
+        }
+
+        if (broken_block_out)
+            *broken_block_out = BLOCK_DOOR;
+        return true;
+    }
 
     if (!world_set_block(world,
                          target->hit_x, target->hit_y, target->hit_z,
@@ -663,6 +706,344 @@ static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam
 
     world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
     return PLACE_OK;
+}
+
+static BlockDoorFacing door_facing_from_camera(const Camera *cam)
+{
+    float fx;
+    float fz;
+
+    if (!cam)
+        return BLOCK_DOOR_FACING_NORTH;
+
+    fx = sinf(cam->yaw);
+    fz = cosf(cam->yaw);
+    if (fabsf(fx) > fabsf(fz))
+        return fx >= 0.0f ? BLOCK_DOOR_FACING_EAST :
+                            BLOCK_DOOR_FACING_WEST;
+    return fz >= 0.0f ? BLOCK_DOOR_FACING_SOUTH :
+                        BLOCK_DOOR_FACING_NORTH;
+}
+
+static PlaceResult try_place_targeted_door(VoxelWorld *world,
+                                           const Camera *cam,
+                                           const Player *player)
+{
+    BlockTarget target = {0};
+    BlockDoorFacing facing;
+    BlockID lower;
+    BlockID upper;
+
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return PLACE_FAIL_NO_TRACE;
+    if (!target.place_valid)
+        return PLACE_FAIL_NO_AIR_NEAR_HIT;
+    if (target.place_y + 1 >= WORLD_CHUNK_HEIGHT)
+        return PLACE_FAIL_WORLD_REJECTED;
+    if (!block_is_passable(world_get_block(world,
+                                           target.place_x,
+                                           target.place_y,
+                                           target.place_z)) ||
+        !block_is_passable(world_get_block(world,
+                                           target.place_x,
+                                           target.place_y + 1,
+                                           target.place_z)))
+        return PLACE_FAIL_TARGET_OCCUPIED;
+    if (player &&
+        (player_intersects_block(player,
+                                 target.place_x,
+                                 target.place_y,
+                                 target.place_z) ||
+         player_intersects_block(player,
+                                 target.place_x,
+                                 target.place_y + 1,
+                                 target.place_z)))
+        return PLACE_FAIL_PLAYER_BLOCKED;
+
+    facing = door_facing_from_camera(cam);
+    lower = block_door_make(facing, false, false);
+    upper = block_door_make(facing, false, true);
+
+    if (!world_set_block(world,
+                         target.place_x, target.place_y, target.place_z,
+                         lower))
+        return PLACE_FAIL_WORLD_REJECTED;
+    if (!world_set_block(world,
+                         target.place_x, target.place_y + 1, target.place_z,
+                         upper)) {
+        world_set_block(world,
+                        target.place_x, target.place_y, target.place_z,
+                        BLOCK_AIR);
+        return PLACE_FAIL_WORLD_REJECTED;
+    }
+
+    world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
+    return PLACE_OK;
+}
+
+static bool try_toggle_targeted_door(VoxelWorld *world,
+                                     const Camera *cam,
+                                     const Player *player,
+                                     Chat *chat)
+{
+    BlockTarget target = {0};
+    BlockID hit;
+    int lower_y;
+    BlockDoorFacing facing;
+    bool next_open;
+
+    if (!world || !cam)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.hit)
+        return false;
+
+    hit = world_get_block(world, target.hit_x, target.hit_y, target.hit_z);
+    if (!block_is_door(hit))
+        return false;
+
+    lower_y = block_is_door_upper(hit) ? target.hit_y - 1 : target.hit_y;
+    facing = block_door_facing(hit);
+    next_open = !block_is_door_open(hit);
+
+    if (!next_open && player &&
+        (player_intersects_block(player,
+                                 target.hit_x,
+                                 lower_y,
+                                 target.hit_z) ||
+         player_intersects_block(player,
+                                 target.hit_x,
+                                 lower_y + 1,
+                                 target.hit_z))) {
+        if (chat)
+            chat_log(chat, "door is blocked");
+        return true;
+    }
+
+    if (block_is_door(world_get_block(world,
+                                      target.hit_x,
+                                      lower_y,
+                                      target.hit_z))) {
+        world_set_block(world,
+                        target.hit_x, lower_y, target.hit_z,
+                        block_door_make(facing, next_open, false));
+    }
+    if (block_is_door(world_get_block(world,
+                                      target.hit_x,
+                                      lower_y + 1,
+                                      target.hit_z))) {
+        world_set_block(world,
+                        target.hit_x, lower_y + 1, target.hit_z,
+                        block_door_make(facing, next_open, true));
+    }
+
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    if (chat)
+        chat_log(chat, "door %s", next_open ? "opened" : "closed");
+    return true;
+}
+
+static int furnace_smelt_find(const FurnaceSmelt smelts[],
+                              int x, int y, int z)
+{
+    if (!smelts)
+        return -1;
+
+    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
+        if (smelts[i].active &&
+            smelts[i].x == x &&
+            smelts[i].y == y &&
+            smelts[i].z == z)
+            return i;
+    }
+
+    return -1;
+}
+
+static FurnaceSmelt *furnace_smelt_free_slot(FurnaceSmelt smelts[])
+{
+    if (!smelts)
+        return NULL;
+
+    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
+        if (!smelts[i].active)
+            return &smelts[i];
+    }
+
+    return NULL;
+}
+
+static ItemID furnace_inventory_first_fuel(const SurvivalInventory *inventory)
+{
+    static const ItemID fuels[] = {
+        ITEM_COAL,
+        (ItemID)BLOCK_WOOD,
+        (ItemID)BLOCK_PLANKS,
+        ITEM_STICK,
+    };
+
+    if (!inventory)
+        return ITEM_NONE;
+
+    for (int i = 0; i < (int)(sizeof(fuels) / sizeof(fuels[0])); i++) {
+        if (survival_inventory_count_item(inventory, fuels[i]) > 0)
+            return fuels[i];
+    }
+
+    return ITEM_NONE;
+}
+
+static bool try_start_targeted_furnace_smelt(VoxelWorld *world,
+                                             const Camera *cam,
+                                             SurvivalInventory *inventory,
+                                             FurnaceSmelt smelts[],
+                                             int hotbar_slot,
+                                             Chat *chat)
+{
+    BlockTarget target = {0};
+    const ItemStack *held_stack;
+    FurnaceSmelt *smelt;
+    ItemID fuel;
+
+    if (!world || !cam || !inventory)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.hit ||
+        world_get_block(world, target.hit_x, target.hit_y, target.hit_z) !=
+            BLOCK_FURNACE)
+        return false;
+
+    held_stack = survival_inventory_hotbar_stack(inventory, hotbar_slot);
+    if (item_stack_is_empty(held_stack)) {
+        if (chat)
+            chat_log(chat, "furnace: hold sand to smelt glass");
+        return true;
+    }
+    if (held_stack->item != (ItemID)BLOCK_SAND) {
+        if (!item_is_placeable_block(held_stack->item) &&
+            item_is_furnace_fuel(held_stack->item) && chat)
+            chat_log(chat, "furnace: hold sand to smelt glass");
+        return !item_is_placeable_block(held_stack->item) &&
+               item_is_furnace_fuel(held_stack->item);
+    }
+
+    if (furnace_smelt_find(smelts,
+                           target.hit_x, target.hit_y, target.hit_z) >= 0) {
+        if (chat)
+            chat_log(chat, "furnace is already smelting");
+        return true;
+    }
+
+    smelt = furnace_smelt_free_slot(smelts);
+    if (!smelt) {
+        if (chat)
+            chat_log(chat, "furnace queue is full");
+        return true;
+    }
+
+    fuel = furnace_inventory_first_fuel(inventory);
+    if (fuel == ITEM_NONE) {
+        if (chat)
+            chat_log(chat, "furnace: needs coal, wood, planks, or sticks");
+        return true;
+    }
+
+    if (!survival_inventory_remove_storage(inventory, hotbar_slot, 1))
+        return true;
+    if (!survival_inventory_remove_item(inventory, fuel, 1))
+        return true;
+
+    smelt->active = true;
+    smelt->x = target.hit_x;
+    smelt->y = target.hit_y;
+    smelt->z = target.hit_z;
+    smelt->timer = 0.0f;
+    smelt->output = (ItemID)BLOCK_GLASS;
+    smelt->fuel = fuel;
+
+    if (chat)
+        chat_log(chat, "furnace: smelting glass with %s", item_name(fuel));
+    return true;
+}
+
+static void furnace_smelts_update(FurnaceSmelt smelts[],
+                                  const VoxelWorld *world,
+                                  SurvivalInventory *inventory,
+                                  ItemEntityPool *drops,
+                                  const Player *player,
+                                  float dt,
+                                  Chat *chat)
+{
+    if (!smelts || !world || !inventory)
+        return;
+
+    if (dt < 0.0f)
+        dt = 0.0f;
+
+    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
+        FurnaceSmelt *smelt = &smelts[i];
+        int leftover;
+
+        if (!smelt->active)
+            continue;
+
+        if (world_get_block(world, smelt->x, smelt->y, smelt->z) !=
+            BLOCK_FURNACE) {
+            smelt->active = false;
+            continue;
+        }
+
+        smelt->timer += dt;
+        if (smelt->timer < FURNACE_SMELT_SECONDS)
+            continue;
+
+        leftover = survival_inventory_add_item(inventory, smelt->output, 1);
+        if (leftover > 0)
+            item_entity_spawn_item_near_player(drops, player,
+                                               smelt->output, leftover);
+        if (chat)
+            chat_log(chat, "furnace finished %s", item_name(smelt->output));
+        smelt->active = false;
+    }
+}
+
+static void furnace_smelts_draw(RenderContext *ctx,
+                                const FurnaceSmelt smelts[],
+                                float world_time)
+{
+    if (!ctx || !smelts)
+        return;
+
+    for (int i = 0; i < FURNACE_MAX_ACTIVE_SMELTS; i++) {
+        const FurnaceSmelt *smelt = &smelts[i];
+        float progress;
+        float flicker;
+        Vec3 flame_center;
+
+        if (!smelt->active)
+            continue;
+
+        progress = smelt->timer / FURNACE_SMELT_SECONDS;
+        if (progress < 0.0f)
+            progress = 0.0f;
+        if (progress > 1.0f)
+            progress = 1.0f;
+
+        flicker = (sinf(world_time * 42.0f + (float)i * 1.7f) + 1.0f) * 0.5f;
+        flame_center = (Vec3){
+            (float)smelt->x + 0.5f,
+            (float)smelt->y + 1.02f + progress * 0.22f + flicker * 0.04f,
+            (float)smelt->z + 0.5f,
+        };
+        renderer_draw_world_billboard_tile(ctx,
+                                           flame_center,
+                                           0.32f + flicker * 0.16f,
+                                           TEX_TILE_TORCH,
+                                           QUAD_FLAG_ALPHA_KEY |
+                                               QUAD_FLAG_ZTEST);
+    }
 }
 
 static const char *place_result_name(PlaceResult r)
@@ -1021,8 +1402,34 @@ static bool execute_fill_command(Chat *chat, Player *player,
     return true;
 }
 
+static bool execute_give_command(Chat *chat, SurvivalInventory *inventory,
+                                 const GameCommandAst *ast)
+{
+    ItemID item;
+    int count;
+    int leftover;
+    int added;
+
+    if (!inventory || !ast)
+        return true;
+
+    item = ast->value.give.item;
+    count = ast->value.give.count;
+    leftover = survival_inventory_add_item(inventory, item, count);
+    added = count - leftover;
+
+    if (added > 0)
+        chat_log(chat, "give: %s x%d", item_name(item), added);
+    if (leftover > 0)
+        chat_log(chat, "inventory full: %d not added", leftover);
+
+    return true;
+}
+
 static bool execute_chat_command(Chat *chat, Player *player,
-                                 VoxelWorld *world, float *world_time,
+                                 VoxelWorld *world,
+                                 SurvivalInventory *inventory,
+                                 float *world_time,
                                  bool *kill_requested,
                                  const char *line)
 {
@@ -1061,6 +1468,8 @@ static bool execute_chat_command(Chat *chat, Player *player,
         return execute_setblock_command(chat, player, world, &parsed.ast);
     case GAME_COMMAND_KIND_FILL:
         return execute_fill_command(chat, player, world, &parsed.ast);
+    case GAME_COMMAND_KIND_GIVE:
+        return execute_give_command(chat, inventory, &parsed.ast);
     case GAME_COMMAND_KIND_KILL:
         if (kill_requested)
             *kill_requested = true;
@@ -1071,6 +1480,7 @@ static bool execute_chat_command(Chat *chat, Player *player,
         chat_log(chat, "/physics set gravity|speed|jump_height <value>");
         chat_log(chat, "/setblock <x> <y> <z> <block>");
         chat_log(chat, "/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>");
+        chat_log(chat, "/give [me] <item> [count]");
         chat_log(chat, "/kill");
         return true;
     default:
@@ -1767,8 +2177,7 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot,
             BlockID block = hotbar_block_at(selected_page, i);
 
             if (block != BLOCK_AIR) {
-                uint8_t flags =
-                    block_render_model(block) == BLOCK_RENDER_CROSS ?
+                uint8_t flags = block_is_alpha_keyed(block) ?
                     QUAD_FLAG_ALPHA_KEY : 0;
 
                 renderer_draw_screen_tile(ctx,
@@ -1965,6 +2374,36 @@ static bool try_consume_held_food(SurvivalInventory *inventory,
     return true;
 }
 
+static bool try_toss_selected_item(SurvivalInventory *inventory,
+                                   ItemEntityPool *drops,
+                                   const Player *player,
+                                   const Camera *cam,
+                                   int hotbar_slot,
+                                   Chat *chat)
+{
+    const ItemStack *held_stack;
+    ItemID held_item;
+
+    if (!inventory || !drops || !player || !cam)
+        return false;
+
+    held_stack = survival_inventory_hotbar_stack(inventory, hotbar_slot);
+    if (item_stack_is_empty(held_stack)) {
+        if (chat)
+            chat_log(chat, "nothing to drop");
+        return false;
+    }
+
+    held_item = held_stack->item;
+    if (!survival_inventory_remove_storage(inventory, hotbar_slot, 1))
+        return false;
+
+    item_entity_toss_item(drops, player, camera_forward(cam), held_item, 1);
+    if (chat)
+        chat_log(chat, "dropped %s", item_name(held_item));
+    return true;
+}
+
 static bool try_open_targeted_crafting_table(const VoxelWorld *world,
                                              const Camera *cam,
                                              SurvivalInventory *inventory,
@@ -2090,17 +2529,19 @@ static void draw_block_in_hand(RenderContext *ctx, BlockID type, float swing_tim
     const float s = HUD_SCALE;
     float swing = hand_swing_phase(swing_timer);
 
-    if (block_render_model(type) == BLOCK_RENDER_CROSS) {
+    if (block_render_model(type) != BLOCK_RENDER_CUBE) {
         float size = 22.0f * s;
         float x0 = SCREEN_WIDTH - 42.0f * s - swing * 7.0f * s;
         float y0 = SCREEN_HEIGHT - 58.0f * s + swing * 12.0f * s;
+        uint8_t tile = block_is_door(type) ?
+            TEX_TILE_DOOR_ITEM : block_face_texture_id(type, FACE_FRONT);
 
         renderer_draw_custom_screen_quad(ctx,
             x0,                 y0,
             x0 + size,          y0 + 3.0f * s,
             x0 + size * 0.85f,  y0 + size + 7.0f * s,
             x0 - size * 0.15f,  y0 + size + 4.0f * s,
-            block_face_texture_id(type, FACE_FRONT),
+            tile,
             QUAD_FLAG_ALPHA_KEY);
         return;
     }
@@ -2239,6 +2680,7 @@ int main(void)
     int selected_hotbar_page = 0;
     SurvivalInventory survival_inventory;
     ItemEntityPool item_drops;
+    FurnaceSmelt furnace_smelts[FURNACE_MAX_ACTIVE_SMELTS] = {0};
     bool inventory_open = false;
     int inventory_recipe_page = 0;
     float inventory_cursor_x = SCREEN_WIDTH * 0.5f;
@@ -2295,7 +2737,7 @@ int main(void)
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse  Q=quit\n");
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  Q=drop item  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse\n");
         printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
@@ -2456,7 +2898,10 @@ int main(void)
         if (paused && inventory_open)
             close_survival_inventory(&survival_inventory, &item_drops,
                                      &player, &inventory_open);
-        if (paused && pause_menu_update(&pause, &inp, &pause_settings)) {
+        bool pause_exit_requested = false;
+        if (paused &&
+            pause_menu_update(&pause, &inp, &pause_settings,
+                              &pause_exit_requested)) {
             world_set_stream_chunks_per_frame(&world,
                                               pause_settings.stream_chunks_per_frame);
             world_set_near_chunk_radius(&world,
@@ -2472,6 +2917,12 @@ int main(void)
             /* near_chunk_radius_max tracks the current render distance */
             pause_settings.near_chunk_radius_max =
                 world_render_distance(&world);
+        }
+        if (paused)
+            (void)input_consume_menu_select(&inp);
+        if (pause_exit_requested) {
+            inp.quit = true;
+            break;
         }
 
         if (input_consume_inventory_toggle(&inp) &&
@@ -2511,7 +2962,8 @@ int main(void)
 
                     snprintf(submitted, sizeof(submitted), "%s", chat.input);
                     chat_handle_enter(&chat);
-                    execute_chat_command(&chat, &player, &world, &world_time,
+                    execute_chat_command(&chat, &player, &world,
+                                         &survival_inventory, &world_time,
                                          &kill_requested, submitted);
                 } else {
                     chat_handle_char(&chat, ch);
@@ -2747,6 +3199,10 @@ int main(void)
         if (player.mode == PLAYER_MODE_SURVIVAL)
             item_entities_update(&item_drops, &world, &survival_inventory,
                                  &player, frame_dt);
+        if (!paused && player.mode == PLAYER_MODE_SURVIVAL)
+            furnace_smelts_update(furnace_smelts, &world,
+                                  &survival_inventory, &item_drops,
+                                  &player, frame_dt, &chat);
 
         if (!paused && !chat_is_open(&chat) && inventory_open) {
             bool left_click = input_consume_break(&inp);
@@ -2766,6 +3222,7 @@ int main(void)
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_hotbar_page(&inp);
+            (void)input_consume_item_drop(&inp);
             inventory_recipe_page =
                 clamp_recipe_lookup_page(craft_grid_dim, inventory_recipe_page);
 
@@ -2785,6 +3242,7 @@ int main(void)
             bool hotbar_page_pressed = input_consume_hotbar_page(&inp);
             bool break_pressed = input_consume_break(&inp);
             bool place_pressed = input_consume_place(&inp);
+            bool item_drop_pressed = input_consume_item_drop(&inp);
 
             if (break_pressed || place_pressed)
                 hand_swing_timer = 0.0f;
@@ -2824,6 +3282,16 @@ int main(void)
                     chat_log(&chat, "selected: %d %s",
                              selected_hotbar_slot + 1,
                              BlockRegistry[selected].name);
+                }
+            }
+
+            if (item_drop_pressed) {
+                if (player.mode == PLAYER_MODE_SURVIVAL) {
+                    try_toss_selected_item(&survival_inventory, &item_drops,
+                                           &player, &cam,
+                                           selected_hotbar_slot, &chat);
+                } else if (player.mode == PLAYER_MODE_CREATIVE) {
+                    chat_log(&chat, "creative item drops disabled");
                 }
             }
 
@@ -2903,8 +3371,17 @@ int main(void)
                 if (player.mode == PLAYER_MODE_CREATIVE) {
                     BlockID held = hotbar_block_at(selected_hotbar_page,
                                                    selected_hotbar_slot);
-                    PlaceResult pr = try_place_targeted_block(&world, &cam,
-                                                              &player, held);
+                    PlaceResult pr = PLACE_OK;
+
+                    if (try_toggle_targeted_door(&world, &cam,
+                                                 &player, &chat)) {
+                        pr = PLACE_OK;
+                    } else if (held == BLOCK_DOOR) {
+                        pr = try_place_targeted_door(&world, &cam, &player);
+                    } else {
+                        pr = try_place_targeted_block(&world, &cam,
+                                                      &player, held);
+                    }
                     if (pr != PLACE_OK && debug_enabled) {
                         chat_log(&chat, "place %s -> %s",
                                  BlockRegistry[held].name,
@@ -2915,13 +3392,25 @@ int main(void)
                         survival_inventory_hotbar_stack(&survival_inventory,
                                                         selected_hotbar_slot);
 
-                    if (try_open_targeted_crafting_table(&world, &cam,
+                    if (try_toggle_targeted_door(&world, &cam,
+                                                 &player, &chat)) {
+                        break_timer = 0.0f;
+                        break_duration = 0.0f;
+                        break_target_valid = false;
+                    } else if (try_open_targeted_crafting_table(&world, &cam,
                                                          &survival_inventory,
                                                          &inventory_open,
                                                          &inventory_cursor_x,
                                                          &inventory_cursor_y,
                                                          &chat)) {
                         inventory_recipe_page = 0;
+                        break_timer = 0.0f;
+                        break_duration = 0.0f;
+                        break_target_valid = false;
+                    } else if (try_start_targeted_furnace_smelt(
+                                   &world, &cam, &survival_inventory,
+                                   furnace_smelts, selected_hotbar_slot,
+                                   &chat)) {
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;
@@ -2937,9 +3426,10 @@ int main(void)
                             /* Food uses the same right-click path as placing. */
                         } else if (item_is_placeable_block(held_item)) {
                             BlockID held = item_place_block(held_item);
-                            PlaceResult pr =
+                            PlaceResult pr = held == BLOCK_DOOR ?
+                                try_place_targeted_door(&world, &cam, &player) :
                                 try_place_targeted_block(&world, &cam,
-                                                        &player, held);
+                                                         &player, held);
 
                             if (pr == PLACE_OK) {
                                 survival_inventory_remove_storage(&survival_inventory,
@@ -2966,6 +3456,7 @@ int main(void)
             (void)input_consume_hotbar_page(&inp);
             (void)input_consume_break(&inp);
             (void)input_consume_place(&inp);
+            (void)input_consume_item_drop(&inp);
         }
         if (hand_swing_timer < HAND_SWING_SECONDS) {
             hand_swing_timer += frame_dt;
@@ -3036,6 +3527,7 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
+        furnace_smelts_draw(ctx, furnace_smelts, world_time);
         item_entities_draw(ctx, &item_drops, world_time);
         if (camera_underwater)
             draw_underwater_overlay(ctx);

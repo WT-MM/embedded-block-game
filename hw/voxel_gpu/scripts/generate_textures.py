@@ -363,6 +363,10 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_CACTUS_SIDE: "cactus_side.tga",
     TEX_TILE_CACTUS_TOP: "cactus_top.tga",
     TEX_TILE_CACTUS_BOTTOM: "cactus_bottom.tga",
+    TEX_TILE_DOOR_LOWER: "door_wood_lower.png",
+    TEX_TILE_DOOR_UPPER: "door_wood_upper.png",
+    TEX_TILE_COAL: "coal.png",
+    TEX_TILE_TORCH: "torch_on.png",
     TEX_TILE_SAND: "sand.png",
     TEX_TILE_GRAVEL: "gravel.png",
     TEX_TILE_COBBLESTONE: "cobblestone.png",
@@ -391,6 +395,9 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_CRAFTING_TABLE_TOP: "crafting_table_top.png",
     TEX_TILE_CRAFTING_TABLE_SIDE: "crafting_table_side.png",
     TEX_TILE_CRAFTING_TABLE_FRONT: "crafting_table_front.png",
+    TEX_TILE_FURNACE_TOP: "furnace_top.png",
+    TEX_TILE_FURNACE_SIDE: "furnace_side.png",
+    TEX_TILE_FURNACE_FRONT: "furnace_front_off.png",
     TEX_TILE_HEART_CONTAINER: "container.png",
     TEX_TILE_HEART: "full.png",
     TEX_TILE_DRUMSTICK: "food_full.png",
@@ -400,6 +407,12 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_HEART_HALF: "heart_half.png",
     TEX_TILE_HEART_BLINK: "heart_full_blinking.png",
     TEX_TILE_HEART_HALF_BLINK: "heart_half_blinking.png",
+}
+
+CACTUS_SOURCE_TILES = {
+    TEX_TILE_CACTUS_SIDE,
+    TEX_TILE_CACTUS_TOP,
+    TEX_TILE_CACTUS_BOTTOM,
 }
 
 # Restrict quantization per tile so imported textures remain faithful while
@@ -424,6 +437,10 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_CACTUS_SIDE: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
     TEX_TILE_CACTUS_TOP: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
     TEX_TILE_CACTUS_BOTTOM: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
+    TEX_TILE_DOOR_LOWER: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT),
+    TEX_TILE_DOOR_UPPER: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT),
+    TEX_TILE_COAL: (PAL_TRANSPARENT, PAL_OBSIDIAN, PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE),
+    TEX_TILE_TORCH: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_LAVA_DARK, PAL_LAVA_ORANGE, PAL_LAVA_HOT, PAL_SUN_GLOW, PAL_SUN_CORE, PAL_WHITE),
     # Water: the vanilla texture is a grayscale brightness mask (alpha=180).
     # Map bright pixels to highlight and dark pixels to deep blue. The mid
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
@@ -457,6 +474,9 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_CRAFTING_TABLE_TOP: (PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT, PAL_STONE_DARK, PAL_STONE_LIGHT, PAL_RED, PAL_WHITE),
     TEX_TILE_CRAFTING_TABLE_SIDE: (PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT, PAL_STONE_DARK, PAL_STONE_LIGHT, PAL_RED, PAL_WHITE),
     TEX_TILE_CRAFTING_TABLE_FRONT: (PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT, PAL_STONE_DARK, PAL_STONE_LIGHT, PAL_RED, PAL_WHITE),
+    TEX_TILE_FURNACE_TOP: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_FURNACE_SIDE: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
+    TEX_TILE_FURNACE_FRONT: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_LAVA_DARK, PAL_LAVA_ORANGE),
     TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
     TEX_TILE_HEART_HALF: (14, 6, 5),
@@ -657,6 +677,22 @@ def source_texel(tile: int, x: int, y: int) -> int | None:
     if pixels is None:
         return None
     rgba = pixels[y * TILE_SIZE + x]
+    if tile in CACTUS_SOURCE_TILES and rgba[3] < 96:
+        best_rgba = rgba
+        best_dist = TILE_SIZE * TILE_SIZE * 2
+        for sy in range(TILE_SIZE):
+            for sx in range(TILE_SIZE):
+                candidate = pixels[sy * TILE_SIZE + sx]
+                if candidate[3] < 96:
+                    continue
+                dx = sx - x
+                dy = sy - y
+                dist = dx * dx + dy * dy
+                if dist < best_dist:
+                    best_rgba = candidate
+                    best_dist = dist
+        r, g, b, _ = best_rgba
+        rgba = (r, g, b, 255)
     return _quantize_to_palette(tile, rgba, x, y)
 
 

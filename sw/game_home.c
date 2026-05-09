@@ -499,7 +499,7 @@ static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
     }
 
     snprintf(line, sizeof(line),
-             "W/S OR CURSOR SELECT   ENTER/SPACE/CLICK START   DEL/BKSP DELETE   Q QUIT");
+             "W/S OR CURSOR SELECT   ENTER/SPACE/CLICK START   DEL/BKSP DELETE   ESC QUIT");
     draw_centered_text(ctx, line, layout.footer_y, 5);
 
     if (menu->delete_confirm_index >= 0 &&
@@ -543,6 +543,8 @@ static void clear_home_menu_input(InputState *inp)
     inp->break_pressed = false;
     inp->break_down = false;
     inp->place_pressed = false;
+    inp->item_drop_pressed = false;
+    inp->pause_toggle_pressed = false;
     input_clear_mouse(inp);
 }
 
@@ -663,6 +665,10 @@ bool run_home_menu(RenderContext *ctx, InputState *inp,
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
         input_update(inp);
+        if (input_consume_pause_toggle(inp)) {
+            inp->quit = true;
+            break;
+        }
 
         home_menu_layout(&menu, &layout);
         cursor_moved = inp->cursor_dx != 0.0f || inp->cursor_dy != 0.0f;

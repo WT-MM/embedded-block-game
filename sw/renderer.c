@@ -1783,7 +1783,7 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
     if (block_is_translucent(type))
         face_flags |= QUAD_ALPHA_50;
     /*
-     * Cutout textures (leaves, cactus edges, flowers) carry palette index 0
+     * Cutout textures (leaves, flowers, doors, torches) carry palette index 0
      * for their holes. Without ALPHA_KEY those texels render as the palette-0
      * background color and look like solid sky-tinted blobs instead of holes.
      */
@@ -1846,6 +1846,159 @@ static void emit_cross_block_face_lit(RenderContext *ctx, BlockID type,
     CameraVertex clipped[6];
     int clipped_count = clip_face_to_near_plane(face_cam, clipped);
     emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
+}
+
+static void torch_face_vertices(Vec3 block_pos, uint8_t face,
+                                Vec3 out[4])
+{
+    const float half = 0.24f;
+    const float top = 0.86f;
+    float cx = block_pos.x + 0.5f;
+    float y = block_pos.y;
+    float cz = block_pos.z + 0.5f;
+
+    if (face == CHUNK_FACE_CROSS_B) {
+        out[0] = (Vec3){ cx + half, y,       cz - half };
+        out[1] = (Vec3){ cx - half, y,       cz + half };
+        out[2] = (Vec3){ cx - half, y + top, cz + half };
+        out[3] = (Vec3){ cx + half, y + top, cz - half };
+        return;
+    }
+
+    out[0] = (Vec3){ cx - half, y,       cz - half };
+    out[1] = (Vec3){ cx + half, y,       cz + half };
+    out[2] = (Vec3){ cx + half, y + top, cz + half };
+    out[3] = (Vec3){ cx - half, y + top, cz - half };
+}
+
+static void door_face_vertices(Vec3 block_pos, BlockID type, uint8_t face,
+                               Vec3 out[4])
+{
+    const float thickness = 0.10f;
+    const float near_edge = 0.05f;
+    const float far_edge = 0.95f;
+    BlockDoorFacing facing = block_door_facing(type);
+    bool open = block_is_door_open(type);
+    bool span_x = true;
+    float plane = near_edge;
+
+    if (!open) {
+        switch (facing) {
+        case BLOCK_DOOR_FACING_EAST:
+            span_x = false;
+            plane = far_edge;
+            break;
+        case BLOCK_DOOR_FACING_SOUTH:
+            span_x = true;
+            plane = far_edge;
+            break;
+        case BLOCK_DOOR_FACING_WEST:
+            span_x = false;
+            plane = near_edge;
+            break;
+        case BLOCK_DOOR_FACING_NORTH:
+        default:
+            span_x = true;
+            plane = near_edge;
+            break;
+        }
+    } else {
+        switch (facing) {
+        case BLOCK_DOOR_FACING_EAST:
+            span_x = true;
+            plane = far_edge;
+            break;
+        case BLOCK_DOOR_FACING_SOUTH:
+            span_x = false;
+            plane = near_edge;
+            break;
+        case BLOCK_DOOR_FACING_WEST:
+            span_x = true;
+            plane = near_edge;
+            break;
+        case BLOCK_DOOR_FACING_NORTH:
+        default:
+            span_x = false;
+            plane = far_edge;
+            break;
+        }
+    }
+
+    if (face == CHUNK_FACE_CROSS_B)
+        plane += plane < 0.5f ? thickness : -thickness;
+
+    if (span_x) {
+        float z = block_pos.z + plane;
+
+        out[0] = (Vec3){ block_pos.x,        block_pos.y,        z };
+        out[1] = (Vec3){ block_pos.x + 1.0f, block_pos.y,        z };
+        out[2] = (Vec3){ block_pos.x + 1.0f, block_pos.y + 1.0f, z };
+        out[3] = (Vec3){ block_pos.x,        block_pos.y + 1.0f, z };
+        return;
+    }
+
+    {
+        float x = block_pos.x + plane;
+
+        out[0] = (Vec3){ x, block_pos.y,        block_pos.z + 1.0f };
+        out[1] = (Vec3){ x, block_pos.y,        block_pos.z };
+        out[2] = (Vec3){ x, block_pos.y + 1.0f, block_pos.z };
+        out[3] = (Vec3){ x, block_pos.y + 1.0f, block_pos.z + 1.0f };
+    }
+}
+
+static void emit_model_quad_lit(RenderContext *ctx,
+                                Vec3 face_world[4], uint8_t texture_tile,
+                                uint8_t light_flags)
+{
+    static const float tile_span = 16.0f;
+    CameraVertex face_cam[4];
+    uint8_t texture_id;
+    uint8_t face_flags = light_flags | QUAD_FLAG_FOG | QUAD_FLAG_ALPHA_KEY;
+
+    for (int i = 0; i < 4; i++) {
+        world_to_camera(ctx, face_world[i], &face_cam[i]);
+        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
+        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
+    }
+    if (camera_quad_outside_view(ctx, face_cam))
+        return;
+
+    texture_id = choose_face_texture_lod(ctx, texture_tile, face_cam);
+
+    CameraVertex clipped[6];
+    int clipped_count = clip_face_to_near_plane(face_cam, clipped);
+    emit_clipped_face(ctx, clipped, clipped_count, texture_id, face_flags);
+}
+
+static void emit_torch_block_face_lit(RenderContext *ctx, BlockID type,
+                                      Vec3 block_pos, uint8_t face,
+                                      uint8_t light_flags)
+{
+    Vec3 face_world[4];
+
+    if (type == BLOCK_AIR)
+        return;
+
+    torch_face_vertices(block_pos, face, face_world);
+    emit_model_quad_lit(ctx, face_world,
+                        block_face_texture_id(type, FACE_FRONT),
+                        light_flags);
+}
+
+static void emit_door_block_face_lit(RenderContext *ctx, BlockID type,
+                                     Vec3 block_pos, uint8_t face,
+                                     uint8_t light_flags)
+{
+    Vec3 face_world[4];
+
+    if (!block_is_door(type))
+        return;
+
+    door_face_vertices(block_pos, type, face, face_world);
+    emit_model_quad_lit(ctx, face_world,
+                        block_face_texture_id(type, FACE_FRONT),
+                        light_flags);
 }
 
 static void emit_merged_block_face(RenderContext *ctx, BlockID type,
@@ -2552,15 +2705,26 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
             float wx = (float)wxi;
             float wy = (float)wyi;
             float wz = (float)wzi;
-            if (block_render_model(id) == BLOCK_RENDER_CROSS) {
+            BlockRenderModel model = block_render_model(id);
+
+            if (model == BLOCK_RENDER_CROSS ||
+                model == BLOCK_RENDER_TORCH ||
+                model == BLOCK_RENDER_DOOR) {
                 Vec3 block_pos = { wx, wy, wz };
                 uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
                                                                     FACE_TOP,
                                                                     face->sky_light,
                                                                     face->block_light);
 
-                emit_cross_block_face_lit(ctx, id, block_pos,
-                                          face->face, light_flags);
+                if (model == BLOCK_RENDER_CROSS)
+                    emit_cross_block_face_lit(ctx, id, block_pos,
+                                              face->face, light_flags);
+                else if (model == BLOCK_RENDER_TORCH)
+                    emit_torch_block_face_lit(ctx, id, block_pos,
+                                              face->face, light_flags);
+                else
+                    emit_door_block_face_lit(ctx, id, block_pos,
+                                             face->face, light_flags);
                 if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                     ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                     return ctx->n_quads - before;

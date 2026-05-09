@@ -9,6 +9,8 @@
 #define PAUSE_DIM_PALETTE   14   /* medium grey (0x5c5c5c) */
 #define PAUSE_TEXT_PALETTE  5    /* white */
 #define PAUSE_SETTING_COUNT 3
+#define PAUSE_OPTION_COUNT  4
+#define PAUSE_EXIT_INDEX    3
 #define PAUSE_MAX_LINES 12
 #define PAUSE_LINE_CHARS 72
 
@@ -25,6 +27,7 @@ void pause_menu_toggle(PauseMenu *pm)
     pm->prev_down = false;
     pm->prev_left = false;
     pm->prev_right = false;
+    pm->prev_select = false;
 }
 
 bool pause_menu_is_open(const PauseMenu *pm)
@@ -40,7 +43,8 @@ static bool edge_pressed(bool now, bool *prev)
 }
 
 bool pause_menu_update(PauseMenu *pm, const InputState *inp,
-                       PauseMenuSettings *settings)
+                       PauseMenuSettings *settings,
+                       bool *exit_requested)
 {
     bool up;
     bool down;
@@ -55,8 +59,12 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
         pm->prev_down = false;
         pm->prev_left = false;
         pm->prev_right = false;
+        pm->prev_select = false;
         return false;
     }
+
+    if (exit_requested)
+        *exit_requested = false;
 
     up = inp->look_up || inp->forward;
     down = inp->look_down || inp->back;
@@ -66,11 +74,11 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
     if (edge_pressed(up, &pm->prev_up)) {
         pm->selected_setting--;
         if (pm->selected_setting < 0)
-            pm->selected_setting = PAUSE_SETTING_COUNT - 1;
+            pm->selected_setting = PAUSE_OPTION_COUNT - 1;
     }
     if (edge_pressed(down, &pm->prev_down)) {
         pm->selected_setting++;
-        if (pm->selected_setting >= PAUSE_SETTING_COUNT)
+        if (pm->selected_setting >= PAUSE_OPTION_COUNT)
             pm->selected_setting = 0;
     }
 
@@ -112,6 +120,11 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                 changed = true;
             }
         }
+    }
+    if (edge_pressed(inp->menu_select_pressed, &pm->prev_select) &&
+        pm->selected_setting == PAUSE_EXIT_INDEX) {
+        if (exit_requested)
+            *exit_requested = true;
     }
 
     return changed;
@@ -167,9 +180,12 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c RENDER DISTANCE       %d",
              pm->selected_setting == 2 ? '>' : ' ',
              settings ? settings->render_distance : 0);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT GAME",
+             pm->selected_setting == PAUSE_EXIT_INDEX ? '>' : ' ');
     set_blank_line(lines[line_count++]);
-    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "W/S SELECT   A/D ADJUST");
-    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "ESC RESUME   Q QUIT");
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS,
+             "W/S SELECT   A/D ADJUST   ENTER USE");
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "ESC RESUME");
     set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "PREGENERATED WORLDS - PLANNED");
 

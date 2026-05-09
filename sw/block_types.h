@@ -50,13 +50,39 @@ typedef enum {
     BLOCK_CACTUS,
     BLOCK_RED_MUSHROOM,
     BLOCK_BROWN_MUSHROOM,
+    BLOCK_FURNACE,
+    BLOCK_TORCH,
+    BLOCK_DOOR_EAST,
+    BLOCK_DOOR_SOUTH,
+    BLOCK_DOOR_WEST,
+    BLOCK_DOOR_NORTH_UPPER,
+    BLOCK_DOOR_EAST_UPPER,
+    BLOCK_DOOR_SOUTH_UPPER,
+    BLOCK_DOOR_WEST_UPPER,
+    BLOCK_DOOR_NORTH_OPEN,
+    BLOCK_DOOR_EAST_OPEN,
+    BLOCK_DOOR_SOUTH_OPEN,
+    BLOCK_DOOR_WEST_OPEN,
+    BLOCK_DOOR_NORTH_OPEN_UPPER,
+    BLOCK_DOOR_EAST_OPEN_UPPER,
+    BLOCK_DOOR_SOUTH_OPEN_UPPER,
+    BLOCK_DOOR_WEST_OPEN_UPPER,
     NUM_BLOCK_TYPES
 } BlockID;
 
 typedef enum {
     BLOCK_RENDER_CUBE = 0,
     BLOCK_RENDER_CROSS,
+    BLOCK_RENDER_TORCH,
+    BLOCK_RENDER_DOOR,
 } BlockRenderModel;
+
+typedef enum {
+    BLOCK_DOOR_FACING_NORTH = 0,
+    BLOCK_DOOR_FACING_EAST,
+    BLOCK_DOOR_FACING_SOUTH,
+    BLOCK_DOOR_FACING_WEST,
+} BlockDoorFacing;
 
 typedef enum {
 #define TEXTURE_TILE(name, base) TEX_TILE_##name = base,
@@ -101,5 +127,11 @@ bool block_is_passable(BlockID id);
 /* Shared cube-face occlusion rule for renderer and chunk meshing. */
 bool block_face_should_render(BlockID current, BlockID neighbor);
 BlockRenderModel block_render_model(BlockID id);
+bool block_is_door(BlockID id);
+bool block_is_door_upper(BlockID id);
+bool block_is_door_open(BlockID id);
+BlockDoorFacing block_door_facing(BlockID id);
+BlockID block_door_make(BlockDoorFacing facing, bool open, bool upper);
+BlockID block_door_toggle(BlockID id);
 
 #endif

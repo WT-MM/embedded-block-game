@@ -118,6 +118,22 @@ static int expect_fill(const char *line, BlockID expected_block,
     return 0;
 }
 
+static int expect_give(const char *line, ItemID expected_item,
+                       int expected_count)
+{
+    GameCommandParseResult result;
+
+    if (game_command_parse(line, &result) != GAME_COMMAND_PARSE_OK)
+        return check_failed("give command did not parse");
+    if (result.ast.kind != GAME_COMMAND_KIND_GIVE ||
+        result.ast.action != GAME_COMMAND_ACTION_SET ||
+        result.ast.value.give.item != expected_item ||
+        result.ast.value.give.count != expected_count)
+        return check_failed("give command AST mismatch");
+
+    return 0;
+}
+
 int main(void)
 {
     if (expect_status("hello world", GAME_COMMAND_PARSE_NOT_COMMAND))
@@ -141,6 +157,10 @@ int main(void)
         return 1;
     if (expect_status("/setblock 0 0 0 cheese",
                       GAME_COMMAND_PARSE_BAD_VALUE))
+        return 1;
+    if (expect_status("/give air", GAME_COMMAND_PARSE_BAD_VALUE))
+        return 1;
+    if (expect_status("/give coal 0", GAME_COMMAND_PARSE_BAD_VALUE))
         return 1;
 
     if (expect_time("/time set day", GAME_COMMAND_TIME_DAY))
@@ -178,8 +198,18 @@ int main(void)
         return 1;
     if (expect_fill("/fill 0 1 2 3 4 5 glass", BLOCK_GLASS, false))
         return 1;
+    if (expect_setblock("/setblock 1 2 3 furnace", BLOCK_FURNACE))
+        return 1;
+    if (expect_setblock("/setblock 1 2 3 torch", BLOCK_TORCH))
+        return 1;
     if (expect_fill("/blocks set ~-1 ~ ~1 ~1 ~2 ~3 diamond-block",
                     BLOCK_DIAMOND_BLOCK, true))
+        return 1;
+    if (expect_give("/give coal 12", ITEM_COAL, 12))
+        return 1;
+    if (expect_give("/give me minecraft:stone 64", (ItemID)BLOCK_STONE, 64))
+        return 1;
+    if (expect_give("/give player mushroom-stew", ITEM_MUSHROOM_STEW, 1))
         return 1;
 
     printf("command_parser_test: ok\n");

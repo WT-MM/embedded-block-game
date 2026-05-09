@@ -10,6 +10,16 @@ static void set_all_faces(BlockDescriptor *block, uint8_t tile_id)
         block->face_texture_ids[i] = tile_id;
 }
 
+static void init_door_descriptor(BlockID id, bool upper)
+{
+    BlockRegistry[id].id = id;
+    BlockRegistry[id].name = "Door";
+    set_all_faces(&BlockRegistry[id],
+                  upper ? TEX_TILE_DOOR_UPPER : TEX_TILE_DOOR_LOWER);
+    BlockRegistry[id].hardness_seconds = 0.9f;
+    BlockRegistry[id].render_model = BLOCK_RENDER_DOOR;
+}
+
 typedef struct {
     uint8_t base;
     uint8_t mip1;
@@ -207,10 +217,7 @@ void init_block_types(void)
 
     BlockRegistry[BLOCK_DOOR].id = BLOCK_DOOR;
     BlockRegistry[BLOCK_DOOR].name = "Door";
-    set_all_faces(&BlockRegistry[BLOCK_DOOR], TEX_TILE_WOOD_PLANK);
-    BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_FRONT] = TEX_TILE_WOOD_SIDE;
-    BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_BACK] = TEX_TILE_WOOD_SIDE;
-    BlockRegistry[BLOCK_DOOR].hardness_seconds = 0.9f;
+    init_door_descriptor(BLOCK_DOOR, false);
 
     BlockRegistry[BLOCK_CACTUS].id = BLOCK_CACTUS;
     BlockRegistry[BLOCK_CACTUS].name = "Cactus";
@@ -230,6 +237,38 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_BROWN_MUSHROOM], TEX_TILE_BROWN_MUSHROOM);
     BlockRegistry[BLOCK_BROWN_MUSHROOM].hardness_seconds = 0.1f;
     BlockRegistry[BLOCK_BROWN_MUSHROOM].render_model = BLOCK_RENDER_CROSS;
+
+    BlockRegistry[BLOCK_FURNACE].id = BLOCK_FURNACE;
+    BlockRegistry[BLOCK_FURNACE].name = "Furnace";
+    set_all_faces(&BlockRegistry[BLOCK_FURNACE], TEX_TILE_FURNACE_SIDE);
+    BlockRegistry[BLOCK_FURNACE].face_texture_ids[FACE_TOP] = TEX_TILE_FURNACE_TOP;
+    BlockRegistry[BLOCK_FURNACE].face_texture_ids[FACE_BOTTOM] = TEX_TILE_FURNACE_TOP;
+    BlockRegistry[BLOCK_FURNACE].face_texture_ids[FACE_FRONT] = TEX_TILE_FURNACE_FRONT;
+    BlockRegistry[BLOCK_FURNACE].hardness_seconds = 2.0f;
+
+    BlockRegistry[BLOCK_TORCH].id = BLOCK_TORCH;
+    BlockRegistry[BLOCK_TORCH].name = "Torch";
+    set_all_faces(&BlockRegistry[BLOCK_TORCH], TEX_TILE_TORCH);
+    BlockRegistry[BLOCK_TORCH].emission_level = 14;
+    BlockRegistry[BLOCK_TORCH].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_TORCH].self_lit = true;
+    BlockRegistry[BLOCK_TORCH].render_model = BLOCK_RENDER_TORCH;
+
+    init_door_descriptor(BLOCK_DOOR_EAST, false);
+    init_door_descriptor(BLOCK_DOOR_SOUTH, false);
+    init_door_descriptor(BLOCK_DOOR_WEST, false);
+    init_door_descriptor(BLOCK_DOOR_NORTH_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_EAST_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_SOUTH_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_WEST_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_NORTH_OPEN, false);
+    init_door_descriptor(BLOCK_DOOR_EAST_OPEN, false);
+    init_door_descriptor(BLOCK_DOOR_SOUTH_OPEN, false);
+    init_door_descriptor(BLOCK_DOOR_WEST_OPEN, false);
+    init_door_descriptor(BLOCK_DOOR_NORTH_OPEN_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_EAST_OPEN_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_SOUTH_OPEN_UPPER, true);
+    init_door_descriptor(BLOCK_DOOR_WEST_OPEN_UPPER, true);
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -289,7 +328,9 @@ bool block_is_transparent(BlockID id)
     return id == BLOCK_AIR || id == BLOCK_GLASS || id == BLOCK_LEAVES ||
            id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
            id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
-           block_render_model(id) == BLOCK_RENDER_CROSS;
+           block_is_door(id) ||
+           block_render_model(id) == BLOCK_RENDER_CROSS ||
+           block_render_model(id) == BLOCK_RENDER_TORCH;
 }
 
 bool block_is_translucent(BlockID id)
@@ -300,15 +341,18 @@ bool block_is_translucent(BlockID id)
 
 bool block_is_alpha_keyed(BlockID id)
 {
-    return id == BLOCK_LEAVES || id == BLOCK_CACTUS ||
-           block_render_model(id) == BLOCK_RENDER_CROSS;
+    return id == BLOCK_LEAVES || block_is_door(id) ||
+           block_render_model(id) == BLOCK_RENDER_CROSS ||
+           block_render_model(id) == BLOCK_RENDER_TORCH;
 }
 
 bool block_is_passable(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
            id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
-           block_render_model(id) == BLOCK_RENDER_CROSS;
+           block_is_door_open(id) ||
+           block_render_model(id) == BLOCK_RENDER_CROSS ||
+           block_render_model(id) == BLOCK_RENDER_TORCH;
 }
 
 bool block_face_should_render(BlockID current, BlockID neighbor)
@@ -328,4 +372,94 @@ BlockRenderModel block_render_model(BlockID id)
         return BLOCK_RENDER_CUBE;
 
     return BlockRegistry[id].render_model;
+}
+
+bool block_is_door(BlockID id)
+{
+    return id == BLOCK_DOOR ||
+           (id >= BLOCK_DOOR_EAST && id <= BLOCK_DOOR_WEST_OPEN_UPPER);
+}
+
+bool block_is_door_upper(BlockID id)
+{
+    return id == BLOCK_DOOR_NORTH_UPPER ||
+           id == BLOCK_DOOR_EAST_UPPER ||
+           id == BLOCK_DOOR_SOUTH_UPPER ||
+           id == BLOCK_DOOR_WEST_UPPER ||
+           id == BLOCK_DOOR_NORTH_OPEN_UPPER ||
+           id == BLOCK_DOOR_EAST_OPEN_UPPER ||
+           id == BLOCK_DOOR_SOUTH_OPEN_UPPER ||
+           id == BLOCK_DOOR_WEST_OPEN_UPPER;
+}
+
+bool block_is_door_open(BlockID id)
+{
+    return id >= BLOCK_DOOR_NORTH_OPEN && id <= BLOCK_DOOR_WEST_OPEN_UPPER;
+}
+
+BlockDoorFacing block_door_facing(BlockID id)
+{
+    switch (id) {
+    case BLOCK_DOOR:
+    case BLOCK_DOOR_NORTH_UPPER:
+    case BLOCK_DOOR_NORTH_OPEN:
+    case BLOCK_DOOR_NORTH_OPEN_UPPER:
+        return BLOCK_DOOR_FACING_NORTH;
+    case BLOCK_DOOR_EAST:
+    case BLOCK_DOOR_EAST_UPPER:
+    case BLOCK_DOOR_EAST_OPEN:
+    case BLOCK_DOOR_EAST_OPEN_UPPER:
+        return BLOCK_DOOR_FACING_EAST;
+    case BLOCK_DOOR_SOUTH:
+    case BLOCK_DOOR_SOUTH_UPPER:
+    case BLOCK_DOOR_SOUTH_OPEN:
+    case BLOCK_DOOR_SOUTH_OPEN_UPPER:
+        return BLOCK_DOOR_FACING_SOUTH;
+    case BLOCK_DOOR_WEST:
+    case BLOCK_DOOR_WEST_UPPER:
+    case BLOCK_DOOR_WEST_OPEN:
+    case BLOCK_DOOR_WEST_OPEN_UPPER:
+        return BLOCK_DOOR_FACING_WEST;
+    default:
+        return BLOCK_DOOR_FACING_NORTH;
+    }
+}
+
+BlockID block_door_make(BlockDoorFacing facing, bool open, bool upper)
+{
+    if (!open) {
+        switch (facing) {
+        case BLOCK_DOOR_FACING_EAST:
+            return upper ? BLOCK_DOOR_EAST_UPPER : BLOCK_DOOR_EAST;
+        case BLOCK_DOOR_FACING_SOUTH:
+            return upper ? BLOCK_DOOR_SOUTH_UPPER : BLOCK_DOOR_SOUTH;
+        case BLOCK_DOOR_FACING_WEST:
+            return upper ? BLOCK_DOOR_WEST_UPPER : BLOCK_DOOR_WEST;
+        case BLOCK_DOOR_FACING_NORTH:
+        default:
+            return upper ? BLOCK_DOOR_NORTH_UPPER : BLOCK_DOOR;
+        }
+    }
+
+    switch (facing) {
+    case BLOCK_DOOR_FACING_EAST:
+        return upper ? BLOCK_DOOR_EAST_OPEN_UPPER : BLOCK_DOOR_EAST_OPEN;
+    case BLOCK_DOOR_FACING_SOUTH:
+        return upper ? BLOCK_DOOR_SOUTH_OPEN_UPPER : BLOCK_DOOR_SOUTH_OPEN;
+    case BLOCK_DOOR_FACING_WEST:
+        return upper ? BLOCK_DOOR_WEST_OPEN_UPPER : BLOCK_DOOR_WEST_OPEN;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        return upper ? BLOCK_DOOR_NORTH_OPEN_UPPER : BLOCK_DOOR_NORTH_OPEN;
+    }
+}
+
+BlockID block_door_toggle(BlockID id)
+{
+    if (!block_is_door(id))
+        return id;
+
+    return block_door_make(block_door_facing(id),
+                           !block_is_door_open(id),
+                           block_is_door_upper(id));
 }

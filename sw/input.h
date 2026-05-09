@@ -43,6 +43,7 @@ typedef struct {
     bool break_pressed;
     bool break_down;
     bool place_pressed;
+    bool item_drop_pressed;
     bool inventory_toggle_pressed;
     bool pause_toggle_pressed;
     bool debug_hud_toggle_pressed;
@@ -89,6 +90,7 @@ bool input_consume_mode_toggle(InputState *inp);
 bool input_consume_chat_toggle(InputState *inp);
 bool input_consume_break(InputState *inp);
 bool input_consume_place(InputState *inp);
+bool input_consume_item_drop(InputState *inp);
 bool input_consume_inventory_toggle(InputState *inp);
 bool input_consume_pause_toggle(InputState *inp);
 bool input_consume_debug_hud_toggle(InputState *inp);

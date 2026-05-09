@@ -142,12 +142,54 @@ static void test_food_items_and_mushroom_stew_recipe(void)
     assert(found_stew);
 }
 
+static void test_furnace_torch_and_coal(void)
+{
+    SurvivalInventory inv;
+
+    survival_inventory_init(&inv);
+    survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
+    inv.craft[0] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[1] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[2] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[3] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[5] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[6] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[7] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    inv.craft[8] = (ItemStack){ (ItemID)BLOCK_COBBLESTONE, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == (ItemID)BLOCK_FURNACE);
+    assert(inv.craft_output.count == 1);
+
+    survival_inventory_init(&inv);
+    inv.craft[0] = (ItemStack){ ITEM_COAL, 1 };
+    inv.craft[3] = (ItemStack){ ITEM_STICK, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == (ItemID)BLOCK_TORCH);
+    assert(inv.craft_output.count == 4);
+
+    survival_inventory_init(&inv);
+    assert(survival_inventory_add_item(&inv, ITEM_COAL, 3) == 0);
+    assert(survival_inventory_count_item(&inv, ITEM_COAL) == 3);
+    assert(survival_inventory_remove_item(&inv, ITEM_COAL, 2));
+    assert(survival_inventory_count_item(&inv, ITEM_COAL) == 1);
+    assert(!survival_inventory_remove_item(&inv, ITEM_COAL, 2));
+    assert(survival_drop_for_block(BLOCK_COAL_ORE) == ITEM_COAL);
+    assert(item_is_furnace_fuel(ITEM_COAL));
+    assert(item_is_furnace_fuel((ItemID)BLOCK_WOOD));
+    assert(item_is_furnace_fuel((ItemID)BLOCK_PLANKS));
+    assert(item_is_furnace_fuel(ITEM_STICK));
+    assert(!item_is_furnace_fuel((ItemID)BLOCK_SAND));
+}
+
 static void test_added_item_textures(void)
 {
     assert(item_texture_id(ITEM_STICK) == TEX_TILE_STICK);
     assert(item_texture_id((ItemID)BLOCK_DOOR) == TEX_TILE_DOOR_ITEM);
     assert(item_texture_id((ItemID)BLOCK_CRAFTING_TABLE) ==
            TEX_TILE_CRAFTING_TABLE_FRONT);
+    assert(item_texture_id((ItemID)BLOCK_FURNACE) == TEX_TILE_FURNACE_FRONT);
+    assert(item_texture_id((ItemID)BLOCK_TORCH) == TEX_TILE_TORCH);
+    assert(item_texture_id(ITEM_COAL) == TEX_TILE_COAL);
 }
 
 static void test_cursor_slot_clicks(void)
@@ -178,6 +220,7 @@ int main(void)
     test_table_only_block_recipes();
     test_legacy_door_recipe_removed();
     test_food_items_and_mushroom_stew_recipe();
+    test_furnace_torch_and_coal();
     test_added_item_textures();
     test_cursor_slot_clicks();
     puts("inventory_test: ok");

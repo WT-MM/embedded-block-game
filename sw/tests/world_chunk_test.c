@@ -332,6 +332,27 @@ int main(void)
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-lava-cleanup mesh rebuild failed");
 
+    if (block_face_texture_id(BLOCK_FURNACE, FACE_TOP) != TEX_TILE_FURNACE_TOP ||
+        block_face_texture_id(BLOCK_FURNACE, FACE_FRONT) != TEX_TILE_FURNACE_FRONT ||
+        block_render_model(BLOCK_FURNACE) != BLOCK_RENDER_CUBE ||
+        block_render_model(BLOCK_TORCH) != BLOCK_RENDER_TORCH ||
+        block_emission_level(BLOCK_TORCH) != 14 ||
+        !block_is_self_lit(BLOCK_TORCH) ||
+        !block_is_alpha_keyed(BLOCK_TORCH) ||
+        !block_is_passable(BLOCK_TORCH))
+        return check_failed("furnace/torch metadata missing");
+    if (!block_is_door(BLOCK_DOOR) ||
+        !block_is_door(block_door_make(BLOCK_DOOR_FACING_EAST, true, true)) ||
+        block_render_model(BLOCK_DOOR) != BLOCK_RENDER_DOOR ||
+        block_door_toggle(BLOCK_DOOR) !=
+            block_door_make(BLOCK_DOOR_FACING_NORTH, true, false) ||
+        !block_is_door_upper(block_door_make(BLOCK_DOOR_FACING_WEST, false, true)) ||
+        !block_is_door_open(block_door_make(BLOCK_DOOR_FACING_SOUTH, true, false)) ||
+        block_is_passable(BLOCK_DOOR) ||
+        !block_is_passable(block_door_make(BLOCK_DOOR_FACING_NORTH, true, false)) ||
+        !block_is_alpha_keyed(BLOCK_DOOR))
+        return check_failed("door metadata missing");
+
     if (block_render_model(BLOCK_RED_FLOWER) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_RED_FLOWER) ||
         !block_is_passable(BLOCK_RED_FLOWER) ||
@@ -339,7 +360,7 @@ int main(void)
         !block_is_alpha_keyed(BLOCK_RED_MUSHROOM) ||
         !block_is_passable(BLOCK_RED_MUSHROOM) ||
         block_render_model(BLOCK_CACTUS) != BLOCK_RENDER_CUBE ||
-        !block_is_alpha_keyed(BLOCK_CACTUS) ||
+        block_is_alpha_keyed(BLOCK_CACTUS) ||
         block_is_passable(BLOCK_CACTUS))
         return check_failed("plant metadata missing");
     const int flower_x = 9;

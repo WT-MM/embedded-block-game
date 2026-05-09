@@ -147,6 +147,44 @@ void item_entity_spawn_item_near_player(ItemEntityPool *pool,
     item_entity_spawn_near_player(pool, player, &stack);
 }
 
+void item_entity_toss_item(ItemEntityPool *pool,
+                           const Player *player,
+                           Vec3 push_dir,
+                           ItemID item,
+                           int count)
+{
+    Vec3 pos;
+    Vec3 vel;
+    float forward_len;
+
+    if (!pool || !player || count <= 0 || item == ITEM_NONE ||
+        item >= NUM_ITEM_TYPES)
+        return;
+
+    forward_len = sqrtf(push_dir.x * push_dir.x +
+                        push_dir.y * push_dir.y +
+                        push_dir.z * push_dir.z);
+    if (forward_len > 0.0001f) {
+        push_dir.x /= forward_len;
+        push_dir.y /= forward_len;
+        push_dir.z /= forward_len;
+    } else {
+        push_dir.x = 0.0f;
+        push_dir.y = 0.0f;
+        push_dir.z = 1.0f;
+    }
+
+    pos.x = player->x + push_dir.x * 0.55f;
+    pos.y = player->y + PLAYER_HEIGHT * 0.62f;
+    pos.z = player->z + push_dir.z * 0.55f;
+    vel.x = push_dir.x * 4.0f;
+    vel.y = 2.4f + push_dir.y * 1.8f;
+    vel.z = push_dir.z * 4.0f;
+
+    item_entity_spawn_stack(pool, item, count, pos, vel,
+                            ITEM_ENTITY_PICKUP_DELAY_SECONDS);
+}
+
 static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
                                               ItemEntityPool *drops,
                                               const Player *player,

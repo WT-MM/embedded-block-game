@@ -13,6 +13,7 @@ typedef struct {
     bool prev_down;
     bool prev_left;
     bool prev_right;
+    bool prev_select;
 } PauseMenu;
 
 typedef struct {
@@ -28,7 +29,8 @@ void pause_menu_init(PauseMenu *pm);
 void pause_menu_toggle(PauseMenu *pm);
 bool pause_menu_is_open(const PauseMenu *pm);
 bool pause_menu_update(PauseMenu *pm, const InputState *inp,
-                       PauseMenuSettings *settings);
+                       PauseMenuSettings *settings,
+                       bool *exit_requested);
 
 void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
                      const PauseMenuSettings *settings);

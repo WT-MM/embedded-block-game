@@ -53,6 +53,8 @@ a slash. Lines starting with `/` are parsed as commands:
   `/physics reset`.
 - `/setblock <x> <y> <z> <block>` edits one block.
 - `/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>` edits a region.
+- `/give <item> [count]` or `/give me <item> [count]` adds items to the
+  player's survival inventory.
 - Coordinates can be absolute integers or Minecraft-style relative values
   such as `~`, `~-1`, and `~3`; block names use underscores, e.g.
   `air`, `stone`, `glass`, `diamond_block`.

@@ -51,6 +51,26 @@ static const CraftRecipe CRAFT_RECIPES[] = {
     },
     {
         .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    ITEM_NONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE },
+        .output = (ItemID)BLOCK_FURNACE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 1,
+        .height = 2,
+        .inputs = { ITEM_COAL, ITEM_STICK, ITEM_NONE, ITEM_NONE },
+        .output = (ItemID)BLOCK_TORCH,
+        .output_count = 4,
+    },
+    {
+        .shapeless = false,
         .width = 2,
         .height = 2,
         .inputs = { (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND,
@@ -151,7 +171,8 @@ static bool item_id_valid(ItemID item)
            item == ITEM_RED_MUSHROOM ||
            item == ITEM_BROWN_MUSHROOM ||
            item == ITEM_BOWL ||
-           item == ITEM_MUSHROOM_STEW;
+           item == ITEM_MUSHROOM_STEW ||
+           item == ITEM_COAL;
 }
 
 void item_stack_clear(ItemStack *stack)
@@ -231,16 +252,20 @@ const char *item_name(ItemID item)
         return "Bowl";
     if (item == ITEM_MUSHROOM_STEW)
         return "Mushroom Stew";
+    if (item == ITEM_COAL)
+        return "Coal";
 
     return "Unknown";
 }
 
 uint8_t item_texture_id(ItemID item)
 {
-    if (item == (ItemID)BLOCK_DOOR)
+    if (block_is_door((BlockID)item))
         return TEX_TILE_DOOR_ITEM;
     if (item == (ItemID)BLOCK_CRAFTING_TABLE)
         return TEX_TILE_CRAFTING_TABLE_FRONT;
+    if (item == (ItemID)BLOCK_FURNACE)
+        return TEX_TILE_FURNACE_FRONT;
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return block_face_texture_id((BlockID)item, FACE_FRONT);
     if (item == ITEM_STICK)
@@ -255,6 +280,8 @@ uint8_t item_texture_id(ItemID item)
         return TEX_TILE_BOWL;
     if (item == ITEM_MUSHROOM_STEW)
         return TEX_TILE_MUSHROOM_STEW;
+    if (item == ITEM_COAL)
+        return TEX_TILE_COAL;
 
     return 0;
 }
@@ -270,6 +297,14 @@ BlockID item_place_block(ItemID item)
         return BLOCK_AIR;
 
     return (BlockID)item;
+}
+
+bool item_is_furnace_fuel(ItemID item)
+{
+    return item == ITEM_COAL ||
+           item == (ItemID)BLOCK_WOOD ||
+           item == (ItemID)BLOCK_PLANKS ||
+           item == ITEM_STICK;
 }
 
 int item_food_units(ItemID item)
@@ -367,6 +402,43 @@ bool survival_inventory_remove_storage(SurvivalInventory *inv, int slot, int cou
         return false;
 
     item_stack_remove(&inv->storage[slot], count);
+    return true;
+}
+
+int survival_inventory_count_item(const SurvivalInventory *inv, ItemID item)
+{
+    int total = 0;
+
+    if (!inv || !item_id_valid(item))
+        return 0;
+
+    for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT; i++) {
+        if (!item_stack_is_empty(&inv->storage[i]) &&
+            inv->storage[i].item == item)
+            total += inv->storage[i].count;
+    }
+
+    return total;
+}
+
+bool survival_inventory_remove_item(SurvivalInventory *inv, ItemID item, int count)
+{
+    if (!inv || !item_id_valid(item) || count <= 0)
+        return false;
+    if (survival_inventory_count_item(inv, item) < count)
+        return false;
+
+    for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT && count > 0; i++) {
+        ItemStack *stack = &inv->storage[i];
+        int removed;
+
+        if (item_stack_is_empty(stack) || stack->item != item)
+            continue;
+
+        removed = item_stack_remove(stack, count);
+        count -= removed;
+    }
+
     return true;
 }
 
@@ -746,6 +818,8 @@ ItemID survival_drop_for_block(BlockID block)
         return (ItemID)BLOCK_DIRT;
     case BLOCK_STONE:
         return (ItemID)BLOCK_COBBLESTONE;
+    case BLOCK_COAL_ORE:
+        return ITEM_COAL;
     case BLOCK_LEAVES:
         return ITEM_NONE;
     case BLOCK_RED_MUSHROOM:
@@ -753,6 +827,8 @@ ItemID survival_drop_for_block(BlockID block)
     case BLOCK_BROWN_MUSHROOM:
         return ITEM_BROWN_MUSHROOM;
     default:
+        if (block_is_door(block))
+            return (ItemID)BLOCK_DOOR;
         if (block > BLOCK_AIR && block < NUM_BLOCK_TYPES)
             return (ItemID)block;
         return ITEM_NONE;

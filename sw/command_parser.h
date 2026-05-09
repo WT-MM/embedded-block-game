@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-#include "block_types.h"
+#include "inventory.h"
 
 #define GAME_COMMAND_ERROR_MAX 96
 
@@ -25,6 +25,7 @@ typedef enum {
     GAME_COMMAND_KIND_PHYSICS,
     GAME_COMMAND_KIND_SETBLOCK,
     GAME_COMMAND_KIND_FILL,
+    GAME_COMMAND_KIND_GIVE,
 } GameCommandKind;
 
 typedef enum {
@@ -86,6 +87,10 @@ typedef struct {
             GameCommandCoord z2;
             BlockID block;
         } fill;
+        struct {
+            ItemID item;
+            int count;
+        } give;
     } value;
 } GameCommandAst;
 

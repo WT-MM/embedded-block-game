@@ -555,7 +555,10 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 if (press_edge)
                     inp->pause_toggle_pressed = true;
                 break;
-            case KEY_Q:     if (down) inp->quit = true;   break;
+            case KEY_Q:
+                if (press_edge)
+                    inp->item_drop_pressed = true;
+                break;
             case KEY_F3:
                 if (press_edge)
                     inp->debug_hud_toggle_pressed = true;
@@ -687,6 +690,13 @@ bool input_consume_place(InputState *inp)
     return pressed;
 }
 
+bool input_consume_item_drop(InputState *inp)
+{
+    bool pressed = inp->item_drop_pressed;
+    inp->item_drop_pressed = false;
+    return pressed;
+}
+
 bool input_consume_inventory_toggle(InputState *inp)
 {
     bool pressed = inp->inventory_toggle_pressed;
@@ -779,6 +789,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->break_pressed = false;
         inp->break_down = false;
         inp->place_pressed = false;
+        inp->item_drop_pressed = false;
         inp->inventory_toggle_pressed = false;
         inp->menu_select_pressed = false;
         inp->menu_delete_pressed = false;

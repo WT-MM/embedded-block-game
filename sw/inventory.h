@@ -24,6 +24,7 @@ typedef enum {
     ITEM_BROWN_MUSHROOM,
     ITEM_BOWL,
     ITEM_MUSHROOM_STEW,
+    ITEM_COAL,
     NUM_ITEM_TYPES,
 } ItemID;
 
@@ -65,6 +66,7 @@ const char *item_name(ItemID item);
 uint8_t item_texture_id(ItemID item);
 bool item_is_placeable_block(ItemID item);
 BlockID item_place_block(ItemID item);
+bool item_is_furnace_fuel(ItemID item);
 int item_food_units(ItemID item);
 bool item_food_returns_bowl(ItemID item);
 
@@ -74,6 +76,8 @@ int survival_inventory_craft_grid_dim(const SurvivalInventory *inv);
 int survival_inventory_add_item(SurvivalInventory *inv, ItemID item, int count);
 int survival_inventory_add_block(SurvivalInventory *inv, BlockID block, int count);
 bool survival_inventory_remove_storage(SurvivalInventory *inv, int slot, int count);
+int survival_inventory_count_item(const SurvivalInventory *inv, ItemID item);
+bool survival_inventory_remove_item(SurvivalInventory *inv, ItemID item, int count);
 void survival_inventory_refresh_craft_output(SurvivalInventory *inv);
 bool survival_inventory_click(SurvivalInventory *inv,
                               InventorySlotArea area,

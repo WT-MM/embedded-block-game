@@ -4,41 +4,15 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
 
 static inline bool env_value_is_set(const char *value)
 {
     return value && value[0] != '\0';
 }
 
-static inline int env_ascii_tolower(int ch)
-{
-    return (ch >= 'A' && ch <= 'Z') ? ch + ('a' - 'A') : ch;
-}
-
-static inline bool env_streq_ci(const char *a, const char *b)
-{
-    if (!a || !b)
-        return false;
-
-    while (*a && *b) {
-        if (env_ascii_tolower((unsigned char)*a) !=
-            env_ascii_tolower((unsigned char)*b))
-            return false;
-        a++;
-        b++;
-    }
-
-    return *a == *b;
-}
-
 static inline bool env_value_is_false(const char *value)
 {
-    return env_value_is_set(value) &&
-           (strcmp(value, "0") == 0 ||
-            env_streq_ci(value, "false") ||
-            env_streq_ci(value, "off") ||
-            env_streq_ci(value, "no"));
+    return value && value[0] == '0' && value[1] == '\0';
 }
 
 static inline bool env_value_is_true(const char *value)
@@ -48,7 +22,7 @@ static inline bool env_value_is_true(const char *value)
 
 static inline const char *env_get_nonempty(const char *name)
 {
-    const char *value = name ? getenv(name) : NULL;
+    const char *value = getenv(name);
 
     return env_value_is_set(value) ? value : NULL;
 }
@@ -81,8 +55,7 @@ static inline bool env_parse_long_value(const char *value, long *out)
     if (errno == ERANGE || end == value || *end != '\0')
         return false;
 
-    if (out)
-        *out = parsed;
+    *out = parsed;
     return true;
 }
 
@@ -172,8 +145,7 @@ static inline bool env_parse_float_value(const char *value, float *out)
     if (errno == ERANGE || end == value || *end != '\0' || parsed != parsed)
         return false;
 
-    if (out)
-        *out = parsed;
+    *out = parsed;
     return true;
 }
 

@@ -435,6 +435,24 @@ static bool    g_glyphs_ready = false;
 
 static void reset_input_history_browse(Chat *chat);
 
+static int chat_line_len(const char *line)
+{
+    int len = 0;
+
+    while (len < CHAT_LINE_MAX && line[len] != '\0')
+        len++;
+    return len;
+}
+
+static int copy_chat_line(char *out, const char *line)
+{
+    int len = chat_line_len(line);
+
+    memcpy(out, line, (size_t)len);
+    out[len] = '\0';
+    return len;
+}
+
 static void build_glyph_tables(void)
 {
     if (g_glyphs_ready) return;
@@ -526,27 +544,23 @@ static void push_history_line(Chat *chat, const char *line, int len)
 
 static void reset_input_history_browse(Chat *chat)
 {
-    if (!chat)
-        return;
-
     chat->input_history_cursor = 0;
     chat->input_history_draft[0] = '\0';
 }
 
-static void push_input_history(Chat *chat, const char *line, int len)
+static void push_input_history(Chat *chat, const char *line)
 {
     int slot;
+    int len;
 
-    if (!chat || !line || len <= 0)
+    if (!line || line[0] == '\0')
         return;
-    if (len > CHAT_LINE_MAX)
-        len = CHAT_LINE_MAX;
+    len = chat_line_len(line);
 
     if (chat->input_history_count > 0) {
         int last = (chat->input_history_head - 1 +
                     CHAT_INPUT_HISTORY_LINES) % CHAT_INPUT_HISTORY_LINES;
-        if ((int)strlen(chat->input_history[last]) == len &&
-            strncmp(chat->input_history[last], line, (size_t)len) == 0)
+        if (strcmp(chat->input_history[last], line) == 0)
             return;
     }
 
@@ -614,7 +628,7 @@ void chat_handle_enter(Chat *chat)
         if (n < 0) n = 0;
         if (n > CHAT_LINE_MAX) n = CHAT_LINE_MAX;
         push_history_line(chat, line, n);
-        push_input_history(chat, chat->input, chat->input_len);
+        push_input_history(chat, chat->input);
     }
     chat->input_len = 0;
     chat->input[0] = '\0';
@@ -631,8 +645,7 @@ void chat_handle_history_prev(Chat *chat)
 
     chat_reset_completion(chat);
     if (chat->input_history_cursor == 0)
-        snprintf(chat->input_history_draft,
-                 sizeof(chat->input_history_draft), "%s", chat->input);
+        copy_chat_line(chat->input_history_draft, chat->input);
     if (chat->input_history_cursor < chat->input_history_count)
         chat->input_history_cursor++;
 
@@ -663,18 +676,10 @@ void chat_handle_history_next(Chat *chat)
 
 void chat_set_input(Chat *chat, const char *line)
 {
-    int len;
-
     if (!chat || !line)
         return;
 
-    len = snprintf(chat->input, sizeof(chat->input), "%s", line);
-    if (len < 0)
-        len = 0;
-    if (len > CHAT_LINE_MAX)
-        len = CHAT_LINE_MAX;
-    chat->input_len = len;
-    chat->input[chat->input_len] = '\0';
+    chat->input_len = copy_chat_line(chat->input, line);
 }
 
 void chat_reset_completion(Chat *chat)

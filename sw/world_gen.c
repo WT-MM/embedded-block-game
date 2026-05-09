@@ -43,8 +43,6 @@ static float smoothstep01(float t)
 
 static float smoothstep_range(float edge0, float edge1, float x)
 {
-    if (edge0 == edge1)
-        return x >= edge1 ? 1.0f : 0.0f;
     return smoothstep01((x - edge0) / (edge1 - edge0));
 }
 
@@ -78,9 +76,9 @@ static float worldgen_biome_value(int wx, int wz, uint32_t base_seed)
 
 static WorldBiome worldgen_biome_from_value(float b)
 {
-    if (b < 0.22f)
+    if (b < 0.13f)
         return WORLD_BIOME_OCEAN;
-    if (b < 0.38f)
+    if (b < 0.36f)
         return WORLD_BIOME_PLAINS;
     if (b < 0.54f)
         return WORLD_BIOME_DESERT;
@@ -131,10 +129,10 @@ static int worldgen_surface_y_at(int wx, int wz, uint32_t base_seed,
     float mid  = value_noise_octave(wx, wz, 12, base_seed, 0xb2u);
     float fine = value_noise_octave(wx, wz, 4,  base_seed, 0xc3u);
     float biome_value = worldgen_biome_value(wx, wz, base_seed);
-    float ocean_w = 1.0f - smoothstep_range(0.18f, 0.30f, biome_value);
-    float plains_w = smoothstep_range(0.18f, 0.30f, biome_value) *
-                     (1.0f - smoothstep_range(0.34f, 0.46f, biome_value));
-    float desert_w = smoothstep_range(0.34f, 0.46f, biome_value) *
+    float ocean_w = 1.0f - smoothstep_range(0.10f, 0.20f, biome_value);
+    float plains_w = smoothstep_range(0.10f, 0.20f, biome_value) *
+                     (1.0f - smoothstep_range(0.32f, 0.44f, biome_value));
+    float desert_w = smoothstep_range(0.32f, 0.44f, biome_value) *
                      (1.0f - smoothstep_range(0.50f, 0.62f, biome_value));
     float hills_w = smoothstep_range(0.50f, 0.62f, biome_value) *
                     (1.0f - smoothstep_range(0.66f, 0.82f, biome_value));
@@ -320,7 +318,7 @@ static bool worldgen_wants_cactus(int wx, int wz, uint32_t base_seed,
 {
     uint32_t roll;
 
-    if (!column || column->biome != WORLD_BIOME_DESERT ||
+    if (column->biome != WORLD_BIOME_DESERT ||
         column->underwater || column->beach ||
         column->surface_y < WORLDGEN_SEA_LEVEL)
         return false;
@@ -333,6 +331,7 @@ static bool worldgen_lava_pool_center_candidate(int wx, int wz,
                                                 uint32_t base_seed)
 {
     WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
+    const int check_radius = WORLDGEN_LAVA_POOL_RADIUS + 1;
     uint32_t roll;
 
     if (column.biome != WORLD_BIOME_DESERT ||
@@ -342,7 +341,27 @@ static bool worldgen_lava_pool_center_candidate(int wx, int wz,
         return false;
 
     roll = hash_world_coord(wx, wz, base_seed, 0x1a7au);
-    return (roll & 0x3ffu) < 3u;
+    if ((roll & 0x3ffu) >= 3u)
+        return false;
+
+    for (int dz = -check_radius; dz <= check_radius; dz++) {
+        for (int dx = -check_radius; dx <= check_radius; dx++) {
+            int dist_sq = dx * dx + dz * dz;
+            WorldgenColumn near_column;
+
+            if (dist_sq > check_radius * check_radius)
+                continue;
+
+            near_column = worldgen_column_at(wx + dx, wz + dz, base_seed);
+            if (near_column.biome != WORLD_BIOME_DESERT ||
+                near_column.underwater || near_column.beach)
+                return false;
+            if (near_column.surface_y != column.surface_y)
+                return false;
+        }
+    }
+
+    return true;
 }
 
 static bool worldgen_wants_lava_pool(int wx, int wz, uint32_t base_seed)
@@ -424,21 +443,6 @@ static void worldgen_place_cactus(Chunk *chunk, int local_x, int base_y,
                                  BLOCK_CACTUS, false);
 }
 
-static bool worldgen_lava_pool_cell_allowed(const WorldgenColumn *column,
-                                            int center_surface_y)
-{
-    int dy;
-
-    if (!column || column->biome != WORLD_BIOME_DESERT ||
-        column->underwater || column->beach ||
-        column->surface_y < WORLDGEN_SEA_LEVEL + 1 ||
-        column->surface_y >= WORLD_CHUNK_HEIGHT - 2)
-        return false;
-
-    dy = column->surface_y - center_surface_y;
-    return dy >= -1 && dy <= 1;
-}
-
 static void worldgen_place_desert_lava_pool(Chunk *chunk,
                                             int center_local_x,
                                             int center_local_z,
@@ -449,15 +453,14 @@ static void worldgen_place_desert_lava_pool(Chunk *chunk,
     int center_wx;
     int center_wz;
     WorldgenColumn center_column;
-
-    if (!chunk)
-        return;
+    int pool_y;
 
     origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
     origin_z = chunk->chunk_z * WORLD_CHUNK_SIZE;
     center_wx = origin_x + center_local_x;
     center_wz = origin_z + center_local_z;
     center_column = worldgen_column_at(center_wx, center_wz, base_seed);
+    pool_y = center_column.surface_y;
 
     for (int dz = -WORLDGEN_LAVA_POOL_RADIUS;
          dz <= WORLDGEN_LAVA_POOL_RADIUS; dz++) {
@@ -466,32 +469,24 @@ static void worldgen_place_desert_lava_pool(Chunk *chunk,
             int dist_sq = dx * dx + dz * dz;
             int lx = center_local_x + dx;
             int lz = center_local_z + dz;
-            int wx = center_wx + dx;
-            int wz = center_wz + dz;
-            WorldgenColumn column;
-            int surface_y;
 
             if (dist_sq > WORLDGEN_LAVA_POOL_RADIUS *
                           WORLDGEN_LAVA_POOL_RADIUS)
                 continue;
 
-            column = worldgen_column_at(wx, wz, base_seed);
-            if (!worldgen_lava_pool_cell_allowed(&column,
-                                                 center_column.surface_y))
-                continue;
-
-            surface_y = column.surface_y;
             if (dist_sq <= 4) {
-                worldgen_set_block_local(chunk, lx, surface_y - 1, lz,
+                worldgen_set_block_local(chunk, lx, pool_y - 1, lz,
                                          BLOCK_SANDSTONE, true);
-                worldgen_set_block_local(chunk, lx, surface_y, lz,
+                worldgen_set_block_local(chunk, lx, pool_y, lz,
                                          BLOCK_LAVA, true);
-                worldgen_set_block_local(chunk, lx, surface_y + 1, lz,
+                worldgen_set_block_local(chunk, lx, pool_y + 1, lz,
                                          BLOCK_AIR, true);
             } else {
-                worldgen_set_block_local(chunk, lx, surface_y, lz,
+                worldgen_set_block_local(chunk, lx, pool_y - 1, lz,
                                          BLOCK_SANDSTONE, true);
-                worldgen_set_block_local(chunk, lx, surface_y + 1, lz,
+                worldgen_set_block_local(chunk, lx, pool_y, lz,
+                                         BLOCK_SANDSTONE, true);
+                worldgen_set_block_local(chunk, lx, pool_y + 1, lz,
                                          BLOCK_AIR, true);
             }
         }
@@ -529,8 +524,6 @@ static void worldgen_try_place_ore(Chunk *chunk,
     int wz;
     WorldgenColumn column;
 
-    if (!chunk)
-        return;
     if (lx < 0 || lx >= WORLD_CHUNK_SIZE ||
         lz < 0 || lz >= WORLD_CHUNK_SIZE ||
         y < 1 || y >= WORLD_CHUNK_HEIGHT)
@@ -556,9 +549,6 @@ static void worldgen_place_ore_vein(Chunk *chunk,
                                     uint32_t base_seed)
 {
     int radius_sq;
-
-    if (!chunk || !ore)
-        return;
 
     radius_sq = ore->radius * ore->radius;
     for (int dy = -1; dy <= 1; dy++) {
@@ -594,9 +584,6 @@ static void worldgen_place_ores(Chunk *chunk,
     };
     int origin_x;
     int origin_z;
-
-    if (!chunk)
-        return;
 
     origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
     origin_z = chunk->chunk_z * WORLD_CHUNK_SIZE;

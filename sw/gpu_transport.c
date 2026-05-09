@@ -1701,8 +1701,8 @@ static void gpu_transport_pipeline_stop(GPUTransport *transport)
 
 GPUTransport *gpu_transport_open(void)
 {
-    const char *backend_env = getenv("VOXEL_GPU_BACKEND");
-    const char *socket_env = getenv("VOXEL_GPU_SOCKET_PATH");
+    const char *backend_env = env_get_nonempty("VOXEL_GPU_BACKEND");
+    const char *socket_env = env_get_nonempty("VOXEL_GPU_SOCKET_PATH");
     int debug_enabled = env_flag("DEBUG", false);
     GPUTransport *transport = calloc(1, sizeof(*transport));
     int ret;
@@ -1722,7 +1722,7 @@ GPUTransport *gpu_transport_open(void)
         return NULL;
     }
 
-    if (!socket_env || !socket_env[0])
+    if (!socket_env)
         socket_env = VGPU_SOCKET_DEFAULT_PATH;
     if (strlen(socket_env) >= sizeof(transport->socket_path)) {
         fprintf(stderr, "renderer: socket path too long: %s\n", socket_env);
@@ -1784,23 +1784,18 @@ GPUTransport *gpu_transport_open(void)
                     "renderer: VOXEL_HW_BAND_REUSE enabled (full-band skip path; set =0 to disable)\n");
     }
 
-    {
-        const char *pipeline = getenv("VOXEL_PIPELINE_FRAMES");
-        int pipeline_default =
-            (!pipeline || pipeline[0] == '\0') &&
-            transport->mode == GPU_BACKEND_HW;
-        if (pipeline_default || env_value_is_true(pipeline)) {
-            if (transport->mode == GPU_BACKEND_HW) {
-                ret = gpu_transport_pipeline_start(transport, debug_enabled);
-                if (ret < 0) {
-                    fprintf(stderr,
-                            "renderer: VOXEL_PIPELINE_FRAMES disabled (worker start failed: %s)\n",
-                            strerror(-ret));
-                }
-            } else if (debug_enabled) {
+    if (env_flag("VOXEL_PIPELINE_FRAMES",
+                 transport->mode == GPU_BACKEND_HW)) {
+        if (transport->mode == GPU_BACKEND_HW) {
+            ret = gpu_transport_pipeline_start(transport, debug_enabled);
+            if (ret < 0) {
                 fprintf(stderr,
-                        "renderer: VOXEL_PIPELINE_FRAMES requested but requires VOXEL_GPU_BACKEND=hw\n");
+                        "renderer: VOXEL_PIPELINE_FRAMES disabled (worker start failed: %s)\n",
+                        strerror(-ret));
             }
+        } else if (debug_enabled) {
+            fprintf(stderr,
+                    "renderer: VOXEL_PIPELINE_FRAMES requested but requires VOXEL_GPU_BACKEND=hw\n");
         }
     }
 

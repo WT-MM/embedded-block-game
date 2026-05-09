@@ -24,6 +24,16 @@ static int expected_loaded_chunks(int render_distance)
     return diameter * diameter;
 }
 
+static int test_floor_div(int value, int divisor)
+{
+    int q = value / divisor;
+    int r = value % divisor;
+
+    if (r < 0)
+        q--;
+    return q;
+}
+
 static void cleanup_temp_world_dir(const char *world_dir)
 {
     char path[WORLD_SAVE_PATH_MAX];
@@ -184,6 +194,55 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
     return sample;
 }
 
+static bool loaded_world_has_uncontained_lava(const VoxelWorld *world)
+{
+    static const int dx[4] = { -1, 1, 0, 0 };
+    static const int dz[4] = { 0, 0, -1, 1 };
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        for (int y = 1; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    int wx;
+                    int wz;
+
+                    if (chunk->blocks[y][z][x] != BLOCK_LAVA)
+                        continue;
+
+                    wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
+                    wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
+                    if (block_is_passable(world_get_block(world,
+                                                          wx, y - 1, wz)))
+                        return true;
+
+                    for (int d = 0; d < 4; d++) {
+                        int nx = wx + dx[d];
+                        int nz = wz + dz[d];
+                        int ncx = test_floor_div(nx, WORLD_CHUNK_SIZE);
+                        int ncz = test_floor_div(nz, WORLD_CHUNK_SIZE);
+                        BlockID neighbor;
+
+                        if (!world_get_chunk(world, ncx, ncz))
+                            continue;
+
+                        neighbor = world_get_block(world, nx, y, nz);
+                        if (neighbor != BLOCK_LAVA &&
+                            block_is_passable(neighbor))
+                            return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 int main(void)
 {
     /* Each test expects one world_rebuild_dirty_meshes() to drain every dirty
@@ -280,6 +339,8 @@ int main(void)
     WorldgenSample lava_sample = sample_worldgen(&lava_world);
     if (lava_sample.lava_blocks <= 0 || !lava_world.has_light_emitters)
         return check_failed("desert lava pools did not generate lit lava");
+    if (loaded_world_has_uncontained_lava(&lava_world))
+        return check_failed("desert lava pools generated spill-prone lava");
     world_free(&lava_world);
 
     if (!world_init_infinite_procedural(&biome_world,

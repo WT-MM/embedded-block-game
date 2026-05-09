@@ -11,6 +11,99 @@ typedef struct {
     uint8_t output_count;
 } CraftRecipe;
 
+typedef struct {
+    const char *name;
+    uint8_t texture_id;
+    ItemToolKind tool_kind;
+    ItemToolTier tool_tier;
+    uint8_t food_units;
+    bool returns_bowl;
+} ItemDef;
+
+#define ITEM_DEF(label, texture) \
+    { .name = label, .texture_id = texture }
+#define FOOD_DEF(label, texture, units) \
+    { .name = label, .texture_id = texture, .food_units = units }
+#define FOOD_BOWL_DEF(label, texture, units) \
+    { .name = label, .texture_id = texture, .food_units = units, \
+      .returns_bowl = true }
+#define TOOL_DEF(label, texture, kind, tier) \
+    { .name = label, .texture_id = texture, .tool_kind = kind, \
+      .tool_tier = tier }
+
+static const ItemDef ITEM_DEFS[NUM_ITEM_TYPES - NUM_BLOCK_TYPES] = {
+    [ITEM_STICK - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Stick", TEX_TILE_STICK),
+    [ITEM_APPLE - NUM_BLOCK_TYPES] =
+        FOOD_DEF("Apple", TEX_TILE_APPLE, 4),
+    [ITEM_RED_MUSHROOM - NUM_BLOCK_TYPES] =
+        FOOD_DEF("Red Mushroom", TEX_TILE_RED_MUSHROOM, 2),
+    [ITEM_BROWN_MUSHROOM - NUM_BLOCK_TYPES] =
+        FOOD_DEF("Brown Mushroom", TEX_TILE_BROWN_MUSHROOM, 2),
+    [ITEM_BOWL - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Bowl", TEX_TILE_BOWL),
+    [ITEM_MUSHROOM_STEW - NUM_BLOCK_TYPES] =
+        FOOD_BOWL_DEF("Mushroom Stew", TEX_TILE_MUSHROOM_STEW, 8),
+    [ITEM_COAL - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Coal", TEX_TILE_COAL),
+    [ITEM_IRON_INGOT - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Iron Ingot", TEX_TILE_IRON_INGOT),
+    [ITEM_GOLD_INGOT - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Gold Ingot", TEX_TILE_GOLD_INGOT),
+    [ITEM_DIAMOND - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Diamond", TEX_TILE_DIAMOND),
+    [ITEM_BUCKET - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Bucket", TEX_TILE_BUCKET),
+    [ITEM_WATER_BUCKET - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Water Bucket", TEX_TILE_WATER_BUCKET),
+    [ITEM_LAVA_BUCKET - NUM_BLOCK_TYPES] =
+        ITEM_DEF("Lava Bucket", TEX_TILE_LAVA_BUCKET),
+    [ITEM_WOOD_PICKAXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Wooden Pickaxe", TEX_TILE_WOOD_PICKAXE,
+                 ITEM_TOOL_PICKAXE, ITEM_TOOL_TIER_WOOD),
+    [ITEM_STONE_PICKAXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Stone Pickaxe", TEX_TILE_STONE_PICKAXE,
+                 ITEM_TOOL_PICKAXE, ITEM_TOOL_TIER_STONE),
+    [ITEM_IRON_PICKAXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Iron Pickaxe", TEX_TILE_IRON_PICKAXE,
+                 ITEM_TOOL_PICKAXE, ITEM_TOOL_TIER_IRON),
+    [ITEM_GOLD_PICKAXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Gold Pickaxe", TEX_TILE_GOLD_PICKAXE,
+                 ITEM_TOOL_PICKAXE, ITEM_TOOL_TIER_GOLD),
+    [ITEM_DIAMOND_PICKAXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Diamond Pickaxe", TEX_TILE_DIAMOND_PICKAXE,
+                 ITEM_TOOL_PICKAXE, ITEM_TOOL_TIER_DIAMOND),
+    [ITEM_WOOD_AXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Wooden Axe", TEX_TILE_WOOD_AXE,
+                 ITEM_TOOL_AXE, ITEM_TOOL_TIER_WOOD),
+    [ITEM_STONE_AXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Stone Axe", TEX_TILE_STONE_AXE,
+                 ITEM_TOOL_AXE, ITEM_TOOL_TIER_STONE),
+    [ITEM_IRON_AXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Iron Axe", TEX_TILE_IRON_AXE,
+                 ITEM_TOOL_AXE, ITEM_TOOL_TIER_IRON),
+    [ITEM_GOLD_AXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Gold Axe", TEX_TILE_GOLD_AXE,
+                 ITEM_TOOL_AXE, ITEM_TOOL_TIER_GOLD),
+    [ITEM_DIAMOND_AXE - NUM_BLOCK_TYPES] =
+        TOOL_DEF("Diamond Axe", TEX_TILE_DIAMOND_AXE,
+                 ITEM_TOOL_AXE, ITEM_TOOL_TIER_DIAMOND),
+};
+
+#undef ITEM_DEF
+#undef FOOD_DEF
+#undef FOOD_BOWL_DEF
+#undef TOOL_DEF
+
+static const ItemDef *item_def(ItemID item)
+{
+    if (item < (ItemID)NUM_BLOCK_TYPES || item >= NUM_ITEM_TYPES)
+        return NULL;
+    if (!ITEM_DEFS[item - NUM_BLOCK_TYPES].name)
+        return NULL;
+    return &ITEM_DEFS[item - NUM_BLOCK_TYPES];
+}
+
 static const CraftRecipe CRAFT_RECIPES[] = {
     {
         .shapeless = false,
@@ -271,30 +364,7 @@ static bool item_id_valid(ItemID item)
 {
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return true;
-
-    return item == ITEM_STICK ||
-           item == ITEM_APPLE ||
-           item == ITEM_RED_MUSHROOM ||
-           item == ITEM_BROWN_MUSHROOM ||
-           item == ITEM_BOWL ||
-           item == ITEM_MUSHROOM_STEW ||
-           item == ITEM_COAL ||
-           item == ITEM_IRON_INGOT ||
-           item == ITEM_GOLD_INGOT ||
-           item == ITEM_DIAMOND ||
-           item == ITEM_BUCKET ||
-           item == ITEM_WATER_BUCKET ||
-           item == ITEM_LAVA_BUCKET ||
-           item == ITEM_WOOD_PICKAXE ||
-           item == ITEM_STONE_PICKAXE ||
-           item == ITEM_IRON_PICKAXE ||
-           item == ITEM_GOLD_PICKAXE ||
-           item == ITEM_DIAMOND_PICKAXE ||
-           item == ITEM_WOOD_AXE ||
-           item == ITEM_STONE_AXE ||
-           item == ITEM_IRON_AXE ||
-           item == ITEM_GOLD_AXE ||
-           item == ITEM_DIAMOND_AXE;
+    return item_def(item) != NULL;
 }
 
 void item_stack_clear(ItemStack *stack)
@@ -360,60 +430,22 @@ int item_stack_remove(ItemStack *stack, int count)
 
 const char *item_name(ItemID item)
 {
+    const ItemDef *def;
+
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return BlockRegistry[(BlockID)item].name;
-    if (item == ITEM_STICK)
-        return "Stick";
-    if (item == ITEM_APPLE)
-        return "Apple";
-    if (item == ITEM_RED_MUSHROOM)
-        return "Red Mushroom";
-    if (item == ITEM_BROWN_MUSHROOM)
-        return "Brown Mushroom";
-    if (item == ITEM_BOWL)
-        return "Bowl";
-    if (item == ITEM_MUSHROOM_STEW)
-        return "Mushroom Stew";
-    if (item == ITEM_COAL)
-        return "Coal";
-    if (item == ITEM_IRON_INGOT)
-        return "Iron Ingot";
-    if (item == ITEM_GOLD_INGOT)
-        return "Gold Ingot";
-    if (item == ITEM_DIAMOND)
-        return "Diamond";
-    if (item == ITEM_BUCKET)
-        return "Bucket";
-    if (item == ITEM_WATER_BUCKET)
-        return "Water Bucket";
-    if (item == ITEM_LAVA_BUCKET)
-        return "Lava Bucket";
-    if (item == ITEM_WOOD_PICKAXE)
-        return "Wooden Pickaxe";
-    if (item == ITEM_STONE_PICKAXE)
-        return "Stone Pickaxe";
-    if (item == ITEM_IRON_PICKAXE)
-        return "Iron Pickaxe";
-    if (item == ITEM_GOLD_PICKAXE)
-        return "Gold Pickaxe";
-    if (item == ITEM_DIAMOND_PICKAXE)
-        return "Diamond Pickaxe";
-    if (item == ITEM_WOOD_AXE)
-        return "Wooden Axe";
-    if (item == ITEM_STONE_AXE)
-        return "Stone Axe";
-    if (item == ITEM_IRON_AXE)
-        return "Iron Axe";
-    if (item == ITEM_GOLD_AXE)
-        return "Gold Axe";
-    if (item == ITEM_DIAMOND_AXE)
-        return "Diamond Axe";
+
+    def = item_def(item);
+    if (def)
+        return def->name;
 
     return "Unknown";
 }
 
 uint8_t item_texture_id(ItemID item)
 {
+    const ItemDef *def;
+
     if (block_is_door((BlockID)item))
         return TEX_TILE_DOOR_ITEM;
     if (item == (ItemID)BLOCK_CRAFTING_TABLE)
@@ -422,52 +454,10 @@ uint8_t item_texture_id(ItemID item)
         return TEX_TILE_FURNACE_FRONT;
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return block_face_texture_id((BlockID)item, FACE_FRONT);
-    if (item == ITEM_STICK)
-        return TEX_TILE_STICK;
-    if (item == ITEM_APPLE)
-        return TEX_TILE_APPLE;
-    if (item == ITEM_RED_MUSHROOM)
-        return TEX_TILE_RED_MUSHROOM;
-    if (item == ITEM_BROWN_MUSHROOM)
-        return TEX_TILE_BROWN_MUSHROOM;
-    if (item == ITEM_BOWL)
-        return TEX_TILE_BOWL;
-    if (item == ITEM_MUSHROOM_STEW)
-        return TEX_TILE_MUSHROOM_STEW;
-    if (item == ITEM_COAL)
-        return TEX_TILE_COAL;
-    if (item == ITEM_IRON_INGOT)
-        return TEX_TILE_IRON_INGOT;
-    if (item == ITEM_GOLD_INGOT)
-        return TEX_TILE_GOLD_INGOT;
-    if (item == ITEM_DIAMOND)
-        return TEX_TILE_DIAMOND;
-    if (item == ITEM_BUCKET)
-        return TEX_TILE_BUCKET;
-    if (item == ITEM_WATER_BUCKET)
-        return TEX_TILE_WATER_BUCKET;
-    if (item == ITEM_LAVA_BUCKET)
-        return TEX_TILE_LAVA_BUCKET;
-    if (item == ITEM_WOOD_PICKAXE)
-        return TEX_TILE_WOOD_PICKAXE;
-    if (item == ITEM_STONE_PICKAXE)
-        return TEX_TILE_STONE_PICKAXE;
-    if (item == ITEM_IRON_PICKAXE)
-        return TEX_TILE_IRON_PICKAXE;
-    if (item == ITEM_GOLD_PICKAXE)
-        return TEX_TILE_GOLD_PICKAXE;
-    if (item == ITEM_DIAMOND_PICKAXE)
-        return TEX_TILE_DIAMOND_PICKAXE;
-    if (item == ITEM_WOOD_AXE)
-        return TEX_TILE_WOOD_AXE;
-    if (item == ITEM_STONE_AXE)
-        return TEX_TILE_STONE_AXE;
-    if (item == ITEM_IRON_AXE)
-        return TEX_TILE_IRON_AXE;
-    if (item == ITEM_GOLD_AXE)
-        return TEX_TILE_GOLD_AXE;
-    if (item == ITEM_DIAMOND_AXE)
-        return TEX_TILE_DIAMOND_AXE;
+
+    def = item_def(item);
+    if (def)
+        return def->texture_id;
 
     return 0;
 }
@@ -506,45 +496,16 @@ ItemID item_furnace_smelt_output(ItemID input)
 
 ItemToolKind item_tool_kind(ItemID item)
 {
-    switch (item) {
-    case ITEM_WOOD_PICKAXE:
-    case ITEM_STONE_PICKAXE:
-    case ITEM_IRON_PICKAXE:
-    case ITEM_GOLD_PICKAXE:
-    case ITEM_DIAMOND_PICKAXE:
-        return ITEM_TOOL_PICKAXE;
-    case ITEM_WOOD_AXE:
-    case ITEM_STONE_AXE:
-    case ITEM_IRON_AXE:
-    case ITEM_GOLD_AXE:
-    case ITEM_DIAMOND_AXE:
-        return ITEM_TOOL_AXE;
-    default:
-        return ITEM_TOOL_NONE;
-    }
+    const ItemDef *def = item_def(item);
+
+    return def ? def->tool_kind : ITEM_TOOL_NONE;
 }
 
 ItemToolTier item_tool_tier(ItemID item)
 {
-    switch (item) {
-    case ITEM_WOOD_PICKAXE:
-    case ITEM_WOOD_AXE:
-        return ITEM_TOOL_TIER_WOOD;
-    case ITEM_STONE_PICKAXE:
-    case ITEM_STONE_AXE:
-        return ITEM_TOOL_TIER_STONE;
-    case ITEM_IRON_PICKAXE:
-    case ITEM_IRON_AXE:
-        return ITEM_TOOL_TIER_IRON;
-    case ITEM_GOLD_PICKAXE:
-    case ITEM_GOLD_AXE:
-        return ITEM_TOOL_TIER_GOLD;
-    case ITEM_DIAMOND_PICKAXE:
-    case ITEM_DIAMOND_AXE:
-        return ITEM_TOOL_TIER_DIAMOND;
-    default:
-        return ITEM_TOOL_TIER_NONE;
-    }
+    const ItemDef *def = item_def(item);
+
+    return def ? def->tool_tier : ITEM_TOOL_TIER_NONE;
 }
 
 bool item_is_tool(ItemID item)
@@ -620,22 +581,16 @@ float item_break_seconds(ItemID item, BlockID block, float base_seconds)
 
 int item_food_units(ItemID item)
 {
-    switch (item) {
-    case ITEM_APPLE:
-        return 4;
-    case ITEM_RED_MUSHROOM:
-    case ITEM_BROWN_MUSHROOM:
-        return 2;
-    case ITEM_MUSHROOM_STEW:
-        return 8;
-    default:
-        return 0;
-    }
+    const ItemDef *def = item_def(item);
+
+    return def ? def->food_units : 0;
 }
 
 bool item_food_returns_bowl(ItemID item)
 {
-    return item == ITEM_MUSHROOM_STEW;
+    const ItemDef *def = item_def(item);
+
+    return def && def->returns_bowl;
 }
 
 static int clamp_craft_grid_dim(int grid_dim)

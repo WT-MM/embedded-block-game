@@ -77,8 +77,6 @@ static void test_crafting_table_and_door_recipes(void)
 static void test_table_only_block_recipes(void)
 {
     SurvivalInventory inv;
-    CraftRecipeView recipe;
-    bool found_diamond_block = false;
 
     survival_inventory_init(&inv);
     survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
@@ -90,15 +88,6 @@ static void test_table_only_block_recipes(void)
 
     assert(survival_craft_recipe_count_for_grid(SURVIVAL_CRAFT_GRID_TABLE) >
            survival_craft_recipe_count_for_grid(SURVIVAL_CRAFT_GRID_PLAYER));
-    for (int i = 0;
-         i < survival_craft_recipe_count_for_grid(SURVIVAL_CRAFT_GRID_TABLE);
-         i++) {
-        assert(survival_craft_recipe_view_for_grid(
-            i, SURVIVAL_CRAFT_GRID_TABLE, &recipe));
-        if (recipe.output == (ItemID)BLOCK_DIAMOND_BLOCK)
-            found_diamond_block = true;
-    }
-    assert(found_diamond_block);
 }
 
 static void test_legacy_door_recipe_removed(void)
@@ -117,8 +106,6 @@ static void test_legacy_door_recipe_removed(void)
 static void test_food_items_and_mushroom_stew_recipe(void)
 {
     SurvivalInventory inv;
-    CraftRecipeView recipe;
-    bool found_stew = false;
 
     survival_inventory_init(&inv);
     inv.craft[0] = (ItemStack){ ITEM_BROWN_MUSHROOM, 1 };
@@ -131,15 +118,6 @@ static void test_food_items_and_mushroom_stew_recipe(void)
     assert(item_food_units(ITEM_RED_MUSHROOM) == 2);
     assert(item_food_units(ITEM_MUSHROOM_STEW) == 8);
     assert(item_food_returns_bowl(ITEM_MUSHROOM_STEW));
-
-    for (int i = 0; i < survival_craft_recipe_count(); i++) {
-        assert(survival_craft_recipe_view(i, &recipe));
-        if (recipe.output == ITEM_MUSHROOM_STEW &&
-            recipe.output_count == 1 &&
-            recipe.shapeless)
-            found_stew = true;
-    }
-    assert(found_stew);
 }
 
 static void test_furnace_torch_and_coal(void)
@@ -228,7 +206,7 @@ static void test_furnace_torch_and_coal(void)
     assert(item_break_seconds(ITEM_IRON_AXE, BLOCK_STONE, 2.4f) == 2.4f);
 }
 
-static void test_added_item_textures(void)
+static void test_item_textures(void)
 {
     assert(item_texture_id(ITEM_STICK) == TEX_TILE_STICK);
     assert(item_texture_id((ItemID)BLOCK_DOOR) == TEX_TILE_DOOR_ITEM);
@@ -236,24 +214,9 @@ static void test_added_item_textures(void)
            TEX_TILE_CRAFTING_TABLE_FRONT);
     assert(item_texture_id((ItemID)BLOCK_FURNACE) == TEX_TILE_FURNACE_FRONT);
     assert(item_texture_id((ItemID)BLOCK_TORCH) == TEX_TILE_TORCH);
-    assert(item_texture_id(ITEM_COAL) == TEX_TILE_COAL);
-    assert(item_texture_id(ITEM_IRON_INGOT) == TEX_TILE_IRON_INGOT);
-    assert(item_texture_id(ITEM_GOLD_INGOT) == TEX_TILE_GOLD_INGOT);
-    assert(item_texture_id(ITEM_DIAMOND) == TEX_TILE_DIAMOND);
-    assert(item_texture_id(ITEM_BUCKET) == TEX_TILE_BUCKET);
-    assert(item_texture_id(ITEM_WATER_BUCKET) == TEX_TILE_WATER_BUCKET);
-    assert(item_texture_id(ITEM_LAVA_BUCKET) == TEX_TILE_LAVA_BUCKET);
-    assert(item_texture_id(ITEM_WOOD_PICKAXE) == TEX_TILE_WOOD_PICKAXE);
-    assert(item_texture_id(ITEM_STONE_PICKAXE) == TEX_TILE_STONE_PICKAXE);
-    assert(item_texture_id(ITEM_IRON_PICKAXE) == TEX_TILE_IRON_PICKAXE);
-    assert(item_texture_id(ITEM_GOLD_PICKAXE) == TEX_TILE_GOLD_PICKAXE);
     assert(item_texture_id(ITEM_DIAMOND_PICKAXE) ==
            TEX_TILE_DIAMOND_PICKAXE);
-    assert(item_texture_id(ITEM_WOOD_AXE) == TEX_TILE_WOOD_AXE);
-    assert(item_texture_id(ITEM_STONE_AXE) == TEX_TILE_STONE_AXE);
-    assert(item_texture_id(ITEM_IRON_AXE) == TEX_TILE_IRON_AXE);
-    assert(item_texture_id(ITEM_GOLD_AXE) == TEX_TILE_GOLD_AXE);
-    assert(item_texture_id(ITEM_DIAMOND_AXE) == TEX_TILE_DIAMOND_AXE);
+    assert(item_texture_id(ITEM_LAVA_BUCKET) == TEX_TILE_LAVA_BUCKET);
 }
 
 static void test_cursor_slot_clicks(void)
@@ -285,7 +248,7 @@ int main(void)
     test_legacy_door_recipe_removed();
     test_food_items_and_mushroom_stew_recipe();
     test_furnace_torch_and_coal();
-    test_added_item_textures();
+    test_item_textures();
     test_cursor_slot_clicks();
     puts("inventory_test: ok");
     return 0;

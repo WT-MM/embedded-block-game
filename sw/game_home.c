@@ -104,10 +104,24 @@ static bool path_is_directory(const char *path)
 static bool join_path(char *out, size_t out_size,
                       const char *root, const char *name)
 {
-    if (!out || out_size == 0 || !root || !name)
+    if (out_size == 0)
         return false;
 
     return snprintf(out, out_size, "%s/%s", root, name) < (int)out_size;
+}
+
+static void copy_cstr(char *out, size_t out_size, const char *text)
+{
+    size_t len;
+
+    if (out_size == 0)
+        return;
+
+    len = strlen(text);
+    if (len >= out_size)
+        len = out_size - 1;
+    memcpy(out, text, len);
+    out[len] = '\0';
 }
 
 static bool remove_path_tree(const char *path)
@@ -192,9 +206,9 @@ static int scan_saved_worlds(const char *worlds_root,
                                       &desert_lava_pools_enabled))
             continue;
 
-        snprintf(entries[count].name, sizeof(entries[count].name), "%s",
-                 entry->d_name);
-        snprintf(entries[count].path, sizeof(entries[count].path), "%s", path);
+        copy_cstr(entries[count].name, sizeof(entries[count].name),
+                  entry->d_name);
+        copy_cstr(entries[count].path, sizeof(entries[count].path), path);
         entries[count].seed = seed;
         entries[count].stone_tries_per_chunk = stone_tries;
         entries[count].desert_lava_pools_enabled =
@@ -244,8 +258,8 @@ static bool choose_new_world_path(const char *worlds_root,
         if (path_is_directory(path))
             continue;
 
-        snprintf(selection->name, sizeof(selection->name), "%s", name);
-        snprintf(selection->path, sizeof(selection->path), "%s", path);
+        copy_cstr(selection->name, sizeof(selection->name), name);
+        copy_cstr(selection->path, sizeof(selection->path), path);
         selection->seed = seed;
         selection->stone_tries_per_chunk = STONE_TRIES_PER_CHUNK;
         selection->desert_lava_pools_enabled =
@@ -274,14 +288,11 @@ static bool point_in_rect(float x, float y,
 
 static void home_menu_layout(const HomeMenuState *menu, HomeMenuLayout *layout)
 {
-    int option_rows = (menu && menu->world_count > 0 ? menu->world_count : 1) + 2;
+    int option_rows = (menu->world_count > 0 ? menu->world_count : 1) + 2;
     float total_h = (float)option_rows * HOME_ROW_STEP;
     float list_w = HOME_LOAD_W + HOME_DELETE_GAP + HOME_DELETE_W;
     float list_y = 124.0f;
     float footer_y = SCREEN_HEIGHT - 30.0f;
-
-    if (!layout)
-        return;
 
     if (list_y + total_h > footer_y - 6.0f)
         list_y = footer_y - 6.0f - total_h;
@@ -304,9 +315,6 @@ static HomeHit home_menu_hit_test(const HomeMenuState *menu,
                                   float x, float y)
 {
     HomeHit hit = { HOME_HIT_NONE, -1, -1 };
-
-    if (!menu || !layout)
-        return hit;
 
     if (point_in_rect(x, y,
                       layout->list_x, layout->list_y,
@@ -354,8 +362,6 @@ static HomeHit home_menu_hit_test(const HomeMenuState *menu,
 
 static void home_set_selected(HomeMenuState *menu, int selected)
 {
-    if (!menu)
-        return;
     if (selected < 0)
         selected = 0;
     if (selected > menu->world_count + 1)
@@ -369,7 +375,7 @@ static void home_set_selected(HomeMenuState *menu, int selected)
 static void draw_centered_text(RenderContext *ctx, const char *text,
                                float y, uint8_t palette_index)
 {
-    int len = text ? (int)strlen(text) : 0;
+    int len = (int)strlen(text);
     float width = (float)(len * chat_font_cell_w());
     float x = floorf((SCREEN_WIDTH - width) * 0.5f);
 
@@ -396,7 +402,7 @@ static void draw_dirt_tiled_bg(RenderContext *ctx)
 static void draw_centered_text_scaled(RenderContext *ctx, const char *text,
                                       float y, uint8_t palette_index, int scale)
 {
-    int len = text ? (int)strlen(text) : 0;
+    int len = (int)strlen(text);
     int cell_w = (5 + 1) * scale;
     float width = (float)(len * cell_w);
     float x = floorf((SCREEN_WIDTH - width) * 0.5f);
@@ -411,7 +417,7 @@ static void draw_menu_button_styled(RenderContext *ctx, float x, float y,
                                     bool selected, uint8_t panel_pal,
                                     uint8_t text_pal)
 {
-    int len = label ? (int)strlen(label) : 0;
+    int len = (int)strlen(label);
     int cell_w = chat_font_cell_w();
     int cell_h = chat_font_cell_h();
     float text_w = (float)(len * cell_w);
@@ -530,8 +536,7 @@ static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
                  menu->worlds[menu->delete_confirm_index].name);
         draw_centered_text(ctx, line, layout.footer_y - 15.0f, 6);
     } else if (menu->status[0] != '\0') {
-        snprintf(line, sizeof(line), "%s", menu->status);
-        draw_centered_text(ctx, line, layout.footer_y - 15.0f, 8);
+        draw_centered_text(ctx, menu->status, layout.footer_y - 15.0f, 8);
     }
 
     if (worlds_root && worlds_root[0]) {
@@ -552,9 +557,6 @@ static bool home_edge_pressed(bool now, bool *prev)
 
 static void clear_home_menu_input(InputState *inp)
 {
-    if (!inp)
-        return;
-
     inp->forward = inp->back = inp->left = inp->right = false;
     inp->up = inp->down = false;
     inp->sprint = false;
@@ -577,14 +579,11 @@ static bool select_world_direct(SelectedWorld *selection)
     int stone_tries = STONE_TRIES_PER_CHUNK;
     bool desert_lava_pools_enabled = DEFAULT_DESERT_LAVA_POOLS;
 
-    if (!selection)
-        return false;
-
     (void)world_read_save_metadata(world_save_dir, &seed, &stone_tries,
                                    &desert_lava_pools_enabled);
 
-    snprintf(selection->name, sizeof(selection->name), "%s", world_save_dir);
-    snprintf(selection->path, sizeof(selection->path), "%s", world_save_dir);
+    copy_cstr(selection->name, sizeof(selection->name), world_save_dir);
+    copy_cstr(selection->path, sizeof(selection->path), world_save_dir);
     selection->seed = seed;
     selection->stone_tries_per_chunk = stone_tries;
     selection->desert_lava_pools_enabled = desert_lava_pools_enabled;
@@ -593,8 +592,6 @@ static bool select_world_direct(SelectedWorld *selection)
 
 static void home_toggle_lava_pools(HomeMenuState *menu)
 {
-    if (!menu)
-        return;
     menu->desert_lava_pools_enabled =
         !menu->desert_lava_pools_enabled;
     menu->delete_confirm_index = -1;
@@ -605,9 +602,6 @@ static void home_toggle_lava_pools(HomeMenuState *menu)
 static bool home_select_current(HomeMenuState *menu, const char *worlds_root,
                                 SelectedWorld *selection)
 {
-    if (!menu || !selection)
-        return false;
-
     if (menu->selected == 0) {
         if (!choose_new_world_path(worlds_root, selection,
                                    menu->desert_lava_pools_enabled))
@@ -616,10 +610,8 @@ static bool home_select_current(HomeMenuState *menu, const char *worlds_root,
                menu->selected < menu->world_count + 2) {
         HomeWorldEntry *world = &menu->worlds[menu->selected - 2];
 
-        snprintf(selection->name, sizeof(selection->name), "%s",
-                 world->name);
-        snprintf(selection->path, sizeof(selection->path), "%s",
-                 world->path);
+        copy_cstr(selection->name, sizeof(selection->name), world->name);
+        copy_cstr(selection->path, sizeof(selection->path), world->path);
         selection->seed = world->seed;
         selection->stone_tries_per_chunk =
             world->stone_tries_per_chunk;
@@ -638,7 +630,7 @@ static void home_delete_selected(HomeMenuState *menu, const char *worlds_root)
     char deleted_name[GAME_HOME_NAME_MAX];
     char deleted_path[WORLD_SAVE_PATH_MAX];
 
-    if (!menu || menu->selected < 2 || menu->selected >= menu->world_count + 2)
+    if (menu->selected < 2 || menu->selected >= menu->world_count + 2)
         return;
 
     world_index = menu->selected - 2;
@@ -648,10 +640,10 @@ static void home_delete_selected(HomeMenuState *menu, const char *worlds_root)
         return;
     }
 
-    snprintf(deleted_name, sizeof(deleted_name), "%s",
-             menu->worlds[world_index].name);
-    snprintf(deleted_path, sizeof(deleted_path), "%s",
-             menu->worlds[world_index].path);
+    copy_cstr(deleted_name, sizeof(deleted_name),
+              menu->worlds[world_index].name);
+    copy_cstr(deleted_path, sizeof(deleted_path),
+              menu->worlds[world_index].path);
 
     if (!remove_path_tree(deleted_path)) {
         snprintf(menu->status, sizeof(menu->status),

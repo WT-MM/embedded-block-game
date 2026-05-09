@@ -333,9 +333,9 @@ static float fov_degrees_from_x10(int fov_x10)
 
 static int read_status_log_enabled(int debug_enabled)
 {
-    const char *value = getenv("VOXEL_STATUS_LOG");
+    const char *value = env_get_nonempty("VOXEL_STATUS_LOG");
 
-    if (!env_value_is_set(value) || env_streq_ci(value, "auto"))
+    if (!value || strcmp(value, "auto") == 0)
         return debug_enabled;
     return env_value_is_true(value);
 }
@@ -3970,7 +3970,7 @@ home_menu_start:
                 else if (ch == INPUT_TEXT_ENTER) {
                     char submitted[CHAT_LINE_MAX + 1];
 
-                    snprintf(submitted, sizeof(submitted), "%s", chat.input);
+                    strcpy(submitted, chat.input);
                     chat_handle_enter(&chat);
                     execute_chat_command(&chat, &player, &world,
                                          &survival_inventory, &world_time,

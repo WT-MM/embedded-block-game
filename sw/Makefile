@@ -19,6 +19,7 @@ TEST_TARGETS := \
 	tests/voxel_test \
 	tests/command_parser_test \
 	tests/inventory_test \
+	tests/player_physics_test \
 	tests/world_chunk_test \
 	tests/renderer_scene_test \
 	tests/renderer_static_test \
@@ -54,6 +55,9 @@ tests/command_parser_test: tests/command_parser_test.c command_parser.c command_
 
 tests/inventory_test: tests/inventory_test.c inventory.c inventory.h block_types.c block_types.h texture_tiles.def
 	${CC} ${CFLAGS} -I. -o $@ tests/inventory_test.c inventory.c block_types.c
+
+tests/player_physics_test: tests/player_physics_test.c player_physics.c player_physics.h world.c world.h world_gen.c world_gen.h env_util.h block_types.c block_types.h texture_tiles.def
+	${CC} ${CFLAGS} ${THREAD_FLAGS} -I. -o $@ tests/player_physics_test.c player_physics.c world.c world_gen.c block_types.c -lm
 
 tests/world_chunk_test: tests/world_chunk_test.c block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h env_util.h
 	${CC} ${CFLAGS} ${THREAD_FLAGS} -I. -o $@ tests/world_chunk_test.c block_types.c world.c world_gen.c -lm
@@ -109,6 +113,7 @@ TARFILES = Makefile README \
 	chat.c chat.h command_parser.c command_parser.h \
 	pause_menu.c pause_menu.h inventory.c inventory.h \
 	tests/voxel_test.c tests/command_parser_test.c tests/inventory_test.c \
+	tests/player_physics_test.c \
 	tests/world_chunk_test.c tests/renderer_scene_test.c \
 	tests/renderer_static_test.c tests/renderer_quad_test.c \
 	tests/renderer_edge_test.c tests/renderer_fog_test.c \

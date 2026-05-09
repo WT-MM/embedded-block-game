@@ -92,6 +92,25 @@ static bool check_collision(VoxelWorld *world, float px, float py, float pz) {
     return false;
 }
 
+static bool has_floor_support(VoxelWorld *world, float px, float py, float pz) {
+    const float edge_epsilon = 0.001f;
+    int min_x = (int)floorf(px - PLAYER_WIDTH / 2.0f + edge_epsilon);
+    int max_x = (int)floorf(px + PLAYER_WIDTH / 2.0f - edge_epsilon);
+    int support_y = (int)floorf(py - 0.05f);
+    int min_z = (int)floorf(pz - PLAYER_DEPTH / 2.0f + edge_epsilon);
+    int max_z = (int)floorf(pz + PLAYER_DEPTH / 2.0f - edge_epsilon);
+
+    if (support_y < 0 || support_y >= WORLD_CHUNK_HEIGHT)
+        return false;
+
+    for (int z = min_z; z <= max_z; z++)
+        for (int x = min_x; x <= max_x; x++)
+            if (!block_is_passable(world_get_block(world, x, support_y, z)))
+                return true;
+
+    return false;
+}
+
 static int floor_div_i(int value, int divisor) {
     int q = value / divisor;
     int r = value % divisor;
@@ -288,11 +307,16 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
     p->current_eye_y = approach(p->current_eye_y, target_eye, 5.0f * dt);
 
     if (apply_collision) {
+        bool sneak_edge_guard =
+            apply_gravity && p->is_shifting && p->is_grounded && !in_water;
+
         p->is_grounded = false;
 
         if (p->vx != 0.0f) {
             float next_x = p->x + p->vx * dt;
-            if (!check_collision(world, next_x, p->y, p->z))
+            if (!check_collision(world, next_x, p->y, p->z) &&
+                (!sneak_edge_guard ||
+                 has_floor_support(world, next_x, p->y, p->z)))
                 p->x = next_x;
             else
                 p->vx = 0.0f;
@@ -313,7 +337,9 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
 
         if (p->vz != 0.0f) {
             float next_z = p->z + p->vz * dt;
-            if (!check_collision(world, p->x, p->y, next_z))
+            if (!check_collision(world, p->x, p->y, next_z) &&
+                (!sneak_edge_guard ||
+                 has_floor_support(world, p->x, p->y, next_z)))
                 p->z = next_z;
             else
                 p->vz = 0.0f;

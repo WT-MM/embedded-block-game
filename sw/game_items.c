@@ -26,9 +26,6 @@ static ItemEntity *item_entity_find_spawn_slot(ItemEntityPool *pool)
     int oldest_index = 0;
     float oldest_age = -1.0f;
 
-    if (!pool)
-        return NULL;
-
     for (int i = 0; i < ITEM_ENTITY_MAX; i++) {
         if (!pool->items[i].active)
             return &pool->items[i];
@@ -48,12 +45,12 @@ static void item_entity_spawn_stack(ItemEntityPool *pool,
                                     Vec3 velocity,
                                     float pickup_delay)
 {
-    while (pool && count > 0 && item != ITEM_NONE && item < NUM_ITEM_TYPES) {
+    if (!pool || item == ITEM_NONE || item >= NUM_ITEM_TYPES)
+        return;
+
+    while (count > 0) {
         ItemEntity *entity = item_entity_find_spawn_slot(pool);
         int stack_count = count > ITEM_STACK_MAX ? ITEM_STACK_MAX : count;
-
-        if (!entity)
-            return;
 
         memset(entity, 0, sizeof(*entity));
         entity->active = true;
@@ -102,9 +99,12 @@ void item_entity_spawn_block_drop(ItemEntityPool *pool,
         push_dir.z * 1.2f,
     };
 
+    if (!pool)
+        return;
+
     if (broken_block == BLOCK_LEAVES) {
         uint32_t roll = item_drop_hash(wx, wy, wz,
-                                       pool ? pool->spawn_counter : 0u);
+                                       pool->spawn_counter);
 
         drop = (roll % 5u == 0u) ? ITEM_APPLE : ITEM_NONE;
     }
@@ -195,7 +195,7 @@ static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
 {
     int leftover;
 
-    if (!inv || item_stack_is_empty(stack))
+    if (item_stack_is_empty(stack))
         return;
 
     leftover = survival_inventory_add_item(inv, stack->item, stack->count);

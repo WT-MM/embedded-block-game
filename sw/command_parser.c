@@ -12,6 +12,7 @@
 #define COMMAND_MAX_TOKENS 10
 #define COMMAND_GIVE_MAX_COUNT 4096
 #define COMMAND_ITEMS_MAX_PAGE 999
+#define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 typedef struct {
     char text[COMMAND_TOKEN_MAX];
@@ -54,12 +55,12 @@ static bool parse_long_text(const char *text, long min_value,
     char *end = NULL;
     long value;
 
-    if (!text || *text == '\0')
+    if (*text == '\0')
         return false;
 
     errno = 0;
     value = strtol(text, &end, 10);
-    if (errno == ERANGE || !end || *end != '\0' ||
+    if (errno == ERANGE || *end != '\0' ||
         value < min_value || value > max_value)
         return false;
 
@@ -73,12 +74,12 @@ static bool parse_float_token(const CommandToken *token, float *out)
     char *end = NULL;
     float value;
 
-    if (!token || token->text[0] == '\0')
+    if (token->text[0] == '\0')
         return false;
 
     errno = 0;
     value = strtof(token->text, &end);
-    if (errno == ERANGE || !end || *end != '\0' ||
+    if (errno == ERANGE || *end != '\0' ||
         value != value || value < -1000000.0f || value > 1000000.0f)
         return false;
 
@@ -214,9 +215,6 @@ static bool parse_coord_value(const CommandToken *token, GameCommandCoord *out)
     const char *text;
     long value = 0;
 
-    if (!token || !out)
-        return false;
-
     text = token->text;
     out->relative = false;
     out->value = 0;
@@ -310,9 +308,6 @@ static bool parse_block_value(const CommandToken *token, BlockID *out)
     const char *text;
     long id;
 
-    if (!token || !out)
-        return false;
-
     text = token->text;
     if (strncmp(text, "minecraft:", 10) == 0)
         text += 10;
@@ -322,8 +317,7 @@ static bool parse_block_value(const CommandToken *token, BlockID *out)
         return true;
     }
 
-    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
-                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_BLOCK_NAMES); i++) {
         if (block_token_name_equals(text, COMMAND_BLOCK_NAMES[i].name)) {
             *out = COMMAND_BLOCK_NAMES[i].block;
             return true;
@@ -377,9 +371,6 @@ static bool parse_item_value(const CommandToken *token, ItemID *out)
     const char *text;
     long id;
 
-    if (!token || !out)
-        return false;
-
     text = token->text;
     if (strncmp(text, "minecraft:", 10) == 0)
         text += 10;
@@ -394,8 +385,7 @@ static bool parse_item_value(const CommandToken *token, ItemID *out)
         return true;
     }
 
-    for (size_t i = 0; i < sizeof(COMMAND_ITEM_NAMES) /
-                            sizeof(COMMAND_ITEM_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_ITEM_NAMES); i++) {
         if (block_token_name_equals(text, COMMAND_ITEM_NAMES[i].name)) {
             *out = COMMAND_ITEM_NAMES[i].item;
             return true;
@@ -420,8 +410,7 @@ static bool block_name_is_first_for_list(size_t index)
 
 static bool item_name_conflicts_with_block(const char *name)
 {
-    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
-                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_BLOCK_NAMES); i++) {
         if (COMMAND_BLOCK_NAMES[i].block != BLOCK_AIR &&
             block_token_name_equals(name, COMMAND_BLOCK_NAMES[i].name))
             return true;
@@ -458,13 +447,11 @@ int game_command_give_name_count(void)
 {
     int count = 0;
 
-    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
-                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_BLOCK_NAMES); i++) {
         if (block_name_is_first_for_list(i))
             count++;
     }
-    for (size_t i = 0; i < sizeof(COMMAND_ITEM_NAMES) /
-                            sizeof(COMMAND_ITEM_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_ITEM_NAMES); i++) {
         if (item_name_is_first_for_list(i))
             count++;
     }
@@ -477,16 +464,14 @@ const char *game_command_give_name_at(int index)
     if (index < 0)
         return NULL;
 
-    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
-                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_BLOCK_NAMES); i++) {
         if (!block_name_is_first_for_list(i))
             continue;
         if (index == 0)
             return COMMAND_BLOCK_NAMES[i].name;
         index--;
     }
-    for (size_t i = 0; i < sizeof(COMMAND_ITEM_NAMES) /
-                            sizeof(COMMAND_ITEM_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_ITEM_NAMES); i++) {
         if (!item_name_is_first_for_list(i))
             continue;
         if (index == 0)
@@ -632,8 +617,7 @@ static bool completion_name_matches_prefix(const char *prefix,
 static bool token_is_command(const CommandCompleteToken *token,
                              const char *name)
 {
-    return token &&
-           token->text[0] == '/' &&
+    return token->text[0] == '/' &&
            strcmp(token->text + 1, name) == 0;
 }
 
@@ -658,10 +642,9 @@ static bool command_is_blocks(const CommandCompleteToken *token)
 
 static bool token_is_give_target(const CommandCompleteToken *token)
 {
-    return token &&
-           (strcmp(token->text, "me") == 0 ||
-            strcmp(token->text, "self") == 0 ||
-            strcmp(token->text, "player") == 0);
+    return strcmp(token->text, "me") == 0 ||
+           strcmp(token->text, "self") == 0 ||
+           strcmp(token->text, "player") == 0;
 }
 
 static int add_completion_match(const char **matches, int count,
@@ -688,8 +671,7 @@ static int add_completion_array_matches(const char **matches, int count,
 static int add_block_completion_matches(const char **matches, int count,
                                         const char *prefix)
 {
-    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
-                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(COMMAND_BLOCK_NAMES); i++) {
         if (block_name_is_first_for_completion(i)) {
             count = add_completion_match(matches, count, prefix,
                                          COMMAND_BLOCK_NAMES[i].name);
@@ -805,8 +787,7 @@ bool game_command_complete(const char *line, int cycle_index,
         if (root_prefix[0] != '/')
             return false;
         root_prefix++;
-        for (size_t i = 0; i < sizeof(COMMAND_ROOT_NAMES) /
-                                sizeof(COMMAND_ROOT_NAMES[0]); i++) {
+        for (size_t i = 0; i < ARRAY_COUNT(COMMAND_ROOT_NAMES); i++) {
             if (completion_name_matches_prefix(root_prefix,
                                                COMMAND_ROOT_NAMES[i])) {
                 if (match_count >= COMMAND_COMPLETE_MATCH_MAX)
@@ -836,42 +817,37 @@ bool game_command_complete(const char *line, int cycle_index,
         if (context_count == 1) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix, COMMAND_TIME_NAMES,
-                sizeof(COMMAND_TIME_NAMES) / sizeof(COMMAND_TIME_NAMES[0]));
+                ARRAY_COUNT(COMMAND_TIME_NAMES));
         } else if (context_count == 2 &&
                    strcmp(tokens[1].text, "set") == 0) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix, COMMAND_TIME_VALUE_NAMES,
-                sizeof(COMMAND_TIME_VALUE_NAMES) /
-                sizeof(COMMAND_TIME_VALUE_NAMES[0]));
+                ARRAY_COUNT(COMMAND_TIME_VALUE_NAMES));
         }
     } else if (command_is_gamemode(&tokens[0])) {
         if (context_count == 1) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix, COMMAND_GAMEMODE_NAMES,
-                sizeof(COMMAND_GAMEMODE_NAMES) /
-                sizeof(COMMAND_GAMEMODE_NAMES[0]));
+                ARRAY_COUNT(COMMAND_GAMEMODE_NAMES));
         } else if (context_count == 2 &&
                    strcmp(tokens[1].text, "set") == 0) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix,
                 COMMAND_GAMEMODE_VALUE_NAMES,
-                sizeof(COMMAND_GAMEMODE_VALUE_NAMES) /
-                sizeof(COMMAND_GAMEMODE_VALUE_NAMES[0]));
+                ARRAY_COUNT(COMMAND_GAMEMODE_VALUE_NAMES));
         }
     } else if (command_is_physics(&tokens[0])) {
         if (context_count == 1) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix,
                 COMMAND_PHYSICS_ACTION_NAMES,
-                sizeof(COMMAND_PHYSICS_ACTION_NAMES) /
-                sizeof(COMMAND_PHYSICS_ACTION_NAMES[0]));
+                ARRAY_COUNT(COMMAND_PHYSICS_ACTION_NAMES));
         } else if (context_count == 2 &&
                    strcmp(tokens[1].text, "set") == 0) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix,
                 COMMAND_PHYSICS_PROPERTY_NAMES,
-                sizeof(COMMAND_PHYSICS_PROPERTY_NAMES) /
-                sizeof(COMMAND_PHYSICS_PROPERTY_NAMES[0]));
+                ARRAY_COUNT(COMMAND_PHYSICS_PROPERTY_NAMES));
         }
     } else if (token_is_command(&tokens[0], "setblock")) {
         if (context_count == 4)
@@ -885,7 +861,7 @@ bool game_command_complete(const char *line, int cycle_index,
         if (context_count == 1) {
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix, COMMAND_SET_NAME,
-                sizeof(COMMAND_SET_NAME) / sizeof(COMMAND_SET_NAME[0]));
+                ARRAY_COUNT(COMMAND_SET_NAME));
         } else if (context_count >= 2 &&
                    strcmp(tokens[1].text, "set") == 0 &&
                    (context_count == 5 || context_count == 8)) {
@@ -897,8 +873,7 @@ bool game_command_complete(const char *line, int cycle_index,
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix,
                 COMMAND_GIVE_PREFIX_NAMES,
-                sizeof(COMMAND_GIVE_PREFIX_NAMES) /
-                sizeof(COMMAND_GIVE_PREFIX_NAMES[0]));
+                ARRAY_COUNT(COMMAND_GIVE_PREFIX_NAMES));
             match_count = add_give_completion_matches(
                 matches, match_count, match_prefix);
         } else if (context_count == 2 && token_is_give_target(&tokens[1])) {
@@ -910,8 +885,7 @@ bool game_command_complete(const char *line, int cycle_index,
             match_count = add_completion_array_matches(
                 matches, match_count, match_prefix,
                 COMMAND_KILL_TARGET_NAMES,
-                sizeof(COMMAND_KILL_TARGET_NAMES) /
-                sizeof(COMMAND_KILL_TARGET_NAMES[0]));
+                ARRAY_COUNT(COMMAND_KILL_TARGET_NAMES));
         }
     }
 

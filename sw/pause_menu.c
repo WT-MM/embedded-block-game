@@ -18,7 +18,6 @@
 void pause_menu_init(PauseMenu *pm)
 {
     memset(pm, 0, sizeof(*pm));
-    pm->open = false;
 }
 
 void pause_menu_toggle(PauseMenu *pm)
@@ -48,9 +47,6 @@ static bool adjust_int_setting(int *value, int min_value, int max_value,
 {
     int next;
 
-    if (!value || delta == 0)
-        return false;
-
     next = *value + delta;
     if (next < min_value)
         next = min_value;
@@ -73,8 +69,6 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
     bool right;
     bool changed = false;
 
-    if (!pm || !inp || !settings)
-        return false;
     if (!pm->open) {
         pm->prev_up = false;
         pm->prev_down = false;
@@ -84,8 +78,7 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
         return false;
     }
 
-    if (action)
-        *action = PAUSE_MENU_ACTION_NONE;
+    *action = PAUSE_MENU_ACTION_NONE;
 
     up = inp->look_up || inp->forward;
     down = inp->look_down || inp->back;
@@ -168,11 +161,9 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
     }
     if (edge_pressed(inp->menu_select_pressed, &pm->prev_select)) {
         if (pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX) {
-            if (action)
-                *action = PAUSE_MENU_ACTION_EXIT_TO_MENU;
+            *action = PAUSE_MENU_ACTION_EXIT_TO_MENU;
         } else if (pm->selected_setting == PAUSE_EXIT_GAME_INDEX) {
-            if (action)
-                *action = PAUSE_MENU_ACTION_EXIT_GAME;
+            *action = PAUSE_MENU_ACTION_EXIT_GAME;
         }
     }
 
@@ -187,16 +178,11 @@ static void format_stream_value(char *buf, size_t buf_size, int value)
         snprintf(buf, buf_size, "%d", value);
 }
 
-static void set_blank_line(char *line)
-{
-    if (line)
-        line[0] = '\0';
-}
-
 void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
                      const PauseMenuSettings *settings)
 {
-    if (!pm || !pm->open || !ctx) return;
+    if (!pm->open)
+        return;
 
     /* Full-screen dim. Stack two 50% alpha rects to deepen the darken
      * without needing a 25%-or-less blend level the hardware lacks at
@@ -213,38 +199,35 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
     char stream_value[16];
     int line_count = 0;
 
-    if (settings)
-        format_stream_value(stream_value, sizeof(stream_value),
-                            settings->stream_chunks_per_frame);
-    else
-        snprintf(stream_value, sizeof(stream_value), "N/A");
+    format_stream_value(stream_value, sizeof(stream_value),
+                        settings->stream_chunks_per_frame);
 
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "GAME MENU");
-    set_blank_line(lines[line_count++]);
+    lines[line_count++][0] = '\0';
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c STREAM CHUNKS/FRAME  %s",
              pm->selected_setting == 0 ? '>' : ' ', stream_value);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c NEAR MESH RADIUS     %d",
              pm->selected_setting == 1 ? '>' : ' ',
-             settings ? settings->near_chunk_radius : 0);
+             settings->near_chunk_radius);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c RENDER DISTANCE       %d",
              pm->selected_setting == 2 ? '>' : ' ',
-             settings ? settings->render_distance : 0);
+             settings->render_distance);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c MOUSE SENSITIVITY    %d%%",
              pm->selected_setting == 3 ? '>' : ' ',
-             settings ? settings->mouse_sensitivity_percent : 100);
+             settings->mouse_sensitivity_percent);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c FOV                  %d.%d",
              pm->selected_setting == 4 ? '>' : ' ',
-             settings ? settings->fov_degrees_x10 / 10 : 0,
-             settings ? settings->fov_degrees_x10 % 10 : 0);
+             settings->fov_degrees_x10 / 10,
+             settings->fov_degrees_x10 % 10);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT TO MENU",
              pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX ? '>' : ' ');
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT GAME",
              pm->selected_setting == PAUSE_EXIT_GAME_INDEX ? '>' : ' ');
-    set_blank_line(lines[line_count++]);
+    lines[line_count++][0] = '\0';
     snprintf(lines[line_count++], PAUSE_LINE_CHARS,
              "W/S SELECT   A/D ADJUST   ENTER USE");
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "ESC RESUME");
-    set_blank_line(lines[line_count++]);
+    lines[line_count++][0] = '\0';
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "PREGENERATED WORLDS - PLANNED");
 
     int block_h = line_count * line_step;

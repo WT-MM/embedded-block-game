@@ -1058,11 +1058,11 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
 static void draw_healthbar(RenderContext *ctx)
 {
     float slot_left, slot_top;
-    const float icon = 9.0f * HUD_SCALE;
-    const float step = 10.0f * HUD_SCALE;
+    const float icon = 8.0f * HUD_SCALE;
+    const float step = 8.0f * HUD_SCALE;
 
     hotbar_metrics(&slot_left, &slot_top, NULL, NULL, NULL);
-    const float health_top = slot_top - icon - 8.0f;
+    const float health_top = slot_top - icon - 7.0f;
 
     for (int i = 0; i < 10; i++) {
         float x0 = slot_left + (float)i * step;
@@ -1076,11 +1076,11 @@ static void draw_healthbar(RenderContext *ctx)
 static void draw_hungerbar(RenderContext *ctx)
 {
     float slot_left, slot_top, total_width;
-    const float icon = 9.0f * HUD_SCALE;
-    const float step = 10.0f * HUD_SCALE;
+    const float icon = 8.0f * HUD_SCALE;
+    const float step = 8.0f * HUD_SCALE;
 
     hotbar_metrics(&slot_left, &slot_top, NULL, NULL, &total_width);
-    const float health_top = slot_top - icon - 8.0f;
+    const float health_top = slot_top - icon - 7.0f;
     const float hunger_right = slot_left + total_width;
 
     for (int i = 0; i < 10; i++) {
@@ -1102,8 +1102,8 @@ static float hand_swing_phase(float swing_timer)
     return sinf(t * (float)M_PI);
 }
 
-/* Bare hand for survival: a chunky first-person rectangle arm. Keep the
- * silhouette simple; the blockiness reads better than pseudo-anatomy here. */
+/* Bare hand for survival: one continuous first-person cuboid. Keeping the
+ * silhouette connected reads closer to Minecraft than a separate fist block. */
 static void draw_bare_hand(RenderContext *ctx, float swing_timer)
 {
     const float s = HUD_SCALE;
@@ -1112,50 +1112,40 @@ static void draw_bare_hand(RenderContext *ctx, float swing_timer)
     const uint8_t skin_shadow = 19;
 
     float swing = hand_swing_phase(swing_timer);
-    float punch_x = -15.0f * s * swing;
-    float punch_y = 16.0f * s * swing;
-    float hand_x = SCREEN_WIDTH - 76.0f * s + punch_x;
-    float hand_y = SCREEN_HEIGHT - 90.0f * s + punch_y;
+    float tip_dx = -16.0f * s * swing;
+    float tip_dy = 10.0f * s * swing;
+    float base_dx = tip_dx * 0.25f;
+    float base_dy = tip_dy * 0.20f;
 
-    /* Forearm, partially hidden behind the hotbar. */
-    draw_screen_solid_quad(ctx,
-        hand_x + 20.0f * s, hand_y + 37.0f * s,
-        hand_x + 49.0f * s, hand_y + 43.0f * s,
-        SCREEN_WIDTH + 9.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        SCREEN_WIDTH - 29.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        skin_mid);
-    draw_screen_solid_quad(ctx,
-        hand_x + 20.0f * s, hand_y + 37.0f * s,
-        hand_x + 28.0f * s, hand_y + 39.0f * s,
-        SCREEN_WIDTH - 18.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        SCREEN_WIDTH - 29.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        skin_light);
-    draw_screen_solid_quad(ctx,
-        hand_x + 42.0f * s, hand_y + 42.0f * s,
-        hand_x + 49.0f * s, hand_y + 43.0f * s,
-        SCREEN_WIDTH + 9.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        SCREEN_WIDTH - 4.0f * s, SCREEN_HEIGHT + 8.0f * s,
-        skin_shadow);
+    float tl_x = SCREEN_WIDTH - 62.0f * s + tip_dx;
+    float tl_y = SCREEN_HEIGHT - 78.0f * s + tip_dy;
+    float tr_x = SCREEN_WIDTH - 30.0f * s + tip_dx;
+    float tr_y = SCREEN_HEIGHT - 67.0f * s + tip_dy;
+    float br_x = SCREEN_WIDTH + 8.0f * s + base_dx;
+    float br_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
+    float bl_x = SCREEN_WIDTH - 28.0f * s + base_dx;
+    float bl_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
 
-    /* Fist block. */
     draw_screen_solid_quad(ctx,
-        hand_x - 1.0f * s, hand_y,
-        hand_x + 38.0f * s, hand_y + 7.0f * s,
-        hand_x + 42.0f * s, hand_y + 40.0f * s,
-        hand_x + 1.0f * s, hand_y + 34.0f * s,
+        tl_x, tl_y,
+        tr_x, tr_y,
+        br_x, br_y,
+        bl_x, bl_y,
         skin_mid);
+
     draw_screen_solid_quad(ctx,
-        hand_x + 32.0f * s, hand_y + 8.0f * s,
-        hand_x + 38.0f * s, hand_y + 7.0f * s,
-        hand_x + 42.0f * s, hand_y + 40.0f * s,
-        hand_x + 34.0f * s, hand_y + 39.0f * s,
-        skin_shadow);
-    draw_screen_solid_quad(ctx,
-        hand_x + 1.0f * s, hand_y + 2.0f * s,
-        hand_x + 15.0f * s, hand_y + 4.0f * s,
-        hand_x + 16.0f * s, hand_y + 32.0f * s,
-        hand_x + 1.0f * s, hand_y + 34.0f * s,
+        tl_x, tl_y,
+        tl_x + 8.0f * s, tl_y + 2.5f * s,
+        bl_x - 8.0f * s, bl_y,
+        bl_x, bl_y,
         skin_light);
+
+    draw_screen_solid_quad(ctx,
+        tr_x - 7.0f * s, tr_y - 2.0f * s,
+        tr_x, tr_y,
+        br_x, br_y,
+        br_x - 11.0f * s, br_y,
+        skin_shadow);
 }
 
 /* Block-in-hand for creative: isometric cube tilted into the bottom-right.

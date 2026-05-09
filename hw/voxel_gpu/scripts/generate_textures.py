@@ -331,7 +331,7 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_WATER: "water_still.png",
     TEX_TILE_HEART_CONTAINER: "container.png",
     TEX_TILE_HEART: "full.png",
-    TEX_TILE_DRUMSTICK: "drumstick.png",
+    TEX_TILE_DRUMSTICK: "food_full.png",
     TEX_TILE_AIR_BUBBLE: "air.png",
     TEX_TILE_AIR_BUBBLE_POP: "air_bursting.png",
     TEX_TILE_HEART_HALF: "heart_half.png",
@@ -382,6 +382,10 @@ HUD_SOURCE_TILES = {
     TEX_TILE_HEART_HALF,
     TEX_TILE_HEART_BLINK,
     TEX_TILE_HEART_HALF_BLINK,
+}
+
+HUD_CROP_SOURCE_TILES = {
+    TEX_TILE_DRUMSTICK,
 }
 
 # Vanilla grass/leaves/water textures are grayscale masks intended for biome tinting.
@@ -523,7 +527,12 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
 
     with Image.open(source_path) as image:
         rgba = image.convert("RGBA")
-        if tile in HUD_SOURCE_TILES:
+        if tile in HUD_CROP_SOURCE_TILES:
+            bbox = rgba.getbbox()
+            if bbox is not None:
+                nearest = getattr(Image, "Resampling", Image).NEAREST
+                rgba = rgba.crop(bbox).resize((TILE_SIZE, TILE_SIZE), nearest)
+        elif tile in HUD_SOURCE_TILES:
             # Modern vanilla HUD sprites are usually 9x9 standalone images.
             # Resize the whole sprite frame, not the non-transparent bounds:
             # half-heart and bursting-bubble sprites rely on empty pixels for

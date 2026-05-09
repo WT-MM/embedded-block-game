@@ -286,6 +286,17 @@ bool block_is_passable(BlockID id)
            block_render_model(id) == BLOCK_RENDER_CROSS;
 }
 
+bool block_face_should_render(BlockID current, BlockID neighbor)
+{
+    if (neighbor == BLOCK_AIR)
+        return true;
+    if (block_is_translucent(current))
+        return false;
+    if (current == neighbor && block_is_alpha_keyed(current))
+        return false;
+    return block_is_transparent(neighbor);
+}
+
 BlockRenderModel block_render_model(BlockID id)
 {
     if (id < BLOCK_AIR || id >= NUM_BLOCK_TYPES)

@@ -53,6 +53,8 @@ Module.symvers
 # --- Userspace build artifacts ---
 /a.out
 sw/tests/voxel_test
+sw/tests/command_parser_test
+sw/tests/inventory_test
 sw/tests/renderer_scene_test
 sw/tests/renderer_static_test
 sw/tests/renderer_quad_test

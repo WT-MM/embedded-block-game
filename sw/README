@@ -10,14 +10,17 @@ Files
   virtual_gpu_protocol.h
                 Binary protocol shared with the Python virtual GPU server.
   renderer.c     Software block renderer that emits quad descriptors.
+  game_home.c    World-select screen, save discovery, and home-menu drawing.
+  game_items.c   Dropped-item entity update/draw and inventory-close drops.
+  world_gen.c    Deterministic biome/heightmap terrain generation.
   texture_tiles.def
                 Shared atlas slot metadata consumed by block_types.h/c and
                 ../hw/voxel_gpu/scripts/generate_textures.py.
   tests/         Userspace test programs (see below).
   Makefile       Builds both the .ko and the test binaries.
   ../PROJECT_NOTES.md
-                 Root-level debugging/report notes, including the April 2026
-                 rasterizer edge-function signedness bug and validation summary.
+                 Active engineering-note index. Long SDRAM/debug history is
+                 archived under ../docs/notes/.
 
   tests/voxel_test.c
                  Multi-quad flat-color smoke test for the device.
@@ -38,6 +41,11 @@ On the SoC (with kernel headers installed):
 
     make            # builds voxel_gpu.ko and ./tests/* test binaries
     make clean
+
+On a desktop machine without kernel headers or Linux input devices:
+
+    make tests      # builds renderer/unit tests only
+    make clean_tests
 
 Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
 
@@ -99,8 +107,10 @@ Then run any renderer-based binary with one of:
     VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
     VOXEL_GPU_BACKEND=socket ./game
 
-`./game` opens on a world-select screen. Press W/S to choose an existing save
-or create a new random-seed world, then Enter or Space to start.
+On Linux, `./game` opens on a world-select screen. Press W/S to choose an
+existing save or create a new random-seed world, then Enter or Space to start.
+On macOS, use the renderer tests with the socket backend; the game target needs
+Linux input headers and `/dev/input/event*` devices.
 
 To mirror to both FPGA hardware and the Python monitor at once:
 
@@ -110,14 +120,18 @@ Environment variables:
 
     VOXEL_GPU_BACKEND=hw|socket|tee      # default: hw
     VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
-    VOXEL_RENDER_DISTANCE=1..8           # chunk radius; default: 3
+    VOXEL_RENDER_DISTANCE=1..9           # chunk radius; default: 3
     VOXEL_STATUS_LOG=auto|0|1            # per-frame HUD; auto only on TTY
     VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
     VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 1, keep abs-tablet fallback active
     VOXEL_WORLDS_DIR=/path/to/worlds     # home-screen root; default: ../worlds
     VOXEL_WORLD_DIR=/path/to/world       # bypass home screen and open/create one save
     VOXEL_FOV_DEG=30..150                # horizontal FOV in degrees; default 86.5
-    VOXEL_DIAG_BBOX=0|1                  # log per-frame quad bbox (red-stripe debug)
+    VOXEL_TARGET_FPS=15..120             # frame cap; default: 30
+    VOXEL_DEBUG_HUD=0|1                  # extra on-screen renderer/debug stats
+    VOXEL_DIAG_BBOX=0|1                  # log band bbox/cost summaries
+    VOXEL_DIAG_CACHE=0|1                 # log hardware band-cache hit/miss state
+    VOXEL_HW_BAND_REUSE=0|1              # cached-band skip path; default: 1 for hw
     VOXEL_PIPELINE_FRAMES=0|1            # hw submit worker; default: 1 for hw
 
 `socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the

@@ -120,20 +120,38 @@ End-to-End SDRAM Bring-Up on This Branch
 
 What is already wired
 ---------------------
-This branch already contains the first-stage FPGA SDRAM scaffolding:
+This branch contains the SDRAM-backed display path used by `voxel_gpu`:
 
   * `soc_system.qsys` instantiates `fpga_sdram` and connects
     `hps_0.h2f_axi_master -> fpga_sdram.s1`.
   * `soc_system_top.sv` exports the generated SDRAM pins onto the board
     `DRAM_*` signals and drives `DRAM_CLK`.
+  * `voxel_gpu` owns the `VGA_*` scanout path and renders into SDRAM-resident
+    RGB565 front/back frames.
   * The software tree adds EXTMEM control/status ABI plus
     `sw/tests/fpga_sdram_test.c`, a raw `/dev/mem` smoke test for the HPS view
     of the SDRAM window.
 
-What is not implemented yet
----------------------------
-The GPU does not yet render into SDRAM. The current goal is only to prove that
-the HPS can successfully access the FPGA-side SDRAM controller without hanging.
+Current render path
+-------------------
+The GPU renders at 640x480 through eight 60-line on-chip band passes. Software
+submits one band at a time with `BEGIN_BAND` / descriptor writes / `END_BAND`;
+hardware flushes the selected local row window to the inactive SDRAM frame, and
+VGA reads the active SDRAM frame through line buffers.
+
+RTL source layout
+-----------------
+The main renderer remains in `voxel_gpu/rtl/voxel_gpu.sv`. Small leaf helpers
+that do not own state-machine control can live in `.svh` includes:
+
+  * `voxel_gpu/rtl/voxel_raster_helpers.svh` for clamps, band math, sky row
+    helpers, texture-coordinate clamps, and explicit sign-extension helpers.
+  * `voxel_gpu/rtl/voxel_color_helpers.svh` for RGB565 conversion, blending,
+    scanout channel expansion, and light-bank palette addressing.
+
+The hardware `Makefile` includes both `.sv` and `.svh` sources in Qsys/tar
+dependencies. For a teammate-oriented walkthrough of the RTL, start with
+`voxel_gpu/rtl/README.md`.
 
 Recommended bring-up order
 --------------------------
@@ -283,10 +301,13 @@ again so the actual game path owns SDRAM scanout.
 
 The intended behavior is now:
 
-  * rasterization happens into one 320x240 RGB565 BRAM backbuffer,
-  * `FLIP` copies that RGB565 BRAM image into the inactive SDRAM frame,
-  * VGA scanout reads the active SDRAM frame through line buffers, and
-  * the visible frame only switches on vsync after the copy completes.
+  * userspace bins descriptors into eight 60-line hardware bands,
+  * `BEGIN_BAND` prepares the resident color/Z cache for that band,
+  * descriptor writes rasterize at full 640-pixel width inside the resident band,
+  * `END_BAND` flushes the selected local row window to the inactive SDRAM
+    RGB565 frame, and
+  * `FLIP` switches the visible SDRAM frame on vsync after pending flush work is
+    complete.
 
 The HPS control path is still the normal one through the `voxel_gpu`
 Avalon-MM register block, so Linux and the game software should not need a new
@@ -312,12 +333,13 @@ Current EXTMEM defaults
 The hardware now defaults to two SDRAM-resident display frames:
 
   * `EXTMEM_FRONT_BASE = 0`
-  * `EXTMEM_BACK_BASE  = 153600`
-  * `EXTMEM_STRIDE     = 640`
+  * `EXTMEM_BACK_BASE  = 1048576`
+  * `EXTMEM_STRIDE     = 1280`
+  * `DEFAULT_EXTMEM_Z_BASE = 2097152`
 
-Those base addresses are byte addresses for 320x240 RGB565 framebuffers in
-SDRAM. The on-chip BRAM render target is also RGB565 so alpha-blended pixels
-can preserve their resolved destination color before the SDRAM copy.
+Those base addresses are byte addresses. A 640x480 RGB565 color frame is
+614400 bytes, so the default 1 MiB spacing leaves room between the front and
+back buffers.
 
 Reference self-test (removed)
 -----------------------------

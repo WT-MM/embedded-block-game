@@ -1,6 +1,6 @@
-// voxel_gpu.sv — SDRAM-backed display path with RGB565 external frames.
+// voxel_gpu.sv - SDRAM-backed display path with RGB565 external frames.
 //
-// The rasterizer renders at true 640x480 through an explicit 640x64 BRAM band
+// The rasterizer renders at true 640x480 through an explicit 640x60 BRAM band
 // cache. Userspace bins descriptors into eight vertical passes and brackets each
 // pass with BEGIN_BAND / END_BAND CSRs. Palette entries are still the
 // source-color ABI, but resolved pixels are stored as RGB565 so translucent
@@ -14,6 +14,17 @@
 //
 // This keeps BRAM usage close to the indexed design while making the external
 // framebuffer itself true color.
+//
+// Reading map for teammates:
+//   1. Register/FIFO front door: HPS writes CSRs and descriptor words.
+//   2. Main engine FSM: fetches one descriptor, prepares one resident band,
+//      rasterizes pixels, then flushes/drains cache data as needed.
+//   3. Pixel pipeline: edge test -> reciprocal/texture -> palette -> fog ->
+//      color/Z commit. Valid bits move alongside data through every stage.
+//   4. SDRAM background flush and VGA scanout run beside the main FSM. Most
+//      "weird" gates below protect ownership between those concurrent users.
+//   5. Helper `.svh` files contain pure math/color helpers only; stateful
+//      timing stays in this module so the control flow remains visible here.
 
 module voxel_gpu (
     input  logic        clk,
@@ -50,6 +61,10 @@ module voxel_gpu (
     output logic        DRAM_UDQM,
     output logic        DRAM_WE_N
 );
+
+    // ---------------------------------------------------------------------
+    // Register Map, Frame Geometry, and Packed Descriptor Constants
+    // ---------------------------------------------------------------------
 
     localparam logic [12:0] ADDR_CONTROL  = 13'h000;
     localparam logic [12:0] ADDR_STATUS   = 13'h001;
@@ -98,27 +113,12 @@ module voxel_gpu (
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 128;
     localparam int READ_BURST_WORDS = 64;
-    /*
-     * Tier-1 SDRAM-arbitration plan: bg flush stages words into the WR FIFO
-     * during scanout-read windows, then drains them via WR_LENGTH bursts the
-     * moment scanout_write_slack opens. The Sdram_WR_FIFO IP is 512 deep
-     * (sdram_local_test/Sdram_WR_FIFO.v: lpm_numwords = 512); 224 leaves
-     * 288 words of headroom for in-flight pushes after !sdram_wr_full
-     * deasserts. flush_active stays high until sdram_wr_use==0 + post-empty
-     * settling (COPY_DRAIN_CYCLES), so the back-buffer flip cannot race
-     * with words still queued in the FIFO regardless of the high-water.
-     */
+    /* Stage background-flush words into the 512-word SDRAM WR FIFO while
+     * scanout owns the bus; keep headroom for in-flight pushes. */
     localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd224;
     localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
     localparam int SDRAM_ADDR_W    = 25;
-    /* Flush cycles required to drain the rasterizer pipeline before
-     * leaving ST_DRAW. Must match (number of *_valid flops between
-     * ST_FETCH and commit_color). Raising to 14 covers both palette
-     * pipeline stages (pal_rd + plr) that live between draw_pipe and
-     * fog0. The pal_rd stage registers the palette address and the
-     * plr stage registers the palette output, which makes the timing
-     * deterministic regardless of whether Quartus implements the
-     * palette array as MLAB (async read) or M10K (sync read). */
+    /* Drain every valid pipeline stage between fetch and color commit. */
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
     localparam logic [24:0] FB_WORDS_25 = 25'd307200;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
@@ -152,6 +152,20 @@ module voxel_gpu (
     localparam int FLAG_ALPHA_LSB      = 6;
     localparam int FLAG_ALPHA_MSB      = 7;
 
+    // ---------------------------------------------------------------------
+    // Main Engine State Map
+    // ---------------------------------------------------------------------
+    //
+    // Descriptor/raster path:
+    //   IDLE -> FETCH -> SETUP -> DRAW -> DRAW_FLUSH -> IDLE
+    //
+    // Cache path:
+    //   SELECT_FILL chooses whether a band can be loaded from SDRAM or needs
+    //   fresh init. EVICT/FLUSH_* write dirty cache data back out first.
+    //
+    // SDRAM read safety:
+    //   LOAD_COLOR and LOAD_Z are followed by DRAIN_* states because the SDRAM
+    //   controller reads in 64-word bursts and can leave stale tail words.
     typedef enum logic [3:0] {
         ST_IDLE              = 4'd0,
         ST_CLEAR             = 4'd1,
@@ -172,6 +186,10 @@ module voxel_gpu (
     } engine_state_t;
 
     engine_state_t state;
+
+    // ---------------------------------------------------------------------
+    // CSRs, Frame Selection, and Debug Counters
+    // ---------------------------------------------------------------------
 
     logic        ctrl_en;
     logic        ctrl_ien;
@@ -239,6 +257,10 @@ module voxel_gpu (
     wire         fifo_empty = (fifo_count == 0);
     wire [31:0]  fifo_head  = fifo_mem[fifo_rd_ptr];
 
+    // ---------------------------------------------------------------------
+    // Descriptor Fetch and Raster Setup Registers
+    // ---------------------------------------------------------------------
+
     logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
     logic  [5:0] fetch_count;
     logic  [5:0] prefetch_count;
@@ -277,6 +299,16 @@ module voxel_gpu (
     logic signed [63:0] uw_row_val, uw_cur_val;
     logic signed [63:0] vw_row_val, vw_cur_val;
     logic signed [63:0] iw_row_val, iw_cur_val;
+    // ---------------------------------------------------------------------
+    // Pixel Pipeline Registers
+    // ---------------------------------------------------------------------
+    //
+    // Unsuffixed lane = even pixel of the 2-pixel pair.
+    // `_o` lane        = odd pixel of the same pair.
+    //
+    // The long pipeline exists to keep reciprocal lookup, texture ROM,
+    // palette lookup, fog, and destination read latencies aligned.
+
     logic        pipe0_valid;
     logic        pipe0_inside;
     logic        pipe0_ztest;
@@ -815,7 +847,7 @@ module voxel_gpu (
     logic [24:0] sdram_wr_max_addr_cfg;
     logic        sdram_wr_load_pulse;
 
-    /* ── Ping-pong band cache ─────────────────────────────── */
+    /* Ping-pong band cache */
     logic        draw_cache_sel;           // 0 = A active, 1 = B active
     logic        flush_active;             // background flush running
     logic [15:0] flush_maint_addr;         // read address into inactive cache
@@ -929,15 +961,8 @@ module voxel_gpu (
         prefetch_pop_req &&
         ((prefetch_count + 6'd1) >= prefetch_capture_target_words);
     wire fifo_pop_req = fetch_pop_req || prefetch_pop_req;
-    /*
-     * band_flush_pending is intentionally excluded from engine_busy.
-     * The background flush runs independently via flush_active; including
-     * the pending flag in BSY made the driver stall in END_BAND until the
-     * previous band's flush finished draining to SDRAM, which serialised
-     * every band and halved the frame rate on sky/ground views.  The FSM
-     * priority chain (flush before begin) and band_begin_cache_available
-     * gate handle the ordering correctly without blocking the driver.
-     */
+    /* Background flush ordering is handled by the FSM; keep it out of BSY so
+     * userspace can pipeline the next band. */
     wire engine_busy = (state != ST_IDLE) || clear_pending ||
                        band_begin_pending || prefetch_active ||
                        prefetch_valid;
@@ -1084,50 +1109,19 @@ module voxel_gpu (
                                           sdram_rd_empty;
     wire        cache_flush_state       = (state == ST_CACHE_FLUSH_COLOR);
     wire        cache_load_state        = (state == ST_CACHE_LOAD_COLOR || state == ST_CACHE_LOAD_Z);
-    /*
-     * Drain phase after cache_load: the SDRAM controller auto-bursts in
-     * 64-word chunks, so the FIFO can hold up to 64 stale words after the
-     * last useful pixel for a band. Without an explicit drain, the next
-     * RD_LOAD races with those residuals and the new burst's first chunk
-     * (~64 pixels = 1/10 of a 640-wide line) lands wherever a scanline
-     * happens to capture, producing the left-edge streak. Drain pops every
-     * residual word and waits for sdram_rd_empty to be stable for
-     * COPY_DRAIN_CYCLES before allowing the next read or scan_fill burst.
-     */
+    /* Drain stale RD FIFO tail words before another cache/scan read starts. */
     wire        cache_drain_state       = (state == ST_CACHE_DRAIN_COLOR ||
                                            state == ST_CACHE_DRAIN_Z);
     wire        cache_init_state        = (state == ST_CACHE_INIT);
     wire        cache_maint_state       = cache_flush_state || cache_load_state || cache_init_state;
-    /*
-     * "Rasterizer, sky-skip patch, or cache-maintenance currently needs the
-     * active cache port." Used by the ping-pong port mux to decide whether
-     * the flush controller may take ownership when draw_cache_sel == flush_cache_sel.
-     * Without this gate, the FINAL band never gets a follow-up BEGIN_BAND
-     * to toggle draw_cache_sel away, so the flush reads through the
-     * rasterizer port (fb_back_rd_addr = pipe0_addr — stale) and writes a
-     * single repeated pixel for the entire bottom band. Keeping the
-     * rasterizer-priority branch live only while the rasterizer is
-     * actually using the cache lets the flush take over once the
-     * rasterizer/cache-maintenance pipeline is idle, while still
-     * preserving the intermediate-band ping-pong overlap.
-     */
+    /* True when the main FSM still owns the active cache port. */
     wire        cache_used_by_main      = cache_sky_patch_state ||
                                           (state == ST_DRAW) ||
                                           (state == ST_DRAW_FLUSH) ||
                                           cache_init_state ||
                                           cache_load_state ||
                                           cache_flush_state;
-    /*
-     * The `!band_flush_pending` clause keeps cache_band_index from being
-     * clobbered while a previous band's END_BAND is still queued in
-     * band_flush_pending. Without it, when the prior flush is still
-     * draining (flush_active=1) and SW pipelines END_N → BEGIN_(N+1), the
-     * begin branch can fire first, overwrite cache_band_index with N+1,
-     * and then the leftover band_flush_pending fires for the wrong band —
-     * band N never lands in SDRAM. Hold BEGIN until the priority chain
-     * has had one cycle in ST_IDLE to commit the queued flush into its
-     * own flush_*_index registers; then BEGIN can pipeline freely.
-     */
+    /* Hold BEGIN until any queued END_BAND has captured its flush indices. */
     wire        band_begin_cache_available =
         !band_flush_pending &&
         (!flush_active || flush_generated_sky || ((~draw_cache_sel) != flush_cache_sel));
@@ -1165,23 +1159,7 @@ module voxel_gpu (
                                           (!scan_prefetch_best_effort ||
                                            !scan_write_pressure) &&
                                           sdram_rd_empty;
-    /*
-     * Band flushes need active-video SDRAM time to avoid crawling at porch-only
-     * bandwidth. They are writes, so allow them once scanout has both the next
-     * line and the prefetch target resident, but stop launching active-visible
-     * bursts late in the line so the next scanline fill has recovery room.
-     * Keep SDRAM read-side cache loads restricted to blanking; those are the
-     * risky path for RD FIFO tail data.
-     */
-    /*
-     * Gates background band-cache flushes (writes to SDRAM) on scanout having
-     * enough headroom. We require target + immediate_next resident, but NOT
-     * far_next: the 2-line prefetch is best-effort and is now bank-protected
-     * once it lands, so it doesn't need to also block writes. Including
-     * far_next here starved world-block flushes whenever scanout was 2 lines
-     * behind — sky and HUD bands snuck through during vsync, but the bulk of
-     * world geometry never made it back to SDRAM, so ground/blocks vanished.
-     */
+    /* Let writes use active-video time once scanout has enough line headroom. */
     wire        scan_prefetch_margin_ready =
         scan_target_or_active_ready &&
         scan_immediate_next_line_ready &&
@@ -1216,18 +1194,10 @@ module voxel_gpu (
         scan_rd_capture && (scan_fill_words_complete == LINE_WORDS_10);
     wire        scan_fill_chunk_done =
         scan_rd_capture && (scan_fill_words_complete[5:0] == 6'd0);
-    /* ── SDRAM write push: serves both main-FSM flush and background flush ── */
+    /* SDRAM write push: serves both main-FSM flush and background flush. */
     wire        main_flush_wr_push = cache_flush_state && cache_word_pending_valid &&
                                      !sdram_wr_full && scanout_write_slack;
-    /*
-     * Tier-1 arbitration: bg flush pushes into the WR FIFO independent of
-     * scanout_write_slack. The FIFO push is internal (M10K) and uses no
-     * external SDRAM bus cycles — the bus only sees writes when WR_LENGTH
-     * fires below, and that signal is still gated by scanout_write_slack.
-     * !sdram_wr_full is the hard backpressure gate; combined with the
-     * raised COPY_WR_FIFO_HIGH_WATER, this lets bg flush stage during
-     * scanout reads and drain in burst-ready chunks during write windows.
-     */
+    /* Background flush may stage into the internal WR FIFO while scanout reads. */
     wire        bg_flush_wr_push   = bg_flush_stream_active && flush_word_pending_valid &&
                                      !cache_flush_state &&
                                      !sdram_wr_full;
@@ -1237,25 +1207,13 @@ module voxel_gpu (
         cache_words_done + (cache_rd_capture ? 16'd1 : 16'd0);
     wire        cache_rd_pop = cache_load_state && !sdram_rd_empty &&
                                (cache_load_words_requested < cache_pixels_total);
-    /*
-     * Suppress pops while scan_fill_armed is asserted: the burst was just
-     * programmed via sdram_rd_load_pulse but the SDRAM controller has not yet
-     * begun delivering data for it, so any !sdram_rd_empty in this window is
-     * stale residual from the prior burst that would otherwise contaminate
-     * scan_linebuf[0]. scan_fill_armed clears at lines ~1995 the cycle after
-     * sdram_rd_empty deasserts (new data arrived), at which point pops resume.
-     */
+    /* While armed, ignore residual RD FIFO data from the previous burst. */
     wire        scan_rd_pop = !cache_load_state && !cache_drain_state &&
                               scan_fill_active && !scan_fill_armed && !sdram_rd_empty &&
                               (scan_fill_store_idx + (scan_rd_capture ? 10'd1 : 10'd0) <
                                LINE_WORDS_10) &&
                               !scan_fill_chunk_done;
-    /*
-     * During cache-load drain, pop without capturing anywhere. The SDRAM
-     * controller's RD_LENGTH is already 0 (cache_load_state went false at
-     * drain entry), so no new bursts launch — drain just empties the
-     * residuals from the last in-flight burst.
-     */
+    /* Drain residual read data without storing it. */
     wire        drain_rd_pop = cache_drain_state && !sdram_rd_empty;
     wire        sdram_rd_pop = scan_rd_pop || cache_rd_pop || drain_rd_pop;
     wire        cache_can_issue_read =
@@ -1267,10 +1225,7 @@ module voxel_gpu (
         (!cache_word_pending_valid || main_flush_wr_push);
     wire        cache_issue_read = cache_can_issue_read;
 
-    /* Background flush controller can issue a read from the inactive cache.
-     * Tier-1 arbitration: dropped scanout_write_slack from issue gate so the
-     * cache→FIFO pipeline keeps moving during scanout reads. Backpressure is
-     * preserved by sdram_wr_use < COPY_WR_FIFO_HIGH_WATER. */
+    /* Keep the cache-to-FIFO pipeline moving until the WR FIFO high-water mark. */
     wire        flush_can_issue_read =
         bg_flush_stream_active &&
         !flush_generated_sky &&
@@ -1378,26 +1333,39 @@ module voxel_gpu (
      */
     wire signed [63:0] edge_ax0 = $signed(edge_A[0]) * setup_start_x;
     wire signed [63:0] edge_by0 = $signed(edge_B[0]) * setup_start_y;
-    wire signed [63:0] edge_c0  = $signed({{32{edge_C[0][31]}}, edge_C[0]});
+    wire signed [63:0] edge_c0  = sext32_to_s64(edge_C[0]);
     wire signed [63:0] edge_ax1 = $signed(edge_A[1]) * setup_start_x;
     wire signed [63:0] edge_by1 = $signed(edge_B[1]) * setup_start_y;
-    wire signed [63:0] edge_c1  = $signed({{32{edge_C[1][31]}}, edge_C[1]});
+    wire signed [63:0] edge_c1  = sext32_to_s64(edge_C[1]);
     wire signed [63:0] edge_ax2 = $signed(edge_A[2]) * setup_start_x;
     wire signed [63:0] edge_by2 = $signed(edge_B[2]) * setup_start_y;
-    wire signed [63:0] edge_c2  = $signed({{32{edge_C[2][31]}}, edge_C[2]});
+    wire signed [63:0] edge_c2  = sext32_to_s64(edge_C[2]);
     wire signed [63:0] edge_ax3 = $signed(edge_A[3]) * setup_start_x;
     wire signed [63:0] edge_by3 = $signed(edge_B[3]) * setup_start_y;
-    wire signed [63:0] edge_c3  = $signed({{32{edge_C[3][31]}}, edge_C[3]});
+    wire signed [63:0] edge_c3  = sext32_to_s64(edge_C[3]);
     wire signed [63:0] edge_eval0 = edge_ax0 + edge_by0 + edge_c0;
     wire signed [63:0] edge_eval1 = edge_ax1 + edge_by1 + edge_c1;
     wire signed [63:0] edge_eval2 = edge_ax2 + edge_by2 + edge_c2;
     wire signed [63:0] edge_eval3 = edge_ax3 + edge_by3 + edge_c3;
+    wire signed [63:0] edge_A0_ext = sext32_to_s64(edge_A[0]);
+    wire signed [63:0] edge_A1_ext = sext32_to_s64(edge_A[1]);
+    wire signed [63:0] edge_A2_ext = sext32_to_s64(edge_A[2]);
+    wire signed [63:0] edge_A3_ext = sext32_to_s64(edge_A[3]);
+    wire signed [63:0] edge_B0_ext = sext32_to_s64(edge_B[0]);
+    wire signed [63:0] edge_B1_ext = sext32_to_s64(edge_B[1]);
+    wire signed [63:0] edge_B2_ext = sext32_to_s64(edge_B[2]);
+    wire signed [63:0] edge_B3_ext = sext32_to_s64(edge_B[3]);
+    wire signed [63:0] edge_A0_step2 = edge_A0_ext + edge_A0_ext;
+    wire signed [63:0] edge_A1_step2 = edge_A1_ext + edge_A1_ext;
+    wire signed [63:0] edge_A2_step2 = edge_A2_ext + edge_A2_ext;
+    wire signed [63:0] edge_A3_step2 = edge_A3_ext + edge_A3_ext;
+
     wire draw_inside = (edge_cur_val[0] >= 0) && (edge_cur_val[1] >= 0) &&
                        (edge_cur_val[2] >= 0) && (edge_cur_val[3] >= 0);
-    wire signed [63:0] edge_cur_val_o0 = edge_cur_val[0] + edge_A[0];
-    wire signed [63:0] edge_cur_val_o1 = edge_cur_val[1] + edge_A[1];
-    wire signed [63:0] edge_cur_val_o2 = edge_cur_val[2] + edge_A[2];
-    wire signed [63:0] edge_cur_val_o3 = edge_cur_val[3] + edge_A[3];
+    wire signed [63:0] edge_cur_val_o0 = edge_cur_val[0] + edge_A0_ext;
+    wire signed [63:0] edge_cur_val_o1 = edge_cur_val[1] + edge_A1_ext;
+    wire signed [63:0] edge_cur_val_o2 = edge_cur_val[2] + edge_A2_ext;
+    wire signed [63:0] edge_cur_val_o3 = edge_cur_val[3] + edge_A3_ext;
     wire draw_inside_o_edge = (edge_cur_val_o0 >= 0) &&
                               (edge_cur_val_o1 >= 0) &&
                               (edge_cur_val_o2 >= 0) &&
@@ -1412,20 +1380,47 @@ module voxel_gpu (
     wire draw_pair_exited = draw_row_inside && !draw_inside && !draw_inside_o_edge;
     wire draw_pair_last = (draw_x_next >= draw_x_max);
     wire [15:0] draw_z_value = clamp_z(z_cur_val);
-    wire signed [47:0] draw_dz_dx_ext = {{32{draw_dz_dx[15]}}, draw_dz_dx};
-    wire signed [63:0] draw_uw_dx_ext = {{32{draw_uw_dx[31]}}, draw_uw_dx};
-    wire signed [63:0] draw_vw_dx_ext = {{32{draw_vw_dx[31]}}, draw_vw_dx};
-    wire signed [63:0] draw_iw_dx_ext = {{32{draw_iw_dx[31]}}, draw_iw_dx};
+    wire signed [47:0] draw_dz_dx_ext = sext16_to_s48(draw_dz_dx);
+    wire signed [47:0] draw_dz_dy_ext = sext16_to_s48(draw_dz_dy);
+    wire signed [63:0] draw_uw_dx_ext = sext32_to_s64(draw_uw_dx);
+    wire signed [63:0] draw_uw_dy_ext = sext32_to_s64(draw_uw_dy);
+    wire signed [63:0] draw_vw_dx_ext = sext32_to_s64(draw_vw_dx);
+    wire signed [63:0] draw_vw_dy_ext = sext32_to_s64(draw_vw_dy);
+    wire signed [63:0] draw_iw_dx_ext = sext32_to_s64(draw_iw_dx);
+    wire signed [63:0] draw_iw_dy_ext = sext32_to_s64(draw_iw_dy);
+
+    // Draw loop stepping:
+    //   * next_pair advances horizontally by two pixels (even + odd lane).
+    //   * next_row advances to x_start_even of the following scanline.
+    // The named wires keep the two ST_DRAW branches below readable and make
+    // the signed edge/gradient widths explicit.
+    wire signed [63:0] edge_next_pair0 = edge_cur_val[0] + edge_A0_step2;
+    wire signed [63:0] edge_next_pair1 = edge_cur_val[1] + edge_A1_step2;
+    wire signed [63:0] edge_next_pair2 = edge_cur_val[2] + edge_A2_step2;
+    wire signed [63:0] edge_next_pair3 = edge_cur_val[3] + edge_A3_step2;
+    wire signed [63:0] edge_next_row0 = edge_row_val[0] + edge_B0_ext;
+    wire signed [63:0] edge_next_row1 = edge_row_val[1] + edge_B1_ext;
+    wire signed [63:0] edge_next_row2 = edge_row_val[2] + edge_B2_ext;
+    wire signed [63:0] edge_next_row3 = edge_row_val[3] + edge_B3_ext;
+    wire signed [47:0] z_next_pair = z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
+    wire signed [47:0] z_next_row = z_row_val + draw_dz_dy_ext;
+    wire signed [63:0] uw_next_pair = uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
+    wire signed [63:0] uw_next_row = uw_row_val + draw_uw_dy_ext;
+    wire signed [63:0] vw_next_pair = vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
+    wire signed [63:0] vw_next_row = vw_row_val + draw_vw_dy_ext;
+    wire signed [63:0] iw_next_pair = iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
+    wire signed [63:0] iw_next_row = iw_row_val + draw_iw_dy_ext;
+
     wire signed [47:0] draw_z_start_val =
         $signed({32'd0, draw_z0}) - (draw_x_min[0] ? draw_dz_dx_ext : 48'sd0);
     wire signed [63:0] draw_uw_start_val =
-        $signed({{32{draw_uw_0[31]}}, draw_uw_0}) -
+        sext32_to_s64(draw_uw_0) -
         (draw_x_min[0] ? draw_uw_dx_ext : 64'sd0);
     wire signed [63:0] draw_vw_start_val =
-        $signed({{32{draw_vw_0[31]}}, draw_vw_0}) -
+        sext32_to_s64(draw_vw_0) -
         (draw_x_min[0] ? draw_vw_dx_ext : 64'sd0);
     wire signed [63:0] draw_iw_start_val =
-        $signed({{32{draw_iw_0[31]}}, draw_iw_0}) -
+        sext32_to_s64(draw_iw_0) -
         (draw_x_min[0] ? draw_iw_dx_ext : 64'sd0);
     wire [15:0] draw_z_value_o = clamp_z(z_cur_val + draw_dz_dx_ext);
     wire [2:0]  draw_band_index = y_to_band(draw_y_cur);
@@ -1656,310 +1651,8 @@ module voxel_gpu (
         expand5_to_8(scan_rgb565_r[4:0])
     };
 
-    function automatic [9:0] clamp_x(input logic signed [15:0] value);
-        begin
-            if (value < 0)
-                clamp_x = 10'd0;
-            else if (value > 16'sd639)
-                clamp_x = 10'd639;
-            else
-                clamp_x = value[9:0];
-        end
-    endfunction
-
-    function automatic [8:0] clamp_y(input logic signed [15:0] value);
-        begin
-            if (value < 0)
-                clamp_y = 9'd0;
-            else if (value > 16'sd479)
-                clamp_y = 9'd479;
-            else
-                clamp_y = value[8:0];
-        end
-    endfunction
-
-    function automatic [15:0] band_local_addr(input logic [9:0] x,
-                                              input logic [8:0] y,
-                                              input logic [2:0] band);
-        logic [8:0] band_base_y;
-        logic [8:0] local_y;
-        begin
-            band_base_y = band_base_row(band);
-            local_y = (y >= band_base_y) ? (y - band_base_y) : 9'd0;
-            band_local_addr = local_y * 16'd640 + {6'd0, x};
-        end
-    endfunction
-
-    function automatic [15:0] band_pixel_count(input logic [2:0] band);
-        logic [9:0]  base_row;
-        logic [9:0]  band_end;
-        logic [15:0] visible_rows;
-        begin
-            /* Use 10-bit row math: the final band is 420..479, and 420+60
-             * wraps if this calculation is accidentally kept at 9 bits. */
-            base_row = {1'b0, band_base_row(band)};
-            band_end = base_row + 10'd60;
-            if (base_row >= 10'd480)
-                band_pixel_count = 16'd0;
-            else if (band_end > 10'd480) begin
-                visible_rows = {6'd0, (10'd480 - base_row)};
-                band_pixel_count = visible_rows * 16'd640;
-            end else begin
-                band_pixel_count = 16'd38400;
-            end
-        end
-    endfunction
-
-    function automatic [15:0] band_local_row_offset(input logic [5:0] local_y);
-        begin
-            /* local_y * 640 == local_y*512 + local_y*128 */
-            band_local_row_offset = {local_y, 9'd0} + {3'd0, local_y, 7'd0};
-        end
-    endfunction
-
-    function automatic [15:0] band_row_window_count(input logic [5:0] y_min,
-                                                    input logic [5:0] y_max);
-        logic [6:0] rows;
-        begin
-            rows = {1'b0, y_max} - {1'b0, y_min} + 7'd1;
-            band_row_window_count = {rows, 9'd0} + {2'd0, rows, 7'd0};
-        end
-    endfunction
-
-    function automatic [24:0] band_word_count(input logic [2:0] band);
-        begin
-            band_word_count = {9'd0, band_pixel_count(band)};
-        end
-    endfunction
-
-    function automatic [24:0] band_word_offset(input logic [2:0] band);
-        begin
-            /* band * 38400 = band*32768 + band*4096 + band*1024 + band*512.
-             * Encoding as shift+add avoids a synthesized variable-width
-             * multiplier whose result mis-aliased on the Cyclone V build. */
-            band_word_offset = {7'd0, band, 15'd0} +
-                               {10'd0, band, 12'd0} +
-                               {12'd0, band, 10'd0} +
-                               {13'd0, band, 9'd0};
-        end
-    endfunction
-
-    function automatic [8:0] band_base_row(input logic [2:0] band);
-        begin
-            /* band * 60 == band*64 - band*4 */
-            band_base_row = {band, 6'd0} - {4'd0, band, 2'd0};
-        end
-    endfunction
-
-    function automatic [4:0] sky_clear_start_index(input logic [2:0] band);
-        begin
-            case (band)
-                3'd0: sky_clear_start_index = 5'd0;   // row 0
-                3'd1: sky_clear_start_index = 5'd3;   // row 60
-                3'd2: sky_clear_start_index = 5'd6;   // row 120
-                3'd3: sky_clear_start_index = 5'd9;   // row 180
-                3'd4: sky_clear_start_index = 5'd12;  // row 240
-                3'd5: sky_clear_start_index = 5'd15;  // row 300
-                3'd6: sky_clear_start_index = 5'd18;  // row 360
-                default: sky_clear_start_index = 5'd21; // row 420
-            endcase
-        end
-    endfunction
-
-    function automatic [4:0] sky_row_count_for_local_y(input logic [5:0] local_y);
-        logic [4:0] local_mod;
-        begin
-            local_mod = local_y[4:0];
-            if (local_y >= 6'd40)
-                sky_row_count_for_local_y = local_mod - 5'd8;
-            else if (local_y >= 6'd32)
-                sky_row_count_for_local_y = local_mod + 5'd12;
-            else if (local_y >= 6'd20)
-                sky_row_count_for_local_y = local_mod - 5'd20;
-            else
-                sky_row_count_for_local_y = local_mod;
-        end
-    endfunction
-
-    function automatic [4:0] sky_clear_index_for_local_y(input logic [2:0] band,
-                                                         input logic [5:0] local_y);
-        logic [5:0] pal;
-        begin
-            pal = {1'b0, sky_clear_start_index(band)};
-            if (local_y >= 6'd40)
-                pal = pal + 6'd2;
-            else if (local_y >= 6'd20)
-                pal = pal + 6'd1;
-            sky_clear_index_for_local_y =
-                (pal >= SKY_GRADIENT_COLORS_6) ?
-                SKY_GRADIENT_LAST_INDEX : pal[4:0];
-        end
-    endfunction
-
-    function automatic [4:0] sky_palette_for_y(input logic [8:0] y);
-        logic [2:0] band;
-        logic [8:0] local_y_wide;
-        logic [5:0] local_y;
-        logic [6:0] row_sum;
-        logic [1:0] pal_offset;
-        logic [5:0] pal;
-        begin
-            band = y_to_band(y);
-            local_y_wide = y - band_base_row(band);
-            local_y = local_y_wide[5:0];
-            row_sum = {1'b0, local_y};
-            if (row_sum >= 7'd60)
-                pal_offset = 2'd3;
-            else if (row_sum >= 7'd40)
-                pal_offset = 2'd2;
-            else if (row_sum >= 7'd20)
-                pal_offset = 2'd1;
-            else
-                pal_offset = 2'd0;
-
-            pal = {1'b0, sky_clear_start_index(band)} +
-                  {4'b0, pal_offset};
-            sky_palette_for_y = (pal >= SKY_GRADIENT_COLORS_6) ?
-                                SKY_GRADIENT_LAST_INDEX : pal[4:0];
-        end
-    endfunction
-
-    function automatic [2:0] y_to_band(input logic [8:0] y);
-        logic [9:0] y_adjusted;
-        begin
-            /* Exact floor(y / 60) for visible rows 0..479, but cheaper than
-             * a divider or a chain of threshold compares. */
-            y_adjusted = {1'b0, y} + {5'd0, y[8:5], 1'b0} + 10'd2;
-            y_to_band = y_adjusted[8:6];
-        end
-    endfunction
-
-    function automatic [15:0] clamp_z(input logic signed [47:0] value);
-        begin
-            if (value < 0)
-                clamp_z = 16'h0000;
-            else if (value > 48'sd65534)
-                clamp_z = Z_VALID_FAR;
-            else
-                clamp_z = value[15:0];
-        end
-    endfunction
-
-    function automatic signed [31:0] clamp_s32(input logic signed [63:0] value);
-        begin
-            if (value > 64'sh7FFF_FFFF)
-                clamp_s32 = 32'sh7FFF_FFFF;
-            else if (value < -64'sh8000_0000)
-                clamp_s32 = -32'sh8000_0000;
-            else
-                clamp_s32 = value[31:0];
-        end
-    endfunction
-
-    function automatic [31:0] clamp_pos_u32(input logic signed [63:0] value);
-        begin
-            if (value <= 0)
-                clamp_pos_u32 = 32'd0;
-            else if (value > 64'sh7FFF_FFFF)
-                clamp_pos_u32 = 32'h7FFF_FFFF;
-            else
-                clamp_pos_u32 = value[31:0];
-        end
-    endfunction
-
-    function automatic [5:0] msb_index32(input logic [31:0] value);
-        integer bit_idx;
-        logic found;
-        begin
-            msb_index32 = 6'd0;
-            found = 1'b0;
-            for (bit_idx = 31; bit_idx >= 0; bit_idx = bit_idx - 1) begin
-                if (!found && value[bit_idx]) begin
-                    msb_index32 = bit_idx[5:0];
-                    found = 1'b1;
-                end
-            end
-        end
-    endfunction
-
-    function automatic [3:0] texture_coord(input logic signed [63:0] value,
-                                           input logic repeat_uv);
-        begin
-            if (repeat_uv)
-                texture_coord = value[35:32];
-            else if (value <= 64'sd0)
-                texture_coord = 4'd0;
-            else if (value >= 64'sh0000_0010_0000_0000)
-                texture_coord = 4'd15;
-            else
-                texture_coord = value[35:32];
-        end
-    endfunction
-
-    function automatic [15:0] rgb888_to_rgb565(input logic [23:0] rgb888);
-        begin
-            rgb888_to_rgb565 = {
-                rgb888[23:19],
-                rgb888[15:10],
-                rgb888[7:3]
-            };
-        end
-    endfunction
-
-    function automatic [15:0] blend_rgb565(
-        input logic [15:0] src,
-        input logic [15:0] dst,
-        input logic  [1:0] alpha
-    );
-        logic [6:0] r_mix;
-        logic [7:0] g_mix;
-        logic [6:0] b_mix;
-        begin
-            case (alpha)
-                2'd1: begin  // 75% source, 25% destination
-                    r_mix = ({2'd0, src[15:11]} * 3'd3) + {2'd0, dst[15:11]} + 7'd2;
-                    g_mix = ({2'd0, src[10:5]} * 3'd3) + {2'd0, dst[10:5]} + 8'd2;
-                    b_mix = ({2'd0, src[4:0]} * 3'd3) + {2'd0, dst[4:0]} + 7'd2;
-                    blend_rgb565 = {r_mix[6:2], g_mix[7:2], b_mix[6:2]};
-                end
-                2'd2: begin  // 50% source, 50% destination
-                    r_mix = {1'd0, src[15:11]} + {1'd0, dst[15:11]} + 7'd1;
-                    g_mix = {1'd0, src[10:5]} + {1'd0, dst[10:5]} + 8'd1;
-                    b_mix = {1'd0, src[4:0]} + {1'd0, dst[4:0]} + 7'd1;
-                    blend_rgb565 = {r_mix[5:1], g_mix[6:1], b_mix[5:1]};
-                end
-                2'd3: begin  // 25% source, 75% destination
-                    r_mix = {2'd0, src[15:11]} + ({2'd0, dst[15:11]} * 3'd3) + 7'd2;
-                    g_mix = {2'd0, src[10:5]} + ({2'd0, dst[10:5]} * 3'd3) + 8'd2;
-                    b_mix = {2'd0, src[4:0]} + ({2'd0, dst[4:0]} * 3'd3) + 7'd2;
-                    blend_rgb565 = {r_mix[6:2], g_mix[7:2], b_mix[6:2]};
-                end
-                default: blend_rgb565 = src;
-            endcase
-        end
-    endfunction
-
-    function automatic [7:0] expand5_to_8(input logic [4:0] value);
-        begin
-            expand5_to_8 = {value, value[4:2]};
-        end
-    endfunction
-
-    function automatic [7:0] expand6_to_8(input logic [5:0] value);
-        begin
-            expand6_to_8 = {value, value[5:4]};
-        end
-    endfunction
-
-    function automatic [7:0] apply_light_bank(input logic [7:0] color,
-                                              input logic [1:0] light_bank);
-        begin
-            if ((color == 8'd0) || (light_bank == 2'd0) || (color[7:6] != 2'b00))
-                apply_light_bank = color;
-            else
-                apply_light_bank = {light_bank, color[5:0]};
-        end
-    endfunction
+`include "voxel_raster_helpers.svh"
+`include "voxel_color_helpers.svh"
 
     voxel_vga_counters counters (
         .clk50       (clk),
@@ -3839,18 +3532,8 @@ module voxel_gpu (
                         clear_pending <= 1'b0;
                         clear_addr    <= 16'd0;
                     end else if (band_begin_pending && band_begin_cache_available) begin
-                        /*
-                         * There are only two local caches. We can overlap one
-                         * band's background flush with the next band's draw,
-                         * but a second fast BEGIN_BAND would toggle back into
-                         * the cache still being flushed. Sky/ground views hit
-                         * this hard because bands complete almost immediately.
-                         *
-                         * The gate is in the outer else-if so that when it
-                         * fails, the chain falls through to the band_flush
-                         * branch below — otherwise a queued flush could be
-                         * stranded behind a begin we cannot service yet.
-                         */
+                        /* Only two local caches exist; wait here rather than
+                         * toggling back into a cache still being flushed. */
                         band_begin_pending <= 1'b0;
                         cache_target_band <= band_index_cfg;
                         cache_band_index <= band_index_cfg;
@@ -3871,29 +3554,11 @@ module voxel_gpu (
                         draw_cache_sel <= ~draw_cache_sel;
                         state <= ST_CACHE_INIT;
                     end else if (band_flush_pending && !flush_active) begin
-                        /*
-                         * end_band() polls FEM=1 before setting band_flush_pending,
-                         * so band-N's descriptors are guaranteed already drained
-                         * from the FIFO. Anything in the FIFO at this point
-                         * belongs to band N+1 (SW pipelined begin_band(N+1) and
-                         * started pushing descriptors while we were waiting on
-                         * the prior flush). Don't gate this branch on
-                         * fifo_count==0 — those next-band descriptors are
-                         * blocked from being fetched by the !band_flush_pending
-                         * gate on the ST_FETCH branch below, and they will
-                         * drain after this branch clears band_flush_pending and
-                         * branch 2 consumes BEGIN_(N+1) to advance
-                         * cache_band_index. Adding fifo_count==0 here would
-                         * deadlock: branch 5 can't drain (waiting on this branch
-                         * to clear band_flush_pending), and this branch can't
-                         * fire (waiting for the FIFO to drain).
-                         */
+                        /* Do not require fifo_count==0: pipelined next-band
+                         * descriptors may already be queued behind this flush. */
                         band_flush_pending <= 1'b0;
                         if (cache_valid && cache_dirty) begin
-                            /* Kick background flush on the current active cache.
-                             * The next BEGIN_BAND will toggle draw_cache_sel,
-                             * so the rasterizer will switch to the other cache
-                             * while this one flushes in the background. */
+                            /* Flush this cache while the next band uses the other. */
                             flush_active <= 1'b1;
                             flush_band_index <= cache_band_index;
                             flush_pixels_total <= cache_window_pixels;
@@ -3937,23 +3602,8 @@ module voxel_gpu (
                         state <= ST_FETCH;
                     end else if (!prefetch_active && ctrl_en && (fifo_count >= 11'd16) &&
                                  !band_flush_pending) begin
-                        /*
-                         * Don't pull descriptors while a band flush is queued.
-                         * end_band() polls FEM before setting band_flush_pending,
-                         * so the FIFO is supposed to be empty here — but
-                         * begin_band(N+1) only polls BSY=0 (which excludes
-                         * band_flush_pending after cff6eba). begin_band(N+1)
-                         * can therefore return while band_flush_pending=1 from
-                         * the prior end_band(N), and SW then pushes desc-(N+1)
-                         * into the FIFO. cache_band_index is still N at that
-                         * point (BEGIN_(N+1) is queued but blocked from
-                         * consuming by the !band_flush_pending gate on
-                         * branch 2), so without this gate ST_FETCH would draw
-                         * desc-(N+1) into cache N. Wait until branch 3 kicks
-                         * the band-N flush (clearing band_flush_pending) and
-                         * branch 2 consumes BEGIN_(N+1) (updating
-                         * cache_band_index to N+1) before fetching.
-                         */
+                        /* Wait until the queued flush/begin pair advances the
+                         * resident cache before fetching next-band descriptors. */
                         state       <= ST_FETCH;
                         fetch_count <= 6'd0;
                     end
@@ -4418,33 +4068,33 @@ module voxel_gpu (
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
-                                edge_row_val[0] <= edge_row_val[0] + edge_B[0];
-                                edge_cur_val[0] <= edge_row_val[0] + edge_B[0];
-                                edge_row_val[1] <= edge_row_val[1] + edge_B[1];
-                                edge_cur_val[1] <= edge_row_val[1] + edge_B[1];
-                                edge_row_val[2] <= edge_row_val[2] + edge_B[2];
-                                edge_cur_val[2] <= edge_row_val[2] + edge_B[2];
-                                edge_row_val[3] <= edge_row_val[3] + edge_B[3];
-                                edge_cur_val[3] <= edge_row_val[3] + edge_B[3];
-                                z_row_val <= z_row_val + draw_dz_dy;
-                                z_cur_val <= z_row_val + draw_dz_dy;
-                                uw_row_val <= uw_row_val + draw_uw_dy;
-                                uw_cur_val <= uw_row_val + draw_uw_dy;
-                                vw_row_val <= vw_row_val + draw_vw_dy;
-                                vw_cur_val <= vw_row_val + draw_vw_dy;
-                                iw_row_val <= iw_row_val + draw_iw_dy;
-                                iw_cur_val <= iw_row_val + draw_iw_dy;
+                                edge_row_val[0] <= edge_next_row0;
+                                edge_cur_val[0] <= edge_next_row0;
+                                edge_row_val[1] <= edge_next_row1;
+                                edge_cur_val[1] <= edge_next_row1;
+                                edge_row_val[2] <= edge_next_row2;
+                                edge_cur_val[2] <= edge_next_row2;
+                                edge_row_val[3] <= edge_next_row3;
+                                edge_cur_val[3] <= edge_next_row3;
+                                z_row_val <= z_next_row;
+                                z_cur_val <= z_next_row;
+                                uw_row_val <= uw_next_row;
+                                uw_cur_val <= uw_next_row;
+                                vw_row_val <= vw_next_row;
+                                vw_cur_val <= vw_next_row;
+                                iw_row_val <= iw_next_row;
+                                iw_cur_val <= iw_next_row;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd2;
-                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0] + edge_A[0];
-                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1] + edge_A[1];
-                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2] + edge_A[2];
-                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3] + edge_A[3];
-                            z_cur_val <= z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
-                            uw_cur_val <= uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
-                            vw_cur_val <= vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
-                            iw_cur_val <= iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
+                            edge_cur_val[0] <= edge_next_pair0;
+                            edge_cur_val[1] <= edge_next_pair1;
+                            edge_cur_val[2] <= edge_next_pair2;
+                            edge_cur_val[3] <= edge_next_pair3;
+                            z_cur_val <= z_next_pair;
+                            uw_cur_val <= uw_next_pair;
+                            vw_cur_val <= vw_next_pair;
+                            iw_cur_val <= iw_next_pair;
                         end
                     end else if (state == ST_DRAW) begin
                         pipe0_valid <= 1'b0;
@@ -4468,33 +4118,33 @@ module voxel_gpu (
                                 draw_x_cur <= draw_x_start_even;
                                 draw_y_cur <= draw_y_cur + 9'd1;
                                 draw_row_inside <= 1'b0;
-                                edge_row_val[0] <= edge_row_val[0] + edge_B[0];
-                                edge_cur_val[0] <= edge_row_val[0] + edge_B[0];
-                                edge_row_val[1] <= edge_row_val[1] + edge_B[1];
-                                edge_cur_val[1] <= edge_row_val[1] + edge_B[1];
-                                edge_row_val[2] <= edge_row_val[2] + edge_B[2];
-                                edge_cur_val[2] <= edge_row_val[2] + edge_B[2];
-                                edge_row_val[3] <= edge_row_val[3] + edge_B[3];
-                                edge_cur_val[3] <= edge_row_val[3] + edge_B[3];
-                                z_row_val <= z_row_val + draw_dz_dy;
-                                z_cur_val <= z_row_val + draw_dz_dy;
-                                uw_row_val <= uw_row_val + draw_uw_dy;
-                                uw_cur_val <= uw_row_val + draw_uw_dy;
-                                vw_row_val <= vw_row_val + draw_vw_dy;
-                                vw_cur_val <= vw_row_val + draw_vw_dy;
-                                iw_row_val <= iw_row_val + draw_iw_dy;
-                                iw_cur_val <= iw_row_val + draw_iw_dy;
+                                edge_row_val[0] <= edge_next_row0;
+                                edge_cur_val[0] <= edge_next_row0;
+                                edge_row_val[1] <= edge_next_row1;
+                                edge_cur_val[1] <= edge_next_row1;
+                                edge_row_val[2] <= edge_next_row2;
+                                edge_cur_val[2] <= edge_next_row2;
+                                edge_row_val[3] <= edge_next_row3;
+                                edge_cur_val[3] <= edge_next_row3;
+                                z_row_val <= z_next_row;
+                                z_cur_val <= z_next_row;
+                                uw_row_val <= uw_next_row;
+                                uw_cur_val <= uw_next_row;
+                                vw_row_val <= vw_next_row;
+                                vw_cur_val <= vw_next_row;
+                                iw_row_val <= iw_next_row;
+                                iw_cur_val <= iw_next_row;
                             end
                         end else begin
                             draw_x_cur <= draw_x_cur + 10'd2;
-                            edge_cur_val[0] <= edge_cur_val[0] + edge_A[0] + edge_A[0];
-                            edge_cur_val[1] <= edge_cur_val[1] + edge_A[1] + edge_A[1];
-                            edge_cur_val[2] <= edge_cur_val[2] + edge_A[2] + edge_A[2];
-                            edge_cur_val[3] <= edge_cur_val[3] + edge_A[3] + edge_A[3];
-                            z_cur_val <= z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
-                            uw_cur_val <= uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
-                            vw_cur_val <= vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
-                            iw_cur_val <= iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
+                            edge_cur_val[0] <= edge_next_pair0;
+                            edge_cur_val[1] <= edge_next_pair1;
+                            edge_cur_val[2] <= edge_next_pair2;
+                            edge_cur_val[3] <= edge_next_pair3;
+                            z_cur_val <= z_next_pair;
+                            uw_cur_val <= uw_next_pair;
+                            vw_cur_val <= vw_next_pair;
+                            iw_cur_val <= iw_next_pair;
                         end
                     end else begin
                         pipe0_valid <= 1'b0;
@@ -4766,17 +4416,7 @@ module voxel_gpu (
                 cache_resume_draw <= 1'b0;
                 cache_final_flush <= 1'b0;
                 draw_cache_sel <= 1'b0;
-                /*
-                 * Do not reset background-flush state here. CLEAR_FRAME
-                 * fires at the start of every software frame and on fast
-                 * sky/ground views it races the tail end of the previous
-                 * frame's band flush. Killing flush_active mid-stream
-                 * leaves partial data in the SDRAM framebuffer, which
-                 * scanout displays as a flash. The flush writes to the
-                 * old back buffer and completes harmlessly on its own;
-                 * band_begin_cache_available correctly stalls new bands
-                 * if the flush still owns a local cache.
-                 */
+                /* CLEAR_FRAME must not kill an in-flight background flush. */
                 cache_words_issued <= 16'd0;
                 cache_words_done <= 16'd0;
                 cache_maint_addr <= 16'd0;
@@ -4786,13 +4426,7 @@ module voxel_gpu (
                 cache_word_pending_valid <= 1'b0;
                 sdram_wr_load_pulse <= 1'b0;
                 scan_late_count <= 16'd0;
-                /*
-                 * Do not reset the scanout RD pipeline here. CLEAR_FRAME is
-                 * issued at the start of every software frame, and with the
-                 * 30 FPS cap it can land in the middle of active display.
-                 * Dropping scan_rd_capture/load/hold state mid-line corrupts
-                 * the line-buffer fill and shows up as sky/ground flashing.
-                 */
+                /* Leave scanout RD state alone; CLEAR_FRAME can arrive mid-line. */
                 fifo_wr_ptr <= 10'd0;
                 fifo_rd_ptr <= 10'd0;
                 fifo_count <= 11'd0;

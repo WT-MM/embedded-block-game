@@ -1,5 +1,5 @@
 /*
- * voxel_gpu.c — MVP device driver for the FPGA voxel GPU peripheral.
+ * voxel_gpu.c - MVP device driver for the FPGA voxel GPU peripheral.
  *
  * Responsibilities (per the MVP spec):
  *   (A) Map the FPGA registers exposed through the lightweight HPS bridge.
@@ -41,23 +41,11 @@
 
 #define DRIVER_NAME "voxel_gpu"
 
-/*
- * Bounce buffer for write(): we copy from user in chunks, then push the
- * chunk into the FIFO in bursts paced by STATUS.FIFO_COUNT. Sized larger
- * than the 4 KB hardware FIFO so one copy_from_user() feeds multiple
- * burst rounds; the inner loop already back-pressures via
- * voxel_fifo_wait_space, so a bigger bounce just amortizes the
- * outer-loop syscall/copy overhead on heavy bands.
- */
+/* write() staging buffer; FIFO writes still back-pressure on STATUS.FIFO_COUNT. */
 #define VOXEL_BOUNCE_WORDS  2048                      /* 8 KB per chunk */
 #define VOXEL_BOUNCE_BYTES  (VOXEL_BOUNCE_WORDS * 4)
 
-/*
- * Polling timeouts. These are very generous — at 60 Hz a vsync arrives
- * every ~16 ms; the rasterizer should never take a full second on any
- * well-formed frame, so a 250 ms timeout is essentially "the hardware
- * is wedged".
- */
+/* Generous polling timeout for a 60 Hz display path. */
 #define VOXEL_POLL_TIMEOUT_MS   250
 #define VOXEL_POLL_DELAY_US     1
 #define VOXEL_FIFO_MIN_BURST_WORDS 64
@@ -399,13 +387,7 @@ static long voxel_ioc_begin_band(void __user *uarg)
 		 (band.flush_y_min & 0x3fu) |
 		 ((band.flush_y_max & 0x3fu) << 8));
 	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_BEGIN);
-	/*
-	 * Do not wait for the band cache init here. The command FIFO can be
-	 * filled while hardware clears/initializes the resident band; END_BAND
-	 * still waits for FIFO-empty + idle before it requests the flush. The
-	 * readback keeps the BAND_INDEX/BAND_CTRL writes ordered before the
-	 * userspace write() that streams descriptors immediately after this ioctl.
-	 */
+	/* Keep BEGIN_BAND pipelined; the readback orders CSR writes before write(). */
 	voxel_rd(VOXEL_REG_BAND_CTRL);
 
 out:
@@ -428,12 +410,7 @@ static long voxel_ioc_end_band(void)
 		goto out;
 
 	voxel_wr(VOXEL_REG_BAND_CTRL, VOXEL_BAND_CTRL_FLUSH);
-	/*
-	 * Do not poll BSY here. The background flush runs independently
-	 * via flush_active; band_flush_pending is no longer in engine_busy
-	 * so BSY clears immediately. The FSM priority chain ensures the
-	 * flush completes before the next BEGIN_BAND starts drawing.
-	 */
+	/* The RTL orders this background flush before the next band begins. */
 
 out:
 	mutex_unlock(&voxdev.lock);

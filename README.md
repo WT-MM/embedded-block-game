@@ -16,6 +16,13 @@ Run the game against it in another shell:
     make game
     VOXEL_GPU_BACKEND=socket ./game
 
+On macOS, build the desktop-safe test targets instead; the interactive game
+uses Linux `/dev/input/event*` headers and devices:
+
+    cd sw
+    make tests
+    VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
+
 Useful Variants
 ---------------
 
@@ -70,3 +77,5 @@ More Detail
 - `hw/README.md` covers Quartus / Platform Designer notes, including the
   Quartus 19.1 HDL-regeneration workaround for the SDRAM controller IP.
 - `virtual_hw/README.md` covers the Python virtual GPU package and options.
+- `PROJECT_NOTES.md` is the active engineering note index; long historical
+  debug ledgers live under `docs/notes/`.

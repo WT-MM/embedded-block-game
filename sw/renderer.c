@@ -970,15 +970,6 @@ static BlockID lookup_block_at(const BlockLookup *lookup, Vec3 pos)
     return BLOCK_AIR;
 }
 
-static bool face_should_render_simple(BlockID current, BlockID neighbor)
-{
-    if (neighbor == BLOCK_AIR)
-        return true;
-    if (current == BLOCK_GLASS)
-        return false;
-    return block_is_transparent(neighbor);
-}
-
 static bool is_face_exposed(const Block *block, BlockFace face,
                             const BlockLookup *lookup)
 {
@@ -988,7 +979,7 @@ static bool is_face_exposed(const Block *block, BlockFace face,
         block->position.z + face_normals[face].z,
     };
 
-    return face_should_render_simple(block->type, lookup_block_at(lookup, neighbor));
+    return block_face_should_render(block->type, lookup_block_at(lookup, neighbor));
 }
 
 /* Pack a float edge coefficient into Q24.8 (multiply by 256, round). */

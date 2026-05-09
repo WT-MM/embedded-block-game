@@ -95,6 +95,8 @@ bool block_is_translucent(BlockID id);
 bool block_is_alpha_keyed(BlockID id);
 /* True for blocks the player walks through without colliding (water). */
 bool block_is_passable(BlockID id);
+/* Shared cube-face occlusion rule for renderer and chunk meshing. */
+bool block_face_should_render(BlockID current, BlockID neighbor);
 BlockRenderModel block_render_model(BlockID id);
 
 #endif

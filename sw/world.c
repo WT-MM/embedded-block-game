@@ -1,4 +1,5 @@
 #include "world.h"
+#include "world_gen.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -975,442 +976,6 @@ static void mark_trailing_perimeter_dirty(VoxelWorld *world,
     }
 }
 
-/* Sea level: any column whose surface lands below this gets flooded with
- * water up to (but not above) y=WORLDGEN_SEA_LEVEL. */
-#define WORLDGEN_SEA_LEVEL 14
-/* Trees only spawn on grass that is at or above this y. Slight buffer above
- * sea level so we don't end up with logs sprouting out of shallow ponds. */
-#define WORLDGEN_TREE_MIN_Y (WORLDGEN_SEA_LEVEL + 1)
-/* Tree canopy half-width in xz; the loop below scans neighbor cells out to
- * this radius beyond the chunk edge so canopies span chunk seams. */
-#define WORLDGEN_TREE_RADIUS 2
-
-typedef struct {
-    int surface_y;
-    WorldBiome biome;
-    bool underwater;
-    bool beach;
-    bool clay_patch;
-} WorldgenColumn;
-
-static uint32_t hash_world_coord(int wx, int wz, uint32_t base_seed,
-                                 uint32_t salt)
-{
-    uint32_t h = base_seed ^ salt;
-
-    h ^= (uint32_t)wx * 0x9e3779b9u;
-    h ^= (uint32_t)wz * 0x85ebca6bu;
-    h ^= h >> 16;
-    h *= 0x7feb352du;
-    h ^= h >> 15;
-    h *= 0x846ca68bu;
-    h ^= h >> 16;
-    return h;
-}
-
-static float smoothstep01(float t)
-{
-    if (t <= 0.0f) return 0.0f;
-    if (t >= 1.0f) return 1.0f;
-    return t * t * (3.0f - 2.0f * t);
-}
-
-static float smoothstep_range(float edge0, float edge1, float x)
-{
-    if (edge0 == edge1)
-        return x >= edge1 ? 1.0f : 0.0f;
-    return smoothstep01((x - edge0) / (edge1 - edge0));
-}
-
-static float value_noise_octave(int wx, int wz, int period, uint32_t base_seed,
-                                uint32_t salt)
-{
-    int gx = (wx >= 0) ? (wx / period) : ((wx - period + 1) / period);
-    int gz = (wz >= 0) ? (wz / period) : ((wz - period + 1) / period);
-    int rx = wx - gx * period;
-    int rz = wz - gz * period;
-    float fx = smoothstep01((float)rx / (float)period);
-    float fz = smoothstep01((float)rz / (float)period);
-
-    float c00 = (float)(hash_world_coord(gx,     gz,     base_seed, salt) & 0xFFFFu);
-    float c10 = (float)(hash_world_coord(gx + 1, gz,     base_seed, salt) & 0xFFFFu);
-    float c01 = (float)(hash_world_coord(gx,     gz + 1, base_seed, salt) & 0xFFFFu);
-    float c11 = (float)(hash_world_coord(gx + 1, gz + 1, base_seed, salt) & 0xFFFFu);
-
-    float a = c00 + (c10 - c00) * fx;
-    float b = c01 + (c11 - c01) * fx;
-    return (a + (b - a) * fz) / 65535.0f; /* 0..1 */
-}
-
-static float worldgen_biome_value(int wx, int wz, uint32_t base_seed)
-{
-    float broad = value_noise_octave(wx, wz, 64, base_seed, 0xb10bu);
-    float local = value_noise_octave(wx, wz, 24, base_seed, 0xb22bu);
-
-    return broad * 0.78f + local * 0.22f;
-}
-
-static WorldBiome worldgen_biome_from_value(float b)
-{
-    if (b < 0.42f)
-        return WORLD_BIOME_PLAINS;
-    if (b < 0.62f)
-        return WORLD_BIOME_HILLS;
-    return WORLD_BIOME_MOUNTAINS;
-}
-
-const char *world_biome_name(WorldBiome biome)
-{
-    switch (biome) {
-    case WORLD_BIOME_PLAINS:
-        return "plains";
-    case WORLD_BIOME_HILLS:
-        return "hills";
-    case WORLD_BIOME_MOUNTAINS:
-        return "mountains";
-    default:
-        return "unknown";
-    }
-}
-
-WorldBiome world_biome_at(const VoxelWorld *world, int wx, int wz)
-{
-    if (!world)
-        return WORLD_BIOME_PLAINS;
-
-    return worldgen_biome_from_value(
-        worldgen_biome_value(wx, wz, world->procedural_seed));
-}
-
-static bool worldgen_clay_patch(int wx, int wz, uint32_t base_seed)
-{
-    float patch = value_noise_octave(wx, wz, 18, base_seed, 0xc1a4u) * 0.65f +
-                  value_noise_octave(wx, wz, 6,  base_seed, 0xc1a5u) * 0.35f;
-
-    return patch > 0.72f;
-}
-
-/* Height range stays inside [0, WORLD_CHUNK_HEIGHT) but now blends broad
- * plains/hills/mountain biome bands. Plains hover around sea level, hills
- * roll above them, and mountains use ridged noise so they read as peaks
- * instead of just taller rounded hills. */
-static int worldgen_surface_y_at(int wx, int wz, uint32_t base_seed,
-                                 float *biome_value_out)
-{
-    float low  = value_noise_octave(wx, wz, 32, base_seed, 0xa1u);
-    float mid  = value_noise_octave(wx, wz, 12, base_seed, 0xb2u);
-    float fine = value_noise_octave(wx, wz, 4,  base_seed, 0xc3u);
-    float biome_value = worldgen_biome_value(wx, wz, base_seed);
-    float plains_w = 1.0f - smoothstep_range(0.34f, 0.54f, biome_value);
-    float mountain_w = smoothstep_range(0.58f, 0.80f, biome_value);
-    float hills_w = 1.0f - plains_w - mountain_w;
-    float ridge = fabsf(value_noise_octave(wx, wz, 24, base_seed, 0xa44u) - 0.5f) * 2.0f;
-    float plains_h = (float)WORLDGEN_SEA_LEVEL + 1.0f +
-                     (low - 0.5f) * 3.0f +
-                     (fine - 0.5f) * 1.2f;
-    float hills_h = (float)WORLDGEN_SEA_LEVEL + 3.0f +
-                    (low - 0.5f) * 5.5f +
-                    (mid - 0.5f) * 8.0f +
-                    (fine - 0.5f) * 1.8f;
-    float mountain_h = (float)WORLDGEN_SEA_LEVEL + 7.0f +
-                       ridge * 11.5f +
-                       (low - 0.5f) * 4.0f +
-                       (fine - 0.5f) * 2.5f;
-    float h_f;
-    int h;
-
-    if (hills_w < 0.0f)
-        hills_w = 0.0f;
-    h_f = plains_h * plains_w + hills_h * hills_w + mountain_h * mountain_w;
-    h = (int)floorf(h_f + 0.5f);
-
-    if (h < 2) h = 2;
-    if (h >= WORLD_CHUNK_HEIGHT - 1) h = WORLD_CHUNK_HEIGHT - 2;
-
-    if (biome_value_out)
-        *biome_value_out = biome_value;
-    return h;
-}
-
-static bool worldgen_column_touches_water(int wx, int wz, uint32_t base_seed)
-{
-    for (int dz = -2; dz <= 2; dz++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            if (dx == 0 && dz == 0)
-                continue;
-            if (abs(dx) + abs(dz) > 2)
-                continue;
-            if (worldgen_surface_y_at(wx + dx, wz + dz, base_seed, NULL) <
-                WORLDGEN_SEA_LEVEL)
-                return true;
-        }
-    }
-    return false;
-}
-
-static WorldgenColumn worldgen_column_at(int wx, int wz, uint32_t base_seed)
-{
-    float biome_value;
-    int h = worldgen_surface_y_at(wx, wz, base_seed, &biome_value);
-    WorldgenColumn column;
-
-    column.surface_y = h;
-    column.biome = worldgen_biome_from_value(biome_value);
-    column.underwater = h < WORLDGEN_SEA_LEVEL;
-    column.beach = column.biome != WORLD_BIOME_MOUNTAINS &&
-                   h == WORLDGEN_SEA_LEVEL &&
-                   worldgen_column_touches_water(wx, wz, base_seed);
-    column.clay_patch = worldgen_clay_patch(wx, wz, base_seed);
-    return column;
-}
-
-static BlockID worldgen_column_block(const WorldgenColumn *column, int y)
-{
-    if (y == column->surface_y) {
-        if (column->clay_patch && column->underwater)
-            return BLOCK_CLAY;
-        if (column->underwater || column->beach)
-            return BLOCK_SAND;
-        if (column->surface_y >= WORLDGEN_SEA_LEVEL + 8)
-            return BLOCK_STONE;
-        return BLOCK_GRASS;
-    }
-
-    if (y >= column->surface_y - 3) {
-        if (column->clay_patch && column->underwater &&
-            y >= column->surface_y - 1)
-            return BLOCK_CLAY;
-        if (column->underwater || column->beach)
-            return (y <= column->surface_y - 2) ? BLOCK_SANDSTONE : BLOCK_SAND;
-        if (column->surface_y >= WORLDGEN_SEA_LEVEL + 8)
-            return BLOCK_STONE;
-        return BLOCK_DIRT;
-    }
-
-    if ((column->underwater || column->beach) && y >= column->surface_y - 5)
-        return BLOCK_SANDSTONE;
-    return BLOCK_STONE;
-}
-
-/* Deterministic per-(wx,wz) tree roll. Returns true if a tree wants to spawn
- * here, and only if this column is the local maximum of the roll within its
- * footprint - that way two trees never overlap into each other. */
-static bool worldgen_tree_candidate(int wx, int wz, uint32_t base_seed)
-{
-    WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
-    uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
-
-    if (column.underwater || column.beach ||
-        column.biome == WORLD_BIOME_MOUNTAINS ||
-        column.surface_y >= WORLDGEN_SEA_LEVEL + 8 ||
-        column.surface_y < WORLDGEN_TREE_MIN_Y)
-        return false;
-
-    /* Plains are open, hills get occasional clusters. */
-    uint32_t spacing = (column.biome == WORLD_BIOME_HILLS) ? 48u : 72u;
-    if ((roll % spacing) != 0u)
-        return false;
-    return true;
-}
-
-static bool worldgen_wants_tree(int wx, int wz, uint32_t base_seed)
-{
-    uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
-
-    if (!worldgen_tree_candidate(wx, wz, base_seed))
-        return false;
-
-    for (int dz = -WORLDGEN_TREE_RADIUS; dz <= WORLDGEN_TREE_RADIUS; dz++) {
-        for (int dx = -WORLDGEN_TREE_RADIUS; dx <= WORLDGEN_TREE_RADIUS; dx++) {
-            if (dx == 0 && dz == 0)
-                continue;
-            uint32_t neighbor = hash_world_coord(wx + dx, wz + dz,
-                                                 base_seed, 0xd00du);
-            if (!worldgen_tree_candidate(wx + dx, wz + dz, base_seed))
-                continue;
-            /* Tie-break by raw hash; lower wins. */
-            if (neighbor < roll)
-                return false;
-        }
-    }
-    return true;
-}
-
-static bool worldgen_wants_flower(int wx, int wz, uint32_t base_seed,
-                                  WorldBiome biome)
-{
-    uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xf10fu);
-    uint32_t threshold;
-
-    if (biome == WORLD_BIOME_MOUNTAINS)
-        return false;
-
-    threshold = (biome == WORLD_BIOME_PLAINS) ? 5u : 2u;
-    return (roll & 0xffu) < threshold;
-}
-
-static void worldgen_set_block_local(Chunk *chunk, int lx, int ly, int lz,
-                                     BlockID block, bool overwrite)
-{
-    if (lx < 0 || lx >= WORLD_CHUNK_SIZE) return;
-    if (lz < 0 || lz >= WORLD_CHUNK_SIZE) return;
-    if (ly < 0 || ly >= WORLD_CHUNK_HEIGHT) return;
-    if (!overwrite && chunk->blocks[ly][lz][lx] != BLOCK_AIR)
-        return;
-    chunk->blocks[ly][lz][lx] = block;
-}
-
-static void worldgen_place_tree(Chunk *chunk, int local_x, int trunk_top_y,
-                                int local_z, uint32_t roll)
-{
-    int trunk_height = 4 + (int)(roll & 1u); /* 4 or 5 logs */
-    int trunk_base = trunk_top_y - trunk_height + 1;
-    /* Extend one extra block down to surface level so the tree is visually
-     * rooted to the ground rather than floating one block above the grass. */
-    int trunk_ground = (trunk_base > 0) ? trunk_base - 1 : trunk_base;
-
-    for (int y = trunk_ground; y <= trunk_top_y; y++)
-        worldgen_set_block_local(chunk, local_x, y, local_z, BLOCK_WOOD, true);
-
-    /* Two-tier canopy: a 5x5 mid layer just below the top log, and a 3x3
-     * crown on top. Corners of the 5x5 layer are skipped for a softer
-     * silhouette. */
-    int canopy_y = trunk_top_y;
-    for (int dz = -2; dz <= 2; dz++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            if ((dx == -2 || dx == 2) && (dz == -2 || dz == 2))
-                continue; /* nip corners */
-            worldgen_set_block_local(chunk, local_x + dx, canopy_y, local_z + dz,
-                                     BLOCK_LEAVES, false);
-        }
-    }
-    for (int dz = -1; dz <= 1; dz++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dz == 0)
-                continue;
-            worldgen_set_block_local(chunk, local_x + dx, canopy_y + 1,
-                                     local_z + dz, BLOCK_LEAVES, false);
-        }
-    }
-    worldgen_set_block_local(chunk, local_x, canopy_y + 2, local_z,
-                             BLOCK_LEAVES, false);
-}
-
-static void generate_chunk_terrain(Chunk *chunk, uint32_t base_seed,
-                                   int stone_tries_per_chunk)
-{
-    /* stone_tries_per_chunk is retained as a save-metadata field for
-     * forward/backward compatibility with the old random-stone gen but is
-     * unused by the heightmap-driven path. */
-    (void)stone_tries_per_chunk;
-
-    clear_chunk_blocks(chunk);
-
-    int origin_x = chunk->chunk_x * WORLD_CHUNK_SIZE;
-    int origin_z = chunk->chunk_z * WORLD_CHUNK_SIZE;
-
-    /* Pass 1: stratified terrain column for every (lx, lz) in this chunk. */
-    for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
-        for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
-            int wx = origin_x + lx;
-            int wz = origin_z + lz;
-            WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
-            int surface_y = column.surface_y;
-
-            for (int y = 0; y <= surface_y; y++) {
-                chunk->blocks[y][lz][lx] =
-                    worldgen_column_block(&column, y);
-            }
-
-            if (column.underwater) {
-                for (int y = surface_y + 1; y <= WORLDGEN_SEA_LEVEL; y++)
-                    chunk->blocks[y][lz][lx] = BLOCK_WATER;
-            }
-        }
-    }
-
-    /* Pass 2: trees. Scan a band that extends WORLDGEN_TREE_RADIUS past the
-     * chunk edge so canopies whose trunks are in a neighbor still drop their
-     * leaves into this chunk, giving seamless forests across chunk borders.
-     * Trunk-only blocks outside the chunk are clipped by
-     * worldgen_set_block_local. */
-    for (int lz = -WORLDGEN_TREE_RADIUS;
-         lz < WORLD_CHUNK_SIZE + WORLDGEN_TREE_RADIUS; lz++) {
-        for (int lx = -WORLDGEN_TREE_RADIUS;
-             lx < WORLD_CHUNK_SIZE + WORLDGEN_TREE_RADIUS; lx++) {
-            int wx = origin_x + lx;
-            int wz = origin_z + lz;
-
-            if (!worldgen_wants_tree(wx, wz, base_seed))
-                continue;
-
-            WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
-            int surface_y = column.surface_y;
-            if (surface_y < WORLDGEN_TREE_MIN_Y)
-                continue;
-            int trunk_top_y = surface_y + 4 +
-                              (int)(hash_world_coord(wx, wz, base_seed,
-                                                     0xfeedu) & 1u);
-            if (trunk_top_y + 2 >= WORLD_CHUNK_HEIGHT)
-                continue;
-
-            uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
-            worldgen_place_tree(chunk, lx, trunk_top_y, lz, roll);
-        }
-    }
-
-    /* Pass 3: small plains/hill flowers after trees, so decorations do not
-     * end up inside trunks or canopy blocks. */
-    for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
-        for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
-            int wx = origin_x + lx;
-            int wz = origin_z + lz;
-            WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
-            int flower_y = column.surface_y + 1;
-
-            if (column.underwater || column.beach ||
-                flower_y >= WORLD_CHUNK_HEIGHT)
-                continue;
-            if (chunk->blocks[column.surface_y][lz][lx] != BLOCK_GRASS ||
-                chunk->blocks[flower_y][lz][lx] != BLOCK_AIR)
-                continue;
-            if (!worldgen_wants_flower(wx, wz, base_seed, column.biome))
-                continue;
-
-            chunk->blocks[flower_y][lz][lx] =
-                (hash_world_coord(wx, wz, base_seed, 0xf11au) & 1u) ?
-                BLOCK_YELLOW_FLOWER : BLOCK_RED_FLOWER;
-        }
-    }
-}
-
-/*
- * A face between `current` and `neighbor` should be emitted when the
- * neighbor doesn't fully occlude it:
- *   - Any face next to air is visible.
- *   - An opaque block's face next to glass / fluid / leaves is visible:
- *     you can see the opaque surface through the transparent neighbor.
- *   - A translucent block (glass, fluid) next to anything but air is
- *     hidden, which collapses interior walls of solid translucent volumes
- *     into a single hull and avoids alpha-over-alpha overdraw artefacts
- *     when looking at translucent stacks.
- */
-static bool face_should_render(BlockID current, BlockID neighbor)
-{
-    if (neighbor == BLOCK_AIR)
-        return true;
-    if (block_is_translucent(current))
-        return false;
-    /* Hide alpha-keyed faces against the same block: leaf canopies stack
-     * dense enough that emitting every leaf-vs-leaf interior face was
-     * doubling chunk quad counts and tanking FPS. Adjacent leaves share
-     * the same texture and lighting, so the interior face was never the
-     * one the camera actually sees. */
-    if (current == neighbor && block_is_alpha_keyed(current))
-        return false;
-    return block_is_transparent(neighbor);
-}
-
 static bool block_uses_cube_mesh(BlockID id)
 {
     return block_render_model(id) == BLOCK_RENDER_CUBE;
@@ -1567,24 +1132,6 @@ BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz)
     return chunk->blocks[wy][lz][lx];
 }
 
-__attribute__((unused))
-static uint8_t world_get_sky_light(const VoxelWorld *world, int wx, int wy, int wz)
-{
-    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
-        return 0;
-
-    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
-    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
-    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
-    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
-    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
-
-    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
-        return 0;
-
-    return chunk->sky_light[wy][lz][lx];
-}
-
 static uint8_t world_get_block_light(const VoxelWorld *world, int wx, int wy, int wz)
 {
     if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
@@ -1600,26 +1147,6 @@ static uint8_t world_get_block_light(const VoxelWorld *world, int wx, int wy, in
         return 0;
 
     return chunk->block_light[wy][lz][lx];
-}
-
-__attribute__((unused))
-static bool world_set_sky_light(VoxelWorld *world, int wx, int wy, int wz,
-                                uint8_t value)
-{
-    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
-        return false;
-
-    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
-    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
-    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
-    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
-    Chunk *chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
-
-    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
-        return false;
-
-    chunk->sky_light[wy][lz][lx] = value;
-    return true;
 }
 
 static bool world_set_block_light(VoxelWorld *world, int wx, int wy, int wz,
@@ -1741,7 +1268,7 @@ static bool mesh_face_should_render(const Chunk *nb[3][3], int ccx, int ccz,
                                          wz + FACE_NZ[face]);
 
     if (!block_is_any_fluid(current))
-        return face_should_render(current, neighbor);
+        return block_face_should_render(current, neighbor);
 
     if (neighbor == BLOCK_AIR)
         return true;
@@ -2079,9 +1606,8 @@ static bool world_rebuild_lighting_locked(VoxelWorld *world)
     clear_world_lighting(world);
 
     /*
-     * Sky columns are fully contained in each chunk's (lx,lz) column — no
-     * cross-chunk vertical dependency. Walking chunk arrays avoids two
-     * hash-table lookups per cell (world_get_block + world_set_sky_light).
+     * Sky columns are fully contained in each chunk's (lx,lz) column. Walking
+     * chunk arrays avoids hash-table probes per cell.
      */
     for (int i = 0; i < world->chunk_count; i++) {
         Chunk *chunk = &world->chunks[i];
@@ -3029,9 +2555,9 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     }
 
     initialize_chunk_slot(chunk, chunk_x, chunk_z, world->stream_epoch);
-    generate_chunk_terrain(chunk,
-                           world->procedural_seed,
-                           world->stone_tries_per_chunk);
+    world_generate_chunk_terrain(chunk,
+                                 world->procedural_seed,
+                                 world->stone_tries_per_chunk);
     if (!load_chunk_snapshot(world, chunk))
         return false;
     rebuild_chunk_sky_lighting(chunk);
@@ -3115,9 +2641,9 @@ bool world_async_chunk_gen_offline(const VoxelWorld *world,
      * never published anywhere. */
     scratch->flags = CHUNK_FLAG_LOADED;
 
-    generate_chunk_terrain(scratch,
-                           world->procedural_seed,
-                           world->stone_tries_per_chunk);
+    world_generate_chunk_terrain(scratch,
+                                 world->procedural_seed,
+                                 world->stone_tries_per_chunk);
     /* load_chunk_snapshot only reads world->persistence_enabled and
      * world->save_root, both immutable post-init, so no lock needed. */
     if (!load_chunk_snapshot(world, scratch)) {

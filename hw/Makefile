@@ -76,6 +76,8 @@ KERNEL_CONFIG = $(KERNEL_DIR)/.config
 ZIMAGE = $(KERNEL_DIR)/arch/arm/boot/zImage
 
 VOXEL_GPU_RTL = $(wildcard voxel_gpu/rtl/*.sv)
+VOXEL_GPU_RTL_HEADERS = $(wildcard voxel_gpu/rtl/*.svh)
+VOXEL_GPU_RTL_DOCS = $(wildcard voxel_gpu/rtl/*.md)
 VOXEL_GPU_ASSETS = voxel_gpu/assets/textures.mif voxel_gpu/assets/recip_lut.hex
 VOXEL_GPU_DEBUG_ASSETS = voxel_gpu/assets/textures_preview.png
 VOXEL_GPU_SCRIPTS = voxel_gpu/scripts/generate_textures.py voxel_gpu/scripts/generate_recip_lut.py
@@ -86,6 +88,8 @@ TARFILES = Makefile \
 	$(SYSTEM)_top.sv \
 	$(BOARD_INFO) \
 	$(VOXEL_GPU_RTL) \
+	$(VOXEL_GPU_RTL_HEADERS) \
+	$(VOXEL_GPU_RTL_DOCS) \
 	$(VOXEL_GPU_ASSETS) \
 	$(VOXEL_GPU_DEBUG_ASSETS) \
 	$(VOXEL_GPU_SCRIPTS)
@@ -126,7 +130,7 @@ project19 : project
 .PHONY : qsys
 qsys : $(QSYS_STAMP)
 
-QSYS_COMPONENT_SOURCES = voxel_gpu_hw.tcl $(VOXEL_GPU_RTL) $(VOXEL_GPU_ASSETS) \
+QSYS_COMPONENT_SOURCES = voxel_gpu_hw.tcl $(VOXEL_GPU_RTL) $(VOXEL_GPU_RTL_HEADERS) $(VOXEL_GPU_ASSETS) \
 	$(VOXEL_GPU_SCRIPTS) \
 	$(wildcard sdram_local_test/*.v) \
 	$(wildcard sdram_local_test/*.h) \
@@ -156,6 +160,12 @@ qsys19 : qsys
 .PHONY : quartus
 quartus : $(SOF)
 
+.PHONY : quartus19
+quartus19 : QUARTUS_SH=$(QUARTUS_SH_19)
+quartus19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+quartus19 : QUARTUS_STA=$(QUARTUS_STA_19)
+quartus19 : quartus
+
 $(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
 	$(QUARTUS_SH) --flow compile $(QPF)
 
@@ -166,6 +176,13 @@ $(SOF) $(HPS_PIN_MAP) : $(PROJECT_STAMP) $(TOP_LEVEL_SOURCES)
 # to an .rbf file to be placed on an SD card and written by u-boot
 .PHONY : rbf
 rbf : $(RBF)
+
+.PHONY : rbf19
+rbf19 : QUARTUS_SH=$(QUARTUS_SH_19)
+rbf19 : QUARTUS_MAP=$(QUARTUS_MAP_19)
+rbf19 : QUARTUS_STA=$(QUARTUS_STA_19)
+rbf19 : QUARTUS_CPF=$(QUARTUS_CPF_19)
+rbf19 : rbf
 
 $(RBF) : $(SOF)
 	$(QUARTUS_CPF) -c $(SOF) $(RBF)

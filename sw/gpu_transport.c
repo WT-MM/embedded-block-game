@@ -72,7 +72,6 @@ struct GPUTransport {
 };
 
 struct descriptor_bin {
-    /* Flat buffer for binned descriptors */
     uint8_t *flat_buf;
     size_t flat_used;
     size_t flat_capacity;
@@ -81,31 +80,13 @@ struct descriptor_bin {
     uint8_t scene_y_max;
 };
 
-/* Two parallel sets of per-band bins. With frame pipelining enabled, the
- * submit worker reads the set it was handed
- * (`worker_bin_set`) while the main thread has already swapped to the other
- * set (`g_main_bin_set`) for the next frame. Pipelining off: only set 0 is
- * ever used. Functions that touch bins take the set as a parameter so the
- * worker thread reads the correct set without racing on a global. */
+/* Double-buffered so the submit worker can own one bin set while the renderer
+ * fills the other for the next frame. */
 static struct descriptor_bin g_bins_pool[2][VOXEL_BAND_COUNT];
 static int g_main_bin_set = 0;
 
-/* Per-band "primer" quad. Submitted as the first descriptor of every band so
- * the very first pixel through the rasterizer pipeline after BEGIN_BAND lands
- * on a known, hidden 1-px write at column 0 of the band's first scanline.
- *
- * The motivation is the family of palette-pipeline staleness bugs documented
- * in PROJECT_NOTES.md: after the FIFO drains and rasterization restarts, the
- * first pixel through the pipeline can latch a stale palette index from the
- * previous frame's tail (red `0x06` was historically the most-visible value).
- * This was patched on the per-quad seam with the pal_rd+plr stages, but the
- * SDRAM banding upgrade introduced a new "first-quad-of-band" idle restart
- * which manifests as occasional red speckles on the absolute left edge.
- *
- * The primer absorbs that first-pixel state into a write at (0, band_start)
- * with palette index 0. Sky/world quads then overdraw that pixel, so the
- * primer is invisible in steady state but always paints the leading edge
- * with a known color even if the pipeline is glitchy on its first cycle. */
+/* Hidden 1-pixel descriptor that primes the first draw after BEGIN_BAND.
+ * See PROJECT_NOTES.md for the stale-palette history. */
 static struct quad_desc g_band_primers[VOXEL_BAND_COUNT];
 static int g_band_primers_initialized;
 
@@ -120,8 +101,7 @@ static void init_band_primers(void)
         p->x_max = 0;
         p->y_min = (__s16)(b * VOXEL_BAND_CACHE_HEIGHT);
         p->y_max = p->y_min;
-        /* All 4 edges constant +1 in Q24.8 → e(x,y) ≥ 0 everywhere → the
-         * single bbox pixel evaluates inside, primes the pipeline. */
+        /* Constant positive edges make the single bbox pixel evaluate inside. */
         for (int i = 0; i < 4; i++) {
             p->edges[i].A = 0;
             p->edges[i].B = 0;
@@ -136,9 +116,7 @@ static void init_band_primers(void)
     g_band_primers_initialized = 1;
 }
 
-/* Diagnostics gated by VOXEL_DIAG_BBOX=1: scan submitted x_min/x_max and
- * y_min/y_max ranges so we can confirm nothing is leaking off-screen on
- * the left/top edges (red-stripe investigation). */
+/* VOXEL_DIAG_BBOX=1 logs submitted bbox ranges and per-band costs. */
 static int g_diag_bbox;
 static int g_diag_cache;
 static int g_hw_band_reuse;
@@ -793,9 +771,7 @@ static void bin_note_scene_rows(struct descriptor_bin *bin, unsigned band,
         bin->scene_y_max = (uint8_t)local_max;
 }
 
-/* Reset per-band bins, prime each, and zero the staging diag accumulators.
- * Shared by the legacy in-submit binning loop and the new bin-during-emit
- * path so both produce identical per-band content (primer first, then quads). */
+/* Reset per-band bins and prepend the hidden primer descriptor. */
 static int reset_bins_and_prime(struct descriptor_bin bins[VOXEL_BAND_COUNT],
                                 struct diag_cost *diag_cost)
 {
@@ -821,12 +797,7 @@ static int reset_bins_and_prime(struct descriptor_bin bins[VOXEL_BAND_COUNT],
     return 0;
 }
 
-/* Route one already-built descriptor into the per-band bins. Returns 0 on
- * success (including the y-fully-off-screen and redundant-sky-clear skips),
- * negative errno on allocation failure. Caller-owned diag accumulators are
- * updated when g_diag_bbox is set. Pulled out of submit_hw_binned so both
- * the legacy second-pass loop and the new gpu_transport_bin_descriptor
- * front-loaded path share one implementation. */
+/* Route one descriptor into the hardware bands, clipping y when needed. */
 static int bin_one_descriptor(GPUTransport *transport,
                               struct descriptor_bin bins[VOXEL_BAND_COUNT],
                               const void *desc_bytes, size_t desc_size,
@@ -1046,12 +1017,8 @@ static int submit_hw_prebinned(GPUTransport *transport,
             continue;
         }
 
-        /* Primer-only cache-miss: BEGIN_BAND fills the cache via the RTL
-         * sky-gradient-clear, so we don't need any descriptor writes. The
-         * primer existed to absorb a first-pixel pipeline glitch when real
-         * descriptors rasterize; with zero descriptors pushed, there is no
-         * glitch to absorb. Skipping the primer write saves a write_all()
-         * syscall + one descriptor's FIFO traversal per primer-only miss. */
+        /* Primer-only miss: BEGIN_BAND already initializes the band, and no
+         * real descriptor means no first-pixel hazard to absorb. */
         const void *submit_buf =
             primer_only ? NULL : bins[band].flat_buf;
         size_t submit_bytes =

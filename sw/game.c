@@ -699,6 +699,85 @@ static Vec3 camera_forward(const Camera *cam)
     };
 }
 
+static int game_floor_div_i(int value, int divisor)
+{
+    int q = value / divisor;
+    int r = value % divisor;
+
+    if (r < 0)
+        q--;
+    return q;
+}
+
+static int game_positive_mod_i(int value, int divisor)
+{
+    int r = value % divisor;
+
+    if (r < 0)
+        r += divisor;
+    return r;
+}
+
+static bool game_block_is_water(BlockID id)
+{
+    return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+}
+
+static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
+{
+    int wx = (int)floorf(cam->position.x);
+    int wy = (int)floorf(cam->position.y);
+    int wz = (int)floorf(cam->position.z);
+    BlockID id;
+
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return false;
+
+    id = world_get_block(world, wx, wy, wz);
+    if (id == BLOCK_WATER)
+        return true;
+    if (id != BLOCK_WATER_FLOW)
+        return false;
+
+    if (wy + 1 < WORLD_CHUNK_HEIGHT &&
+        game_block_is_water(world_get_block(world, wx, wy + 1, wz)))
+        return true;
+
+    int chunk_x = game_floor_div_i(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = game_floor_div_i(wz, WORLD_CHUNK_SIZE);
+    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return false;
+
+    int lx = game_positive_mod_i(wx, WORLD_CHUNK_SIZE);
+    int lz = game_positive_mod_i(wz, WORLD_CHUNK_SIZE);
+    int level = chunk->water_level[wy][lz][lx];
+    if (level < 1)
+        level = 1;
+    if (level > 7)
+        level = 7;
+
+    float water_top = (float)wy + (float)(8 - level) * 0.125f;
+    return cam->position.y < water_top - 0.02f;
+}
+
+static void draw_underwater_overlay(RenderContext *ctx, float world_time)
+{
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                       64, QUAD_ALPHA_50);
+    renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
+                       65, QUAD_ALPHA_25);
+
+    float drift = fmodf(world_time * 18.0f, 32.0f);
+    for (int i = -1; i < 16; i++) {
+        float y = (float)i * 32.0f + drift;
+
+        renderer_fill_rect(ctx, 0.0f, y,
+                           SCREEN_WIDTH, y + 3.0f,
+                           66, QUAD_ALPHA_25);
+    }
+}
+
 static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
                                float max_distance, BlockTarget *out)
 {
@@ -1764,6 +1843,8 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC, &begin_end);
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
+        if (camera_is_underwater(&world, &cam))
+            draw_underwater_overlay(ctx, world_time);
         if (!paused && !chat_open &&
             player.mode == PLAYER_MODE_SURVIVAL &&
             break_target_valid && break_timer > 0.0f && break_duration > 0.0f) {

@@ -1344,20 +1344,28 @@ static uint8_t choose_face_light_flags(const RenderContext *ctx, BlockFace face)
 }
 
 static void merged_face_vertices(Vec3 block_pos, BlockFace face,
-                                 int u_size, int v_size, Vec3 out[4])
+                                 int u_size, int v_size,
+                                 uint8_t height_eighths, Vec3 out[4])
 {
     float u = (float)u_size;
     float v = (float)v_size;
     float x = block_pos.x;
     float y = block_pos.y;
     float z = block_pos.z;
+    /* "Top" Y of the face. For full-height blocks (height_eighths == 8)
+     * this is exactly y + v, which keeps the existing greedy-merge math
+     * untouched. For partial-height water (height_eighths < 8) v_size is
+     * guaranteed to be 1 (translucent never merges), so the partial top
+     * sits at y + height/8. */
+    float top_y = y + (v - 1.0f) + (float)height_eighths * (1.0f / 8.0f);
+    float top_y_only = y + (float)height_eighths * (1.0f / 8.0f);
 
     switch (face) {
     case FACE_TOP:
-        out[0] = (Vec3){ x,     y + 1, z + v };
-        out[1] = (Vec3){ x + u, y + 1, z + v };
-        out[2] = (Vec3){ x + u, y + 1, z     };
-        out[3] = (Vec3){ x,     y + 1, z     };
+        out[0] = (Vec3){ x,     top_y_only, z + v };
+        out[1] = (Vec3){ x + u, top_y_only, z + v };
+        out[2] = (Vec3){ x + u, top_y_only, z     };
+        out[3] = (Vec3){ x,     top_y_only, z     };
         break;
     case FACE_BOTTOM:
         out[0] = (Vec3){ x,     y, z     };
@@ -1368,26 +1376,26 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
     case FACE_LEFT:
         out[0] = (Vec3){ x, y,     z     };
         out[1] = (Vec3){ x, y,     z + u };
-        out[2] = (Vec3){ x, y + v, z + u };
-        out[3] = (Vec3){ x, y + v, z     };
+        out[2] = (Vec3){ x, top_y, z + u };
+        out[3] = (Vec3){ x, top_y, z     };
         break;
     case FACE_RIGHT:
         out[0] = (Vec3){ x + 1, y,     z + u };
         out[1] = (Vec3){ x + 1, y,     z     };
-        out[2] = (Vec3){ x + 1, y + v, z     };
-        out[3] = (Vec3){ x + 1, y + v, z + u };
+        out[2] = (Vec3){ x + 1, top_y, z     };
+        out[3] = (Vec3){ x + 1, top_y, z + u };
         break;
     case FACE_FRONT:
         out[0] = (Vec3){ x,     y,     z };
         out[1] = (Vec3){ x + u, y,     z };
-        out[2] = (Vec3){ x + u, y + v, z };
-        out[3] = (Vec3){ x,     y + v, z };
+        out[2] = (Vec3){ x + u, top_y, z };
+        out[3] = (Vec3){ x,     top_y, z };
         break;
     case FACE_BACK:
         out[0] = (Vec3){ x + u, y,     z + 1 };
         out[1] = (Vec3){ x,     y,     z + 1 };
-        out[2] = (Vec3){ x,     y + v, z + 1 };
-        out[3] = (Vec3){ x + u, y + v, z + 1 };
+        out[2] = (Vec3){ x,     top_y, z + 1 };
+        out[3] = (Vec3){ x + u, top_y, z + 1 };
         break;
     default:
         for (int i = 0; i < 4; i++)
@@ -1415,6 +1423,7 @@ static bool merged_emit_repeat_uv_enabled(void)
 static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
                                        Vec3 block_pos, BlockFace face,
                                        int u_size, int v_size,
+                                       uint8_t height_eighths,
                                        uint8_t light_flags);
 
 static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
@@ -1450,7 +1459,7 @@ static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
             default:
                 break;
             }
-            emit_merged_block_face_lit(ctx, type, unit, face, 1, 1, light_flags);
+            emit_merged_block_face_lit(ctx, type, unit, face, 1, 1, 8, light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return;
         }
@@ -1460,6 +1469,7 @@ static void expand_merged_face_to_unit_quads(RenderContext *ctx, BlockID type,
 static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
                                        Vec3 block_pos, BlockFace face,
                                        int u_size, int v_size,
+                                       uint8_t height_eighths,
                                        uint8_t light_flags)
 {
     static const float tile_span = 16.0f;
@@ -1496,7 +1506,7 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
                          ctx->current_camera.position))
         return;
 
-    merged_face_vertices(block_pos, face, u_size, v_size, face_world);
+    merged_face_vertices(block_pos, face, u_size, v_size, height_eighths, face_world);
     for (int i = 0; i < 4; i++) {
         world_to_camera(ctx, face_world[i], &face_cam[i]);
         face_cam[i].u = (i == 1 || i == 2) ? tile_span * (float)u_size : 0.0f;
@@ -1546,7 +1556,7 @@ static void emit_merged_block_face(RenderContext *ctx, BlockID type,
                               : choose_face_light_flags(ctx, face);
 
     emit_merged_block_face_lit(ctx, type, block_pos, face, u_size, v_size,
-                               light_flags);
+                               8, light_flags);
 }
 
 static void emit_block_face(RenderContext *ctx, BlockID type,
@@ -2113,6 +2123,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        (BlockFace)face->face,
                                        face->u_size ? face->u_size : 1,
                                        face->v_size ? face->v_size : 1,
+                                       face->height ? face->height : 8,
                                        light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
@@ -2200,6 +2211,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        block_pos, (BlockFace)ref->face->face,
                                        ref->face->u_size ? ref->face->u_size : 1,
                                        ref->face->v_size ? ref->face->v_size : 1,
+                                       ref->face->height ? ref->face->height : 8,
                                        light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;

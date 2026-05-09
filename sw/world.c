@@ -25,7 +25,9 @@
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define STREAM_CHUNKS_PER_FRAME_MAX 64
 #define WORLD_META_VERSION 1u
-#define WORLD_CHUNK_VERSION 1u
+/* v2: appended water_level[H][Z][X] after the block grid for Minecraft-style
+ * variable water height. v1 saves are rejected on load and re-generated. */
+#define WORLD_CHUNK_VERSION 2u
 
 /*
  * Save format v1:
@@ -437,7 +439,8 @@ static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     if (!file)
         return false;
     if (fwrite(&header, sizeof(header), 1, file) != 1 ||
-        fwrite(blocks, sizeof(blocks), 1, file) != 1) {
+        fwrite(blocks, sizeof(blocks), 1, file) != 1 ||
+        fwrite(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
         fclose(file);
         unlink(temp_path);
         return false;
@@ -476,7 +479,8 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     }
 
     if (fread(&header, sizeof(header), 1, file) != 1 ||
-        fread(blocks, sizeof(blocks), 1, file) != 1) {
+        fread(blocks, sizeof(blocks), 1, file) != 1 ||
+        fread(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
         fclose(file);
         return false;
     }
@@ -499,6 +503,13 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                 if (id >= NUM_BLOCK_TYPES)
                     return false;
                 chunk->blocks[y][z][x] = (BlockID)id;
+                /* Sanitize water_level: only meaningful for water blocks. */
+                if (id == BLOCK_WATER)
+                    chunk->water_level[y][z][x] = 0;
+                else if (id != BLOCK_WATER_FLOW)
+                    chunk->water_level[y][z][x] = 0;
+                else if (chunk->water_level[y][z][x] > 7)
+                    chunk->water_level[y][z][x] = 7;
             }
         }
     }
@@ -713,6 +724,7 @@ static bool chunk_in_window(int chunk_x, int chunk_z,
 static void clear_chunk_blocks(Chunk *chunk)
 {
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
+    memset(chunk->water_level, 0, sizeof(chunk->water_level));
 }
 
 static void clear_chunk_lighting(Chunk *chunk)
@@ -1960,7 +1972,8 @@ static void append_chunk_face(ChunkFace *faces, int *out,
                               int x, int y, int z,
                               BlockFace face, BlockID type,
                               int u_size, int v_size,
-                              uint8_t sky_light, uint8_t block_light)
+                              uint8_t sky_light, uint8_t block_light,
+                              uint8_t height)
 {
     faces[(*out)++] = (ChunkFace){
         .x = (uint8_t)x,
@@ -1972,6 +1985,7 @@ static void append_chunk_face(ChunkFace *faces, int *out,
         .v_size = (uint8_t)v_size,
         .sky_light = sky_light,
         .block_light = block_light,
+        .height = height,
     };
 }
 
@@ -2080,10 +2094,21 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
                     if (block_is_translucent(id)) {
+                        /* Water flow renders at a partial height set by
+                         * its water_level (0..7, where higher = thinner).
+                         * Sources and all other translucent blocks get
+                         * the full 8/8 height. */
+                        uint8_t h = 8;
+                        if (id == BLOCK_WATER_FLOW) {
+                            uint8_t lvl = chunk->water_level[y][z][x];
+                            if (lvl > 7) lvl = 7;
+                            h = (uint8_t)(8 - lvl);
+                            if (h < 1) h = 1;
+                        }
                         used[v][u] = true;
                         append_chunk_face(chunk->faces, &out, x, y, z,
                                           (BlockFace)f, id, 1, 1,
-                                          sky_light, block_light);
+                                          sky_light, block_light, h);
                         continue;
                     }
 
@@ -2131,7 +2156,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     append_chunk_face(chunk->faces, &out, x, y, z,
                                       (BlockFace)f, id, merge_w, merge_h,
-                                      sky_light, block_light);
+                                      sky_light, block_light, 8);
                 }
             }
         }
@@ -2235,6 +2260,7 @@ static void copy_chunk_data_to_scratch(Chunk *dest, const Chunk *src)
     memcpy(dest->blocks, src->blocks, sizeof(dest->blocks));
     memcpy(dest->sky_light, src->sky_light, sizeof(dest->sky_light));
     memcpy(dest->block_light, src->block_light, sizeof(dest->block_light));
+    memcpy(dest->water_level, src->water_level, sizeof(dest->water_level));
     dest->chunk_x = src->chunk_x;
     dest->chunk_z = src->chunk_z;
     dest->generation = src->generation;
@@ -2741,6 +2767,7 @@ bool world_async_chunk_gen_offline(const VoxelWorld *world,
 
     memcpy(out->blocks, scratch->blocks, sizeof(out->blocks));
     memcpy(out->sky_light, scratch->sky_light, sizeof(out->sky_light));
+    memcpy(out->water_level, scratch->water_level, sizeof(out->water_level));
     out->has_light_emitters = chunk_has_light_emitters(scratch);
 
     free(scratch);
@@ -2772,6 +2799,8 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             memcpy(chunk->blocks, result->blocks, sizeof(chunk->blocks));
             memcpy(chunk->sky_light, result->sky_light,
                    sizeof(chunk->sky_light));
+            memcpy(chunk->water_level, result->water_level,
+                   sizeof(chunk->water_level));
             memset(chunk->block_light, 0, sizeof(chunk->block_light));
             chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
             chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
@@ -3020,6 +3049,17 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
     chunk->flags |= CHUNK_FLAG_MODIFIED;
     chunk->generation++;
 
+    /* Maintain water_level on type changes. Sources are always level 0;
+     * flow placed via the public API defaults to level 1 (caller is the
+     * player or a tool, not the tick - the tick uses its own internal
+     * helper that picks a level explicitly); anything else clears it. */
+    if (type == BLOCK_WATER)
+        chunk->water_level[wy][lz][lx] = 0;
+    else if (type == BLOCK_WATER_FLOW)
+        chunk->water_level[wy][lz][lx] = 1;
+    else
+        chunk->water_level[wy][lz][lx] = 0;
+
     mark_chunk_and_adjacent_dirty_for_block(world, wx, wz);
     update_column_sky_light(world, wx, wz);
 
@@ -3159,26 +3199,30 @@ int world_chunk_capacity(const VoxelWorld *world)
 /* -----------------------------------------------------------------------
  * Minecraft-style water simulation
  * -----------------------------------------------------------------------
- * Each BLOCK_WATER (source) block attempts to:
- *   1. Flow straight down if the block below is air.
- *   2. Spread laterally (±X, ±Z) up to WATER_MAX_LATERAL_DISTANCE steps,
- *      into air blocks that are at the same Y or lower than the source.
+ * Sources (BLOCK_WATER) carry water_level=0 and stay alive forever.
+ * Flows (BLOCK_WATER_FLOW) carry water_level 1..7, where higher = thinner.
+ * A flow at level 7 is "terminal" and never spreads further.
  *
- * Each BLOCK_WATER_FLOW block evaporates (becomes air) if none of its
- * 6 face-adjacent neighbours is a water block (source or flow).
+ * Spread is GRADUAL: each tick we take an immutable snapshot of the
+ * currently-existing source/flow cells (the "active" set), and only those
+ * cells push water out by one ring. New flows placed during this tick are
+ * NOT in the snapshot, so they wait until the next tick to spread - which
+ * gives the visible "Minecraft pool grows over ~7 ticks" behavior instead
+ * of the previous instant fill.
  *
- * A BFS queue is used so each tick processes at most WATER_TICK_MAX_BLOCKS
- * newly-placed flow blocks, bounding the per-tick cost on slow hardware.
+ * Each tick:
+ *   Pass 1 - Evaporate orphan flows whose 6 neighbours hold no water.
+ *   Pass 2 - Snapshot every source / non-terminal flow that has at least
+ *            one air neighbour (the only ones that can do anything).
+ *   Pass 3 - For each snapshot cell: try to flow straight down (gravity
+ *            priority, places a level-1 flow); otherwise spread laterally
+ *            into air at level+1.
  * ----------------------------------------------------------------------- */
-#define WATER_MAX_LATERAL_DISTANCE  7   /* Minecraft source level */
-/* BFS queue size. Holds seeded sources + every flow node we still need to
- * walk through during the spread pass. Must be large enough that a world
- * with a natural ocean (hundreds of source blocks) plus a fresh
- * player-placed source still has room for that source to spread its full
- * 7-radius pool. Old value of 512 was just barely above the source count
- * of a single ocean chunk, so spread placements were silently dropped from
- * the queue and propagation stalled at distance 0-1. */
-#define WATER_TICK_MAX_BLOCKS    4096
+#define WATER_MAX_LEVEL          7   /* Minecraft level cap; level 7 = terminal */
+/* Active-cell snapshot capacity. Each entry is 16 bytes, so 4096 entries =
+ * 64 KB of static .bss - cheap, and well over the ~225 cells of a fully-
+ * developed 7-radius pool plus typical natural-ocean coastline. */
+#define WATER_TICK_MAX_ACTIVE 4096
 
 static bool block_is_any_water(BlockID id)
 {
@@ -3192,15 +3236,37 @@ WaterTickStats world_water_tick_stats(void)
     return g_water_tick_stats;
 }
 
+/* Place a flow at (wx, wy, wz) and force its water_level to the given
+ * value. world_set_block_locked() defaults water-flow placements to
+ * level 1 (the public-API meaning "freshly placed flow"); the tick needs
+ * to override that with the actual propagated level. */
+static bool water_set_flow_locked(VoxelWorld *world,
+                                  int wx, int wy, int wz, uint8_t level)
+{
+    if (level < 1 || level > WATER_MAX_LEVEL)
+        return false;
+    if (!world_set_block_locked(world, wx, wy, wz, BLOCK_WATER_FLOW))
+        return false;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    Chunk *c = world_get_chunk_mut(world, chunk_x, chunk_z);
+    if (!c)
+        return false;
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+    c->water_level[wy][lz][lx] = level;
+    return true;
+}
+
 bool world_water_tick(VoxelWorld *world)
 {
     if (!world)
         return false;
 
-    /* Temporary BFS queue: (wx, wy, wz, lateral_dist_from_source). */
-    typedef struct { int wx, wy, wz; int dist; } WaterNode;
-    static WaterNode queue[WATER_TICK_MAX_BLOCKS];
-    int head = 0, tail = 0;
+    typedef struct { int wx, wy, wz; uint8_t level; } WaterCell;
+    static WaterCell active[WATER_TICK_MAX_ACTIVE];
+    int active_count = 0;
     bool changed = false;
     WaterTickStats stats = {0};
 
@@ -3225,7 +3291,6 @@ bool world_water_tick(VoxelWorld *world)
                     int wx = ox + x, wy = y, wz = oz + z;
                     bool has_neighbor = false;
 
-                    /* Check all 6 face neighbors for any water. */
                     const int dx[6] = {-1,1,0,0,0,0};
                     const int dy[6] = {0,0,-1,1,0,0};
                     const int dz[6] = {0,0,0,0,-1,1};
@@ -3246,8 +3311,14 @@ bool world_water_tick(VoxelWorld *world)
         }
     }
 
-    /* ---- Pass 2: spread from source blocks ---- */
-    for (int ci = 0; ci < world->chunk_count; ci++) {
+    /* ---- Pass 2: snapshot active spreaders ----
+     * An "active" cell is a source or non-terminal flow that has at least
+     * one face neighbour (down or 4 lateral) that's BLOCK_AIR. The air
+     * pre-filter skips ocean interiors so a single coast doesn't flood
+     * the snapshot. */
+    for (int ci = 0;
+         ci < world->chunk_count && active_count < WATER_TICK_MAX_ACTIVE;
+         ci++) {
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
@@ -3255,16 +3326,29 @@ bool world_water_tick(VoxelWorld *world)
         int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
         int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
 
-        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
-            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
-                    if (chunk->blocks[y][z][x] != BLOCK_WATER)
+        for (int y = 0;
+             y < WORLD_CHUNK_HEIGHT && active_count < WATER_TICK_MAX_ACTIVE;
+             y++) {
+            for (int z = 0;
+                 z < WORLD_CHUNK_SIZE && active_count < WATER_TICK_MAX_ACTIVE;
+                 z++) {
+                for (int x = 0;
+                     x < WORLD_CHUNK_SIZE && active_count < WATER_TICK_MAX_ACTIVE;
+                     x++) {
+                    BlockID b = chunk->blocks[y][z][x];
+                    if (b != BLOCK_WATER && b != BLOCK_WATER_FLOW)
                         continue;
 
-                    /* Skip "inactive" sources whose down + 4 lateral neighbors
-                     * are all non-air. These are interior ocean blocks that
-                     * can't place anything anyway, but would otherwise eat
-                     * BFS queue slots and starve a freshly-placed source. */
+                    if (b == BLOCK_WATER)
+                        stats.sources_seen++;
+
+                    uint8_t lvl = (b == BLOCK_WATER)
+                                      ? 0
+                                      : chunk->water_level[y][z][x];
+                    /* Terminal flows can't push further. */
+                    if (b == BLOCK_WATER_FLOW && lvl >= WATER_MAX_LEVEL)
+                        continue;
+
                     int wx = ox + x, wy = y, wz = oz + z;
                     bool can_spread = false;
                     if (wy > 0 &&
@@ -3274,62 +3358,56 @@ bool world_water_tick(VoxelWorld *world)
                         const int sx[4] = {-1, 1,  0, 0};
                         const int sz[4] = { 0, 0, -1, 1};
                         for (int d = 0; d < 4 && !can_spread; d++) {
-                            if (world_get_block(world, wx + sx[d], wy, wz + sz[d]) == BLOCK_AIR)
+                            if (world_get_block(world,
+                                                wx + sx[d], wy, wz + sz[d])
+                                == BLOCK_AIR)
                                 can_spread = true;
                         }
                     }
                     if (!can_spread)
                         continue;
 
-                    stats.sources_seen++;
-                    if (tail >= WATER_TICK_MAX_BLOCKS)
-                        goto spread_done;
-
-                    /* Seed BFS from this source block (dist=0). */
-                    queue[tail++] = (WaterNode){wx, wy, wz, 0};
+                    active[active_count++] = (WaterCell){wx, wy, wz, lvl};
                 }
             }
         }
     }
 
-spread_done:
-    head = 0;
-    while (head < tail) {
-        WaterNode node = queue[head++];
-        int wx = node.wx, wy = node.wy, wz = node.wz;
-        int dist = node.dist;
+    /* ---- Pass 3: spread one ring per cell ----
+     * Only the cells captured in `active` get to spread this tick. Any
+     * flows we place here are NOT added to `active`, so they don't
+     * cascade further until the next tick - that's what bounds spread to
+     * one ring/tick and produces the gradual pool growth. */
+    for (int i = 0; i < active_count; i++) {
+        WaterCell c = active[i];
 
-        /* --- Try to flow straight down first (gravity priority) --- */
-        if (wy > 0) {
-            BlockID below = world_get_block(world, wx, wy - 1, wz);
-            if (below == BLOCK_AIR) {
-                world_set_block_locked(world, wx, wy - 1, wz, BLOCK_WATER_FLOW);
+        /* Gravity priority: falling water resets to level 1, and we skip
+         * lateral spread for this cell so the column descends cleanly. */
+        if (c.wy > 0 &&
+            world_get_block(world, c.wx, c.wy - 1, c.wz) == BLOCK_AIR) {
+            if (water_set_flow_locked(world, c.wx, c.wy - 1, c.wz, 1)) {
                 changed = true;
                 stats.spread_placed++;
-                /* Falling water resets lateral distance. */
-                if (tail < WATER_TICK_MAX_BLOCKS)
-                    queue[tail++] = (WaterNode){wx, wy - 1, wz, 0};
-                /* When falling, skip lateral spread from this node. */
-                continue;
             }
+            continue;
         }
 
-        /* --- Lateral spread (only if within level 7 distance) --- */
-        if (dist >= WATER_MAX_LATERAL_DISTANCE)
+        /* Lateral spread at one level higher than the source cell. */
+        uint8_t next_level = (uint8_t)(c.level + 1);
+        if (next_level > WATER_MAX_LEVEL)
             continue;
 
-        const int lx[4] = {-1, 1,  0, 0};
-        const int lz[4] = { 0, 0, -1, 1};
+        const int sx[4] = {-1, 1,  0, 0};
+        const int sz[4] = { 0, 0, -1, 1};
         for (int d = 0; d < 4; d++) {
-            int nx = wx + lx[d];
-            int nz = wz + lz[d];
-            if (world_get_block(world, nx, wy, nz) != BLOCK_AIR)
+            int nx = c.wx + sx[d];
+            int nz = c.wz + sz[d];
+            if (world_get_block(world, nx, c.wy, nz) != BLOCK_AIR)
                 continue;
-            world_set_block_locked(world, nx, wy, nz, BLOCK_WATER_FLOW);
-            changed = true;
-            stats.spread_placed++;
-            if (tail < WATER_TICK_MAX_BLOCKS)
-                queue[tail++] = (WaterNode){nx, wy, nz, dist + 1};
+            if (water_set_flow_locked(world, nx, c.wy, nz, next_level)) {
+                changed = true;
+                stats.spread_placed++;
+            }
         }
     }
 

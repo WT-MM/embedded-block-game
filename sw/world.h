@@ -22,6 +22,11 @@ typedef struct {
     uint8_t v_size;
     uint8_t sky_light;
     uint8_t block_light;
+    /* Vertical extent of the block in 1/8 units (1..8). 8 = full block.
+     * Only flowing water (BLOCK_WATER_FLOW) ever uses values < 8: the top
+     * Y of TOP and side faces is lowered to y + height/8. All other blocks
+     * always set this to 8 so the renderer's full-cube path is unchanged. */
+    uint8_t height;
 } ChunkFace;
 
 /* Immutable snapshot of a chunk's face mesh - published by the rebuild path
@@ -67,6 +72,11 @@ typedef struct {
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t block_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    /* 0 = source / full height. 1..7 = decreasing flow level (Minecraft
+     * encoding). Meaningful only for cells whose blocks[] entry is
+     * BLOCK_WATER (always 0) or BLOCK_WATER_FLOW. For any other block id
+     * this byte is ignored and should be left 0. */
+    uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     /* Scratch buffer used by rebuild_chunk_faces to assemble a ChunkMesh
      * snapshot, which is then published via live_mesh. Renderer must NOT
      * read these directly - they are mutated mid-rebuild. */
@@ -234,6 +244,11 @@ bool world_run_mesh_job(VoxelWorld *world,
 typedef struct ChunkGenResult {
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    /* Mirror of Chunk::water_level so an async-generated chunk can carry
+     * its initial water levels into the integration step. Procedural gen
+     * only ever emits sources, so this stays zero in practice - but a
+     * future loaded snapshot could populate it. */
+    uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     bool has_light_emitters;
 } ChunkGenResult;
 

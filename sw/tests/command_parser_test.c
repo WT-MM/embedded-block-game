@@ -57,6 +57,18 @@ static int expect_gamemode(const char *line,
     return 0;
 }
 
+static int expect_kind(const char *line, GameCommandKind expected)
+{
+    GameCommandParseResult result;
+
+    if (game_command_parse(line, &result) != GAME_COMMAND_PARSE_OK)
+        return check_failed("command did not parse");
+    if (result.ast.kind != expected)
+        return check_failed("command kind mismatch");
+
+    return 0;
+}
+
 int main(void)
 {
     if (expect_status("hello world", GAME_COMMAND_PARSE_NOT_COMMAND))
@@ -69,6 +81,8 @@ int main(void)
     if (expect_status("/time set noon", GAME_COMMAND_PARSE_BAD_VALUE))
         return 1;
     if (expect_status("/gamemode", GAME_COMMAND_PARSE_BAD_SYNTAX))
+        return 1;
+    if (expect_status("/kill steve", GAME_COMMAND_PARSE_BAD_SYNTAX))
         return 1;
 
     if (expect_time("/time set day", GAME_COMMAND_TIME_DAY))
@@ -83,6 +97,10 @@ int main(void)
         return 1;
     if (expect_gamemode("/mode 0",
                         GAME_COMMAND_GAMEMODE_SURVIVAL))
+        return 1;
+    if (expect_kind("/kill", GAME_COMMAND_KIND_KILL))
+        return 1;
+    if (expect_kind("/kill self", GAME_COMMAND_KIND_KILL))
         return 1;
 
     printf("command_parser_test: ok\n");

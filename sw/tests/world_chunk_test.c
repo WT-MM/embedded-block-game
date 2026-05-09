@@ -81,11 +81,90 @@ static const ChunkFace *find_chunk_face(const Chunk *chunk,
     return NULL;
 }
 
+typedef struct {
+    int grass_surfaces;
+    int sand_surfaces;
+    int clay_surfaces;
+    int stone_surfaces;
+    int water_blocks;
+    int flowers;
+    int lowest_surface_y;
+    int highest_surface_y;
+} WorldgenSample;
+
+static bool block_is_worldgen_decoration(BlockID id)
+{
+    return id == BLOCK_WOOD ||
+           id == BLOCK_LEAVES ||
+           id == BLOCK_RED_FLOWER ||
+           id == BLOCK_YELLOW_FLOWER;
+}
+
+static WorldgenSample sample_worldgen(const VoxelWorld *world)
+{
+    WorldgenSample sample = {
+        .lowest_surface_y = WORLD_CHUNK_HEIGHT,
+        .highest_surface_y = -1,
+    };
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                BlockID surface = BLOCK_AIR;
+                int surface_y = -1;
+
+                for (int y = WORLD_CHUNK_HEIGHT - 1; y >= 0; y--) {
+                    BlockID id = chunk->blocks[y][z][x];
+
+                    if (id == BLOCK_WATER || id == BLOCK_WATER_FLOW)
+                        sample.water_blocks++;
+                    if (id == BLOCK_RED_FLOWER || id == BLOCK_YELLOW_FLOWER)
+                        sample.flowers++;
+                    if (id == BLOCK_AIR ||
+                        id == BLOCK_WATER ||
+                        id == BLOCK_WATER_FLOW ||
+                        block_is_worldgen_decoration(id))
+                        continue;
+
+                    if (surface_y < 0) {
+                        surface_y = y;
+                        surface = id;
+                    }
+                }
+
+                if (surface_y < 0)
+                    continue;
+                if (surface_y < sample.lowest_surface_y)
+                    sample.lowest_surface_y = surface_y;
+                if (surface_y > sample.highest_surface_y)
+                    sample.highest_surface_y = surface_y;
+
+                if (surface == BLOCK_GRASS)
+                    sample.grass_surfaces++;
+                else if (surface == BLOCK_SAND)
+                    sample.sand_surfaces++;
+                else if (surface == BLOCK_CLAY)
+                    sample.clay_surfaces++;
+                else if (surface == BLOCK_STONE)
+                    sample.stone_surfaces++;
+            }
+        }
+    }
+
+    return sample;
+}
+
 int main(void)
 {
     VoxelWorld world;
     VoxelWorld reloaded_world;
     VoxelWorld capped_world;
+    VoxelWorld biome_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
     char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
     char *world_dir;
@@ -94,6 +173,7 @@ int main(void)
     world_init(&world);
     world_init(&reloaded_world);
     world_init(&capped_world);
+    world_init(&biome_world);
     world_dir = mkdtemp(world_dir_template);
     if (!world_dir)
         return check_failed("mkdtemp failed");
@@ -123,6 +203,30 @@ int main(void)
         return check_failed("default near chunk radius changed");
     if (world_stream_chunks_per_frame(&world) != 0)
         return check_failed("default stream chunk cap changed");
+
+    WorldgenSample initial_sample = sample_worldgen(&world);
+    if (initial_sample.grass_surfaces <= 0 ||
+        initial_sample.sand_surfaces <= 0 ||
+        initial_sample.clay_surfaces <= 0 ||
+        initial_sample.water_blocks <= 0)
+        return check_failed("biome worldgen did not create grass, beach, clay, and water");
+    if (initial_sample.highest_surface_y - initial_sample.lowest_surface_y < 4)
+        return check_failed("biome worldgen terrain was too flat");
+
+    if (!world_init_infinite_procedural(&biome_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        3,
+                                        0.0f,
+                                        0.0f,
+                                        NULL))
+        return check_failed("mountain biome sample load failed");
+    WorldgenSample mountain_sample = sample_worldgen(&biome_world);
+    if (mountain_sample.stone_surfaces <= 0 ||
+        mountain_sample.highest_surface_y < 22)
+        return check_failed("mountain biome sample did not create rocky highlands");
+    world_free(&biome_world);
+
     /* Most of this test validates full-window synchronous streaming behavior;
      * keep that mode explicit for the checks below. */
     world_set_stream_chunks_per_frame(&world, 0);
@@ -130,9 +234,8 @@ int main(void)
         return check_failed("lamp metadata missing");
 
     const int lamp_x = 2;
-    /* Heightmap surfaces top out at sea_level + 8 = 22, so place the lamp
-     * test cells well above any procedural geometry to keep the visibility
-     * checks deterministic across worldgen tweaks. */
+    /* Keep the lighting fixture high enough for this deterministic seed, then
+     * explicitly clear/overwrite the cells it needs below. */
     const int lamp_y = 26;
     const int lamp_z = 2;
     const int gap_x = lamp_x + 1;
@@ -338,13 +441,13 @@ int main(void)
         !world_set_block(&world, gravity_x + 1, 22, gravity_z, BLOCK_GRAVEL))
         return check_failed("gravity test fixture build failed");
     world_water_tick(&world);
-    if (world_get_block(&world, gravity_x, 23, gravity_z) != BLOCK_SAND ||
+    if (world_get_block(&world, gravity_x, 22, gravity_z) != BLOCK_SAND ||
         world_get_block(&world, gravity_x, 24, gravity_z) != BLOCK_AIR)
-        return check_failed("sand did not fall one block");
+        return check_failed("sand did not fall two blocks");
     if (world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL ||
         world_get_block(&world, gravity_x + 1, 22, gravity_z) != BLOCK_AIR)
-        return check_failed("gravel did not fall one block");
-    for (int i = 0; i < 3; i++)
+        return check_failed("gravel did not settle after two-block fall");
+    for (int i = 0; i < 2; i++)
         world_water_tick(&world);
     if (world_get_block(&world, gravity_x, 21, gravity_z) != BLOCK_SAND ||
         world_get_block(&world, gravity_x + 1, 21, gravity_z) != BLOCK_GRAVEL)

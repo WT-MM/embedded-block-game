@@ -135,21 +135,33 @@ wire							ref_req;
 wire							init_req;
 wire							cm_ack;
 wire							active;
+wire							pll_locked;
+reg		[1:0]					reset_sync = 2'b00;
+wire							ctrl_reset_n;
 output                  CLK;
 
 assign mLENGTH_ADDR = {{(`ASIZE-9){1'b0}}, mLENGTH};
+assign ctrl_reset_n = reset_sync[1];
 
 sdram_pll0 sdram_pll0_inst(
 		.refclk(REF_CLK),   //  refclk.clk
-		.rst(1'b0),      //   reset.reset
+		.rst(!RESET_N),      //   reset.reset
 		.outclk_0(CLK), // outclk0.clk
 		.outclk_1(SDR_CLK), // outclk1.clk
-		.locked()    //  locked.export
-	);
+		.locked(pll_locked)    //  locked.export
+		);
 
-control_interface control1 (                                                                                                                               
+always@(posedge CLK or negedge RESET_N or negedge pll_locked)
+begin
+	if(!RESET_N || !pll_locked)
+		reset_sync <= 2'b00;
+	else
+		reset_sync <= {reset_sync[0], 1'b1};
+end
+
+control_interface control1 (
                 .CLK(CLK),
-                .RESET_N(RESET_N),
+                .RESET_N(ctrl_reset_n),
                 .CMD(CMD),
                 .ADDR(mADDR),
                 .REF_ACK(ref_ack),
@@ -168,7 +180,7 @@ control_interface control1 (
 
 command command1(
                 .CLK(CLK),
-                .RESET_N(RESET_N),
+                .RESET_N(ctrl_reset_n),
                 .SADDR(saddr),
                 .NOP(nop),
                 .READA(reada),
@@ -194,7 +206,7 @@ command command1(
                 
 sdr_data_path data_path1(
                 .CLK(CLK),
-                .RESET_N(RESET_N),
+                .RESET_N(ctrl_reset_n),
                 .DATAIN(mDATAIN),
                 .DM(2'b00),
                 .DQOUT(DQOUT),
@@ -214,10 +226,10 @@ Sdram_WR_FIFO 	write_fifo1(
 				.rdusedw(write_side_fifo_rusedw)
 				);
 				
-reg flag;	 
-always@(posedge CLK or negedge RESET_N)
+reg flag;
+always@(posedge CLK)
 begin
- if(!RESET_N)
+ if(!ctrl_reset_n)
  flag	<=	0;
  else
  begin
@@ -259,9 +271,9 @@ end
 assign  DQ = oe ? DQOUT : `DSIZE'hzzzz;
 assign	active	=	Read | Write;
 
-always@(posedge CLK or negedge RESET_N)
+always@(posedge CLK)
 begin
-	if(RESET_N==0)
+	if(ctrl_reset_n==0)
 	begin
 		CMD			<=  0;
 		ST			<=  0;
@@ -343,12 +355,12 @@ begin
 	end
 end
 //	Internal Address & Length Control
-always@(posedge CLK or negedge RESET_N)
+always@(posedge CLK)
 begin
-	if(!RESET_N)
+	if(!ctrl_reset_n)
 	begin
-		rWR_ADDR		<=	WR_ADDR;
-		rRD_ADDR		<=	RD_ADDR;
+		rWR_ADDR		<=	{`ASIZE{1'b0}};
+		rRD_ADDR		<=	{`ASIZE{1'b0}};
 	end
 	else
 	begin
@@ -379,9 +391,9 @@ begin
 	end
 end
 //	Auto Read/Write Control
-always@(posedge CLK or negedge RESET_N)
+always@(posedge CLK)
 begin
-	if(!RESET_N)
+	if(!ctrl_reset_n)
 	begin
 		mWR		<=	0;
 		mRD		<=	0;

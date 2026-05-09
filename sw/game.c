@@ -1084,7 +1084,8 @@ static float command_time_seconds(GameCommandTimeValue value)
 }
 
 static bool execute_chat_command(Chat *chat, Player *player,
-                                 float *world_time, const char *line)
+                                 float *world_time, bool *kill_requested,
+                                 const char *line)
 {
     GameCommandParseResult parsed;
     GameCommandParseStatus status = game_command_parse(line, &parsed);
@@ -1115,9 +1116,14 @@ static bool execute_chat_command(Chat *chat, Player *player,
         }
         return true;
     }
+    case GAME_COMMAND_KIND_KILL:
+        if (kill_requested)
+            *kill_requested = true;
+        return true;
     case GAME_COMMAND_KIND_HELP:
         chat_log(chat, "/time set day|night");
         chat_log(chat, "/gamemode set survival|creative|spectator");
+        chat_log(chat, "/kill");
         return true;
     default:
         chat_log(chat, "unknown command");
@@ -1713,9 +1719,12 @@ int main(void)
         break_duration = 0.0f; \
         break_target_valid = false; \
         hand_swing_timer = HAND_SWING_SECONDS; \
+        creative_flight_enabled = false; \
+        creative_jump_tap_timer = 0.0f; \
         fall_tracking = false; \
         fall_damage_armed = false; \
         fall_start_y = player.y; \
+        last_player_mode = player.mode; \
         chat_log(&chat, "%s", (message)); \
     } while (0)
     int perf_frames = 0;
@@ -1823,6 +1832,7 @@ int main(void)
         }
 
         bool chat_open = chat_is_open(&chat);
+        bool kill_requested = false;
         input_set_pointer_capture(&inp, !paused && !chat_open);
 
         if (chat_open && !paused) {
@@ -1836,13 +1846,15 @@ int main(void)
                     snprintf(submitted, sizeof(submitted), "%s", chat.input);
                     chat_handle_enter(&chat);
                     execute_chat_command(&chat, &player, &world_time,
-                                         submitted);
+                                         &kill_requested, submitted);
                 } else {
                     chat_handle_char(&chat, ch);
                 }
             }
         }
         input_clear_text_queue(&inp);
+        if (kill_requested)
+            RESET_PLAYER_AFTER_DEATH("killed");
 
         if (input_consume_mode_toggle(&inp) && !paused) {
             player_cycle_mode(&player);

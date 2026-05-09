@@ -243,6 +243,8 @@ begin
                 oe_shift <= 0;
                 oe1      <= 0;
                 oe2      <= 0;
+                oe3      <= 0;
+                oe4      <= 0;
                 OE       <= 0;
         end
         else
@@ -276,6 +278,10 @@ begin
                 end
                 else
                 begin
+                        oe_shift <= 0;
+                        oe1      <= 0;
+                        oe2      <= 0;
+                        oe3      <= 0;
                         if (do_writea == 1)                                    // OE generation for page mode accesses
                                 oe4   <= 1;
                         else if (do_precharge == 1 | do_reada == 1 | do_refresh==1 | do_initial == 1 | PM_STOP==1 )

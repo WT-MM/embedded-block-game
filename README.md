@@ -41,6 +41,7 @@ a slash. Lines starting with `/` are parsed as commands:
 - `/gamemode set creative` or `/gamemode creative`
 - `/gamemode set spectator` or `/gamemode spectator`
 - `/gm ...` and `/mode ...` are shorthand aliases for `/gamemode ...`.
+- `/kill` respawns the player at spawn, preserving the current mode.
 - `/help` prints the supported command forms in chat.
 
 Notes

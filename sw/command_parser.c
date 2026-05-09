@@ -187,6 +187,26 @@ static GameCommandParseStatus parse_gamemode_command(
     return result->status;
 }
 
+static GameCommandParseStatus parse_kill_command(
+    const CommandToken tokens[COMMAND_MAX_TOKENS],
+    int count,
+    GameCommandParseResult *result)
+{
+    if (count > 2 ||
+        (count == 2 &&
+         !token_equals(&tokens[1], "self") &&
+         !token_equals(&tokens[1], "me"))) {
+        command_set_error(result, GAME_COMMAND_PARSE_BAD_SYNTAX,
+                          "usage: /kill");
+        return result->status;
+    }
+
+    result->status = GAME_COMMAND_PARSE_OK;
+    result->ast.kind = GAME_COMMAND_KIND_KILL;
+    result->ast.action = GAME_COMMAND_ACTION_NONE;
+    return result->status;
+}
+
 GameCommandParseStatus game_command_parse(const char *line,
                                           GameCommandParseResult *out)
 {
@@ -226,6 +246,8 @@ GameCommandParseStatus game_command_parse(const char *line,
                strcmp(name, "mode") == 0 ||
                strcmp(name, "gm") == 0) {
         parse_gamemode_command(tokens, count, &result);
+    } else if (strcmp(name, "kill") == 0) {
+        parse_kill_command(tokens, count, &result);
     } else if (strcmp(name, "help") == 0) {
         if (count == 1) {
             result.status = GAME_COMMAND_PARSE_OK;

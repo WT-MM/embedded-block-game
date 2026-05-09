@@ -58,7 +58,7 @@ reg		[15:0]					init_timer;
 
 
 // Command decode and ADDR register
-always @(posedge CLK)
+always @(posedge CLK or negedge RESET_N)
 begin
         if (RESET_N == 0) 
         begin
@@ -94,7 +94,7 @@ end
 
 
 //  Generate CMD_ACK
-always @(posedge CLK)
+always @(posedge CLK or negedge RESET_N)
 begin
         if (RESET_N == 0)
                 CMD_ACK <= 0;
@@ -107,7 +107,7 @@ end
 
 
 // refresh timer
-always @(posedge CLK) begin
+always @(posedge CLK or negedge RESET_N) begin
         if (RESET_N == 0) 
         begin
                 timer           <= 0;
@@ -135,7 +135,7 @@ always @(posedge CLK) begin
 end
 
 // initial timer
-always @(posedge CLK) begin
+always @(posedge CLK or negedge RESET_N) begin
         if (RESET_N == 0) 
         begin
                 init_timer      <= 0;

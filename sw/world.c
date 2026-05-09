@@ -3171,7 +3171,14 @@ int world_chunk_capacity(const VoxelWorld *world)
  * newly-placed flow blocks, bounding the per-tick cost on slow hardware.
  * ----------------------------------------------------------------------- */
 #define WATER_MAX_LATERAL_DISTANCE  7   /* Minecraft source level */
-#define WATER_TICK_MAX_BLOCKS     512   /* max new flow blocks per tick */
+/* BFS queue size. Holds seeded sources + every flow node we still need to
+ * walk through during the spread pass. Must be large enough that a world
+ * with a natural ocean (hundreds of source blocks) plus a fresh
+ * player-placed source still has room for that source to spread its full
+ * 7-radius pool. Old value of 512 was just barely above the source count
+ * of a single ocean chunk, so spread placements were silently dropped from
+ * the queue and propagation stalled at distance 0-1. */
+#define WATER_TICK_MAX_BLOCKS    4096
 
 static bool block_is_any_water(BlockID id)
 {
@@ -3254,12 +3261,32 @@ bool world_water_tick(VoxelWorld *world)
                     if (chunk->blocks[y][z][x] != BLOCK_WATER)
                         continue;
 
+                    /* Skip "inactive" sources whose down + 4 lateral neighbors
+                     * are all non-air. These are interior ocean blocks that
+                     * can't place anything anyway, but would otherwise eat
+                     * BFS queue slots and starve a freshly-placed source. */
+                    int wx = ox + x, wy = y, wz = oz + z;
+                    bool can_spread = false;
+                    if (wy > 0 &&
+                        world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR)
+                        can_spread = true;
+                    if (!can_spread) {
+                        const int sx[4] = {-1, 1,  0, 0};
+                        const int sz[4] = { 0, 0, -1, 1};
+                        for (int d = 0; d < 4 && !can_spread; d++) {
+                            if (world_get_block(world, wx + sx[d], wy, wz + sz[d]) == BLOCK_AIR)
+                                can_spread = true;
+                        }
+                    }
+                    if (!can_spread)
+                        continue;
+
                     stats.sources_seen++;
                     if (tail >= WATER_TICK_MAX_BLOCKS)
                         goto spread_done;
 
                     /* Seed BFS from this source block (dist=0). */
-                    queue[tail++] = (WaterNode){ox + x, y, oz + z, 0};
+                    queue[tail++] = (WaterNode){wx, wy, wz, 0};
                 }
             }
         }

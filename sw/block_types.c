@@ -75,6 +75,11 @@ void init_block_types(void)
     BlockRegistry[BLOCK_WATER].name = "Water";
     set_all_faces(&BlockRegistry[BLOCK_WATER], TEX_TILE_WATER);
     BlockRegistry[BLOCK_WATER].self_lit = false;
+
+    BlockRegistry[BLOCK_WATER_FLOW].id = BLOCK_WATER_FLOW;
+    BlockRegistry[BLOCK_WATER_FLOW].name = "Water (flowing)";
+    set_all_faces(&BlockRegistry[BLOCK_WATER_FLOW], TEX_TILE_WATER);
+    BlockRegistry[BLOCK_WATER_FLOW].self_lit = false;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -124,12 +129,12 @@ bool block_blocks_light(BlockID id)
 bool block_is_transparent(BlockID id)
 {
     return id == BLOCK_AIR || id == BLOCK_GLASS || id == BLOCK_LEAVES ||
-           id == BLOCK_WATER;
+           id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
 bool block_is_translucent(BlockID id)
 {
-    return id == BLOCK_GLASS || id == BLOCK_WATER;
+    return id == BLOCK_GLASS || id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
 bool block_is_alpha_keyed(BlockID id)
@@ -139,5 +144,5 @@ bool block_is_alpha_keyed(BlockID id)
 
 bool block_is_passable(BlockID id)
 {
-    return id == BLOCK_AIR || id == BLOCK_WATER;
+    return id == BLOCK_AIR || id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }

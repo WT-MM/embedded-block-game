@@ -155,6 +155,12 @@ const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z);
 Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z);
 BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz);
 bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
+
+/* Minecraft-style water simulation tick. Call every ~250 ms (5 game ticks).
+ * Source blocks (BLOCK_WATER) spread to adjacent air downward then laterally
+ * up to 7 blocks. Flow blocks (BLOCK_WATER_FLOW) evaporate when they lose
+ * all water neighbors. Returns true if any block changed. */
+bool world_water_tick(VoxelWorld *world);
 int world_total_faces(const VoxelWorld *world);
 int world_total_blocks(const VoxelWorld *world);
 int world_loaded_chunk_count(const VoxelWorld *world);

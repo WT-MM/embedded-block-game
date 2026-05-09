@@ -19,6 +19,8 @@ void player_init(Player *p, float start_x, float start_y, float start_z) {
     p->is_grounded = false;
     p->is_shifting = false;
     p->current_eye_y = EYE_HEIGHT_NORMAL;
+    p->is_in_water = false;
+    p->water_check_countdown = 0;
 }
 
 void player_cycle_mode(Player *p) {
@@ -61,7 +63,8 @@ static bool check_collision(VoxelWorld *world, float px, float py, float pz) {
 }
 
 /* Any water voxel overlapping the player AABB counts as "in water" — the
- * player only needs ankle-deep contact to start swimming. */
+ * player only needs ankle-deep contact to start swimming. Checks both
+ * BLOCK_WATER (source) and BLOCK_WATER_FLOW (spreading). */
 static bool player_in_water(VoxelWorld *world, const Player *p) {
     int min_x = (int)floorf(p->x - PLAYER_WIDTH / 2.0f);
     int max_x = (int)floorf(p->x + PLAYER_WIDTH / 2.0f);
@@ -72,9 +75,11 @@ static bool player_in_water(VoxelWorld *world, const Player *p) {
 
     for (int y = min_y; y <= max_y; y++)
         for (int z = min_z; z <= max_z; z++)
-            for (int x = min_x; x <= max_x; x++)
-                if (world_get_block(world, x, y, z) == BLOCK_WATER)
+            for (int x = min_x; x <= max_x; x++) {
+                BlockID b = world_get_block(world, x, y, z);
+                if (b == BLOCK_WATER || b == BLOCK_WATER_FLOW)
                     return true;
+            }
     return false;
 }
 
@@ -85,8 +90,17 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
     /* Water physics is a survival-mode feature: creative/spectator keep
      * their normal fly controls so the player can plow through water at
      * full speed when building. */
-    bool in_water = apply_gravity && apply_collision &&
-                    player_in_water(world, p);
+    bool in_water = false;
+    if (apply_gravity && apply_collision) {
+        /* Re-check immediately if the player is moving vertically (entering
+         * or leaving water), or on the countdown timer otherwise. */
+        bool needs_check = (p->vy != 0.0f) || (--p->water_check_countdown <= 0);
+        if (needs_check) {
+            p->is_in_water = player_in_water(world, p);
+            p->water_check_countdown = WATER_CHECK_INTERVAL;
+        }
+        in_water = p->is_in_water;
+    }
 
     /* Horizontal slewing (same in all modes). Sprint scales the target
      * speed — not the current velocity — so acceleration feels natural.

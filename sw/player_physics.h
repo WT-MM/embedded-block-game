@@ -27,6 +27,11 @@
 #define WATER_SWIM_UP_VELOCITY   3.2f
 #define WATER_HORIZONTAL_DRAG    0.55f
 
+/* How many physics ticks between full water AABB re-checks when the player
+ * is grounded and stationary. 3 ticks @ 60 Hz = ~20 Hz re-check rate.
+ * The re-check triggers immediately whenever vy is non-zero. */
+#define WATER_CHECK_INTERVAL     3
+
 typedef enum {
     PLAYER_MODE_SURVIVAL  = 0, /* gravity + collision */
     PLAYER_MODE_CREATIVE  = 1, /* fly, no gravity, collision */
@@ -41,6 +46,11 @@ typedef struct {
     bool is_grounded;
     bool is_shifting;
     float current_eye_y;  /* dynamic eye offset */
+    /* Cached water state. Refreshed every WATER_CHECK_INTERVAL physics ticks
+     * (or immediately whenever the player moves vertically). Running the full
+     * AABB voxel scan at 60 Hz was the dominant cost in upd_phys at idle. */
+    bool is_in_water;
+    int  water_check_countdown;
 } Player;
 
 void player_init(Player *p, float start_x, float start_y, float start_z);

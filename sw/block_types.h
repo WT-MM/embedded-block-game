@@ -25,6 +25,7 @@ typedef enum {
     BLOCK_PLANKS,
     BLOCK_LEAVES,
     BLOCK_WATER,
+    BLOCK_WATER_FLOW,  /* auto-spread flowing water; evaporates when source removed */
     NUM_BLOCK_TYPES
 } BlockID;
 

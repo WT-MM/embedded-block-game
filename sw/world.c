@@ -1027,8 +1027,11 @@ static void worldgen_place_tree(Chunk *chunk, int local_x, int trunk_top_y,
 {
     int trunk_height = 4 + (int)(roll & 1u); /* 4 or 5 logs */
     int trunk_base = trunk_top_y - trunk_height + 1;
+    /* Extend one extra block down to surface level so the tree is visually
+     * rooted to the ground rather than floating one block above the grass. */
+    int trunk_ground = (trunk_base > 0) ? trunk_base - 1 : trunk_base;
 
-    for (int y = trunk_base; y <= trunk_top_y; y++)
+    for (int y = trunk_ground; y <= trunk_top_y; y++)
         worldgen_set_block_local(chunk, local_x, y, local_z, BLOCK_WOOD, true);
 
     /* Two-tier canopy: a 5x5 mid layer just below the top log, and a 3x3
@@ -3151,4 +3154,145 @@ int world_loaded_chunk_count(const VoxelWorld *world)
 int world_chunk_capacity(const VoxelWorld *world)
 {
     return world ? world->chunk_capacity : 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Minecraft-style water simulation
+ * -----------------------------------------------------------------------
+ * Each BLOCK_WATER (source) block attempts to:
+ *   1. Flow straight down if the block below is air.
+ *   2. Spread laterally (±X, ±Z) up to WATER_MAX_LATERAL_DISTANCE steps,
+ *      into air blocks that are at the same Y or lower than the source.
+ *
+ * Each BLOCK_WATER_FLOW block evaporates (becomes air) if none of its
+ * 6 face-adjacent neighbours is a water block (source or flow).
+ *
+ * A BFS queue is used so each tick processes at most WATER_TICK_MAX_BLOCKS
+ * newly-placed flow blocks, bounding the per-tick cost on slow hardware.
+ * ----------------------------------------------------------------------- */
+#define WATER_MAX_LATERAL_DISTANCE  7   /* Minecraft source level */
+#define WATER_TICK_MAX_BLOCKS     512   /* max new flow blocks per tick */
+
+static bool block_is_any_water(BlockID id)
+{
+    return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+}
+
+bool world_water_tick(VoxelWorld *world)
+{
+    if (!world)
+        return false;
+
+    /* Temporary BFS queue: (wx, wy, wz, lateral_dist_from_source). */
+    typedef struct { int wx, wy, wz; int dist; } WaterNode;
+    static WaterNode queue[WATER_TICK_MAX_BLOCKS];
+    int head = 0, tail = 0;
+    bool changed = false;
+
+    world_lock(world);
+
+    /* ---- Pass 1: evaporate orphaned flow blocks ---- */
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        Chunk *chunk = &world->chunks[ci];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    if (chunk->blocks[y][z][x] != BLOCK_WATER_FLOW)
+                        continue;
+
+                    int wx = ox + x, wy = y, wz = oz + z;
+                    bool has_neighbor = false;
+
+                    /* Check all 6 face neighbors for any water. */
+                    const int dx[6] = {-1,1,0,0,0,0};
+                    const int dy[6] = {0,0,-1,1,0,0};
+                    const int dz[6] = {0,0,0,0,-1,1};
+                    for (int f = 0; f < 6 && !has_neighbor; f++) {
+                        BlockID nb = world_get_block(world,
+                                         wx + dx[f], wy + dy[f], wz + dz[f]);
+                        if (block_is_any_water(nb))
+                            has_neighbor = true;
+                    }
+
+                    if (!has_neighbor) {
+                        world_set_block_locked(world, wx, wy, wz, BLOCK_AIR);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* ---- Pass 2: spread from source blocks ---- */
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        Chunk *chunk = &world->chunks[ci];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    if (chunk->blocks[y][z][x] != BLOCK_WATER)
+                        continue;
+
+                    if (tail >= WATER_TICK_MAX_BLOCKS)
+                        goto spread_done;
+
+                    /* Seed BFS from this source block (dist=0). */
+                    queue[tail++] = (WaterNode){ox + x, y, oz + z, 0};
+                }
+            }
+        }
+    }
+
+spread_done:
+    head = 0;
+    while (head < tail) {
+        WaterNode node = queue[head++];
+        int wx = node.wx, wy = node.wy, wz = node.wz;
+        int dist = node.dist;
+
+        /* --- Try to flow straight down first (gravity priority) --- */
+        if (wy > 0) {
+            BlockID below = world_get_block(world, wx, wy - 1, wz);
+            if (below == BLOCK_AIR) {
+                world_set_block_locked(world, wx, wy - 1, wz, BLOCK_WATER_FLOW);
+                changed = true;
+                /* Falling water resets lateral distance. */
+                if (tail < WATER_TICK_MAX_BLOCKS)
+                    queue[tail++] = (WaterNode){wx, wy - 1, wz, 0};
+                /* When falling, skip lateral spread from this node. */
+                continue;
+            }
+        }
+
+        /* --- Lateral spread (only if within level 7 distance) --- */
+        if (dist >= WATER_MAX_LATERAL_DISTANCE)
+            continue;
+
+        const int lx[4] = {-1, 1,  0, 0};
+        const int lz[4] = { 0, 0, -1, 1};
+        for (int d = 0; d < 4; d++) {
+            int nx = wx + lx[d];
+            int nz = wz + lz[d];
+            if (world_get_block(world, nx, wy, nz) != BLOCK_AIR)
+                continue;
+            world_set_block_locked(world, nx, wy, nz, BLOCK_WATER_FLOW);
+            changed = true;
+            if (tail < WATER_TICK_MAX_BLOCKS)
+                queue[tail++] = (WaterNode){nx, wy, nz, dist + 1};
+        }
+    }
+
+    world_unlock(world);
+    return changed;
 }

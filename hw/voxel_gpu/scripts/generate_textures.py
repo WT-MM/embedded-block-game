@@ -338,16 +338,24 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # background color (because the dark forest tint is closer to (16,16,24)
     # than to (92,134,52)) and the leaves would render as solid sky blobs.
     TEX_TILE_LEAVES: (9, 17),
+    # Water: the vanilla texture is a grayscale brightness mask (alpha=180).
+    # Map bright pixels to highlight and dark pixels to deep blue. The mid
+    # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
+    # this list because the quantizer early-exits to PAL_TRANSPARENT first.
+    TEX_TILE_WATER: (64, 65, 66),
 }
 
-# Vanilla grass/leaves textures are grayscale masks intended for biome tinting.
-# Apply a fixed lush-green tint in this project since we do not have biome maps.
+# Vanilla grass/leaves/water textures are grayscale masks intended for biome tinting.
+# Apply fixed tints in this project since we do not have biome maps.
 # Leaves use a darker forest-green than grass so trees read as a distinct,
 # slightly shadowed canopy against the brighter ground cover.
+# Water uses a rich ocean-blue tint so the grayscale brightness mask maps
+# to our three blue palette entries naturally via nearest-color quantization.
 SOURCE_TILE_TINT: dict[int, tuple[int, int, int]] = {
     TEX_TILE_GRASS_TOP: (121, 192, 90),
     TEX_TILE_GRASS_SIDE: (121, 192, 90),
     TEX_TILE_LEAVES: (52, 96, 38),
+    TEX_TILE_WATER: (42, 82, 156),   # tint maps gray→blue; bright→highlight, dark→deep
 }
 
 
@@ -397,6 +405,19 @@ def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int], x: int, y: 
         if a >= 220 or luma <= 130:
             return PAL_GLASS_EDGE
         return PAL_GLASS
+
+    if tile == TEX_TILE_WATER:
+        # Vanilla water_still.png is a grayscale brightness mask (alpha ~180,
+        # R/G/B all identical in range 165-255). Map brightness directly to
+        # the three blue palette entries so the ripple highlights from the
+        # source texture come through faithfully.
+        gray = (r + g + b) // 3
+        if gray >= 220:
+            return PAL_WATER_HIGHLIGHT  # brightest ripple crests
+        if gray >= 190:
+            return PAL_WATER_MID        # mid-level water body
+        return PAL_WATER_DEEP           # darkest troughs
+
 
     tint = SOURCE_TILE_TINT.get(tile)
     if tint is not None:

@@ -1054,6 +1054,8 @@ int main(void)
     struct timespec perf_window_start;
     float world_time = 0.0f;
     float physics_accumulator = 0.0f;
+    float water_tick_accumulator = 0.0f;
+#define WATER_TICK_INTERVAL 0.25f  /* 5 game ticks @ 20 ticks/s, like Minecraft */
     int perf_frames = 0;
     int perf_quads = 0;
     int perf_sky_quads = 0;
@@ -1089,6 +1091,13 @@ int main(void)
         prev = now;
         world_time += frame_dt;
         physics_accumulator += frame_dt;
+        water_tick_accumulator += frame_dt;
+
+        /* Minecraft-style water simulation: one tick every 250 ms. */
+        if (water_tick_accumulator >= WATER_TICK_INTERVAL) {
+            water_tick_accumulator -= WATER_TICK_INTERVAL;
+            world_water_tick(&world);
+        }
 
         input_update(&inp);
 

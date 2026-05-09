@@ -10,6 +10,8 @@
 #define ITEM_ENTITY_LIFETIME_SECONDS 300.0f
 #define ITEM_ENTITY_PICKUP_RADIUS 1.35f
 #define ITEM_ENTITY_GRAVITY 18.0f
+#define ITEM_ENTITY_TOSS_SPEED 5.0f
+#define ITEM_ENTITY_TOSS_OFFSET 0.65f
 
 void item_entities_init(ItemEntityPool *pool)
 {
@@ -174,12 +176,13 @@ void item_entity_toss_item(ItemEntityPool *pool,
         push_dir.z = 1.0f;
     }
 
-    pos.x = player->x + push_dir.x * 0.55f;
-    pos.y = player->y + PLAYER_HEIGHT * 0.62f;
-    pos.z = player->z + push_dir.z * 0.55f;
-    vel.x = push_dir.x * 4.0f;
-    vel.y = 2.4f + push_dir.y * 1.8f;
-    vel.z = push_dir.z * 4.0f;
+    pos.x = player->x + push_dir.x * ITEM_ENTITY_TOSS_OFFSET;
+    pos.y = player_get_eye_height(player) - 0.18f +
+            push_dir.y * ITEM_ENTITY_TOSS_OFFSET;
+    pos.z = player->z + push_dir.z * ITEM_ENTITY_TOSS_OFFSET;
+    vel.x = push_dir.x * ITEM_ENTITY_TOSS_SPEED;
+    vel.y = push_dir.y * ITEM_ENTITY_TOSS_SPEED;
+    vel.z = push_dir.z * ITEM_ENTITY_TOSS_SPEED;
 
     item_entity_spawn_stack(pool, item, count, pos, vel,
                             ITEM_ENTITY_PICKUP_DELAY_SECONDS);

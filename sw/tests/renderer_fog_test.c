@@ -48,6 +48,7 @@ int main(void)
     if (!world_init_infinite_procedural(&world,
                                         DEMO_WORLD_SEED,
                                         14,
+                                        false,
                                         DEMO_RENDER_DISTANCE_CHUNKS,
                                         camera.position.x,
                                         camera.position.z,

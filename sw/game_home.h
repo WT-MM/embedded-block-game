@@ -15,6 +15,7 @@ typedef struct {
     char path[WORLD_SAVE_PATH_MAX];
     uint32_t seed;
     int stone_tries_per_chunk;
+    bool desert_lava_pools_enabled;
 } SelectedWorld;
 
 bool run_home_menu(RenderContext *ctx, InputState *inp,

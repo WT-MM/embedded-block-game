@@ -143,7 +143,8 @@ same command stream to both backends.
 
 While capture is enabled, `Esc` opens the pause menu and releases the grabbed
 pointer devices so the VM/desktop cursor can come back. Resuming gameplay
-re-captures them.
+re-captures them. The pause menu can adjust render distance, mouse
+sensitivity, and FOV at runtime.
 
 Sysfs / debug peeks
 -------------------

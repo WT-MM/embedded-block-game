@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #include "command_parser.h"
 
@@ -134,6 +135,42 @@ static int expect_give(const char *line, ItemID expected_item,
     return 0;
 }
 
+static int expect_items(const char *line, int expected_page)
+{
+    GameCommandParseResult result;
+
+    if (game_command_parse(line, &result) != GAME_COMMAND_PARSE_OK)
+        return check_failed("items command did not parse");
+    if (result.ast.kind != GAME_COMMAND_KIND_ITEMS ||
+        result.ast.action != GAME_COMMAND_ACTION_NONE ||
+        result.ast.value.items.page != expected_page)
+        return check_failed("items command AST mismatch");
+
+    return 0;
+}
+
+static int expect_completion(const char *line, int cycle_index,
+                             const char *expected)
+{
+    char completed[64];
+
+    if (!game_command_complete(line, cycle_index,
+                               completed, sizeof(completed))) {
+        fprintf(stderr,
+                "command_parser_test: %s did not complete\n",
+                line ? line : "(null)");
+        return 1;
+    }
+    if (strcmp(completed, expected) != 0) {
+        fprintf(stderr,
+                "command_parser_test: %s completed to %s, expected %s\n",
+                line ? line : "(null)", completed, expected);
+        return 1;
+    }
+
+    return 0;
+}
+
 int main(void)
 {
     if (expect_status("hello world", GAME_COMMAND_PARSE_NOT_COMMAND))
@@ -161,6 +198,10 @@ int main(void)
     if (expect_status("/give air", GAME_COMMAND_PARSE_BAD_VALUE))
         return 1;
     if (expect_status("/give coal 0", GAME_COMMAND_PARSE_BAD_VALUE))
+        return 1;
+    if (expect_status("/items zero", GAME_COMMAND_PARSE_BAD_VALUE))
+        return 1;
+    if (expect_status("/items 1 extra", GAME_COMMAND_PARSE_BAD_SYNTAX))
         return 1;
 
     if (expect_time("/time set day", GAME_COMMAND_TIME_DAY))
@@ -211,9 +252,47 @@ int main(void)
         return 1;
     if (expect_give("/give player mushroom-stew", ITEM_MUSHROOM_STEW, 1))
         return 1;
+    if (expect_give("/give bucket", ITEM_BUCKET, 1))
+        return 1;
+    if (expect_give("/give water-bucket", ITEM_WATER_BUCKET, 1))
+        return 1;
+    if (expect_give("/give lava_bucket", ITEM_LAVA_BUCKET, 1))
+        return 1;
     if (expect_give("/give iron_pickaxe", ITEM_IRON_PICKAXE, 1))
         return 1;
     if (expect_give("/give diamond-axe 2", ITEM_DIAMOND_AXE, 2))
+        return 1;
+    if (expect_items("/items", 1))
+        return 1;
+    if (expect_items("/itemnames 2", 2))
+        return 1;
+    if (game_command_give_name_count() <= 0)
+        return check_failed("give name list is empty");
+    if (!game_command_give_name_at(0))
+        return check_failed("give name list first entry missing");
+    if (expect_completion("/phy", 0, "/physics"))
+        return 1;
+    if (expect_completion("/phy", 1, "/phys"))
+        return 1;
+    if (expect_completion("/physics set ", 0, "/physics set gravity"))
+        return 1;
+    if (expect_completion("/physics set ", 1, "/physics set player_speed"))
+        return 1;
+    if (expect_completion("/physics set ", 6, "/physics set gravity"))
+        return 1;
+    if (expect_completion("/physics set j", 0, "/physics set jump_velocity"))
+        return 1;
+    if (expect_completion("/physics set j", 1, "/physics set jump_height"))
+        return 1;
+    if (expect_completion("/time set ", 1, "/time set night"))
+        return 1;
+    if (expect_completion("/setblock 1 2 3 ", 0, "/setblock 1 2 3 air"))
+        return 1;
+    if (expect_completion("/blocks set ~ ~ ~ tor", 0,
+                          "/blocks set ~ ~ ~ torch"))
+        return 1;
+    if (expect_completion("/give player diamond_a", 0,
+                          "/give player diamond_axe"))
         return 1;
 
     printf("command_parser_test: ok\n");

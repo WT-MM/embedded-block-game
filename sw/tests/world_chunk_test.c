@@ -90,6 +90,7 @@ typedef struct {
     int flowers;
     int mushrooms;
     int cacti;
+    int lava_blocks;
     int ore_blocks;
     int lowest_surface_y;
     int highest_surface_y;
@@ -145,6 +146,8 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
                         sample.mushrooms++;
                     if (id == BLOCK_CACTUS)
                         sample.cacti++;
+                    if (id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW)
+                        sample.lava_blocks++;
                     if (block_is_ore(id))
                         sample.ore_blocks++;
                     if (id == BLOCK_AIR ||
@@ -183,10 +186,16 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
 
 int main(void)
 {
+    /* Each test expects one world_rebuild_dirty_meshes() to drain every dirty
+     * chunk; override the runtime default (one chunk per pass). */
+    if (setenv("VOXEL_MESH_REBUILDS_PER_FRAME", "0", 1) != 0)
+        return check_failed("setenv VOXEL_MESH_REBUILDS_PER_FRAME failed");
+
     VoxelWorld world;
     VoxelWorld reloaded_world;
     VoxelWorld capped_world;
     VoxelWorld biome_world;
+    VoxelWorld lava_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
     char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
     char *world_dir;
@@ -196,6 +205,7 @@ int main(void)
     world_init(&reloaded_world);
     world_init(&capped_world);
     world_init(&biome_world);
+    world_init(&lava_world);
     world_dir = mkdtemp(world_dir_template);
     if (!world_dir)
         return check_failed("mkdtemp failed");
@@ -203,6 +213,7 @@ int main(void)
     if (!world_init_infinite_procedural(&world,
                                         TEST_WORLD_SEED,
                                         12,
+                                        true,
                                         TEST_RENDER_DISTANCE,
                                         0.0f,
                                         0.0f,
@@ -237,24 +248,47 @@ int main(void)
     if (initial_sample.ore_blocks <= 0)
         return check_failed("ore worldgen did not place any ore blocks");
     bool found_desert_biome = false;
-    for (int z = -128; z <= 128 && !found_desert_biome; z += 16) {
+    bool found_ocean_biome = false;
+    for (int z = -128; z <= 128 && (!found_desert_biome ||
+                                    !found_ocean_biome); z += 16) {
         for (int x = -128; x <= 128; x += 16) {
-            if (world_biome_at(&world, x, z) == WORLD_BIOME_DESERT) {
+            WorldBiome biome = world_biome_at(&world, x, z);
+
+            if (biome == WORLD_BIOME_DESERT) {
                 found_desert_biome = true;
-                break;
+            } else if (biome == WORLD_BIOME_OCEAN) {
+                found_ocean_biome = true;
             }
         }
     }
     if (!found_desert_biome ||
         strcmp(world_biome_name(WORLD_BIOME_DESERT), "desert") != 0)
         return check_failed("desert biome was not reachable by worldgen");
+    if (!found_ocean_biome ||
+        strcmp(world_biome_name(WORLD_BIOME_OCEAN), "ocean") != 0)
+        return check_failed("ocean biome was not reachable by worldgen");
+
+    if (!world_init_infinite_procedural(&lava_world,
+                                        TEST_WORLD_SEED,
+                                        12,
+                                        true,
+                                        5,
+                                        0.0f,
+                                        0.0f,
+                                        NULL))
+        return check_failed("desert lava pool sample load failed");
+    WorldgenSample lava_sample = sample_worldgen(&lava_world);
+    if (lava_sample.lava_blocks <= 0 || !lava_world.has_light_emitters)
+        return check_failed("desert lava pools did not generate lit lava");
+    world_free(&lava_world);
 
     if (!world_init_infinite_procedural(&biome_world,
                                         TEST_WORLD_SEED,
                                         12,
+                                        true,
                                         3,
-                                        0.0f,
-                                        0.0f,
+                                        -192.0f,
+                                        -256.0f,
                                         NULL))
         return check_failed("mountain biome sample load failed");
     WorldgenSample mountain_sample = sample_worldgen(&biome_world);
@@ -649,6 +683,7 @@ int main(void)
     if (!world_init_infinite_procedural(&reloaded_world,
                                         TEST_WORLD_SEED,
                                         12,
+                                        true,
                                         TEST_RENDER_DISTANCE,
                                         0.0f,
                                         0.0f,
@@ -661,6 +696,7 @@ int main(void)
     if (!world_init_infinite_procedural(&capped_world,
                                         TEST_WORLD_SEED,
                                         12,
+                                        false,
                                         TEST_RENDER_DISTANCE,
                                         0.0f,
                                         0.0f,
@@ -707,6 +743,7 @@ int main(void)
     if (!world_init_infinite_procedural(&async_world,
                                         TEST_WORLD_SEED,
                                         12,
+                                        false,
                                         TEST_RENDER_DISTANCE,
                                         0.0f,
                                         0.0f,

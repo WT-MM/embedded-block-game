@@ -1,8 +1,8 @@
 #include "input.h"
+#include "env_util.h"
 
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -58,38 +58,6 @@ static void describe_device(int fd, char *name, size_t name_size)
 
     if (ioctl(fd, EVIOCGNAME((int)name_size), name) < 0 || name[0] == '\0')
         snprintf(name, name_size, "unknown");
-}
-
-static bool env_flag_enabled(const char *name)
-{
-    const char *value = getenv(name);
-
-    if (!value || value[0] == '\0')
-        return false;
-    if (strcmp(value, "0") == 0)
-        return false;
-    if (strcmp(value, "false") == 0 || strcmp(value, "FALSE") == 0)
-        return false;
-    if (strcmp(value, "no") == 0 || strcmp(value, "NO") == 0)
-        return false;
-
-    return true;
-}
-
-static bool env_flag_enabled_default_true(const char *name)
-{
-    const char *value = getenv(name);
-
-    if (!value || value[0] == '\0')
-        return true;
-    if (strcmp(value, "0") == 0)
-        return false;
-    if (strcmp(value, "false") == 0 || strcmp(value, "FALSE") == 0)
-        return false;
-    if (strcmp(value, "no") == 0 || strcmp(value, "NO") == 0)
-        return false;
-
-    return true;
 }
 
 static uint64_t monotonic_time_ns(void)
@@ -296,7 +264,7 @@ static void scan_pointers(InputState *inp, InputPointerMode wanted_mode)
 static void find_pointers(InputState *inp)
 {
     bool allow_absolute_with_relative =
-        env_flag_enabled_default_true("VOXEL_MOUSE_ALLOW_ABS");
+        env_flag("VOXEL_MOUSE_ALLOW_ABS", true);
     int pointers_before = inp->_pointer_count;
     int pointers_after_relative;
 
@@ -393,15 +361,16 @@ int input_init(InputState *inp)
     memset(inp, 0, sizeof(*inp));
     inp->_kbd_fd   = -1;
     inp->hotbar_slot_pressed = -1;
-    inp->_grab_pointers = env_flag_enabled_default_true("VOXEL_MOUSE_GRAB");
+    inp->_grab_pointers = env_flag("VOXEL_MOUSE_GRAB", true);
     inp->_pointer_capture_wanted = inp->_grab_pointers;
-    inp->_mouse_scale_x = env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
+    inp->_mouse_scale_x =
+        env_flag("VOXEL_MOUSE_INVERT_X", false) ? -1.0f : 1.0f;
     inp->_mouse_scale_y =
-        env_flag_enabled_default_true("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
+        env_flag("VOXEL_MOUSE_INVERT_Y", true) ? -1.0f : 1.0f;
     inp->_cursor_scale_x =
-        env_flag_enabled("VOXEL_MOUSE_INVERT_X") ? -1.0f : 1.0f;
+        env_flag("VOXEL_MOUSE_INVERT_X", false) ? -1.0f : 1.0f;
     inp->_cursor_scale_y =
-        env_flag_enabled("VOXEL_MOUSE_INVERT_Y") ? -1.0f : 1.0f;
+        env_flag("VOXEL_MOUSE_INVERT_Y", false) ? -1.0f : 1.0f;
     for (int i = 0; i < INPUT_MAX_POINTERS; i++)
         inp->_pointers[i].fd = -1;
 
@@ -477,6 +446,12 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                     text_queue_push(inp, INPUT_TEXT_BACKSPACE);
                 } else if (ev.code == KEY_ENTER && press_edge) {
                     text_queue_push(inp, INPUT_TEXT_ENTER);
+                } else if (ev.code == KEY_TAB && press_edge) {
+                    text_queue_push(inp, INPUT_TEXT_TAB);
+                } else if (ev.code == KEY_UP && press_or_repeat) {
+                    text_queue_push(inp, INPUT_TEXT_HISTORY_PREV);
+                } else if (ev.code == KEY_DOWN && press_or_repeat) {
+                    text_queue_push(inp, INPUT_TEXT_HISTORY_NEXT);
                 } else if (press_or_repeat) {
                     char ch = scancode_to_ascii(ev.code, inp->_shift_down);
                     if (ch)

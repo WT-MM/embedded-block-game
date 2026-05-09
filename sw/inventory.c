@@ -171,6 +171,16 @@ static const CraftRecipe CRAFT_RECIPES[] = {
     },
     {
         .shapeless = false,
+        .width = 3,
+        .height = 2,
+        .inputs = { ITEM_IRON_INGOT, ITEM_NONE, ITEM_IRON_INGOT,
+                    ITEM_NONE, ITEM_IRON_INGOT, ITEM_NONE,
+                    ITEM_NONE, ITEM_NONE, ITEM_NONE },
+        .output = ITEM_BUCKET,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
         .width = 2,
         .height = 2,
         .inputs = { (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND,
@@ -272,6 +282,9 @@ static bool item_id_valid(ItemID item)
            item == ITEM_IRON_INGOT ||
            item == ITEM_GOLD_INGOT ||
            item == ITEM_DIAMOND ||
+           item == ITEM_BUCKET ||
+           item == ITEM_WATER_BUCKET ||
+           item == ITEM_LAVA_BUCKET ||
            item == ITEM_WOOD_PICKAXE ||
            item == ITEM_STONE_PICKAXE ||
            item == ITEM_IRON_PICKAXE ||
@@ -369,6 +382,12 @@ const char *item_name(ItemID item)
         return "Gold Ingot";
     if (item == ITEM_DIAMOND)
         return "Diamond";
+    if (item == ITEM_BUCKET)
+        return "Bucket";
+    if (item == ITEM_WATER_BUCKET)
+        return "Water Bucket";
+    if (item == ITEM_LAVA_BUCKET)
+        return "Lava Bucket";
     if (item == ITEM_WOOD_PICKAXE)
         return "Wooden Pickaxe";
     if (item == ITEM_STONE_PICKAXE)
@@ -423,6 +442,12 @@ uint8_t item_texture_id(ItemID item)
         return TEX_TILE_GOLD_INGOT;
     if (item == ITEM_DIAMOND)
         return TEX_TILE_DIAMOND;
+    if (item == ITEM_BUCKET)
+        return TEX_TILE_BUCKET;
+    if (item == ITEM_WATER_BUCKET)
+        return TEX_TILE_WATER_BUCKET;
+    if (item == ITEM_LAVA_BUCKET)
+        return TEX_TILE_LAVA_BUCKET;
     if (item == ITEM_WOOD_PICKAXE)
         return TEX_TILE_WOOD_PICKAXE;
     if (item == ITEM_STONE_PICKAXE)

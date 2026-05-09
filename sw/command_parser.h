@@ -26,6 +26,7 @@ typedef enum {
     GAME_COMMAND_KIND_SETBLOCK,
     GAME_COMMAND_KIND_FILL,
     GAME_COMMAND_KIND_GIVE,
+    GAME_COMMAND_KIND_ITEMS,
 } GameCommandKind;
 
 typedef enum {
@@ -91,6 +92,9 @@ typedef struct {
             ItemID item;
             int count;
         } give;
+        struct {
+            int page;
+        } items;
     } value;
 } GameCommandAst;
 
@@ -107,5 +111,9 @@ const char *game_command_parse_status_name(GameCommandParseStatus status);
 const char *game_command_time_value_name(GameCommandTimeValue value);
 const char *game_command_gamemode_value_name(GameCommandGameModeValue value);
 const char *game_command_physics_property_name(GameCommandPhysicsProperty value);
+int game_command_give_name_count(void);
+const char *game_command_give_name_at(int index);
+bool game_command_complete(const char *line, int cycle_index,
+                           char *out, int out_size);
 
 #endif

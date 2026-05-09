@@ -12,6 +12,9 @@
  * without a second enum. */
 #define INPUT_TEXT_BACKSPACE '\b'
 #define INPUT_TEXT_ENTER     '\n'
+#define INPUT_TEXT_TAB       '\t'
+#define INPUT_TEXT_HISTORY_PREV '\v'
+#define INPUT_TEXT_HISTORY_NEXT '\f'
 
 typedef enum {
     INPUT_POINTER_NONE = 0,
@@ -60,7 +63,8 @@ typedef struct {
     float cursor_dy;
 
     /* Bytes captured while text mode is on. Printable ASCII or one of
-     * INPUT_TEXT_BACKSPACE / INPUT_TEXT_ENTER. */
+     * INPUT_TEXT_BACKSPACE / INPUT_TEXT_ENTER / INPUT_TEXT_TAB /
+     * INPUT_TEXT_HISTORY_PREV / INPUT_TEXT_HISTORY_NEXT. */
     char text_queue[INPUT_TEXT_QUEUE_MAX];
     int  text_queue_len;
 

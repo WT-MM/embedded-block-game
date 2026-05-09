@@ -1,5 +1,6 @@
 #include "world.h"
 #include "world_gen.h"
+#include "env_util.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -25,7 +26,9 @@
 #define DEFAULT_NEAR_CHUNK_RADIUS 1
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define STREAM_CHUNKS_PER_FRAME_MAX 64
-#define WORLD_META_VERSION 1u
+#define WORLD_META_VERSION 2u
+#define WORLD_META_MIN_VERSION 1u
+#define WORLD_GEN_FLAG_DESERT_LAVA_POOLS 0x00000001u
 /* v2: appended water_level[H][Z][X] after the block grid for Minecraft-style
  * variable water height. v1 saves are rejected on load and re-generated. */
 #define WORLD_CHUNK_VERSION 2u
@@ -34,6 +37,7 @@
  * Save format v1:
  *   world.meta
  *     - fixed-size WorldSaveHeader
+ *       - v2 names the trailing reserved field as generation_flags
  *   chunks/<chunk_x>_<chunk_z>.chk
  *     - fixed-size ChunkSaveHeader
  *     - WORLD_CHUNK_SIZE * WORLD_CHUNK_SIZE * WORLD_CHUNK_HEIGHT bytes
@@ -50,7 +54,7 @@ typedef struct __attribute__((packed)) {
     uint32_t stone_tries_per_chunk;
     uint16_t chunk_size;
     uint16_t chunk_height;
-    uint32_t reserved2;
+    uint32_t generation_flags;
 } WorldSaveHeader;
 
 typedef struct __attribute__((packed)) {
@@ -157,10 +161,9 @@ static bool block_is_gravity_affected(BlockID id)
 static bool greedy_meshing_enabled(void)
 {
     static int cached = -1;
-    if (cached < 0) {
-        const char *env = getenv("BLOCK_GAME_GREEDY_MESH");
-        cached = !(env && env[0] == '0' && env[1] == '\0');
-    }
+
+    if (cached < 0)
+        cached = env_flag("BLOCK_GAME_GREEDY_MESH", true) ? 1 : 0;
     return cached != 0;
 }
 
@@ -215,32 +218,6 @@ static int positive_mod(int value, int divisor)
 static int chunk_coord_from_world(float world_pos)
 {
     return (int)floorf(world_pos / (float)WORLD_CHUNK_SIZE);
-}
-
-static int env_int_clamped(const char *primary,
-                           const char *fallback_name,
-                           int default_value,
-                           int min_value,
-                           int max_value)
-{
-    const char *value = getenv(primary);
-    char *end = NULL;
-    long parsed;
-
-    if ((!value || value[0] == '\0') && fallback_name)
-        value = getenv(fallback_name);
-    if (!value || value[0] == '\0')
-        return default_value;
-
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0'))
-        return default_value;
-    if (parsed < min_value)
-        return min_value;
-    if (parsed > max_value)
-        return max_value;
-
-    return (int)parsed;
 }
 
 static size_t chunk_block_count(void)
@@ -336,6 +313,27 @@ static bool ensure_world_save_layout(const VoxelWorld *world)
     return ensure_directory_recursive(chunks_path);
 }
 
+static bool world_meta_version_supported(uint16_t version)
+{
+    return version >= WORLD_META_MIN_VERSION &&
+           version <= WORLD_META_VERSION;
+}
+
+static uint32_t world_generation_flags(const VoxelWorld *world)
+{
+    if (!world)
+        return 0;
+    return world->desert_lava_pools_enabled ?
+           WORLD_GEN_FLAG_DESERT_LAVA_POOLS : 0u;
+}
+
+static uint32_t world_header_generation_flags(const WorldSaveHeader *header)
+{
+    if (!header || header->version < 2u)
+        return WORLD_GEN_FLAG_DESERT_LAVA_POOLS;
+    return header->generation_flags;
+}
+
 static bool load_or_create_world_meta(VoxelWorld *world)
 {
     char meta_path[WORLD_SAVE_PATH_MAX];
@@ -358,6 +356,7 @@ static bool load_or_create_world_meta(VoxelWorld *world)
         header.stone_tries_per_chunk = (uint32_t)world->stone_tries_per_chunk;
         header.chunk_size = WORLD_CHUNK_SIZE;
         header.chunk_height = WORLD_CHUNK_HEIGHT;
+        header.generation_flags = world_generation_flags(world);
 
         file = fopen(meta_path, "wb");
         if (!file)
@@ -376,11 +375,12 @@ static bool load_or_create_world_meta(VoxelWorld *world)
     fclose(file);
 
     if (memcmp(header.magic, "VWLD", 4) != 0 ||
-        header.version != WORLD_META_VERSION ||
+        !world_meta_version_supported(header.version) ||
         header.chunk_size != WORLD_CHUNK_SIZE ||
         header.chunk_height != WORLD_CHUNK_HEIGHT ||
         header.procedural_seed != world->procedural_seed ||
-        header.stone_tries_per_chunk != (uint32_t)world->stone_tries_per_chunk)
+        header.stone_tries_per_chunk != (uint32_t)world->stone_tries_per_chunk ||
+        world_header_generation_flags(&header) != world_generation_flags(world))
         return false;
 
     return true;
@@ -388,7 +388,8 @@ static bool load_or_create_world_meta(VoxelWorld *world)
 
 bool world_read_save_metadata(const char *save_root,
                               uint32_t *seed_out,
-                              int *stone_tries_per_chunk_out)
+                              int *stone_tries_per_chunk_out,
+                              bool *desert_lava_pools_enabled_out)
 {
     char meta_path[WORLD_SAVE_PATH_MAX];
     WorldSaveHeader header = {0};
@@ -410,7 +411,7 @@ bool world_read_save_metadata(const char *save_root,
     fclose(file);
 
     if (memcmp(header.magic, "VWLD", 4) != 0 ||
-        header.version != WORLD_META_VERSION ||
+        !world_meta_version_supported(header.version) ||
         header.chunk_size != WORLD_CHUNK_SIZE ||
         header.chunk_height != WORLD_CHUNK_HEIGHT)
         return false;
@@ -419,6 +420,10 @@ bool world_read_save_metadata(const char *save_root,
         *seed_out = header.procedural_seed;
     if (stone_tries_per_chunk_out)
         *stone_tries_per_chunk_out = (int)header.stone_tries_per_chunk;
+    if (desert_lava_pools_enabled_out)
+        *desert_lava_pools_enabled_out =
+            (world_header_generation_flags(&header) &
+             WORLD_GEN_FLAG_DESERT_LAVA_POOLS) != 0u;
     return true;
 }
 
@@ -2356,25 +2361,16 @@ static bool world_has_dirty_meshes_locked(const VoxelWorld *world)
     return false;
 }
 
-/* 0 or unset: rebuild every dirty chunk in one pass (desktop default).
- * Positive: cap per world_stream / world_set_block / idle-tick pass so
- * chunk lighting + mesh work does not blow one frame on slow CPUs (FPGA). */
+/* Default: cap to 1 dirty chunk per world_stream / world_set_block /
+ * idle-tick pass so chunk lighting + mesh work does not blow one frame.
+ * Set VOXEL_MESH_REBUILDS_PER_FRAME=0 to rebuild every dirty chunk in one pass.
+ * Larger positive values raise the per-pass cap (max 4096). */
 static int mesh_rebuild_chunks_per_pass(void)
 {
-    const char *value = getenv("VOXEL_MESH_REBUILDS_PER_FRAME");
-    char *end = NULL;
-    long parsed;
-
-    if (!value || value[0] == '\0')
-        return 0;
-
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0') || parsed < 1)
-        return 0;
-    if (parsed > 4096)
-        return 4096;
-
-    return (int)parsed;
+    return env_int_capped_or_default("VOXEL_MESH_REBUILDS_PER_FRAME",
+                                     1,
+                                     0,
+                                     4096);
 }
 
 static bool world_rebuild_dirty_meshes_locked_with_limit(VoxelWorld *world,
@@ -2557,7 +2553,8 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     initialize_chunk_slot(chunk, chunk_x, chunk_z, world->stream_epoch);
     world_generate_chunk_terrain(chunk,
                                  world->procedural_seed,
-                                 world->stone_tries_per_chunk);
+                                 world->stone_tries_per_chunk,
+                                 world->desert_lava_pools_enabled);
     if (!load_chunk_snapshot(world, chunk))
         return false;
     rebuild_chunk_sky_lighting(chunk);
@@ -2643,7 +2640,8 @@ bool world_async_chunk_gen_offline(const VoxelWorld *world,
 
     world_generate_chunk_terrain(scratch,
                                  world->procedural_seed,
-                                 world->stone_tries_per_chunk);
+                                 world->stone_tries_per_chunk,
+                                 world->desert_lava_pools_enabled);
     /* load_chunk_snapshot only reads world->persistence_enabled and
      * world->save_root, both immutable post-init, so no lock needed. */
     if (!load_chunk_snapshot(world, scratch)) {
@@ -2813,6 +2811,7 @@ static bool stream_world_to_chunk_center(VoxelWorld *world,
 bool world_init_infinite_procedural(VoxelWorld *world,
                                     uint32_t seed,
                                     int stone_tries_per_chunk,
+                                    bool desert_lava_pools_enabled,
                                     int render_distance_chunks,
                                     float center_x,
                                     float center_z,
@@ -2825,6 +2824,7 @@ bool world_init_infinite_procedural(VoxelWorld *world,
 
     world->procedural_seed = seed;
     world->stone_tries_per_chunk = stone_tries_per_chunk;
+    world->desert_lava_pools_enabled = desert_lava_pools_enabled;
     world->render_distance_chunks = render_distance_chunks;
     world->near_chunk_radius =
         env_int_clamped("VOXEL_NEAR_CHUNK_RADIUS", NULL,

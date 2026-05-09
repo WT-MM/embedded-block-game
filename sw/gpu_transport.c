@@ -1,4 +1,5 @@
 #include "gpu_transport.h"
+#include "env_util.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1493,32 +1494,6 @@ static int socket_request(GPUTransport *transport, uint16_t opcode,
     return reply.status;
 }
 
-static int read_debug_enabled_local(void)
-{
-    const char *value = getenv("DEBUG");
-
-    if (!value || value[0] == '\0')
-        return 0;
-    if (strcmp(value, "0") == 0 ||
-        strcmp(value, "false") == 0 ||
-        strcmp(value, "off") == 0 ||
-        strcmp(value, "no") == 0)
-        return 0;
-    return 1;
-}
-
-static int env_flag_enabled(const char *value)
-{
-    if (!value || value[0] == '\0')
-        return 0;
-    if (strcmp(value, "0") == 0 ||
-        strcmp(value, "false") == 0 ||
-        strcmp(value, "off") == 0 ||
-        strcmp(value, "no") == 0)
-        return 0;
-    return 1;
-}
-
 static int gpu_transport_flip_hw_only(GPUTransport *transport);
 
 static int gpu_transport_wait_pending_flip(GPUTransport *transport)
@@ -1728,7 +1703,7 @@ GPUTransport *gpu_transport_open(void)
 {
     const char *backend_env = getenv("VOXEL_GPU_BACKEND");
     const char *socket_env = getenv("VOXEL_GPU_SOCKET_PATH");
-    int debug_enabled = read_debug_enabled_local();
+    int debug_enabled = env_flag("DEBUG", false);
     GPUTransport *transport = calloc(1, sizeof(*transport));
     int ret;
 
@@ -1791,22 +1766,19 @@ GPUTransport *gpu_transport_open(void)
         log_extmem_state(transport, debug_enabled);
 
     {
-        const char *diag = getenv("VOXEL_DIAG_BBOX");
-        g_diag_bbox = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
+        g_diag_bbox = env_flag("VOXEL_DIAG_BBOX", false) ? 1 : 0;
         if (g_diag_bbox && debug_enabled)
             fprintf(stderr, "renderer: VOXEL_DIAG_BBOX enabled (per-60-frame quad bbox log)\n");
     }
 
     {
-        const char *diag = getenv("VOXEL_DIAG_CACHE");
-        g_diag_cache = (diag && diag[0] && strcmp(diag, "0") != 0) ? 1 : 0;
+        g_diag_cache = env_flag("VOXEL_DIAG_CACHE", false) ? 1 : 0;
         if (g_diag_cache && debug_enabled)
             fprintf(stderr, "renderer: VOXEL_DIAG_CACHE enabled (per-band hit/miss + HW dma_status log)\n");
     }
 
     {
-        const char *reuse = getenv("VOXEL_HW_BAND_REUSE");
-        g_hw_band_reuse = (reuse && reuse[0] && strcmp(reuse, "0") == 0) ? 0 : 1;
+        g_hw_band_reuse = env_flag("VOXEL_HW_BAND_REUSE", true) ? 1 : 0;
         if (g_hw_band_reuse && debug_enabled)
             fprintf(stderr,
                     "renderer: VOXEL_HW_BAND_REUSE enabled (full-band skip path; set =0 to disable)\n");
@@ -1817,7 +1789,7 @@ GPUTransport *gpu_transport_open(void)
         int pipeline_default =
             (!pipeline || pipeline[0] == '\0') &&
             transport->mode == GPU_BACKEND_HW;
-        if (pipeline_default || env_flag_enabled(pipeline)) {
+        if (pipeline_default || env_value_is_true(pipeline)) {
             if (transport->mode == GPU_BACKEND_HW) {
                 ret = gpu_transport_pipeline_start(transport, debug_enabled);
                 if (ret < 0) {

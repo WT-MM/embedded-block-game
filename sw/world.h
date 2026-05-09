@@ -17,6 +17,7 @@
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
+    WORLD_BIOME_OCEAN,
     WORLD_BIOME_DESERT,
     WORLD_BIOME_HILLS,
     WORLD_BIOME_MOUNTAINS,
@@ -126,6 +127,7 @@ typedef struct VoxelWorld {
     int near_chunk_radius;
     uint32_t procedural_seed;
     int stone_tries_per_chunk;
+    bool desert_lava_pools_enabled;
     int *chunk_lookup;
     int chunk_lookup_capacity;
     uint32_t stream_epoch;
@@ -159,13 +161,15 @@ void world_free(VoxelWorld *world);
 bool world_init_infinite_procedural(VoxelWorld *world,
                                     uint32_t seed,
                                     int stone_tries_per_chunk,
+                                    bool desert_lava_pools_enabled,
                                     int render_distance_chunks,
                                     float center_x,
                                     float center_z,
                                     const char *save_root);
 bool world_read_save_metadata(const char *save_root,
                               uint32_t *seed_out,
-                              int *stone_tries_per_chunk_out);
+                              int *stone_tries_per_chunk_out,
+                              bool *desert_lava_pools_enabled_out);
 bool world_stream_around(VoxelWorld *world, float world_x, float world_z);
 bool world_flush(VoxelWorld *world);
 bool world_rebuild_dirty_meshes(VoxelWorld *world);

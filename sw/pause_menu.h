@@ -16,6 +16,12 @@ typedef struct {
     bool prev_select;
 } PauseMenu;
 
+typedef enum {
+    PAUSE_MENU_ACTION_NONE = 0,
+    PAUSE_MENU_ACTION_EXIT_TO_MENU,
+    PAUSE_MENU_ACTION_EXIT_GAME,
+} PauseMenuAction;
+
 typedef struct {
     int stream_chunks_per_frame;
     int stream_chunks_per_frame_max;
@@ -23,6 +29,14 @@ typedef struct {
     int near_chunk_radius_max;
     int render_distance;
     int render_distance_max;
+    int mouse_sensitivity_percent;
+    int mouse_sensitivity_percent_min;
+    int mouse_sensitivity_percent_max;
+    int mouse_sensitivity_percent_step;
+    int fov_degrees_x10;
+    int fov_degrees_x10_min;
+    int fov_degrees_x10_max;
+    int fov_degrees_x10_step;
 } PauseMenuSettings;
 
 void pause_menu_init(PauseMenu *pm);
@@ -30,7 +44,7 @@ void pause_menu_toggle(PauseMenu *pm);
 bool pause_menu_is_open(const PauseMenu *pm);
 bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                        PauseMenuSettings *settings,
-                       bool *exit_requested);
+                       PauseMenuAction *action);
 
 void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
                      const PauseMenuSettings *settings);

@@ -12,6 +12,7 @@
 
 #include "block_types.h"
 #include "chat.h"
+#include "env_util.h"
 
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
 #define DEFAULT_WORLDS_DIR "../worlds"
@@ -25,18 +26,21 @@
 #define HOME_LOAD_W 456.0f
 #define HOME_DELETE_GAP 10.0f
 #define HOME_DELETE_W 82.0f
+#define DEFAULT_DESERT_LAVA_POOLS true
 
 typedef struct {
     char name[GAME_HOME_NAME_MAX];
     char path[WORLD_SAVE_PATH_MAX];
     uint32_t seed;
     int stone_tries_per_chunk;
+    bool desert_lava_pools_enabled;
 } HomeWorldEntry;
 
 typedef struct {
     HomeWorldEntry worlds[HOME_MAX_WORLDS];
     int world_count;
     int selected;
+    bool desert_lava_pools_enabled;
     bool prev_up;
     bool prev_down;
     float cursor_x;
@@ -60,6 +64,7 @@ typedef struct {
 typedef enum {
     HOME_HIT_NONE = 0,
     HOME_HIT_NEW,
+    HOME_HIT_LAVA_TOGGLE,
     HOME_HIT_WORLD,
     HOME_HIT_DELETE,
 } HomeHitKind;
@@ -77,22 +82,16 @@ static long home_ns_diff(const struct timespec *a, const struct timespec *b)
 
 static const char *read_world_save_dir(void)
 {
-    const char *value = getenv("VOXEL_WORLD_DIR");
+    const char *value = env_get_nonempty("VOXEL_WORLD_DIR");
 
-    if (!value || value[0] == '\0')
-        return DEFAULT_WORLD_SAVE_DIR;
-
-    return value;
+    return value ? value : DEFAULT_WORLD_SAVE_DIR;
 }
 
 static const char *read_worlds_dir(void)
 {
-    const char *value = getenv("VOXEL_WORLDS_DIR");
+    const char *value = env_get_nonempty("VOXEL_WORLDS_DIR");
 
-    if (!value || value[0] == '\0')
-        return DEFAULT_WORLDS_DIR;
-
-    return value;
+    return value ? value : DEFAULT_WORLDS_DIR;
 }
 
 static bool path_is_directory(const char *path)
@@ -181,6 +180,7 @@ static int scan_saved_worlds(const char *worlds_root,
         char path[WORLD_SAVE_PATH_MAX];
         uint32_t seed = 0;
         int stone_tries = STONE_TRIES_PER_CHUNK;
+        bool desert_lava_pools_enabled = false;
 
         if (entry->d_name[0] == '.')
             continue;
@@ -188,7 +188,8 @@ static int scan_saved_worlds(const char *worlds_root,
             continue;
         if (!path_is_directory(path))
             continue;
-        if (!world_read_save_metadata(path, &seed, &stone_tries))
+        if (!world_read_save_metadata(path, &seed, &stone_tries,
+                                      &desert_lava_pools_enabled))
             continue;
 
         snprintf(entries[count].name, sizeof(entries[count].name), "%s",
@@ -196,6 +197,8 @@ static int scan_saved_worlds(const char *worlds_root,
         snprintf(entries[count].path, sizeof(entries[count].path), "%s", path);
         entries[count].seed = seed;
         entries[count].stone_tries_per_chunk = stone_tries;
+        entries[count].desert_lava_pools_enabled =
+            desert_lava_pools_enabled;
         count++;
     }
 
@@ -224,7 +227,8 @@ static uint32_t random_world_seed(void)
 }
 
 static bool choose_new_world_path(const char *worlds_root,
-                                  SelectedWorld *selection)
+                                  SelectedWorld *selection,
+                                  bool desert_lava_pools_enabled)
 {
     if (!worlds_root || !selection)
         return false;
@@ -244,6 +248,8 @@ static bool choose_new_world_path(const char *worlds_root,
         snprintf(selection->path, sizeof(selection->path), "%s", path);
         selection->seed = seed;
         selection->stone_tries_per_chunk = STONE_TRIES_PER_CHUNK;
+        selection->desert_lava_pools_enabled =
+            desert_lava_pools_enabled;
         return true;
     }
 
@@ -268,7 +274,7 @@ static bool point_in_rect(float x, float y,
 
 static void home_menu_layout(const HomeMenuState *menu, HomeMenuLayout *layout)
 {
-    int option_rows = (menu && menu->world_count > 0 ? menu->world_count : 1) + 1;
+    int option_rows = (menu && menu->world_count > 0 ? menu->world_count : 1) + 2;
     float total_h = (float)option_rows * HOME_ROW_STEP;
     float list_w = HOME_LOAD_W + HOME_DELETE_GAP + HOME_DELETE_W;
     float list_y = 124.0f;
@@ -311,8 +317,17 @@ static HomeHit home_menu_hit_test(const HomeMenuState *menu,
         return hit;
     }
 
+    if (point_in_rect(x, y,
+                      layout->list_x, layout->list_y + layout->row_step,
+                      layout->list_x + layout->list_w,
+                      layout->list_y + layout->row_step + layout->row_h)) {
+        hit.kind = HOME_HIT_LAVA_TOGGLE;
+        hit.option_index = 1;
+        return hit;
+    }
+
     for (int i = 0; i < menu->world_count; i++) {
-        float row_y = layout->list_y + (float)(i + 1) * layout->row_step;
+        float row_y = layout->list_y + (float)(i + 2) * layout->row_step;
 
         if (point_in_rect(x, y,
                           layout->delete_x, row_y,
@@ -320,7 +335,7 @@ static HomeHit home_menu_hit_test(const HomeMenuState *menu,
                           row_y + layout->row_h)) {
             hit.kind = HOME_HIT_DELETE;
             hit.world_index = i;
-            hit.option_index = i + 1;
+            hit.option_index = i + 2;
             return hit;
         }
         if (point_in_rect(x, y,
@@ -329,7 +344,7 @@ static HomeHit home_menu_hit_test(const HomeMenuState *menu,
                           row_y + layout->row_h)) {
             hit.kind = HOME_HIT_WORLD;
             hit.world_index = i;
-            hit.option_index = i + 1;
+            hit.option_index = i + 2;
             return hit;
         }
     }
@@ -343,8 +358,8 @@ static void home_set_selected(HomeMenuState *menu, int selected)
         return;
     if (selected < 0)
         selected = 0;
-    if (selected > menu->world_count)
-        selected = menu->world_count;
+    if (selected > menu->world_count + 1)
+        selected = menu->world_count + 1;
     if (menu->selected != selected) {
         menu->selected = selected;
         menu->delete_confirm_index = -1;
@@ -472,20 +487,27 @@ static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
                      layout.list_w, layout.row_h,
                      "NEW RANDOM WORLD", menu->selected == 0);
 
+    snprintf(line, sizeof(line), "DESERT LAVA POOLS: %s",
+             menu->desert_lava_pools_enabled ? "ON" : "OFF");
+    draw_menu_button(ctx, layout.list_x, layout.list_y + layout.row_step,
+                     layout.list_w, layout.row_h,
+                     line, menu->selected == 1);
+
     if (menu->world_count == 0) {
-        float y = layout.list_y + layout.row_step;
+        float y = layout.list_y + 2.0f * layout.row_step;
         draw_menu_button(ctx, layout.list_x, y,
                          layout.list_w, layout.row_h,
                          "(NO SAVED WORLDS)", false);
     } else {
         for (int i = 0; i < menu->world_count; i++) {
             const HomeWorldEntry *world = &menu->worlds[i];
-            bool row_selected = menu->selected == i + 1;
+            bool row_selected = menu->selected == i + 2;
             bool confirm = menu->delete_confirm_index == i;
-            float y = layout.list_y + (float)(i + 1) * layout.row_step;
+            float y = layout.list_y + (float)(i + 2) * layout.row_step;
 
-            snprintf(line, sizeof(line), "LOAD  %-27.27s  SEED %08x",
-                     world->name, world->seed);
+            snprintf(line, sizeof(line), "LOAD  %-24.24s  SEED %08x  LAVA %s",
+                     world->name, world->seed,
+                     world->desert_lava_pools_enabled ? "ON" : "OFF");
             draw_menu_button(ctx, layout.list_x, y,
                              layout.load_w, layout.row_h,
                              line, row_selected);
@@ -499,7 +521,7 @@ static void draw_home_menu(RenderContext *ctx, const HomeMenuState *menu,
     }
 
     snprintf(line, sizeof(line),
-             "W/S OR CURSOR SELECT   ENTER/SPACE/CLICK START   DEL/BKSP DELETE   ESC QUIT");
+             "W/S OR CURSOR SELECT   ENTER/SPACE/CLICK START/TOGGLE   DEL/BKSP DELETE   ESC QUIT");
     draw_centered_text(ctx, line, layout.footer_y, 5);
 
     if (menu->delete_confirm_index >= 0 &&
@@ -553,17 +575,31 @@ static bool select_world_direct(SelectedWorld *selection)
     const char *world_save_dir = read_world_save_dir();
     uint32_t seed = STONE_SEED;
     int stone_tries = STONE_TRIES_PER_CHUNK;
+    bool desert_lava_pools_enabled = DEFAULT_DESERT_LAVA_POOLS;
 
     if (!selection)
         return false;
 
-    (void)world_read_save_metadata(world_save_dir, &seed, &stone_tries);
+    (void)world_read_save_metadata(world_save_dir, &seed, &stone_tries,
+                                   &desert_lava_pools_enabled);
 
     snprintf(selection->name, sizeof(selection->name), "%s", world_save_dir);
     snprintf(selection->path, sizeof(selection->path), "%s", world_save_dir);
     selection->seed = seed;
     selection->stone_tries_per_chunk = stone_tries;
+    selection->desert_lava_pools_enabled = desert_lava_pools_enabled;
     return true;
+}
+
+static void home_toggle_lava_pools(HomeMenuState *menu)
+{
+    if (!menu)
+        return;
+    menu->desert_lava_pools_enabled =
+        !menu->desert_lava_pools_enabled;
+    menu->delete_confirm_index = -1;
+    snprintf(menu->status, sizeof(menu->status), "DESERT LAVA POOLS %s",
+             menu->desert_lava_pools_enabled ? "ON" : "OFF");
 }
 
 static bool home_select_current(HomeMenuState *menu, const char *worlds_root,
@@ -573,10 +609,12 @@ static bool home_select_current(HomeMenuState *menu, const char *worlds_root,
         return false;
 
     if (menu->selected == 0) {
-        if (!choose_new_world_path(worlds_root, selection))
+        if (!choose_new_world_path(worlds_root, selection,
+                                   menu->desert_lava_pools_enabled))
             return false;
-    } else if (menu->selected > 0 && menu->selected <= menu->world_count) {
-        HomeWorldEntry *world = &menu->worlds[menu->selected - 1];
+    } else if (menu->selected >= 2 &&
+               menu->selected < menu->world_count + 2) {
+        HomeWorldEntry *world = &menu->worlds[menu->selected - 2];
 
         snprintf(selection->name, sizeof(selection->name), "%s",
                  world->name);
@@ -585,6 +623,8 @@ static bool home_select_current(HomeMenuState *menu, const char *worlds_root,
         selection->seed = world->seed;
         selection->stone_tries_per_chunk =
             world->stone_tries_per_chunk;
+        selection->desert_lava_pools_enabled =
+            world->desert_lava_pools_enabled;
     } else {
         return false;
     }
@@ -598,10 +638,10 @@ static void home_delete_selected(HomeMenuState *menu, const char *worlds_root)
     char deleted_name[GAME_HOME_NAME_MAX];
     char deleted_path[WORLD_SAVE_PATH_MAX];
 
-    if (!menu || menu->selected <= 0 || menu->selected > menu->world_count)
+    if (!menu || menu->selected < 2 || menu->selected >= menu->world_count + 2)
         return;
 
-    world_index = menu->selected - 1;
+    world_index = menu->selected - 2;
     if (menu->delete_confirm_index != world_index) {
         menu->delete_confirm_index = world_index;
         snprintf(menu->status, sizeof(menu->status), "DELETE ARMED");
@@ -624,8 +664,8 @@ static void home_delete_selected(HomeMenuState *menu, const char *worlds_root)
     snprintf(menu->status, sizeof(menu->status), "DELETED: %s", deleted_name);
     menu->world_count = scan_saved_worlds(worlds_root, menu->worlds,
                                           HOME_MAX_WORLDS);
-    if (menu->selected > menu->world_count)
-        menu->selected = menu->world_count;
+    if (menu->selected > menu->world_count + 1)
+        menu->selected = menu->world_count + 1;
     if (menu->selected < 0)
         menu->selected = 0;
     menu->delete_confirm_index = -1;
@@ -634,18 +674,19 @@ static void home_delete_selected(HomeMenuState *menu, const char *worlds_root)
 bool run_home_menu(RenderContext *ctx, InputState *inp,
                    int target_fps, SelectedWorld *selection)
 {
-    const char *direct_world = getenv("VOXEL_WORLD_DIR");
+    const char *direct_world = env_get_nonempty("VOXEL_WORLD_DIR");
     const char *worlds_root = read_worlds_dir();
     HomeMenuState menu = {0};
     long frame_ns = 1000000000L / target_fps;
 
     if (!selection)
         return false;
-    if (direct_world && direct_world[0] != '\0')
+    if (direct_world)
         return select_world_direct(selection);
 
     menu.world_count = scan_saved_worlds(worlds_root, menu.worlds,
                                          HOME_MAX_WORLDS);
+    menu.desert_lava_pools_enabled = DEFAULT_DESERT_LAVA_POOLS;
     menu.cursor_x = SCREEN_WIDTH * 0.5f;
     menu.cursor_y = SCREEN_HEIGHT * 0.5f;
     menu.delete_confirm_index = -1;
@@ -654,7 +695,7 @@ bool run_home_menu(RenderContext *ctx, InputState *inp,
     while (!inp->quit) {
         struct timespec frame_start;
         struct timespec frame_end;
-        int option_count = menu.world_count + 1;
+        int option_count = menu.world_count + 2;
         HomeMenuLayout layout;
         HomeHit cursor_hit;
         bool cursor_moved;
@@ -708,6 +749,9 @@ bool run_home_menu(RenderContext *ctx, InputState *inp,
         if ((clicked && cursor_hit.kind == HOME_HIT_DELETE) ||
             delete_pressed) {
             home_delete_selected(&menu, worlds_root);
+        } else if ((clicked && cursor_hit.kind == HOME_HIT_LAVA_TOGGLE) ||
+                   ((select_pressed || jump_pressed) && menu.selected == 1)) {
+            home_toggle_lava_pools(&menu);
         } else if ((clicked &&
                     (cursor_hit.kind == HOME_HIT_NEW ||
                      cursor_hit.kind == HOME_HIT_WORLD)) ||

@@ -32,7 +32,7 @@ RENDERER_TEST_SRCS := renderer.c gpu_transport.c block_types.c world.c world_gen
 RENDERER_TEST_DEPS := renderer.c renderer.h voxel_gpu.h \
 	gpu_transport.c gpu_transport.h virtual_gpu_protocol.h \
 	block_types.c block_types.h texture_tiles.def world.c world.h \
-	world_gen.c world_gen.h
+	world_gen.c world_gen.h env_util.h
 
 .PHONY: default laptop tests module module_laptop laptop_run clean clean_laptop clean_outputs clean_tests tar
 
@@ -55,7 +55,7 @@ tests/command_parser_test: tests/command_parser_test.c command_parser.c command_
 tests/inventory_test: tests/inventory_test.c inventory.c inventory.h block_types.c block_types.h texture_tiles.def
 	${CC} ${CFLAGS} -I. -o $@ tests/inventory_test.c inventory.c block_types.c
 
-tests/world_chunk_test: tests/world_chunk_test.c block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h
+tests/world_chunk_test: tests/world_chunk_test.c block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h env_util.h
 	${CC} ${CFLAGS} ${THREAD_FLAGS} -I. -o $@ tests/world_chunk_test.c block_types.c world.c world_gen.c -lm
 
 tests/renderer_scene_test: tests/renderer_scene_test.c $(RENDERER_TEST_DEPS)
@@ -79,7 +79,7 @@ tests/fpga_sdram_test: tests/fpga_sdram_test.c
 tests/fpga_band_offset_test: tests/fpga_band_offset_test.c voxel_gpu.h
 	${CC} ${CFLAGS} -I. -o $@ tests/fpga_band_offset_test.c
 
-game: game.c game_home.c game_home.h game_items.c game_items.h player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h thread_affinity.c thread_affinity.h chat.c chat.h command_parser.c command_parser.h pause_menu.c pause_menu.h inventory.c inventory.h
+game: game.c game_home.c game_home.h game_items.c game_items.h player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h thread_affinity.c thread_affinity.h chat.c chat.h command_parser.c command_parser.h pause_menu.c pause_menu.h inventory.c inventory.h env_util.h
 	${CC} ${CFLAGS} ${THREAD_FLAGS} -o $@ game.c game_home.c game_items.c input.c renderer.c gpu_transport.c block_types.c world.c world_gen.c mesh_worker.c gen_worker.c thread_affinity.c player_physics.c chat.c command_parser.c pause_menu.c inventory.c -lm
 
 laptop_run:
@@ -103,7 +103,7 @@ TARFILES = Makefile README \
 	input.c input.h player_physics.c player_physics.h \
 	game_home.c game_home.h game_items.c game_items.h \
 	block_types.c block_types.h texture_tiles.def \
-	world.c world.h world_gen.c world_gen.h \
+	world.c world.h world_gen.c world_gen.h env_util.h \
 	mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h \
 	thread_affinity.c thread_affinity.h \
 	chat.c chat.h command_parser.c command_parser.h \

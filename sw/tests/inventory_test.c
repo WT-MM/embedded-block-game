@@ -168,8 +168,21 @@ static void test_furnace_torch_and_coal(void)
     assert(inv.craft_output.count == 4);
 
     survival_inventory_init(&inv);
+    survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
+    inv.craft[0] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    inv.craft[2] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    inv.craft[4] = (ItemStack){ ITEM_IRON_INGOT, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == ITEM_BUCKET);
+    assert(inv.craft_output.count == 1);
+
+    survival_inventory_init(&inv);
     assert(survival_inventory_add_item(&inv, ITEM_COAL, 3) == 0);
     assert(survival_inventory_count_item(&inv, ITEM_COAL) == 3);
+    assert(survival_inventory_add_item(&inv, ITEM_WATER_BUCKET, 1) == 0);
+    assert(survival_inventory_add_item(&inv, ITEM_LAVA_BUCKET, 1) == 0);
+    assert(survival_inventory_count_item(&inv, ITEM_WATER_BUCKET) == 1);
+    assert(survival_inventory_count_item(&inv, ITEM_LAVA_BUCKET) == 1);
     assert(survival_inventory_remove_item(&inv, ITEM_COAL, 2));
     assert(survival_inventory_count_item(&inv, ITEM_COAL) == 1);
     assert(!survival_inventory_remove_item(&inv, ITEM_COAL, 2));
@@ -227,6 +240,9 @@ static void test_added_item_textures(void)
     assert(item_texture_id(ITEM_IRON_INGOT) == TEX_TILE_IRON_INGOT);
     assert(item_texture_id(ITEM_GOLD_INGOT) == TEX_TILE_GOLD_INGOT);
     assert(item_texture_id(ITEM_DIAMOND) == TEX_TILE_DIAMOND);
+    assert(item_texture_id(ITEM_BUCKET) == TEX_TILE_BUCKET);
+    assert(item_texture_id(ITEM_WATER_BUCKET) == TEX_TILE_WATER_BUCKET);
+    assert(item_texture_id(ITEM_LAVA_BUCKET) == TEX_TILE_LAVA_BUCKET);
     assert(item_texture_id(ITEM_WOOD_PICKAXE) == TEX_TILE_WOOD_PICKAXE);
     assert(item_texture_id(ITEM_STONE_PICKAXE) == TEX_TILE_STONE_PICKAXE);
     assert(item_texture_id(ITEM_IRON_PICKAXE) == TEX_TILE_IRON_PICKAXE);

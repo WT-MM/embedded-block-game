@@ -42,6 +42,11 @@ Chat Commands
 Press `T` in-game to open chat, or press `/` to open chat already seeded with
 a slash. Lines starting with `/` are parsed as commands:
 
+- Press `Tab` while typing a command to cycle valid completions for the
+  current word, e.g. `/physics set <Tab>` cycles physics properties.
+- Press `Up` while chat is open to recall previously submitted text or
+  commands; press `Down` to move back toward the current draft.
+
 - `/time set day` or `/time day`
 - `/time set night` or `/time night`
 - `/gamemode set survival` or `/gamemode survival`
@@ -55,6 +60,7 @@ a slash. Lines starting with `/` are parsed as commands:
 - `/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>` edits a region.
 - `/give <item> [count]` or `/give me <item> [count]` adds items to the
   player's survival inventory.
+- `/items [page]` lists names accepted by `/give`.
 - Coordinates can be absolute integers or Minecraft-style relative values
   such as `~`, `~-1`, and `~3`; block names use underscores, e.g.
   `air`, `stone`, `glass`, `diamond_block`.
@@ -69,6 +75,7 @@ Notes
 - `./game` reads keyboard and mouse input from `/dev/input/event*` on Linux.
 - The input layer prefers relative mice, grabs pointer devices by default, and falls back to absolute VM tablet devices only when needed.
 - Press `Esc` to pause and release the grabbed mouse; resuming gameplay re-captures it.
+- The pause menu can adjust render distance, mouse sensitivity, and FOV at runtime.
 - Use `VOXEL_MOUSE_INVERT_X=1` and/or `VOXEL_MOUSE_INVERT_Y=1` to flip axes.
 - Use `VOXEL_MOUSE_SENS=0.004` to override mouse sensitivity at launch.
 - Use `VOXEL_MOUSE_GRAB=0` to leave the guest cursor free, or `VOXEL_MOUSE_ALLOW_ABS=0` to disable absolute tablet fallback when a relative mouse is present.

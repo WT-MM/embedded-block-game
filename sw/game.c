@@ -20,8 +20,16 @@
 #include "inventory.h"
 #include "game_items.h"
 #include "game_home.h"
+#include "env_util.h"
 
 #define DEFAULT_MOUSE_SENS 0.003f /* radians per pixel */
+#define MIN_MOUSE_SENS_PERCENT 25
+#define MAX_MOUSE_SENS_PERCENT 400
+#define MOUSE_SENS_PERCENT_STEP 5
+#define DEFAULT_FOV_DEG 86.5f
+#define MIN_FOV_DEG_X10 300
+#define MAX_FOV_DEG_X10 1500
+#define FOV_DEG_X10_STEP 50
 #define LOOK_SPEED   1.8f         /* radians per second (arrow keys) */
 #define PITCH_LIMIT  1.48f        /* ~85 degrees, avoids gimbal flip */
 #define DEFAULT_TARGET_FPS 30
@@ -68,6 +76,7 @@
 #define COMMAND_TIME_DAY_SECONDS   0.0f
 #define COMMAND_TIME_NIGHT_SECONDS 90.0f
 #define COMMAND_FILL_MAX_BLOCKS 4096
+#define COMMAND_ITEMS_PER_PAGE 6
 #define HOTBAR_SLOT_PIXELS (17.0f * HUD_SCALE)
 #define HOTBAR_GAP_PIXELS (2.0f * HUD_SCALE)
 #define HOTBAR_BOTTOM_MARGIN_PIXELS (4.0f * HUD_SCALE + 1.0f)
@@ -261,153 +270,126 @@ static bool can_rebuild_deferred_lighting(const VoxelWorld *world,
 
 static float read_mouse_sensitivity(void)
 {
-    const char *value = getenv("VOXEL_MOUSE_SENS");
+    float parsed;
 
-    if (!value || value[0] == '\0')
-        return DEFAULT_MOUSE_SENS;
-
-    char *end = NULL;
-    float parsed = strtof(value, &end);
-
-    if (end == value || (end && *end != '\0') || parsed <= 0.0f)
+    if (!env_parse_float_value(env_get_nonempty("VOXEL_MOUSE_SENS"), &parsed) ||
+        parsed <= 0.0f)
         return DEFAULT_MOUSE_SENS;
 
     return parsed;
 }
 
-static int read_debug_enabled(void)
+static int clamp_mouse_sensitivity_percent(int percent)
 {
-    const char *value = getenv("DEBUG");
+    if (percent < MIN_MOUSE_SENS_PERCENT)
+        return MIN_MOUSE_SENS_PERCENT;
+    if (percent > MAX_MOUSE_SENS_PERCENT)
+        return MAX_MOUSE_SENS_PERCENT;
+    return percent;
+}
 
-    if (!value || value[0] == '\0')
-        return 0;
-    if (strcmp(value, "0") == 0 ||
-        strcmp(value, "false") == 0 ||
-        strcmp(value, "off") == 0 ||
-        strcmp(value, "no") == 0)
-        return 0;
-    return 1;
+static int mouse_sensitivity_to_percent(float sensitivity)
+{
+    int percent;
+
+    if (sensitivity <= 0.0f)
+        sensitivity = DEFAULT_MOUSE_SENS;
+
+    percent = (int)lroundf((sensitivity / DEFAULT_MOUSE_SENS) * 100.0f);
+    return clamp_mouse_sensitivity_percent(percent);
+}
+
+static float mouse_sensitivity_from_percent(int percent)
+{
+    percent = clamp_mouse_sensitivity_percent(percent);
+    return DEFAULT_MOUSE_SENS * ((float)percent / 100.0f);
+}
+
+static int clamp_fov_degrees_x10(int fov_x10)
+{
+    if (fov_x10 < MIN_FOV_DEG_X10)
+        return MIN_FOV_DEG_X10;
+    if (fov_x10 > MAX_FOV_DEG_X10)
+        return MAX_FOV_DEG_X10;
+    return fov_x10;
+}
+
+static int fov_degrees_to_x10(float fov_deg)
+{
+    int fov_x10;
+
+    if (fov_deg != fov_deg)
+        fov_deg = DEFAULT_FOV_DEG;
+
+    fov_x10 = (int)lroundf(fov_deg * 10.0f);
+    return clamp_fov_degrees_x10(fov_x10);
+}
+
+static float fov_degrees_from_x10(int fov_x10)
+{
+    fov_x10 = clamp_fov_degrees_x10(fov_x10);
+    return (float)fov_x10 / 10.0f;
 }
 
 static int read_status_log_enabled(int debug_enabled)
 {
     const char *value = getenv("VOXEL_STATUS_LOG");
 
-    if (!value || value[0] == '\0' || strcmp(value, "auto") == 0)
+    if (!env_value_is_set(value) || env_streq_ci(value, "auto"))
         return debug_enabled;
-    if (strcmp(value, "0") == 0 ||
-        strcmp(value, "false") == 0 ||
-        strcmp(value, "off") == 0 ||
-        strcmp(value, "no") == 0)
-        return 0;
-
-    return 1;
-}
-
-static int read_debug_hud_enabled(void)
-{
-    const char *value = getenv("VOXEL_DEBUG_HUD");
-
-    if (!value || value[0] == '\0')
-        return 0;
-    if (strcmp(value, "0") == 0 ||
-        strcmp(value, "false") == 0 ||
-        strcmp(value, "off") == 0 ||
-        strcmp(value, "no") == 0)
-        return 0;
-    return 1;
+    return env_value_is_true(value);
 }
 
 static int read_target_fps(void)
 {
-    const char *value = getenv("VOXEL_TARGET_FPS");
-    char *end = NULL;
-    long parsed;
-
-    if (!value || value[0] == '\0')
-        return DEFAULT_TARGET_FPS;
-
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0') ||
-        parsed < MIN_TARGET_FPS || parsed > MAX_TARGET_FPS)
-        return DEFAULT_TARGET_FPS;
-
-    return (int)parsed;
+    return env_int_or_default("VOXEL_TARGET_FPS",
+                              DEFAULT_TARGET_FPS,
+                              MIN_TARGET_FPS,
+                              MAX_TARGET_FPS);
 }
 
 static int read_render_distance_chunks(void)
 {
-    const char *value = getenv("VOXEL_RENDER_DISTANCE");
-
-    if (!value || value[0] == '\0')
-        return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
-
-    char *end = NULL;
-    long parsed = strtol(value, &end, 10);
-
-    if (end == value || (end && *end != '\0') ||
-        parsed < 1 || parsed > MAX_WORLD_RENDER_DISTANCE_CHUNKS)
-        return DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS;
-
-    return (int)parsed;
+    return env_int_or_default("VOXEL_RENDER_DISTANCE",
+                              DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS,
+                              1,
+                              MAX_WORLD_RENDER_DISTANCE_CHUNKS);
 }
 
 static int read_stream_chunks_per_frame(void)
 {
-    const char *value = getenv("VOXEL_CHUNKS_PER_FRAME");
-    char *end = NULL;
-    long parsed;
-
-    if (!value || value[0] == '\0')
-        value = getenv("VOXEL_CHUNK_PER_FRAME");
-    if (!value || value[0] == '\0')
-        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
-
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0') ||
-        parsed < 0 || parsed > MAX_STREAM_CHUNKS_PER_FRAME)
-        return DEFAULT_STREAM_CHUNKS_PER_FRAME;
-
-    return (int)parsed;
+    return env_int_or_default_fallback("VOXEL_CHUNKS_PER_FRAME",
+                                       "VOXEL_CHUNK_PER_FRAME",
+                                       DEFAULT_STREAM_CHUNKS_PER_FRAME,
+                                       0,
+                                       MAX_STREAM_CHUNKS_PER_FRAME);
 }
 
 static int read_max_physics_steps_per_frame(void)
 {
-    const char *value = getenv("VOXEL_MAX_PHYSICS_STEPS_PER_FRAME");
-    char *end = NULL;
-    long parsed;
+    return env_int_capped_or_default("VOXEL_MAX_PHYSICS_STEPS_PER_FRAME",
+                                     DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME,
+                                     0,
+                                     MAX_PHYSICS_STEPS_PER_FRAME);
+}
 
-    if (!value || value[0] == '\0')
-        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
-
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0') || parsed < 0)
-        return DEFAULT_MAX_PHYSICS_STEPS_PER_FRAME;
-    if (parsed > MAX_PHYSICS_STEPS_PER_FRAME)
-        return MAX_PHYSICS_STEPS_PER_FRAME;
-    return (int)parsed;
+static float read_camera_fov_degrees(void)
+{
+    return env_float_or_default("VOXEL_FOV_DEG",
+                                DEFAULT_FOV_DEG,
+                                fov_degrees_from_x10(MIN_FOV_DEG_X10),
+                                fov_degrees_from_x10(MAX_FOV_DEG_X10));
 }
 
 /* Camera focal length is stored in screen pixels, so the FOV scales with the
  * render resolution unless we compensate. The pre-SDRAM 320x240 build used
- * focal=170 → horizontal FOV ≈ 86.5°. This computes a focal that preserves
- * that FOV at any resolution, with VOXEL_FOV_DEG to override. */
-static float compute_camera_focal_px(void)
+ * focal=170 -> horizontal FOV ~= 86.5 degrees. */
+static float camera_focal_px_from_fov(float fov_deg)
 {
-    const float default_fov_deg = 86.5f;
-    const char *value = getenv("VOXEL_FOV_DEG");
-    float fov_deg = default_fov_deg;
+    float fov_rad;
 
-    if (value && value[0] != '\0') {
-        char *end = NULL;
-        float parsed = strtof(value, &end);
-        if (end != value && (!end || *end == '\0') &&
-            parsed >= 30.0f && parsed <= 150.0f) {
-            fov_deg = parsed;
-        }
-    }
-
-    float fov_rad = fov_deg * (float)M_PI / 180.0f;
+    fov_deg = fov_degrees_from_x10(fov_degrees_to_x10(fov_deg));
+    fov_rad = fov_deg * (float)M_PI / 180.0f;
     return (SCREEN_WIDTH * 0.5f) / tanf(fov_rad * 0.5f);
 }
 
@@ -428,7 +410,7 @@ static void respawn_player(Player *player, Camera *cam)
     PlayerPhysicsConfig physics;
     float yaw = 0.0f;
     float pitch = -0.3f;
-    float depth = compute_camera_focal_px();
+    float depth = camera_focal_px_from_fov(read_camera_fov_degrees());
 
     if (!player)
         return;
@@ -491,6 +473,11 @@ static int game_positive_mod_i(int value, int divisor)
 static bool game_block_is_water(BlockID id)
 {
     return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
+}
+
+static bool game_block_is_fluid_source(BlockID id)
+{
+    return id == BLOCK_WATER || id == BLOCK_LAVA;
 }
 
 static bool game_block_is_trace_passable(BlockID id)
@@ -618,6 +605,57 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
         last_air_x = block_x;
         last_air_y = block_y;
         last_air_z = block_z;
+    }
+
+    return false;
+}
+
+static bool trace_target_fluid_source(const VoxelWorld *world, const Camera *cam,
+                                      float max_distance, BlockTarget *out)
+{
+    Vec3 dir = camera_forward(cam);
+    bool have_prev_cell = false;
+    int prev_x = 0;
+    int prev_y = 0;
+    int prev_z = 0;
+
+    if (out)
+        memset(out, 0, sizeof(*out));
+
+    for (float distance = 0.0f;
+         distance <= max_distance;
+         distance += BLOCK_TRACE_STEP) {
+        float sample_x = cam->position.x + dir.x * distance;
+        float sample_y = cam->position.y + dir.y * distance;
+        float sample_z = cam->position.z + dir.z * distance;
+        int block_x = (int)floorf(sample_x);
+        int block_y = (int)floorf(sample_y);
+        int block_z = (int)floorf(sample_z);
+        BlockID block;
+
+        if (have_prev_cell &&
+            block_x == prev_x &&
+            block_y == prev_y &&
+            block_z == prev_z)
+            continue;
+
+        prev_x = block_x;
+        prev_y = block_y;
+        prev_z = block_z;
+        have_prev_cell = true;
+
+        block = world_get_block(world, block_x, block_y, block_z);
+        if (game_block_is_fluid_source(block)) {
+            if (out) {
+                out->hit = true;
+                out->hit_x = block_x;
+                out->hit_y = block_y;
+                out->hit_z = block_z;
+            }
+            return true;
+        }
+        if (!game_block_is_trace_passable(block))
+            return false;
     }
 
     return false;
@@ -803,6 +841,175 @@ static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam
 
     world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
     return PLACE_OK;
+}
+
+static bool inventory_can_replace_one_hotbar_item(const SurvivalInventory *inventory,
+                                                  int hotbar_slot,
+                                                  ItemID expected,
+                                                  ItemID replacement)
+{
+    const ItemStack *held;
+
+    if (!inventory || hotbar_slot < 0 ||
+        hotbar_slot >= SURVIVAL_HOTBAR_SLOT_COUNT)
+        return false;
+
+    held = &inventory->storage[hotbar_slot];
+    if (item_stack_is_empty(held) ||
+        held->item != expected ||
+        held->count <= 0)
+        return false;
+    if (held->count == 1)
+        return true;
+
+    for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT; i++) {
+        const ItemStack *stack = &inventory->storage[i];
+
+        if (!item_stack_is_empty(stack) &&
+            stack->item == replacement &&
+            stack->count < ITEM_STACK_MAX)
+            return true;
+    }
+    for (int i = 0; i < SURVIVAL_STORAGE_SLOT_COUNT; i++) {
+        if (i == hotbar_slot)
+            continue;
+        if (item_stack_is_empty(&inventory->storage[i]))
+            return true;
+    }
+
+    return false;
+}
+
+static bool inventory_replace_one_hotbar_item(SurvivalInventory *inventory,
+                                              int hotbar_slot,
+                                              ItemID expected,
+                                              ItemID replacement)
+{
+    ItemStack *held;
+
+    if (!inventory_can_replace_one_hotbar_item(inventory, hotbar_slot,
+                                               expected, replacement))
+        return false;
+
+    held = &inventory->storage[hotbar_slot];
+    if (held->count == 1) {
+        held->item = replacement;
+        held->count = 1;
+        return true;
+    }
+
+    item_stack_remove(held, 1);
+    return survival_inventory_add_item(inventory, replacement, 1) == 0;
+}
+
+static bool try_fill_empty_bucket(VoxelWorld *world,
+                                  const Camera *cam,
+                                  SurvivalInventory *inventory,
+                                  int hotbar_slot,
+                                  Chat *chat)
+{
+    BlockTarget target = {0};
+    BlockID source;
+    ItemID filled_item;
+
+    if (!world || !cam || !inventory)
+        return false;
+    if (!trace_target_fluid_source(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+
+    source = world_get_block(world, target.hit_x, target.hit_y, target.hit_z);
+    if (source == BLOCK_WATER) {
+        filled_item = ITEM_WATER_BUCKET;
+    } else if (source == BLOCK_LAVA) {
+        filled_item = ITEM_LAVA_BUCKET;
+    } else {
+        return false;
+    }
+    if (!inventory_can_replace_one_hotbar_item(inventory, hotbar_slot,
+                                               ITEM_BUCKET, filled_item))
+        return false;
+
+    if (!world_set_block(world, target.hit_x, target.hit_y, target.hit_z,
+                         BLOCK_AIR))
+        return false;
+    if (!inventory_replace_one_hotbar_item(inventory, hotbar_slot,
+                                           ITEM_BUCKET, filled_item)) {
+        world_set_block(world, target.hit_x, target.hit_y, target.hit_z,
+                        source);
+        return false;
+    }
+
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    if (chat)
+        chat_log(chat, "filled %s", item_name(filled_item));
+    return true;
+}
+
+static bool try_empty_filled_bucket(VoxelWorld *world,
+                                    const Camera *cam,
+                                    SurvivalInventory *inventory,
+                                    int hotbar_slot,
+                                    ItemID held_item,
+                                    Chat *chat)
+{
+    BlockTarget target = {0};
+    BlockID fluid;
+    BlockID previous;
+
+    if (!world || !cam || !inventory)
+        return false;
+    if (held_item == ITEM_WATER_BUCKET) {
+        fluid = BLOCK_WATER;
+    } else if (held_item == ITEM_LAVA_BUCKET) {
+        fluid = BLOCK_LAVA;
+    } else {
+        return false;
+    }
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.place_valid)
+        return false;
+    previous = world_get_block(world,
+                               target.place_x,
+                               target.place_y,
+                               target.place_z);
+    if (!block_is_passable(previous))
+        return false;
+    if (!inventory_can_replace_one_hotbar_item(inventory, hotbar_slot,
+                                               held_item, ITEM_BUCKET))
+        return false;
+
+    if (!world_set_block(world,
+                         target.place_x, target.place_y, target.place_z,
+                         fluid))
+        return false;
+    if (!inventory_replace_one_hotbar_item(inventory, hotbar_slot,
+                                           held_item, ITEM_BUCKET)) {
+        world_set_block(world,
+                        target.place_x, target.place_y, target.place_z,
+                        previous);
+        return false;
+    }
+
+    world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
+    if (chat)
+        chat_log(chat, "placed %s", fluid == BLOCK_WATER ? "water" : "lava");
+    return true;
+}
+
+static bool try_use_held_bucket(VoxelWorld *world,
+                                const Camera *cam,
+                                SurvivalInventory *inventory,
+                                int hotbar_slot,
+                                ItemID held_item,
+                                Chat *chat)
+{
+    if (held_item == ITEM_BUCKET)
+        return try_fill_empty_bucket(world, cam, inventory, hotbar_slot, chat);
+    if (held_item == ITEM_WATER_BUCKET || held_item == ITEM_LAVA_BUCKET)
+        return try_empty_filled_bucket(world, cam, inventory, hotbar_slot,
+                                       held_item, chat);
+    return false;
 }
 
 static BlockDoorFacing door_facing_from_camera(const Camera *cam)
@@ -1788,6 +1995,69 @@ static bool execute_give_command(Chat *chat, SurvivalInventory *inventory,
     return true;
 }
 
+static bool execute_items_command(Chat *chat, const GameCommandAst *ast)
+{
+    int count = game_command_give_name_count();
+    int pages;
+    int page;
+    int start;
+    int end;
+
+    if (!chat)
+        return true;
+
+    if (count <= 0) {
+        chat_log(chat, "no giveable item names");
+        return true;
+    }
+
+    pages = (count + COMMAND_ITEMS_PER_PAGE - 1) / COMMAND_ITEMS_PER_PAGE;
+    page = ast ? ast->value.items.page : 1;
+    if (page < 1)
+        page = 1;
+    if (page > pages)
+        page = pages;
+
+    start = (page - 1) * COMMAND_ITEMS_PER_PAGE;
+    end = start + COMMAND_ITEMS_PER_PAGE;
+    if (end > count)
+        end = count;
+
+    chat_log(chat, "items %d/%d:", page, pages);
+    for (int i = start; i < end; i++) {
+        const char *name = game_command_give_name_at(i);
+        if (name)
+            chat_log(chat, "%s", name);
+    }
+    chat_log(chat, "use /give <name> [count]");
+    return true;
+}
+
+static void handle_chat_tab_completion(Chat *chat)
+{
+    char completed[CHAT_LINE_MAX + 1];
+
+    if (!chat || !chat_is_open(chat))
+        return;
+
+    if (!chat->completion_active) {
+        snprintf(chat->completion_base, sizeof(chat->completion_base),
+                 "%s", chat->input);
+        chat->completion_index = 0;
+        chat->completion_active = true;
+    } else {
+        chat->completion_index++;
+    }
+
+    if (game_command_complete(chat->completion_base,
+                              chat->completion_index,
+                              completed, sizeof(completed))) {
+        chat_set_input(chat, completed);
+    } else {
+        chat_reset_completion(chat);
+    }
+}
+
 static bool execute_chat_command(Chat *chat, Player *player,
                                  VoxelWorld *world,
                                  SurvivalInventory *inventory,
@@ -1832,6 +2102,8 @@ static bool execute_chat_command(Chat *chat, Player *player,
         return execute_fill_command(chat, player, world, &parsed.ast);
     case GAME_COMMAND_KIND_GIVE:
         return execute_give_command(chat, inventory, &parsed.ast);
+    case GAME_COMMAND_KIND_ITEMS:
+        return execute_items_command(chat, &parsed.ast);
     case GAME_COMMAND_KIND_KILL:
         if (kill_requested)
             *kill_requested = true;
@@ -1843,6 +2115,7 @@ static bool execute_chat_command(Chat *chat, Player *player,
         chat_log(chat, "/setblock <x> <y> <z> <block>");
         chat_log(chat, "/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>");
         chat_log(chat, "/give [me] <item> [count]");
+        chat_log(chat, "/items [page]");
         chat_log(chat, "/kill");
         return true;
     default:
@@ -3238,21 +3511,25 @@ static void draw_tool_in_hand(RenderContext *ctx, ItemID item, float swing_timer
     float y;
     float size;
     float skew;
+    float swing_left;
+    float swing_down;
 
     if (!ctx || !item_is_tool(item))
         return;
 
     swing = hand_swing_phase(swing_timer);
-    size = 48.0f * s;
-    skew = 13.0f * s + swing * 11.0f * s;
-    x = SCREEN_WIDTH - 96.0f * s - swing * 11.0f * s;
-    y = SCREEN_HEIGHT - 132.0f * s + swing * 23.0f * s;
+    size = 70.0f * s;
+    swing_left = 26.0f * s * swing;
+    swing_down = 22.0f * s * swing;
+    skew = 18.0f * s - 24.0f * s * swing;
+    x = SCREEN_WIDTH - 76.0f * s - swing_left;
+    y = SCREEN_HEIGHT - 92.0f * s + swing_down;
 
     renderer_draw_custom_screen_quad(ctx,
         x + skew,          y,
-        x + size + skew,   y + 5.0f * s,
-        x + size,          y + size,
-        x,                 y + size - 5.0f * s,
+        x + size + skew,   y + 7.0f * s,
+        x + size + 9.0f * s, y + size + 10.0f * s,
+        x - 8.0f * s,       y + size,
         item_texture_id(item),
         QUAD_FLAG_ALPHA_KEY);
 }
@@ -3314,7 +3591,7 @@ static void draw_debug_hud(RenderContext *ctx, const Player *player,
 
 int main(void)
 {
-    int debug_enabled = read_debug_enabled();
+    int debug_enabled = env_flag("DEBUG", false);
     thread_affinity_pin_current("main", "VOXEL_MAIN_CPU", 0);
 
     RenderContext *ctx = renderer_init();
@@ -3336,6 +3613,7 @@ int main(void)
     init_block_types();
     world_init(&world);
     float mouse_sens = read_mouse_sensitivity();
+    float fov_deg = read_camera_fov_degrees();
     int target_fps = read_target_fps();
     long frame_ns = 1000000000L / target_fps;
     int render_distance_chunks = read_render_distance_chunks();
@@ -3355,8 +3633,24 @@ int main(void)
     float inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
     PauseMenuSettings pause_settings = {0};
 
+home_menu_start:
+    chat_init(&chat);
+    pause_menu_init(&pause);
+    memset(&selected_world, 0, sizeof(selected_world));
+    selected_hotbar_slot = 0;
+    selected_hotbar_page = 0;
+    inventory_open = false;
+    furnace_open = false;
+    open_furnace_index = -1;
+    inventory_recipe_page = 0;
+    inventory_cursor_x = SCREEN_WIDTH * 0.5f;
+    inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
+    memset(&pause_settings, 0, sizeof(pause_settings));
+    memset(furnace_states, 0, sizeof(furnace_states));
     survival_inventory_init(&survival_inventory);
     item_entities_init(&item_drops);
+    input_clear_text_queue(&inp);
+    input_clear_mouse(&inp);
 
     if (!run_home_menu(ctx, &inp, target_fps, &selected_world)) {
         input_shutdown(&inp);
@@ -3376,12 +3670,13 @@ int main(void)
         .position = { player.x, player_get_eye_height(&player), player.z },
         .pitch    = -0.3f,  /* negative pitch looks down in renderer.c */
         .yaw      = 0.0f,
-        .depth    = compute_camera_focal_px(),
+        .depth    = camera_focal_px_from_fov(fov_deg),
     };
 
     if (!world_init_infinite_procedural(&world,
                                         selected_world.seed,
                                         selected_world.stone_tries_per_chunk,
+                                        selected_world.desert_lava_pools_enabled,
                                         render_distance_chunks,
                                         player.x,
                                         player.z,
@@ -3400,12 +3695,25 @@ int main(void)
     pause_settings.near_chunk_radius_max = world_render_distance(&world);
     pause_settings.render_distance = world_render_distance(&world);
     pause_settings.render_distance_max = MAX_WORLD_RENDER_DISTANCE_CHUNKS;
+    pause_settings.mouse_sensitivity_percent =
+        mouse_sensitivity_to_percent(mouse_sens);
+    pause_settings.mouse_sensitivity_percent_min = MIN_MOUSE_SENS_PERCENT;
+    pause_settings.mouse_sensitivity_percent_max = MAX_MOUSE_SENS_PERCENT;
+    pause_settings.mouse_sensitivity_percent_step = MOUSE_SENS_PERCENT_STEP;
+    mouse_sens = mouse_sensitivity_from_percent(
+        pause_settings.mouse_sensitivity_percent);
+    pause_settings.fov_degrees_x10 = fov_degrees_to_x10(fov_deg);
+    pause_settings.fov_degrees_x10_min = MIN_FOV_DEG_X10;
+    pause_settings.fov_degrees_x10_max = MAX_FOV_DEG_X10;
+    pause_settings.fov_degrees_x10_step = FOV_DEG_X10_STEP;
+    fov_deg = fov_degrees_from_x10(pause_settings.fov_degrees_x10);
+    cam.depth = camera_focal_px_from_fov(fov_deg);
 
     bool mesh_worker_running = mesh_worker_start(&world);
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page  F/LMB=break  R/RMB=place  Q=drop item  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse\n");
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page/chat autocomplete  F/LMB=break  R/RMB=place  Q=drop item  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse\n");
         printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
@@ -3423,6 +3731,8 @@ int main(void)
                world.meshes_rebuilt_last_stream);
         printf("Mouse sensitivity: %.4f rad/input (set VOXEL_MOUSE_SENS to override)\n",
                mouse_sens);
+        printf("FOV: %.1f degrees (set VOXEL_FOV_DEG=30-150 to override)\n",
+               fov_deg);
         printf("Frame cap: %d FPS (set VOXEL_TARGET_FPS=%d-%d to override)\n",
                target_fps, MIN_TARGET_FPS, MAX_TARGET_FPS);
         printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
@@ -3500,7 +3810,8 @@ int main(void)
     double perf_mesh_drain_ns = 0.0;
     int perf_physics_dropped_steps = 0;
     int status_log_enabled = read_status_log_enabled(debug_enabled);
-    int debug_hud_enabled = read_debug_hud_enabled();
+    int debug_hud_enabled = env_flag("VOXEL_DEBUG_HUD", false);
+    bool return_to_menu_requested = false;
     char fps_text[16] = "fps --";
     int fps_text_len = (int)strlen(fps_text);
     clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -3576,16 +3887,21 @@ int main(void)
             close_furnace_ui(&survival_inventory, &item_drops, &player,
                              furnace_states,
                              &furnace_open, &open_furnace_index);
-        bool pause_exit_requested = false;
+        PauseMenuAction pause_action = PAUSE_MENU_ACTION_NONE;
         if (paused &&
             pause_menu_update(&pause, &inp, &pause_settings,
-                              &pause_exit_requested)) {
+                              &pause_action)) {
             world_set_stream_chunks_per_frame(&world,
                                               pause_settings.stream_chunks_per_frame);
             world_set_near_chunk_radius(&world,
                                         pause_settings.near_chunk_radius);
             world_set_render_distance(&world,
                                       pause_settings.render_distance);
+            mouse_sens = mouse_sensitivity_from_percent(
+                pause_settings.mouse_sensitivity_percent);
+            fov_deg = fov_degrees_from_x10(
+                pause_settings.fov_degrees_x10);
+            cam.depth = camera_focal_px_from_fov(fov_deg);
             pause_settings.stream_chunks_per_frame =
                 world_stream_chunks_per_frame(&world);
             pause_settings.near_chunk_radius =
@@ -3598,8 +3914,11 @@ int main(void)
         }
         if (paused)
             (void)input_consume_menu_select(&inp);
-        if (pause_exit_requested) {
+        if (pause_action == PAUSE_MENU_ACTION_EXIT_GAME) {
             inp.quit = true;
+            break;
+        } else if (pause_action == PAUSE_MENU_ACTION_EXIT_TO_MENU) {
+            return_to_menu_requested = true;
             break;
         }
 
@@ -3642,6 +3961,12 @@ int main(void)
                 char ch = inp.text_queue[i];
                 if (ch == INPUT_TEXT_BACKSPACE)
                     chat_handle_backspace(&chat);
+                else if (ch == INPUT_TEXT_TAB)
+                    handle_chat_tab_completion(&chat);
+                else if (ch == INPUT_TEXT_HISTORY_PREV)
+                    chat_handle_history_prev(&chat);
+                else if (ch == INPUT_TEXT_HISTORY_NEXT)
+                    chat_handle_history_next(&chat);
                 else if (ch == INPUT_TEXT_ENTER) {
                     char submitted[CHAT_LINE_MAX + 1];
 
@@ -4203,6 +4528,14 @@ int main(void)
                                                   &player_food_units,
                                                   &chat)) {
                             /* Food uses the same right-click path as placing. */
+                        } else if (try_use_held_bucket(&world, &cam,
+                                                       &survival_inventory,
+                                                       selected_hotbar_slot,
+                                                       held_item,
+                                                       &chat)) {
+                            break_timer = 0.0f;
+                            break_duration = 0.0f;
+                            break_target_valid = false;
                         } else if (item_is_placeable_block(held_item)) {
                             BlockID held = item_place_block(held_item);
                             PlaceResult pr = held == BLOCK_DOOR ?
@@ -4505,7 +4838,6 @@ int main(void)
 
     if (status_log_enabled)
         printf("\n");
-    input_shutdown(&inp);
     /* Stop gen worker first: it can enqueue mesh-dirty work via finalize,
      * so quiescing it before the mesh worker avoids a final partial mesh
      * round that would just be discarded on shutdown. */
@@ -4514,6 +4846,12 @@ int main(void)
     if (!world_flush(&world))
         fprintf(stderr, "world: failed to flush modified chunks on shutdown\n");
     world_free(&world);
+    if (return_to_menu_requested && !inp.quit) {
+        world_init(&world);
+        goto home_menu_start;
+    }
+
+    input_shutdown(&inp);
     renderer_shutdown(ctx);
     return 0;
 }

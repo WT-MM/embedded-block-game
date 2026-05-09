@@ -8,10 +8,11 @@
 
 #define PAUSE_DIM_PALETTE   14   /* medium grey (0x5c5c5c) */
 #define PAUSE_TEXT_PALETTE  5    /* white */
-#define PAUSE_SETTING_COUNT 3
-#define PAUSE_OPTION_COUNT  4
-#define PAUSE_EXIT_INDEX    3
-#define PAUSE_MAX_LINES 12
+#define PAUSE_SETTING_COUNT 5
+#define PAUSE_OPTION_COUNT  7
+#define PAUSE_EXIT_TO_MENU_INDEX 5
+#define PAUSE_EXIT_GAME_INDEX    6
+#define PAUSE_MAX_LINES 14
 #define PAUSE_LINE_CHARS 72
 
 void pause_menu_init(PauseMenu *pm)
@@ -42,9 +43,29 @@ static bool edge_pressed(bool now, bool *prev)
     return pressed;
 }
 
+static bool adjust_int_setting(int *value, int min_value, int max_value,
+                               int delta)
+{
+    int next;
+
+    if (!value || delta == 0)
+        return false;
+
+    next = *value + delta;
+    if (next < min_value)
+        next = min_value;
+    if (next > max_value)
+        next = max_value;
+    if (next == *value)
+        return false;
+
+    *value = next;
+    return true;
+}
+
 bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                        PauseMenuSettings *settings,
-                       bool *exit_requested)
+                       PauseMenuAction *action)
 {
     bool up;
     bool down;
@@ -63,8 +84,8 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
         return false;
     }
 
-    if (exit_requested)
-        *exit_requested = false;
+    if (action)
+        *action = PAUSE_MENU_ACTION_NONE;
 
     up = inp->look_up || inp->forward;
     down = inp->look_down || inp->back;
@@ -98,6 +119,18 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                 settings->render_distance--;
                 changed = true;
             }
+        } else if (pm->selected_setting == 3) {
+            changed |= adjust_int_setting(
+                &settings->mouse_sensitivity_percent,
+                settings->mouse_sensitivity_percent_min,
+                settings->mouse_sensitivity_percent_max,
+                -settings->mouse_sensitivity_percent_step);
+        } else if (pm->selected_setting == 4) {
+            changed |= adjust_int_setting(
+                &settings->fov_degrees_x10,
+                settings->fov_degrees_x10_min,
+                settings->fov_degrees_x10_max,
+                -settings->fov_degrees_x10_step);
         }
     }
     if (edge_pressed(right, &pm->prev_right)) {
@@ -119,12 +152,28 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                 settings->render_distance++;
                 changed = true;
             }
+        } else if (pm->selected_setting == 3) {
+            changed |= adjust_int_setting(
+                &settings->mouse_sensitivity_percent,
+                settings->mouse_sensitivity_percent_min,
+                settings->mouse_sensitivity_percent_max,
+                settings->mouse_sensitivity_percent_step);
+        } else if (pm->selected_setting == 4) {
+            changed |= adjust_int_setting(
+                &settings->fov_degrees_x10,
+                settings->fov_degrees_x10_min,
+                settings->fov_degrees_x10_max,
+                settings->fov_degrees_x10_step);
         }
     }
-    if (edge_pressed(inp->menu_select_pressed, &pm->prev_select) &&
-        pm->selected_setting == PAUSE_EXIT_INDEX) {
-        if (exit_requested)
-            *exit_requested = true;
+    if (edge_pressed(inp->menu_select_pressed, &pm->prev_select)) {
+        if (pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX) {
+            if (action)
+                *action = PAUSE_MENU_ACTION_EXIT_TO_MENU;
+        } else if (pm->selected_setting == PAUSE_EXIT_GAME_INDEX) {
+            if (action)
+                *action = PAUSE_MENU_ACTION_EXIT_GAME;
+        }
     }
 
     return changed;
@@ -180,8 +229,17 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c RENDER DISTANCE       %d",
              pm->selected_setting == 2 ? '>' : ' ',
              settings ? settings->render_distance : 0);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c MOUSE SENSITIVITY    %d%%",
+             pm->selected_setting == 3 ? '>' : ' ',
+             settings ? settings->mouse_sensitivity_percent : 100);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c FOV                  %d.%d",
+             pm->selected_setting == 4 ? '>' : ' ',
+             settings ? settings->fov_degrees_x10 / 10 : 0,
+             settings ? settings->fov_degrees_x10 % 10 : 0);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT TO MENU",
+             pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX ? '>' : ' ');
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT GAME",
-             pm->selected_setting == PAUSE_EXIT_INDEX ? '>' : ' ');
+             pm->selected_setting == PAUSE_EXIT_GAME_INDEX ? '>' : ' ');
     set_blank_line(lines[line_count++]);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS,
              "W/S SELECT   A/D ADJUST   ENTER USE");

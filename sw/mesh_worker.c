@@ -5,9 +5,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "env_util.h"
 #include "thread_affinity.h"
 
 /*
@@ -64,12 +64,7 @@ static struct {
 
 static bool worker_enabled_from_env(void)
 {
-    const char *value = getenv("VOXEL_MESH_WORKER");
-    if (!value || value[0] == '\0')
-        return true;
-    if (value[0] == '0' && value[1] == '\0')
-        return false;
-    return true;
+    return env_flag("VOXEL_MESH_WORKER", true);
 }
 
 static int mesh_pushes_cap_from_env(void)
@@ -78,15 +73,10 @@ static int mesh_pushes_cap_from_env(void)
     static bool initialized = false;
 
     if (!initialized) {
-        const char *value = getenv("VOXEL_MESH_PUSHES_PER_FRAME");
-
-        if (value && value[0] != '\0') {
-            char *end = NULL;
-            long parsed = strtol(value, &end, 10);
-
-            if (end != value && *end == '\0' && parsed >= 0 && parsed < 4096)
-                cached = (int)parsed;
-        }
+        cached = env_int_or_default("VOXEL_MESH_PUSHES_PER_FRAME",
+                                    -1,
+                                    0,
+                                    4095);
         initialized = true;
     }
 

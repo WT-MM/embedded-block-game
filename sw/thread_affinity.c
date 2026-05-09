@@ -5,11 +5,11 @@
 #endif
 
 #include "thread_affinity.h"
+#include "env_util.h"
 
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #ifdef __linux__
@@ -17,56 +17,30 @@
 #include <unistd.h>
 #endif
 
-static bool env_value_is_false(const char *value)
-{
-    return value &&
-           (strcmp(value, "0") == 0 ||
-            strcmp(value, "false") == 0 ||
-            strcmp(value, "off") == 0 ||
-            strcmp(value, "no") == 0);
-}
-
-static bool env_value_is_true(const char *value)
-{
-    return value &&
-           value[0] != '\0' &&
-           !env_value_is_false(value);
-}
-
 #ifdef __linux__
 static bool affinity_enabled(void)
 {
-    const char *value = getenv("VOXEL_PIN_THREADS");
-
-    if (!value || value[0] == '\0')
-        return false;
-    return env_value_is_true(value);
+    return env_flag("VOXEL_PIN_THREADS", false);
 }
 #endif
 
 static bool affinity_log_enabled(void)
 {
-    const char *value = getenv("VOXEL_AFFINITY_LOG");
-
-    if (value && value[0] != '\0')
-        return env_value_is_true(value);
-    return env_value_is_true(getenv("DEBUG"));
+    return env_flag("VOXEL_AFFINITY_LOG", env_flag("DEBUG", false));
 }
 
 #ifdef __linux__
 static int read_cpu_env(const char *name, int default_cpu)
 {
-    const char *value = name ? getenv(name) : NULL;
-    char *end = NULL;
+    const char *value = env_get_nonempty(name);
     long parsed;
 
-    if (!value || value[0] == '\0')
+    if (!value)
         return default_cpu;
     if (env_value_is_false(value) || strcmp(value, "-1") == 0)
         return -1;
 
-    parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0') || parsed < -1 || parsed > 1023)
+    if (!env_parse_long_value(value, &parsed) || parsed < -1 || parsed > 1023)
         return default_cpu;
     return (int)parsed;
 }

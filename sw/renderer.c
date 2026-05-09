@@ -2,6 +2,7 @@
 #include "world.h"
 #include "gpu_transport.h"
 #include "voxel_gpu.h"
+#include "env_util.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
@@ -627,16 +628,11 @@ static float palette_time_for(float time_seconds)
     static float step_seconds = DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS;
 
     if (!initialized) {
-        const char *value = getenv("VOXEL_SKY_PALETTE_STEP_SECONDS");
-        if (value && value[0] != '\0') {
-            char *end = NULL;
-            float parsed = strtof(value, &end);
-            if (end != value && (!end || *end == '\0') &&
-                parsed >= MIN_SKY_PALETTE_TIME_STEP_SECONDS &&
-                parsed <= MAX_SKY_PALETTE_TIME_STEP_SECONDS) {
-                step_seconds = parsed;
-            }
-        }
+        step_seconds =
+            env_float_or_default("VOXEL_SKY_PALETTE_STEP_SECONDS",
+                                 DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS,
+                                 MIN_SKY_PALETTE_TIME_STEP_SECONDS,
+                                 MAX_SKY_PALETTE_TIME_STEP_SECONDS);
         initialized = 1;
     }
 
@@ -1295,13 +1291,6 @@ static void fit_uv_plane(const Vertex2D v[4], const PlaneBasis *basis,
     uv->one_over_w_dy = to_q16_16(diw_dy);
 }
 
-static int env_flag_default_off(const char *name)
-{
-    const char *value = getenv(name);
-
-    return value && value[0] && strcmp(value, "0") != 0;
-}
-
 /* Conservative software occlusion:
  * a tile is considered covered only when one opaque, z-tested quad contains
  * all four extreme pixel centers. A later quad is culled only when every tile
@@ -1660,10 +1649,9 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
 static bool merged_emit_repeat_uv_enabled(void)
 {
     static int cached = -1;
-    if (cached < 0) {
-        const char *env = getenv("BLOCK_GAME_MERGE_FAR_QUADS");
-        cached = !(env && env[0] == '0' && env[1] == '\0');
-    }
+
+    if (cached < 0)
+        cached = env_flag("BLOCK_GAME_MERGE_FAR_QUADS", true) ? 1 : 0;
     return cached != 0;
 }
 
@@ -2394,8 +2382,8 @@ RenderContext *renderer_init(void)
     ctx->lookup_capacity = 0;
     ctx->translucent_scratch = NULL;
     ctx->translucent_scratch_capacity = 0;
-    ctx->occlusion_enabled = env_flag_default_off("VOXEL_OCCLUSION_CULL") ? 1 : 0;
-    ctx->occlusion_diag = env_flag_default_off("VOXEL_DIAG_OCCLUSION") ? 1 : 0;
+    ctx->occlusion_enabled = env_flag("VOXEL_OCCLUSION_CULL", false) ? 1 : 0;
+    ctx->occlusion_diag = env_flag("VOXEL_DIAG_OCCLUSION", false) ? 1 : 0;
     if (!ctx->submit_buffer) {
         free(ctx->submit_buffer);
         gpu_transport_close(ctx->transport);

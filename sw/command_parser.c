@@ -11,11 +11,19 @@
 #define COMMAND_TOKEN_MAX 32
 #define COMMAND_MAX_TOKENS 10
 #define COMMAND_GIVE_MAX_COUNT 4096
+#define COMMAND_ITEMS_MAX_PAGE 999
 
 typedef struct {
     char text[COMMAND_TOKEN_MAX];
     bool truncated;
 } CommandToken;
+
+typedef struct {
+    char text[COMMAND_TOKEN_MAX];
+    int start;
+    int end;
+    bool truncated;
+} CommandCompleteToken;
 
 static void command_result_init(GameCommandParseResult *result)
 {
@@ -345,6 +353,10 @@ static const CommandItemName COMMAND_ITEM_NAMES[] = {
     { "iron_ingot", ITEM_IRON_INGOT },
     { "gold_ingot", ITEM_GOLD_INGOT },
     { "diamond", ITEM_DIAMOND },
+    { "bucket", ITEM_BUCKET },
+    { "buckets", ITEM_BUCKET },
+    { "water_bucket", ITEM_WATER_BUCKET },
+    { "lava_bucket", ITEM_LAVA_BUCKET },
     { "wood_pickaxe", ITEM_WOOD_PICKAXE },
     { "wooden_pickaxe", ITEM_WOOD_PICKAXE },
     { "stone_pickaxe", ITEM_STONE_PICKAXE },
@@ -391,6 +403,521 @@ static bool parse_item_value(const CommandToken *token, ItemID *out)
     }
 
     return false;
+}
+
+static bool block_name_is_first_for_list(size_t index)
+{
+    BlockID block = COMMAND_BLOCK_NAMES[index].block;
+
+    if (block == BLOCK_AIR)
+        return false;
+    for (size_t i = 0; i < index; i++) {
+        if (COMMAND_BLOCK_NAMES[i].block == block)
+            return false;
+    }
+    return true;
+}
+
+static bool item_name_conflicts_with_block(const char *name)
+{
+    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
+                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+        if (COMMAND_BLOCK_NAMES[i].block != BLOCK_AIR &&
+            block_token_name_equals(name, COMMAND_BLOCK_NAMES[i].name))
+            return true;
+    }
+    return false;
+}
+
+static bool item_name_is_first_for_list(size_t index)
+{
+    ItemID item = COMMAND_ITEM_NAMES[index].item;
+    const char *name = COMMAND_ITEM_NAMES[index].name;
+
+    if (item == ITEM_NONE || item_name_conflicts_with_block(name))
+        return false;
+    for (size_t i = 0; i < index; i++) {
+        if (COMMAND_ITEM_NAMES[i].item == item)
+            return false;
+    }
+    return true;
+}
+
+static bool block_name_is_first_for_completion(size_t index)
+{
+    BlockID block = COMMAND_BLOCK_NAMES[index].block;
+
+    for (size_t i = 0; i < index; i++) {
+        if (COMMAND_BLOCK_NAMES[i].block == block)
+            return false;
+    }
+    return true;
+}
+
+int game_command_give_name_count(void)
+{
+    int count = 0;
+
+    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
+                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+        if (block_name_is_first_for_list(i))
+            count++;
+    }
+    for (size_t i = 0; i < sizeof(COMMAND_ITEM_NAMES) /
+                            sizeof(COMMAND_ITEM_NAMES[0]); i++) {
+        if (item_name_is_first_for_list(i))
+            count++;
+    }
+
+    return count;
+}
+
+const char *game_command_give_name_at(int index)
+{
+    if (index < 0)
+        return NULL;
+
+    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
+                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+        if (!block_name_is_first_for_list(i))
+            continue;
+        if (index == 0)
+            return COMMAND_BLOCK_NAMES[i].name;
+        index--;
+    }
+    for (size_t i = 0; i < sizeof(COMMAND_ITEM_NAMES) /
+                            sizeof(COMMAND_ITEM_NAMES[0]); i++) {
+        if (!item_name_is_first_for_list(i))
+            continue;
+        if (index == 0)
+            return COMMAND_ITEM_NAMES[i].name;
+        index--;
+    }
+
+    return NULL;
+}
+
+#define COMMAND_COMPLETE_MATCH_MAX 128
+
+static const char *COMMAND_ROOT_NAMES[] = {
+    "time",
+    "gamemode",
+    "mode",
+    "gm",
+    "physics",
+    "phys",
+    "setblock",
+    "fill",
+    "blocks",
+    "block",
+    "give",
+    "items",
+    "itemnames",
+    "itemlist",
+    "kill",
+    "help",
+};
+
+static const char *COMMAND_SET_NAME[] = {
+    "set",
+};
+
+static const char *COMMAND_TIME_NAMES[] = {
+    "set",
+    "day",
+    "night",
+};
+
+static const char *COMMAND_TIME_VALUE_NAMES[] = {
+    "day",
+    "night",
+};
+
+static const char *COMMAND_GAMEMODE_NAMES[] = {
+    "set",
+    "survival",
+    "creative",
+    "spectator",
+};
+
+static const char *COMMAND_GAMEMODE_VALUE_NAMES[] = {
+    "survival",
+    "creative",
+    "spectator",
+};
+
+static const char *COMMAND_PHYSICS_ACTION_NAMES[] = {
+    "set",
+    "reset",
+};
+
+static const char *COMMAND_PHYSICS_PROPERTY_NAMES[] = {
+    "gravity",
+    "player_speed",
+    "sprint_multiplier",
+    "jump_velocity",
+    "jump_height",
+    "fly_speed",
+};
+
+static const char *COMMAND_GIVE_PREFIX_NAMES[] = {
+    "me",
+    "player",
+    "self",
+};
+
+static const char *COMMAND_KILL_TARGET_NAMES[] = {
+    "me",
+    "self",
+};
+
+static int tokenize_completion_line(const char *line,
+                                    CommandCompleteToken tokens[COMMAND_MAX_TOKENS])
+{
+    int count = 0;
+    int pos = 0;
+
+    while (line[pos]) {
+        int len = 0;
+
+        while (line[pos] && isspace((unsigned char)line[pos]))
+            pos++;
+        if (!line[pos])
+            break;
+        if (count >= COMMAND_MAX_TOKENS)
+            return -1;
+
+        memset(&tokens[count], 0, sizeof(tokens[count]));
+        tokens[count].start = pos;
+        while (line[pos] && !isspace((unsigned char)line[pos])) {
+            if (len < COMMAND_TOKEN_MAX - 1) {
+                tokens[count].text[len++] =
+                    (char)tolower((unsigned char)line[pos]);
+            } else {
+                tokens[count].truncated = true;
+            }
+            pos++;
+        }
+        tokens[count].end = pos;
+        tokens[count].text[len] = '\0';
+        if (tokens[count].truncated)
+            return -1;
+        count++;
+    }
+
+    return count;
+}
+
+static bool completion_name_matches_prefix(const char *prefix,
+                                           const char *name)
+{
+    while (*prefix) {
+        char pc = (char)tolower((unsigned char)*prefix);
+        char nc = *name;
+
+        if (pc == '-')
+            pc = '_';
+        if (nc == '-')
+            nc = '_';
+        if (pc != nc)
+            return false;
+
+        prefix++;
+        name++;
+    }
+
+    return true;
+}
+
+static bool token_is_command(const CommandCompleteToken *token,
+                             const char *name)
+{
+    return token &&
+           token->text[0] == '/' &&
+           strcmp(token->text + 1, name) == 0;
+}
+
+static bool command_is_physics(const CommandCompleteToken *token)
+{
+    return token_is_command(token, "physics") ||
+           token_is_command(token, "phys");
+}
+
+static bool command_is_gamemode(const CommandCompleteToken *token)
+{
+    return token_is_command(token, "gamemode") ||
+           token_is_command(token, "mode") ||
+           token_is_command(token, "gm");
+}
+
+static bool command_is_blocks(const CommandCompleteToken *token)
+{
+    return token_is_command(token, "blocks") ||
+           token_is_command(token, "block");
+}
+
+static bool token_is_give_target(const CommandCompleteToken *token)
+{
+    return token &&
+           (strcmp(token->text, "me") == 0 ||
+            strcmp(token->text, "self") == 0 ||
+            strcmp(token->text, "player") == 0);
+}
+
+static int add_completion_match(const char **matches, int count,
+                                const char *prefix, const char *candidate)
+{
+    if (count >= COMMAND_COMPLETE_MATCH_MAX)
+        return count;
+    if (completion_name_matches_prefix(prefix, candidate))
+        matches[count++] = candidate;
+    return count;
+}
+
+static int add_completion_array_matches(const char **matches, int count,
+                                        const char *prefix,
+                                        const char *const *names,
+                                        size_t name_count)
+{
+    for (size_t i = 0; i < name_count; i++)
+        count = add_completion_match(matches, count, prefix, names[i]);
+
+    return count;
+}
+
+static int add_block_completion_matches(const char **matches, int count,
+                                        const char *prefix)
+{
+    for (size_t i = 0; i < sizeof(COMMAND_BLOCK_NAMES) /
+                            sizeof(COMMAND_BLOCK_NAMES[0]); i++) {
+        if (block_name_is_first_for_completion(i)) {
+            count = add_completion_match(matches, count, prefix,
+                                         COMMAND_BLOCK_NAMES[i].name);
+        }
+    }
+
+    return count;
+}
+
+static int add_give_completion_matches(const char **matches, int count,
+                                       const char *prefix)
+{
+    int give_count = game_command_give_name_count();
+
+    for (int i = 0; i < give_count; i++) {
+        const char *name = game_command_give_name_at(i);
+
+        if (name)
+            count = add_completion_match(matches, count, prefix, name);
+    }
+
+    return count;
+}
+
+static bool complete_with_matches(const char *line, int line_len,
+                                  int target_start, int target_end,
+                                  const char *namespace_prefix,
+                                  const char **matches, int match_count,
+                                  int cycle_index, char *out, int out_size)
+{
+    char replacement[COMMAND_TOKEN_MAX + 16];
+    const char *selected;
+    int selected_index;
+    int replacement_len;
+    int after_len;
+
+    if (match_count <= 0 || !out || out_size <= 0)
+        return false;
+
+    if (cycle_index < 0)
+        cycle_index = 0;
+    selected_index = cycle_index % match_count;
+    selected = matches[selected_index];
+
+    if (namespace_prefix && namespace_prefix[0]) {
+        replacement_len = snprintf(replacement, sizeof(replacement),
+                                   "%s%s", namespace_prefix, selected);
+    } else {
+        replacement_len = snprintf(replacement, sizeof(replacement),
+                                   "%s", selected);
+    }
+    if (replacement_len < 0 ||
+        replacement_len >= (int)sizeof(replacement))
+        return false;
+
+    after_len = line_len - target_end;
+    if (target_start + replacement_len + after_len >= out_size)
+        return false;
+
+    memcpy(out, line, (size_t)target_start);
+    memcpy(out + target_start, replacement, (size_t)replacement_len);
+    memcpy(out + target_start + replacement_len,
+           line + target_end, (size_t)after_len);
+    out[target_start + replacement_len + after_len] = '\0';
+    return true;
+}
+
+bool game_command_complete(const char *line, int cycle_index,
+                           char *out, int out_size)
+{
+    CommandCompleteToken tokens[COMMAND_MAX_TOKENS];
+    const char *matches[COMMAND_COMPLETE_MATCH_MAX];
+    const char *prefix;
+    const char *match_prefix;
+    const char *namespace_prefix = "";
+    int count;
+    int context_count;
+    int target_start;
+    int target_end;
+    int line_len;
+    int match_count = 0;
+    char root_replacements[COMMAND_COMPLETE_MATCH_MAX][COMMAND_TOKEN_MAX];
+    bool trailing_space;
+
+    if (!line || !out || out_size <= 0)
+        return false;
+
+    line_len = (int)strlen(line);
+    count = tokenize_completion_line(line, tokens);
+    if (count < 0)
+        return false;
+
+    trailing_space = line_len > 0 &&
+                     isspace((unsigned char)line[line_len - 1]);
+    if (count == 0)
+        return false;
+
+    if (trailing_space) {
+        prefix = "";
+        context_count = count;
+        target_start = line_len;
+        target_end = line_len;
+    } else {
+        prefix = tokens[count - 1].text;
+        context_count = count - 1;
+        target_start = tokens[count - 1].start;
+        target_end = tokens[count - 1].end;
+    }
+
+    if (context_count == 0) {
+        const char *root_prefix = prefix;
+
+        if (root_prefix[0] != '/')
+            return false;
+        root_prefix++;
+        for (size_t i = 0; i < sizeof(COMMAND_ROOT_NAMES) /
+                                sizeof(COMMAND_ROOT_NAMES[0]); i++) {
+            if (completion_name_matches_prefix(root_prefix,
+                                               COMMAND_ROOT_NAMES[i])) {
+                if (match_count >= COMMAND_COMPLETE_MATCH_MAX)
+                    break;
+                snprintf(root_replacements[match_count],
+                         sizeof(root_replacements[match_count]),
+                         "/%s", COMMAND_ROOT_NAMES[i]);
+                matches[match_count] = root_replacements[match_count];
+                match_count++;
+            }
+        }
+        return complete_with_matches(line, line_len, target_start, target_end,
+                                     "", matches, match_count, cycle_index,
+                                     out, out_size);
+    }
+
+    if (tokens[0].text[0] != '/' || tokens[0].text[1] == '\0')
+        return false;
+
+    match_prefix = prefix;
+    if (strncmp(match_prefix, "minecraft:", 10) == 0) {
+        namespace_prefix = "minecraft:";
+        match_prefix += 10;
+    }
+
+    if (token_is_command(&tokens[0], "time")) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix, COMMAND_TIME_NAMES,
+                sizeof(COMMAND_TIME_NAMES) / sizeof(COMMAND_TIME_NAMES[0]));
+        } else if (context_count == 2 &&
+                   strcmp(tokens[1].text, "set") == 0) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix, COMMAND_TIME_VALUE_NAMES,
+                sizeof(COMMAND_TIME_VALUE_NAMES) /
+                sizeof(COMMAND_TIME_VALUE_NAMES[0]));
+        }
+    } else if (command_is_gamemode(&tokens[0])) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix, COMMAND_GAMEMODE_NAMES,
+                sizeof(COMMAND_GAMEMODE_NAMES) /
+                sizeof(COMMAND_GAMEMODE_NAMES[0]));
+        } else if (context_count == 2 &&
+                   strcmp(tokens[1].text, "set") == 0) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix,
+                COMMAND_GAMEMODE_VALUE_NAMES,
+                sizeof(COMMAND_GAMEMODE_VALUE_NAMES) /
+                sizeof(COMMAND_GAMEMODE_VALUE_NAMES[0]));
+        }
+    } else if (command_is_physics(&tokens[0])) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix,
+                COMMAND_PHYSICS_ACTION_NAMES,
+                sizeof(COMMAND_PHYSICS_ACTION_NAMES) /
+                sizeof(COMMAND_PHYSICS_ACTION_NAMES[0]));
+        } else if (context_count == 2 &&
+                   strcmp(tokens[1].text, "set") == 0) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix,
+                COMMAND_PHYSICS_PROPERTY_NAMES,
+                sizeof(COMMAND_PHYSICS_PROPERTY_NAMES) /
+                sizeof(COMMAND_PHYSICS_PROPERTY_NAMES[0]));
+        }
+    } else if (token_is_command(&tokens[0], "setblock")) {
+        if (context_count == 4)
+            match_count = add_block_completion_matches(
+                matches, match_count, match_prefix);
+    } else if (token_is_command(&tokens[0], "fill")) {
+        if (context_count == 7)
+            match_count = add_block_completion_matches(
+                matches, match_count, match_prefix);
+    } else if (command_is_blocks(&tokens[0])) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix, COMMAND_SET_NAME,
+                sizeof(COMMAND_SET_NAME) / sizeof(COMMAND_SET_NAME[0]));
+        } else if (context_count >= 2 &&
+                   strcmp(tokens[1].text, "set") == 0 &&
+                   (context_count == 5 || context_count == 8)) {
+            match_count = add_block_completion_matches(
+                matches, match_count, match_prefix);
+        }
+    } else if (token_is_command(&tokens[0], "give")) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix,
+                COMMAND_GIVE_PREFIX_NAMES,
+                sizeof(COMMAND_GIVE_PREFIX_NAMES) /
+                sizeof(COMMAND_GIVE_PREFIX_NAMES[0]));
+            match_count = add_give_completion_matches(
+                matches, match_count, match_prefix);
+        } else if (context_count == 2 && token_is_give_target(&tokens[1])) {
+            match_count = add_give_completion_matches(
+                matches, match_count, match_prefix);
+        }
+    } else if (token_is_command(&tokens[0], "kill")) {
+        if (context_count == 1) {
+            match_count = add_completion_array_matches(
+                matches, match_count, match_prefix,
+                COMMAND_KILL_TARGET_NAMES,
+                sizeof(COMMAND_KILL_TARGET_NAMES) /
+                sizeof(COMMAND_KILL_TARGET_NAMES[0]));
+        }
+    }
+
+    return complete_with_matches(line, line_len, target_start, target_end,
+                                 namespace_prefix, matches, match_count,
+                                 cycle_index, out, out_size);
 }
 
 static GameCommandParseStatus parse_time_command(
@@ -665,6 +1192,33 @@ static GameCommandParseStatus parse_give_command(
     return result->status;
 }
 
+static GameCommandParseStatus parse_items_command(
+    const CommandToken tokens[COMMAND_MAX_TOKENS],
+    int count,
+    GameCommandParseResult *result)
+{
+    long page = 1;
+
+    if (count > 2) {
+        command_set_error(result, GAME_COMMAND_PARSE_BAD_SYNTAX,
+                          "usage: /items [page]");
+        return result->status;
+    }
+
+    if (count == 2 &&
+        !parse_long_text(tokens[1].text, 1, COMMAND_ITEMS_MAX_PAGE, &page)) {
+        command_set_error(result, GAME_COMMAND_PARSE_BAD_VALUE,
+                          "page must be 1..%d", COMMAND_ITEMS_MAX_PAGE);
+        return result->status;
+    }
+
+    result->status = GAME_COMMAND_PARSE_OK;
+    result->ast.kind = GAME_COMMAND_KIND_ITEMS;
+    result->ast.action = GAME_COMMAND_ACTION_NONE;
+    result->ast.value.items.page = (int)page;
+    return result->status;
+}
+
 static GameCommandParseStatus parse_kill_command(
     const CommandToken tokens[COMMAND_MAX_TOKENS],
     int count,
@@ -740,6 +1294,10 @@ GameCommandParseStatus game_command_parse(const char *line,
         parse_blocks_command(tokens, count, &result);
     } else if (strcmp(name, "give") == 0) {
         parse_give_command(tokens, count, &result);
+    } else if (strcmp(name, "items") == 0 ||
+               strcmp(name, "itemnames") == 0 ||
+               strcmp(name, "itemlist") == 0) {
+        parse_items_command(tokens, count, &result);
     } else if (strcmp(name, "kill") == 0) {
         parse_kill_command(tokens, count, &result);
     } else if (strcmp(name, "help") == 0) {

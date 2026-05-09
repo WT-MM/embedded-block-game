@@ -89,7 +89,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_GLASS,
     BLOCK_LAMP,
     BLOCK_LEAVES,
-    BLOCK_WATER,
+    BLOCK_AIR,
 };
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
@@ -891,6 +891,74 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
     }
 }
 
+static void draw_healthbar(RenderContext *ctx)
+{
+    const float s = HUD_SCALE;
+    const float slot_size = 20.0f * s;
+    const float gap = 4.0f * s;
+    const float total_width =
+        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
+    const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
+
+    for (int i = 0; i < 10; i++) {
+        float x0 = slot_left + (float)i * 8.0f * s;
+        float y0 = health_top;
+        float x1 = x0 + 7.0f * s;
+        float y1 = y0 + 7.0f * s;
+        
+        renderer_fill_rect(ctx, x0, y0, x1, y1, 14, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x1 - 1.0f * s, y1 - 1.0f * s, 6, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x0 + 3.0f * s, y0 + 3.0f * s, 5, 0);
+    }
+}
+
+static void draw_hungerbar(RenderContext *ctx)
+{
+    const float s = HUD_SCALE;
+    const float slot_size = 20.0f * s;
+    const float gap = 4.0f * s;
+    const float total_width =
+        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+    const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
+    const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
+
+    float hunger_right = slot_left + total_width;
+
+    for (int i = 0; i < 10; i++) {
+        float x1 = hunger_right - (float)i * 8.0f * s;
+        float x0 = x1 - 7.0f * s;
+        float y0 = health_top;
+        float y1 = y0 + 7.0f * s;
+        
+        renderer_fill_rect(ctx, x0, y0, x1, y1, 14, 0);
+        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
+                           x1 - 1.0f * s, y1 - 1.0f * s, 2, 0);
+    }
+}
+
+static void draw_player_hand(RenderContext *ctx, int selected_slot)
+{
+    BlockID type = HOTBAR_BLOCKS[selected_slot];
+    const float s = HUD_SCALE;
+    const float hand_size = 64.0f * s;
+    float x0 = SCREEN_WIDTH - hand_size + 16.0f * s;
+    float y0 = SCREEN_HEIGHT - hand_size + 16.0f * s;
+    float x1 = x0 + hand_size;
+    float y1 = y0 + hand_size;
+
+    if (type == BLOCK_AIR) {
+        // Draw bare hand (skin-colored block, palette index 20)
+        renderer_fill_rect(ctx, x0, y0, x1, y1, 20, 0);
+        return;
+    }
+
+    renderer_draw_screen_tile(ctx, x0, y0, x1, y1,
+                              block_face_texture_id(type, FACE_FRONT), 0);
+}
+
 /* Debug HUD: player position, chunk coords, render distance, loaded chunks.
  * Toggled with F3 or VOXEL_DEBUG_HUD=1. Drawn top-left below the FPS counter
  * using the same drop-shadow text style. Also draws 3D chunk border lines. */
@@ -1319,9 +1387,18 @@ int main(void)
         int sky_quads = renderer_draw_sky(ctx, world_time);
         int quads = renderer_draw_world(ctx, &world, world_time);
         chat_draw(&chat, ctx);
-        if (!paused && !chat_is_open(&chat))
-            draw_hotbar(ctx, selected_hotbar_slot);
-        renderer_draw_crosshair(ctx);
+        if (!paused && !chat_is_open(&chat)) {
+            if (player.mode == PLAYER_MODE_CREATIVE) {
+                draw_hotbar(ctx, selected_hotbar_slot);
+                renderer_draw_crosshair(ctx);
+                draw_player_hand(ctx, selected_hotbar_slot);
+            } else if (player.mode == PLAYER_MODE_SURVIVAL) {
+                draw_healthbar(ctx);
+                draw_hungerbar(ctx);
+                renderer_draw_crosshair(ctx);
+                draw_player_hand(ctx, selected_hotbar_slot);
+            }
+        }
         pause_menu_draw(&pause, ctx, &pause_settings);
         if (fps_text_len > 0) {
             chat_draw_text(ctx, fps_text, fps_text_len, 13.0f, 13.0f, 0);

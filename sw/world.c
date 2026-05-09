@@ -3300,8 +3300,9 @@ int world_chunk_capacity(const VoxelWorld *world)
  *   Pass 3 - For each snapshot cell: try to flow straight down (gravity
  *            priority, places a level-1 flow); otherwise spread laterally
  *            into air at level+1. If any immediate side cell drops downward,
- *            only those drop cells receive water, so streams pour into holes
- *            instead of skipping across them.
+ *            only those drop cells receive water, and they get the first
+ *            falling-column block in the same tick so water never exists as a
+ *            suspended surface over an empty hole.
  * ----------------------------------------------------------------------- */
 #define WATER_MAX_LEVEL          7   /* Minecraft level cap; level 7 = terminal */
 /* Active-cell snapshot capacity. Each entry is 16 bytes, so 4096 entries =
@@ -3414,6 +3415,29 @@ static bool water_cell_can_spread_locked(const VoxelWorld *world,
     }
 
     return false;
+}
+
+static bool water_set_falling_lateral_locked(VoxelWorld *world,
+                                             int wx, int wy, int wz,
+                                             uint8_t lateral_level,
+                                             WaterTickStats *stats)
+{
+    bool placed = false;
+
+    if (water_set_flow_locked(world, wx, wy, wz, lateral_level)) {
+        placed = true;
+        if (stats)
+            stats->spread_placed++;
+    }
+    if (wy > 0 &&
+        world_get_block(world, wx, wy - 1, wz) == BLOCK_AIR &&
+        water_set_flow_locked(world, wx, wy - 1, wz, 1)) {
+        placed = true;
+        if (stats)
+            stats->spread_placed++;
+    }
+
+    return placed;
 }
 
 bool world_water_tick(VoxelWorld *world)
@@ -3561,7 +3585,11 @@ bool world_water_tick(VoxelWorld *world)
                 continue;
             if (world_get_block(world, nx, c.wy, nz) != BLOCK_AIR)
                 continue;
-            if (water_set_flow_locked(world, nx, c.wy, nz, next_level)) {
+            if (downhill[d]) {
+                if (water_set_falling_lateral_locked(world, nx, c.wy, nz,
+                                                     next_level, &stats))
+                    changed = true;
+            } else if (water_set_flow_locked(world, nx, c.wy, nz, next_level)) {
                 changed = true;
                 stats.spread_placed++;
             }

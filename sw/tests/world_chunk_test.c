@@ -195,7 +195,11 @@ int main(void)
         return check_failed("water test fixture build failed");
     if (!world_set_block(&world, water_x, water_y, water_z, BLOCK_WATER))
         return check_failed("water source placement failed");
-    for (int i = 0; i < 5; i++)
+    world_water_tick(&world);
+    if (world_get_block(&world, water_x + 1, water_y, water_z) != BLOCK_WATER_FLOW ||
+        world_get_block(&world, water_x + 1, water_floor_y, water_z) != BLOCK_WATER_FLOW)
+        return check_failed("water left a suspended surface over the hole");
+    for (int i = 0; i < 4; i++)
         world_water_tick(&world);
     if (world_get_block(&world, water_x + 1, water_y, water_z) != BLOCK_WATER_FLOW ||
         world_get_block(&world, water_x + 1, water_floor_y, water_z) != BLOCK_WATER_FLOW)

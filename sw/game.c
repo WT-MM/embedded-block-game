@@ -1227,7 +1227,7 @@ int main(void)
     float water_tick_accumulator = 0.0f;
     float break_timer = 0.0f;
     BlockTarget break_target = {0};
-#define WATER_TICK_INTERVAL 0.25f  /* 5 game ticks @ 20 ticks/s, like Minecraft */
+#define WATER_TICK_INTERVAL 0.75f  /* Slower visible spread: one water step every 750 ms. */
     int perf_frames = 0;
     int perf_quads = 0;
     int perf_sky_quads = 0;
@@ -1265,7 +1265,8 @@ int main(void)
         physics_accumulator += frame_dt;
         water_tick_accumulator += frame_dt;
 
-        /* Minecraft-style water simulation: one tick every 250 ms. */
+        /* Minecraft-style water simulation: intentionally slower than block
+         * placement so streams grow visibly instead of flooding instantly. */
         if (water_tick_accumulator >= WATER_TICK_INTERVAL) {
             water_tick_accumulator -= WATER_TICK_INTERVAL;
             world_water_tick(&world);

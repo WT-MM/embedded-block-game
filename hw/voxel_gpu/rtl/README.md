@@ -11,9 +11,13 @@ Files
 
   * `voxel_gpu.sv` - top-level Avalon-MM peripheral, descriptor FIFO, main
     engine FSM, pixel pipeline, SDRAM arbitration, and VGA scanout wiring.
+  * `voxel_raster_math.sv` - stateless raster setup and two-pixel draw-loop
+    stepping math used by `ST_SETUP` / `ST_DRAW`.
+  * `voxel_recip_math.sv` - stateless one-over-w normalization,
+    reciprocal-LUT interpolation, and depth denormalization helpers.
+  * `voxel_fog_blend.sv` - stateless per-lane fog and translucency blending.
   * `voxel_raster_helpers.svh` - pure helper functions for coordinate clamps,
-    band math, sky-gradient indexing, reciprocal setup, and explicit signed
-    extension.
+    band math, sky-gradient indexing, and texture-coordinate clamps.
   * `voxel_color_helpers.svh` - pure helper functions for RGB565 conversion,
     alpha blending, scanout channel expansion, and palette light-bank remapping.
   * `voxel_sdp_ram.sv` - small RAM wrappers used by the band caches.
@@ -28,9 +32,10 @@ Main Data Flow
    slave interface.
 2. `ST_FETCH` collects one descriptor into `desc_words`.
 3. `ST_SETUP` converts the descriptor into edge functions, depth gradients, and
-   perspective-correct UV gradients.
-4. `ST_DRAW` walks the descriptor bounding box two pixels per cycle. Pixels flow
-   through reciprocal, texture, palette, fog, and commit stages.
+   perspective-correct UV gradients through `voxel_raster_setup`.
+4. `ST_DRAW` walks the descriptor bounding box two pixels per cycle through
+   `voxel_draw_step`. Pixels flow through reciprocal, texture, palette, fog,
+   and commit stages.
 5. Color/Z commits update the resident band cache. Untouched color pixels are
    lazy-cleared by treating `Z_CLEAR_SENTINEL` as sky/clear color at flush time.
 6. Dirty band caches flush to the inactive SDRAM frame. `FLIP` makes the
@@ -69,7 +74,7 @@ For a quick walkthrough, follow these landmarks in `voxel_gpu.sv`:
   * Header comment: high-level architecture and reading map.
   * `engine_state_t`: lifecycle of one descriptor and one band cache.
   * `desc_*` wires: how packed descriptor words become raster inputs.
-  * `edge_next_pair*` / `edge_next_row*`: the two-pixel draw loop stepping.
-  * `ST_DRAW`: pixel pipeline staging.
+  * `raster_setup` / `draw_step`: descriptor setup and two-pixel stepping.
+  * `ST_DRAW`: pixel pipeline staging and valid-bit movement.
   * `ST_CACHE_*`: cache init/load/flush lifecycle.
   * bottom perf-counter block: how software measures draw/load/flush time.

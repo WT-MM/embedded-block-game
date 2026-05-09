@@ -7,6 +7,9 @@ component RTL, generated assets, and asset generators together.
 ## Layout
 
 - `rtl/voxel_gpu.sv` - top-level Avalon/VGA/SDRAM GPU peripheral.
+- `rtl/voxel_raster_math.sv` - stateless raster setup and draw-step math.
+- `rtl/voxel_recip_math.sv` - stateless reciprocal pipeline math.
+- `rtl/voxel_fog_blend.sv` - stateless fog/translucency blend math.
 - `rtl/voxel_sdp_ram.sv` - explicit M10K simple dual-port RAM wrapper.
 - `rtl/voxel_texture_rom.sv` - explicit M10K texture atlas ROM.
 - `rtl/voxel_vga_counters.sv` - 640x480 VGA timing generator.

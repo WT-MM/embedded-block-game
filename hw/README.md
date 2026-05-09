@@ -141,17 +141,25 @@ VGA reads the active SDRAM frame through line buffers.
 
 RTL source layout
 -----------------
-The main renderer remains in `voxel_gpu/rtl/voxel_gpu.sv`. Small leaf helpers
-that do not own state-machine control can live in `.svh` includes:
+The main renderer remains in `voxel_gpu/rtl/voxel_gpu.sv`. Stateless leaf
+modules own repeated arithmetic, while the main file keeps the FSM and pipeline
+timing visible:
 
+  * `voxel_gpu/rtl/voxel_raster_math.sv` for raster setup and two-pixel draw
+    stepping.
+  * `voxel_gpu/rtl/voxel_recip_math.sv` for one-over-w normalization,
+    reciprocal interpolation, and depth denormalization.
+  * `voxel_gpu/rtl/voxel_fog_blend.sv` for per-lane fog/translucency blending.
   * `voxel_gpu/rtl/voxel_raster_helpers.svh` for clamps, band math, sky row
-    helpers, texture-coordinate clamps, and explicit sign-extension helpers.
+    helpers, and texture-coordinate clamps.
   * `voxel_gpu/rtl/voxel_color_helpers.svh` for RGB565 conversion, blending,
     scanout channel expansion, and light-bank palette addressing.
 
-The hardware `Makefile` includes both `.sv` and `.svh` sources in Qsys/tar
-dependencies. For a teammate-oriented walkthrough of the RTL, start with
-`voxel_gpu/rtl/README.md`.
+The hardware `Makefile` includes `.sv`, `.svh`, and RTL docs in Qsys/tar
+dependencies. The Platform Designer component file `voxel_gpu_hw.tcl` must also
+list authored SystemVerilog and SystemVerilog include files explicitly so Qsys
+copies them into `soc_system/synthesis/submodules`. For a teammate-oriented
+walkthrough of the RTL, start with `voxel_gpu/rtl/README.md`.
 
 Recommended bring-up order
 --------------------------

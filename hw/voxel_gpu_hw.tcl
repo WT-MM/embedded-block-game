@@ -42,6 +42,11 @@ set_fileset_property QUARTUS_SYNTH TOP_LEVEL voxel_gpu
 set_fileset_property QUARTUS_SYNTH ENABLE_RELATIVE_INCLUDE_PATHS false
 set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
 add_fileset_file voxel_gpu/rtl/voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_gpu.sv TOP_LEVEL_FILE
+add_fileset_file voxel_gpu/rtl/voxel_raster_helpers.svh SYSTEM_VERILOG_INCLUDE PATH voxel_gpu/rtl/voxel_raster_helpers.svh
+add_fileset_file voxel_gpu/rtl/voxel_color_helpers.svh SYSTEM_VERILOG_INCLUDE PATH voxel_gpu/rtl/voxel_color_helpers.svh
+add_fileset_file voxel_gpu/rtl/voxel_raster_math.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_raster_math.sv
+add_fileset_file voxel_gpu/rtl/voxel_recip_math.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_recip_math.sv
+add_fileset_file voxel_gpu/rtl/voxel_fog_blend.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_fog_blend.sv
 add_fileset_file voxel_gpu/rtl/voxel_sdp_ram.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_sdp_ram.sv
 add_fileset_file voxel_gpu/rtl/voxel_texture_rom.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_texture_rom.sv
 add_fileset_file voxel_gpu/rtl/voxel_vga_counters.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_vga_counters.sv

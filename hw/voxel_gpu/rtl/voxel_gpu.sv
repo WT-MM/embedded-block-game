@@ -23,8 +23,8 @@
 //      color/Z commit. Valid bits move alongside data through every stage.
 //   4. SDRAM background flush and VGA scanout run beside the main FSM. Most
 //      "weird" gates below protect ownership between those concurrent users.
-//   5. Helper `.svh` files contain pure math/color helpers only; stateful
-//      timing stays in this module so the control flow remains visible here.
+//   5. Leaf helper modules/`.svh` files contain pure math/color helpers only;
+//      stateful timing stays in this module so the control flow remains visible.
 
 module voxel_gpu (
     input  logic        clk,
@@ -1323,49 +1323,55 @@ module voxel_gpu (
     wire [9:0] desc_x_start_even = {desc_x_min[9:1], 1'b0};
     wire [9:0] draw_x_start_even = {draw_x_min[9:1], 1'b0};
     wire [9:0] draw_x_next = draw_x_cur + 10'd1;
-    wire signed [10:0] setup_start_x = $signed({1'b0, draw_x_start_even});
-    wire signed  [9:0] setup_start_y = $signed({1'b0, draw_y_min});
-    /*
-     * Keep the whole edge-function expression in signed arithmetic.
-     * A manual sign-extension concat here becomes an unsigned operand,
-     * which can flip the entire add tree into unsigned math and break
-     * negative edge coefficients.
-     */
-    wire signed [63:0] edge_ax0 = $signed(edge_A[0]) * setup_start_x;
-    wire signed [63:0] edge_by0 = $signed(edge_B[0]) * setup_start_y;
-    wire signed [63:0] edge_c0  = sext32_to_s64(edge_C[0]);
-    wire signed [63:0] edge_ax1 = $signed(edge_A[1]) * setup_start_x;
-    wire signed [63:0] edge_by1 = $signed(edge_B[1]) * setup_start_y;
-    wire signed [63:0] edge_c1  = sext32_to_s64(edge_C[1]);
-    wire signed [63:0] edge_ax2 = $signed(edge_A[2]) * setup_start_x;
-    wire signed [63:0] edge_by2 = $signed(edge_B[2]) * setup_start_y;
-    wire signed [63:0] edge_c2  = sext32_to_s64(edge_C[2]);
-    wire signed [63:0] edge_ax3 = $signed(edge_A[3]) * setup_start_x;
-    wire signed [63:0] edge_by3 = $signed(edge_B[3]) * setup_start_y;
-    wire signed [63:0] edge_c3  = sext32_to_s64(edge_C[3]);
-    wire signed [63:0] edge_eval0 = edge_ax0 + edge_by0 + edge_c0;
-    wire signed [63:0] edge_eval1 = edge_ax1 + edge_by1 + edge_c1;
-    wire signed [63:0] edge_eval2 = edge_ax2 + edge_by2 + edge_c2;
-    wire signed [63:0] edge_eval3 = edge_ax3 + edge_by3 + edge_c3;
-    wire signed [63:0] edge_A0_ext = sext32_to_s64(edge_A[0]);
-    wire signed [63:0] edge_A1_ext = sext32_to_s64(edge_A[1]);
-    wire signed [63:0] edge_A2_ext = sext32_to_s64(edge_A[2]);
-    wire signed [63:0] edge_A3_ext = sext32_to_s64(edge_A[3]);
-    wire signed [63:0] edge_B0_ext = sext32_to_s64(edge_B[0]);
-    wire signed [63:0] edge_B1_ext = sext32_to_s64(edge_B[1]);
-    wire signed [63:0] edge_B2_ext = sext32_to_s64(edge_B[2]);
-    wire signed [63:0] edge_B3_ext = sext32_to_s64(edge_B[3]);
-    wire signed [63:0] edge_A0_step2 = edge_A0_ext + edge_A0_ext;
-    wire signed [63:0] edge_A1_step2 = edge_A1_ext + edge_A1_ext;
-    wire signed [63:0] edge_A2_step2 = edge_A2_ext + edge_A2_ext;
-    wire signed [63:0] edge_A3_step2 = edge_A3_ext + edge_A3_ext;
+    wire signed [63:0] edge_eval0;
+    wire signed [63:0] edge_eval1;
+    wire signed [63:0] edge_eval2;
+    wire signed [63:0] edge_eval3;
+    wire signed [47:0] draw_z_start_val;
+    wire signed [63:0] draw_uw_start_val;
+    wire signed [63:0] draw_vw_start_val;
+    wire signed [63:0] draw_iw_start_val;
+
+    voxel_raster_setup raster_setup (
+        .draw_x_start_even (draw_x_start_even),
+        .draw_y_min        (draw_y_min),
+        .draw_x_min        (draw_x_min),
+        .draw_z0           (draw_z0),
+        .draw_dz_dx        (draw_dz_dx),
+        .draw_uw_0         (draw_uw_0),
+        .draw_uw_dx        (draw_uw_dx),
+        .draw_vw_0         (draw_vw_0),
+        .draw_vw_dx        (draw_vw_dx),
+        .draw_iw_0         (draw_iw_0),
+        .draw_iw_dx        (draw_iw_dx),
+        .edge_a0           (edge_A[0]),
+        .edge_a1           (edge_A[1]),
+        .edge_a2           (edge_A[2]),
+        .edge_a3           (edge_A[3]),
+        .edge_b0           (edge_B[0]),
+        .edge_b1           (edge_B[1]),
+        .edge_b2           (edge_B[2]),
+        .edge_b3           (edge_B[3]),
+        .edge_c0           (edge_C[0]),
+        .edge_c1           (edge_C[1]),
+        .edge_c2           (edge_C[2]),
+        .edge_c3           (edge_C[3]),
+        .edge_eval0        (edge_eval0),
+        .edge_eval1        (edge_eval1),
+        .edge_eval2        (edge_eval2),
+        .edge_eval3        (edge_eval3),
+        .z_start_val       (draw_z_start_val),
+        .uw_start_val      (draw_uw_start_val),
+        .vw_start_val      (draw_vw_start_val),
+        .iw_start_val      (draw_iw_start_val)
+    );
 
     wire draw_inside = (edge_cur_val[0] >= 0) && (edge_cur_val[1] >= 0) &&
                        (edge_cur_val[2] >= 0) && (edge_cur_val[3] >= 0);
-    wire signed [63:0] edge_cur_val_o0 = edge_cur_val[0] + edge_A0_ext;
-    wire signed [63:0] edge_cur_val_o1 = edge_cur_val[1] + edge_A1_ext;
-    wire signed [63:0] edge_cur_val_o2 = edge_cur_val[2] + edge_A2_ext;
-    wire signed [63:0] edge_cur_val_o3 = edge_cur_val[3] + edge_A3_ext;
+    wire signed [63:0] edge_cur_val_o0;
+    wire signed [63:0] edge_cur_val_o1;
+    wire signed [63:0] edge_cur_val_o2;
+    wire signed [63:0] edge_cur_val_o3;
     wire draw_inside_o_edge = (edge_cur_val_o0 >= 0) &&
                               (edge_cur_val_o1 >= 0) &&
                               (edge_cur_val_o2 >= 0) &&
@@ -1380,49 +1386,87 @@ module voxel_gpu (
     wire draw_pair_exited = draw_row_inside && !draw_inside && !draw_inside_o_edge;
     wire draw_pair_last = (draw_x_next >= draw_x_max);
     wire [15:0] draw_z_value = clamp_z(z_cur_val);
-    wire signed [47:0] draw_dz_dx_ext = sext16_to_s48(draw_dz_dx);
-    wire signed [47:0] draw_dz_dy_ext = sext16_to_s48(draw_dz_dy);
-    wire signed [63:0] draw_uw_dx_ext = sext32_to_s64(draw_uw_dx);
-    wire signed [63:0] draw_uw_dy_ext = sext32_to_s64(draw_uw_dy);
-    wire signed [63:0] draw_vw_dx_ext = sext32_to_s64(draw_vw_dx);
-    wire signed [63:0] draw_vw_dy_ext = sext32_to_s64(draw_vw_dy);
-    wire signed [63:0] draw_iw_dx_ext = sext32_to_s64(draw_iw_dx);
-    wire signed [63:0] draw_iw_dy_ext = sext32_to_s64(draw_iw_dy);
+    wire signed [63:0] edge_next_pair0;
+    wire signed [63:0] edge_next_pair1;
+    wire signed [63:0] edge_next_pair2;
+    wire signed [63:0] edge_next_pair3;
+    wire signed [63:0] edge_next_row0;
+    wire signed [63:0] edge_next_row1;
+    wire signed [63:0] edge_next_row2;
+    wire signed [63:0] edge_next_row3;
+    wire signed [47:0] draw_z_lane1_val;
+    wire signed [47:0] z_next_pair;
+    wire signed [47:0] z_next_row;
+    wire signed [63:0] draw_uw_lane1_val;
+    wire signed [63:0] draw_vw_lane1_val;
+    wire signed [63:0] draw_iw_lane1_val;
+    wire signed [63:0] uw_next_pair;
+    wire signed [63:0] uw_next_row;
+    wire signed [63:0] vw_next_pair;
+    wire signed [63:0] vw_next_row;
+    wire signed [63:0] iw_next_pair;
+    wire signed [63:0] iw_next_row;
 
-    // Draw loop stepping:
-    //   * next_pair advances horizontally by two pixels (even + odd lane).
-    //   * next_row advances to x_start_even of the following scanline.
-    // The named wires keep the two ST_DRAW branches below readable and make
-    // the signed edge/gradient widths explicit.
-    wire signed [63:0] edge_next_pair0 = edge_cur_val[0] + edge_A0_step2;
-    wire signed [63:0] edge_next_pair1 = edge_cur_val[1] + edge_A1_step2;
-    wire signed [63:0] edge_next_pair2 = edge_cur_val[2] + edge_A2_step2;
-    wire signed [63:0] edge_next_pair3 = edge_cur_val[3] + edge_A3_step2;
-    wire signed [63:0] edge_next_row0 = edge_row_val[0] + edge_B0_ext;
-    wire signed [63:0] edge_next_row1 = edge_row_val[1] + edge_B1_ext;
-    wire signed [63:0] edge_next_row2 = edge_row_val[2] + edge_B2_ext;
-    wire signed [63:0] edge_next_row3 = edge_row_val[3] + edge_B3_ext;
-    wire signed [47:0] z_next_pair = z_cur_val + draw_dz_dx_ext + draw_dz_dx_ext;
-    wire signed [47:0] z_next_row = z_row_val + draw_dz_dy_ext;
-    wire signed [63:0] uw_next_pair = uw_cur_val + draw_uw_dx_ext + draw_uw_dx_ext;
-    wire signed [63:0] uw_next_row = uw_row_val + draw_uw_dy_ext;
-    wire signed [63:0] vw_next_pair = vw_cur_val + draw_vw_dx_ext + draw_vw_dx_ext;
-    wire signed [63:0] vw_next_row = vw_row_val + draw_vw_dy_ext;
-    wire signed [63:0] iw_next_pair = iw_cur_val + draw_iw_dx_ext + draw_iw_dx_ext;
-    wire signed [63:0] iw_next_row = iw_row_val + draw_iw_dy_ext;
+    voxel_draw_step draw_step (
+        .edge_cur0        (edge_cur_val[0]),
+        .edge_cur1        (edge_cur_val[1]),
+        .edge_cur2        (edge_cur_val[2]),
+        .edge_cur3        (edge_cur_val[3]),
+        .edge_row0        (edge_row_val[0]),
+        .edge_row1        (edge_row_val[1]),
+        .edge_row2        (edge_row_val[2]),
+        .edge_row3        (edge_row_val[3]),
+        .edge_a0          (edge_A[0]),
+        .edge_a1          (edge_A[1]),
+        .edge_a2          (edge_A[2]),
+        .edge_a3          (edge_A[3]),
+        .edge_b0          (edge_B[0]),
+        .edge_b1          (edge_B[1]),
+        .edge_b2          (edge_B[2]),
+        .edge_b3          (edge_B[3]),
+        .z_cur            (z_cur_val),
+        .z_row            (z_row_val),
+        .dz_dx            (draw_dz_dx),
+        .dz_dy            (draw_dz_dy),
+        .uw_cur           (uw_cur_val),
+        .uw_row           (uw_row_val),
+        .uw_dx            (draw_uw_dx),
+        .uw_dy            (draw_uw_dy),
+        .vw_cur           (vw_cur_val),
+        .vw_row           (vw_row_val),
+        .vw_dx            (draw_vw_dx),
+        .vw_dy            (draw_vw_dy),
+        .iw_cur           (iw_cur_val),
+        .iw_row           (iw_row_val),
+        .iw_dx            (draw_iw_dx),
+        .iw_dy            (draw_iw_dy),
+        .edge_lane1_0     (edge_cur_val_o0),
+        .edge_lane1_1     (edge_cur_val_o1),
+        .edge_lane1_2     (edge_cur_val_o2),
+        .edge_lane1_3     (edge_cur_val_o3),
+        .edge_next_pair0  (edge_next_pair0),
+        .edge_next_pair1  (edge_next_pair1),
+        .edge_next_pair2  (edge_next_pair2),
+        .edge_next_pair3  (edge_next_pair3),
+        .edge_next_row0   (edge_next_row0),
+        .edge_next_row1   (edge_next_row1),
+        .edge_next_row2   (edge_next_row2),
+        .edge_next_row3   (edge_next_row3),
+        .z_lane1          (draw_z_lane1_val),
+        .z_next_pair      (z_next_pair),
+        .z_next_row       (z_next_row),
+        .uw_lane1         (draw_uw_lane1_val),
+        .uw_next_pair     (uw_next_pair),
+        .uw_next_row      (uw_next_row),
+        .vw_lane1         (draw_vw_lane1_val),
+        .vw_next_pair     (vw_next_pair),
+        .vw_next_row      (vw_next_row),
+        .iw_lane1         (draw_iw_lane1_val),
+        .iw_next_pair     (iw_next_pair),
+        .iw_next_row      (iw_next_row)
+    );
 
-    wire signed [47:0] draw_z_start_val =
-        $signed({32'd0, draw_z0}) - (draw_x_min[0] ? draw_dz_dx_ext : 48'sd0);
-    wire signed [63:0] draw_uw_start_val =
-        sext32_to_s64(draw_uw_0) -
-        (draw_x_min[0] ? draw_uw_dx_ext : 64'sd0);
-    wire signed [63:0] draw_vw_start_val =
-        sext32_to_s64(draw_vw_0) -
-        (draw_x_min[0] ? draw_vw_dx_ext : 64'sd0);
-    wire signed [63:0] draw_iw_start_val =
-        sext32_to_s64(draw_iw_0) -
-        (draw_x_min[0] ? draw_iw_dx_ext : 64'sd0);
-    wire [15:0] draw_z_value_o = clamp_z(z_cur_val + draw_dz_dx_ext);
+    wire [15:0] draw_z_value_o = clamp_z(draw_z_lane1_val);
     wire [2:0]  draw_band_index = y_to_band(draw_y_cur);
     wire        draw_cache_hit = cache_valid && (cache_band_index == draw_band_index);
     wire [15:0] draw_x_offset = {6'd0, draw_x_cur} - {6'd0, draw_x_start_even};
@@ -1431,43 +1475,64 @@ module voxel_gpu (
     wire signed [31:0] draw_uw_q = clamp_s32(uw_cur_val);
     wire signed [31:0] draw_vw_q = clamp_s32(vw_cur_val);
     wire [31:0] draw_iw_q = clamp_pos_u32(iw_cur_val);
-    wire signed [31:0] draw_uw_q_o = clamp_s32(uw_cur_val + draw_uw_dx_ext);
-    wire signed [31:0] draw_vw_q_o = clamp_s32(vw_cur_val + draw_vw_dx_ext);
-    wire [31:0] draw_iw_q_o = clamp_pos_u32(iw_cur_val + draw_iw_dx_ext);
-    wire [5:0] pipe0_iw_msb = msb_index32(pipe0_iw_q);
-    wire [31:0] pipe0_iw_norm_q = (pipe0_iw_q == 32'd0) ? 32'd0 :
-                                  (pipe0_iw_msb >= 6'd16) ?
-                                  (pipe0_iw_q >> (pipe0_iw_msb - 6'd16)) :
-                                  (pipe0_iw_q << (6'd16 - pipe0_iw_msb));
-    wire [5:0] pipe0_iw_msb_o = msb_index32(pipe0_iw_q_o);
-    wire [31:0] pipe0_iw_norm_q_o = (pipe0_iw_q_o == 32'd0) ? 32'd0 :
-                                    (pipe0_iw_msb_o >= 6'd16) ?
-                                    (pipe0_iw_q_o >> (pipe0_iw_msb_o - 6'd16)) :
-                                    (pipe0_iw_q_o << (6'd16 - pipe0_iw_msb_o));
+    wire signed [31:0] draw_uw_q_o = clamp_s32(draw_uw_lane1_val);
+    wire signed [31:0] draw_vw_q_o = clamp_s32(draw_vw_lane1_val);
+    wire [31:0] draw_iw_q_o = clamp_pos_u32(draw_iw_lane1_val);
+    wire [5:0] pipe0_iw_msb;
+    wire [31:0] pipe0_iw_norm_q;
+    wire [5:0] pipe0_iw_msb_o;
+    wire [31:0] pipe0_iw_norm_q_o;
+
+    voxel_iw_normalize iw_norm_lane0 (
+        .iw_q      (pipe0_iw_q),
+        .iw_msb    (pipe0_iw_msb),
+        .iw_norm_q (pipe0_iw_norm_q)
+    );
+
+    voxel_iw_normalize iw_norm_lane1 (
+        .iw_q      (pipe0_iw_q_o),
+        .iw_msb    (pipe0_iw_msb_o),
+        .iw_norm_q (pipe0_iw_norm_q_o)
+    );
+
     wire [15:0] recip0_iw_phase = recip0_iw_norm_q[15:0];
     wire [10:0] recip0_iw_lut_idx = {1'b0, recip0_iw_phase[15:6]};
     wire [5:0] recip0_iw_lut_frac = recip0_iw_phase[5:0];
     wire [15:0] recip0_iw_phase_o = recip0_iw_norm_q_o[15:0];
     wire [10:0] recip0_iw_lut_idx_o = {1'b0, recip0_iw_phase_o[15:6]};
     wire [5:0] recip0_iw_lut_frac_o = recip0_iw_phase_o[5:0];
-    wire [31:0] recip1_w_norm_delta = recip1_w_norm_lo - recip1_w_norm_hi;
-    wire [37:0] recip1_w_interp_prod = recip1_w_norm_delta * recip1_iw_lut_frac;
-    wire [37:0] recip1_w_interp_step_ext = (recip1_w_interp_prod + 38'd32) >> 6;
-    wire [31:0] recip1_w_interp_step = recip1_w_interp_step_ext[31:0];
-    wire [31:0] recip1_w_norm_q = recip1_w_norm_lo - recip1_w_interp_step;
-    wire [31:0] recip1_w_norm_delta_o = recip1_w_norm_lo_o - recip1_w_norm_hi_o;
-    wire [37:0] recip1_w_interp_prod_o = recip1_w_norm_delta_o * recip1_iw_lut_frac_o;
-    wire [37:0] recip1_w_interp_step_ext_o = (recip1_w_interp_prod_o + 38'd32) >> 6;
-    wire [31:0] recip1_w_interp_step_o = recip1_w_interp_step_ext_o[31:0];
-    wire [31:0] recip1_w_norm_q_o = recip1_w_norm_lo_o - recip1_w_interp_step_o;
-    wire [31:0] recip2_w_q = recip2_iw_zero ? 32'd0 :
-                             (recip2_iw_msb >= 6'd16) ?
-                             (recip2_w_norm_q >> (recip2_iw_msb - 6'd16)) :
-                             (recip2_w_norm_q << (6'd16 - recip2_iw_msb));
-    wire [31:0] recip2_w_q_o = recip2_iw_zero_o ? 32'd0 :
-                               (recip2_iw_msb_o >= 6'd16) ?
-                               (recip2_w_norm_q_o >> (recip2_iw_msb_o - 6'd16)) :
-                               (recip2_w_norm_q_o << (6'd16 - recip2_iw_msb_o));
+    wire [31:0] recip1_w_norm_q;
+    wire [31:0] recip1_w_norm_q_o;
+    wire [31:0] recip2_w_q;
+    wire [31:0] recip2_w_q_o;
+
+    voxel_recip_interpolate recip_interp_lane0 (
+        .w_norm_lo   (recip1_w_norm_lo),
+        .w_norm_hi   (recip1_w_norm_hi),
+        .iw_lut_frac (recip1_iw_lut_frac),
+        .w_norm_q    (recip1_w_norm_q)
+    );
+
+    voxel_recip_interpolate recip_interp_lane1 (
+        .w_norm_lo   (recip1_w_norm_lo_o),
+        .w_norm_hi   (recip1_w_norm_hi_o),
+        .iw_lut_frac (recip1_iw_lut_frac_o),
+        .w_norm_q    (recip1_w_norm_q_o)
+    );
+
+    voxel_w_denormalize w_denorm_lane0 (
+        .iw_zero  (recip2_iw_zero),
+        .iw_msb   (recip2_iw_msb),
+        .w_norm_q (recip2_w_norm_q),
+        .w_q      (recip2_w_q)
+    );
+
+    voxel_w_denormalize w_denorm_lane1 (
+        .iw_zero  (recip2_iw_zero_o),
+        .iw_msb   (recip2_iw_msb_o),
+        .w_norm_q (recip2_w_norm_q_o),
+        .w_q      (recip2_w_q_o)
+    );
     wire signed [63:0] pipe1_u_prod = $signed(pipe1_uw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_v_prod = $signed(pipe1_vw_q) * $signed(pipe1_w_q);
     wire signed [63:0] pipe1_u_prod_o = $signed(pipe1_uw_q_o) * $signed(pipe1_w_q_o);
@@ -1581,47 +1646,34 @@ module voxel_gpu (
     wire [31:0] fog0_radial_q16_o = fog0_radial_prod_o[47:16];
     wire [15:0] fog0_radial_q8_8_o = fog0_radial_q16_o[23:8];
 
-    wire [15:0] fog_dist_span = fog_end_dist - fog_start_dist;
-    wire [15:0] fog_dq1 = fog_start_dist + (fog_dist_span >> 2);
-    wire [15:0] fog_dq2 = fog_start_dist + (fog_dist_span >> 1);
-    wire [15:0] fog_dq3 = fog_end_dist - (fog_dist_span >> 2);
-    wire fog1_fog_active = fog_enable &&
-                           fog1_fog &&
-                           (fog_end_dist > fog_start_dist) &&
-                           (fog1_radial_q8_8 > fog_start_dist);
-    wire fog1_fog_full = fog1_fog_active &&
-                         (fog1_radial_q8_8 >= fog_end_dist);
-    wire fog1_fog_active_o = fog_enable &&
-                             fog1_fog_o &&
-                             (fog_end_dist > fog_start_dist) &&
-                             (fog1_radial_q8_8_o > fog_start_dist);
-    wire fog1_fog_full_o = fog1_fog_active_o &&
-                           (fog1_radial_q8_8_o >= fog_end_dist);
-    // Map active fog depth into the 4-level blend_rgb565 alpha scale
-    // (0=no fog, 1=25%, 2=50%, 3=75%). Pixels past fog_end_dist bypass the
-    // blend entirely and take the fog color directly.
-    wire [1:0] fog1_fog_alpha =
-        !fog1_fog_active ? 2'd0 :
-        fog1_fog_full    ? 2'd0 :
-        (fog1_radial_q8_8 < fog_dq1) ? 2'd1 :
-        (fog1_radial_q8_8 < fog_dq2) ? 2'd2 : 2'd3;
-    wire [1:0] fog1_fog_alpha_o =
-        !fog1_fog_active_o ? 2'd0 :
-        fog1_fog_full_o    ? 2'd0 :
-        (fog1_radial_q8_8_o < fog_dq1) ? 2'd1 :
-        (fog1_radial_q8_8_o < fog_dq2) ? 2'd2 : 2'd3;
-    wire [15:0] fog1_fog_blended =
-        blend_rgb565(fog1_src_rgb565, fog1_fog_rgb565, fog1_fog_alpha);
-    wire [15:0] fog1_fogged_rgb565 =
-        fog1_fog_full ? fog1_fog_rgb565 : fog1_fog_blended;
-    wire [15:0] fog1_out_rgb565 =
-        blend_rgb565(fog1_fogged_rgb565, fog1_dst_rgb565, fog1_alpha);
-    wire [15:0] fog1_fog_blended_o =
-        blend_rgb565(fog1_src_rgb565_o, fog1_fog_rgb565_o, fog1_fog_alpha_o);
-    wire [15:0] fog1_fogged_rgb565_o =
-        fog1_fog_full_o ? fog1_fog_rgb565_o : fog1_fog_blended_o;
-    wire [15:0] fog1_out_rgb565_o =
-        blend_rgb565(fog1_fogged_rgb565_o, fog1_dst_rgb565_o, fog1_alpha_o);
+    wire [15:0] fog1_out_rgb565;
+    wire [15:0] fog1_out_rgb565_o;
+
+    voxel_fog_blend fog_blend_lane0 (
+        .fog_enable     (fog_enable),
+        .pixel_fog      (fog1_fog),
+        .radial_q8_8    (fog1_radial_q8_8),
+        .fog_start_dist (fog_start_dist),
+        .fog_end_dist   (fog_end_dist),
+        .src_rgb565     (fog1_src_rgb565),
+        .dst_rgb565     (fog1_dst_rgb565),
+        .fog_rgb565     (fog1_fog_rgb565),
+        .alpha          (fog1_alpha),
+        .out_rgb565     (fog1_out_rgb565)
+    );
+
+    voxel_fog_blend fog_blend_lane1 (
+        .fog_enable     (fog_enable),
+        .pixel_fog      (fog1_fog_o),
+        .radial_q8_8    (fog1_radial_q8_8_o),
+        .fog_start_dist (fog_start_dist),
+        .fog_end_dist   (fog_end_dist),
+        .src_rgb565     (fog1_src_rgb565_o),
+        .dst_rgb565     (fog1_dst_rgb565_o),
+        .fog_rgb565     (fog1_fog_rgb565_o),
+        .alpha          (fog1_alpha_o),
+        .out_rgb565     (fog1_out_rgb565_o)
+    );
     wire draw_commit_pass = draw_pipe_inside &&
                             !draw_pipe_transparent &&
                             (!draw_pipe_ztest || (draw_pipe_z < draw_pipe_z_ref));

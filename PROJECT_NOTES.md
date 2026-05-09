@@ -31,11 +31,13 @@ The larger C files are being split along ownership boundaries:
   * `sw/world.c` owns chunk storage, persistence, streaming, lighting, meshing,
     fluid/gravity simulation, and block mutation.
   * `sw/world_gen.c` owns deterministic biome/heightmap terrain generation.
-  * `hw/voxel_gpu/rtl/voxel_gpu.sv` remains the main RTL module. Pure helpers
-    live in `voxel_raster_helpers.svh` and `voxel_color_helpers.svh`; keep
-    timing/state-machine logic in the main file unless an extraction is proven
-    by lint and hardware-targeted smoke tests. `hw/voxel_gpu/rtl/README.md`
-    is the teammate-facing map for presentations and code walkthroughs.
+  * `hw/voxel_gpu/rtl/voxel_gpu.sv` remains the main RTL module. Stateless
+    arithmetic is split into `voxel_raster_math.sv`, `voxel_recip_math.sv`, and
+    `voxel_fog_blend.sv`; shared helper functions live in
+    `voxel_raster_helpers.svh` and `voxel_color_helpers.svh`. Keep FSM timing
+    and ownership gates in the main file unless an extraction is proven by lint
+    and hardware-targeted smoke tests. `hw/voxel_gpu/rtl/README.md` is the
+    teammate-facing map for presentations and code walkthroughs.
 
 Active Renderer Notes
 ---------------------

@@ -44,6 +44,7 @@
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
+#define CREATIVE_BLOCK_BREAK_REPEAT_SECONDS 0.12f
 #define COMMAND_TIME_DAY_SECONDS   0.0f
 #define COMMAND_TIME_NIGHT_SECONDS 90.0f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -1102,8 +1103,8 @@ static float hand_swing_phase(float swing_timer)
     return sinf(t * (float)M_PI);
 }
 
-/* Bare hand for survival: one continuous first-person cuboid. Keeping the
- * silhouette connected reads closer to Minecraft than a separate fist block. */
+/* Bare hand for survival: a stylized connected block-arm. The fist is chunky
+ * and the forearm attaches under it, avoiding the long tapered stick look. */
 static void draw_bare_hand(RenderContext *ctx, float swing_timer)
 {
     const float s = HUD_SCALE;
@@ -1112,39 +1113,66 @@ static void draw_bare_hand(RenderContext *ctx, float swing_timer)
     const uint8_t skin_shadow = 19;
 
     float swing = hand_swing_phase(swing_timer);
-    float tip_dx = -16.0f * s * swing;
-    float tip_dy = 10.0f * s * swing;
-    float base_dx = tip_dx * 0.25f;
-    float base_dy = tip_dy * 0.20f;
+    float tip_dx = -12.0f * s * swing;
+    float tip_dy = 12.0f * s * swing;
+    float base_dx = tip_dx * 0.35f;
+    float base_dy = tip_dy * 0.30f;
 
-    float tl_x = SCREEN_WIDTH - 62.0f * s + tip_dx;
-    float tl_y = SCREEN_HEIGHT - 78.0f * s + tip_dy;
-    float tr_x = SCREEN_WIDTH - 30.0f * s + tip_dx;
-    float tr_y = SCREEN_HEIGHT - 67.0f * s + tip_dy;
-    float br_x = SCREEN_WIDTH + 8.0f * s + base_dx;
-    float br_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
-    float bl_x = SCREEN_WIDTH - 28.0f * s + base_dx;
-    float bl_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
+    float fist_x = SCREEN_WIDTH - 78.0f * s + tip_dx;
+    float fist_y = SCREEN_HEIGHT - 94.0f * s + tip_dy;
 
+    float arm_tl_x = fist_x + 13.0f * s;
+    float arm_tl_y = fist_y + 35.0f * s;
+    float arm_tr_x = fist_x + 45.0f * s;
+    float arm_tr_y = fist_y + 43.0f * s;
+    float arm_br_x = SCREEN_WIDTH + 12.0f * s + base_dx;
+    float arm_br_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
+    float arm_bl_x = SCREEN_WIDTH - 44.0f * s + base_dx;
+    float arm_bl_y = SCREEN_HEIGHT + 8.0f * s + base_dy;
+
+    /* Forearm behind the fist. */
     draw_screen_solid_quad(ctx,
-        tl_x, tl_y,
-        tr_x, tr_y,
-        br_x, br_y,
-        bl_x, bl_y,
+        arm_tl_x, arm_tl_y,
+        arm_tr_x, arm_tr_y,
+        arm_br_x, arm_br_y,
+        arm_bl_x, arm_bl_y,
         skin_mid);
 
     draw_screen_solid_quad(ctx,
-        tl_x, tl_y,
-        tl_x + 8.0f * s, tl_y + 2.5f * s,
-        bl_x - 8.0f * s, bl_y,
-        bl_x, bl_y,
+        arm_tl_x, arm_tl_y,
+        arm_tl_x + 7.0f * s, arm_tl_y + 1.5f * s,
+        arm_bl_x + 8.0f * s, arm_bl_y,
+        arm_bl_x, arm_bl_y,
         skin_light);
 
     draw_screen_solid_quad(ctx,
-        tr_x - 7.0f * s, tr_y - 2.0f * s,
-        tr_x, tr_y,
-        br_x, br_y,
-        br_x - 11.0f * s, br_y,
+        arm_tr_x - 7.0f * s, arm_tr_y - 1.5f * s,
+        arm_tr_x, arm_tr_y,
+        arm_br_x, arm_br_y,
+        arm_br_x - 13.0f * s, arm_br_y,
+        skin_shadow);
+
+    /* Fist front face. */
+    draw_screen_solid_quad(ctx,
+        fist_x, fist_y,
+        fist_x + 37.0f * s, fist_y + 8.0f * s,
+        fist_x + 40.0f * s, fist_y + 41.0f * s,
+        fist_x + 1.0f * s, fist_y + 35.0f * s,
+        skin_mid);
+
+    /* Left highlight and right shadow on the fist keep it blocky but readable. */
+    draw_screen_solid_quad(ctx,
+        fist_x, fist_y,
+        fist_x + 9.0f * s, fist_y + 2.0f * s,
+        fist_x + 9.0f * s, fist_y + 34.0f * s,
+        fist_x + 1.0f * s, fist_y + 35.0f * s,
+        skin_light);
+
+    draw_screen_solid_quad(ctx,
+        fist_x + 31.0f * s, fist_y + 6.5f * s,
+        fist_x + 37.0f * s, fist_y + 8.0f * s,
+        fist_x + 40.0f * s, fist_y + 41.0f * s,
+        fist_x + 32.0f * s, fist_y + 40.0f * s,
         skin_shadow);
 }
 
@@ -1596,9 +1624,18 @@ int main(void)
             }
 
             if (player.mode == PLAYER_MODE_CREATIVE) {
-                if (break_pressed)
+                if (inp.break_down)
+                    break_timer += frame_dt;
+                else
+                    break_timer = 0.0f;
+
+                if (break_pressed ||
+                    (inp.break_down &&
+                     break_timer >= CREATIVE_BLOCK_BREAK_REPEAT_SECONDS)) {
                     try_break_targeted_block(&world, &cam);
-                break_timer = 0.0f;
+                    hand_swing_timer = 0.0f;
+                    break_timer = 0.0f;
+                }
                 break_duration = 0.0f;
                 break_target_valid = false;
             } else {

@@ -89,7 +89,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_GLASS,
     BLOCK_LAMP,
     BLOCK_LEAVES,
-    BLOCK_AIR,
+    BLOCK_WATER,
 };
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
@@ -730,7 +730,10 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
         have_prev_cell = true;
 
         block = world_get_block(world, block_x, block_y, block_z);
-        if (block != BLOCK_AIR) {
+        /* Treat passable blocks (air, water) as see-through so the player can
+         * target solid blocks while standing in or looking through water.
+         * The last passable cell traversed becomes the placement position. */
+        if (!block_is_passable(block)) {
             if (!out)
                 return true;
 
@@ -803,7 +806,10 @@ static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target) ||
         !target.place_valid)
         return false;
-    if (world_get_block(world, target.place_x, target.place_y, target.place_z) != BLOCK_AIR)
+    /* Allow overwriting passable blocks (water) so players can fill water
+     * with solids or replace water-flow with a fresh source. */
+    BlockID at_place = world_get_block(world, target.place_x, target.place_y, target.place_z);
+    if (!block_is_passable(at_place))
         return false;
     if (!block_is_passable(type) && player_intersects_block(player, target.place_x, target.place_y, target.place_z))
         return false;
@@ -929,58 +935,58 @@ static void draw_hungerbar(RenderContext *ctx)
 static void draw_player_hand(RenderContext *ctx, int selected_slot, float break_timer)
 {
     BlockID type = HOTBAR_BLOCKS[selected_slot];
-    const float s = HUD_SCALE;
-    const float hand_size = 48.0f * s;
-    
-    float swing_offset_y = sinf(break_timer * 15.0f) * 20.0f * s;
-    float swing_offset_x = sinf(break_timer * 15.0f) * 10.0f * s;
-    
-    float cx = SCREEN_WIDTH - hand_size + 16.0f * s + swing_offset_x;
-    float cy = SCREEN_HEIGHT - hand_size + 16.0f * s + swing_offset_y;
-    float w = hand_size * 0.8f;
-    float h = hand_size * 0.4f;
-    float h2 = hand_size * 0.8f;
-
-    if (type == BLOCK_AIR) {
-        // Draw bare hand (rectangular prism)
-        // Top face
-        renderer_draw_custom_screen_quad(ctx,
-            cx, cy,
-            cx + w, cy - h,
-            cx, cy - 2.0f * h,
-            cx - w, cy - h,
-            0, QUAD_FLAG_ALPHA_KEY); // Or just don't use texture, wait!
-            // Custom quad requires a texture_id!
-        // We will just draw the faces using fill_rect.
-        // Wait, fill_rect is only axis-aligned. So we can't easily draw an isometric bare hand without a texture.
-        // Let's use TEX_TILE_WOOD_SIDE or TEX_TILE_DIRT with color tint, or just draw a flat hand for BLOCK_AIR.
-        // Since we can't draw arbitrary polygons with fill_rect, we use custom screen quad with a solid texture or just dirt.
-        renderer_draw_custom_screen_quad(ctx, cx, cy, cx + w, cy - h, cx, cy - 2.0f*h, cx - w, cy - h, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
-        renderer_draw_custom_screen_quad(ctx, cx + w, cy - h + h2, cx + w, cy - h, cx, cy, cx, cy + h2, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
-        renderer_draw_custom_screen_quad(ctx, cx, cy + h2, cx, cy, cx - w, cy - h, cx - w, cy - h + h2, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
+    if (type == BLOCK_AIR)
         return;
-    }
 
-    // Top Face
+    const float s = HUD_SCALE;
+    /* Half-widths of the isometric cube on screen. The "diamond" top face
+     * spans (-w,+w) horizontally and (-h,+h) vertically around the apex;
+     * h2 is the vertical extent of the side faces. */
+    const float w  = 22.0f * s;
+    const float h  = 11.0f * s;
+    const float h2 = 22.0f * s;
+    const float margin_right  = 12.0f * s;
+    const float margin_bottom = 12.0f * s;
+
+    /* Single-shot swing arc: 0..1 over the 0.3 s break window, eased so the
+     * hand dips down/inward then returns. Using a half-sine keeps motion
+     * unidirectional instead of oscillating both ways. */
+    float t = break_timer / 0.3f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float swing = sinf(t * (float)M_PI);
+    float swing_offset_y = swing * 14.0f * s;
+    float swing_offset_x = swing * -8.0f * s;
+
+    /* Anchor the cube against the bottom-right of the screen with margins,
+     * so the entire diamond+sides assembly stays inside the viewport. */
+    float cx = SCREEN_WIDTH  - w  - margin_right  + swing_offset_x;
+    float cy = SCREEN_HEIGHT - h2 - margin_bottom + swing_offset_y;
+
+    /* Top diamond. UV winding: top apex -> right -> bottom apex -> left,
+     * which rotates the texture 45 degrees CW into the diamond shape. */
     renderer_draw_custom_screen_quad(ctx,
-        cx, cy,
-        cx + w, cy - h,
-        cx, cy - 2.0f * h,
-        cx - w, cy - h,
+        cx,     cy - h,            /* top apex     UV(0,0)   */
+        cx + w, cy,                /* right apex   UV(16,0)  */
+        cx,     cy + h,            /* bottom apex  UV(16,16) */
+        cx - w, cy,                /* left apex    UV(0,16)  */
         block_face_texture_id(type, FACE_TOP), 0);
-    // Right Face
+
+    /* Right side face. Vertices in TL,TR,BR,BL order to match the
+     * UV(0,0)(16,0)(16,16)(0,16) winding hardcoded in renderer.c. */
     renderer_draw_custom_screen_quad(ctx,
-        cx + w, cy - h + h2,
-        cx + w, cy - h,
-        cx, cy,
-        cx, cy + h2,
+        cx,     cy + h,            /* TL */
+        cx + w, cy,                /* TR */
+        cx + w, cy + h2,           /* BR */
+        cx,     cy + h + h2,       /* BL */
         block_face_texture_id(type, FACE_RIGHT), QUAD_LIGHT_LEVEL(2));
-    // Left Face (Front)
+
+    /* Left/front face, same TL,TR,BR,BL winding. */
     renderer_draw_custom_screen_quad(ctx,
-        cx, cy + h2,
-        cx, cy,
-        cx - w, cy - h,
-        cx - w, cy - h + h2,
+        cx - w, cy,                /* TL */
+        cx,     cy + h,            /* TR */
+        cx,     cy + h + h2,       /* BR */
+        cx - w, cy + h2,           /* BL */
         block_face_texture_id(type, FACE_FRONT), QUAD_LIGHT_LEVEL(1));
 }
 

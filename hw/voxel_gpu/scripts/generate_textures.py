@@ -130,28 +130,19 @@ PAL_GLASS_EDGE = 36
 PAL_GLASS_HIGHLIGHT = 37
 PAL_LAMP_GLOW = 38
 PAL_LAMP_FRAME = 39
-
-# Palette entries 40..63 are rewritten every frame by the generated sky
-# gradient. Texture texels must stay out of that range or world blocks inherit
-# sky colors on real hardware.
-RESERVED_DYNAMIC_SKY_PALETTE = frozenset(range(40, 64))
-
-# Semantic aliases for imported Minecraft textures. They intentionally point
-# at stable, light-banked entries below 40 instead of allocating new colors in
-# the sky-gradient range.
-PAL_WATER_DEEP = PAL_GLASS_EDGE
-PAL_WATER_MID = PAL_BLUE
-PAL_WATER_HIGHLIGHT = PAL_GLASS
-PAL_LAVA_DARK = PAL_DIRT_DARK
-PAL_LAVA_ORANGE = PAL_SUN_GLOW
-PAL_LAVA_HOT = PAL_SUN_CORE
-PAL_SAND = PAL_LAMP_GLOW
-PAL_SAND_DARK = PAL_DIRT_LIGHT
-PAL_BRICK = PAL_DIRT
-PAL_BRICK_DARK = PAL_DIRT_DARK
-PAL_OBSIDIAN = PAL_UI_DARK
-PAL_OBSIDIAN_EDGE = PAL_STONE_DARK
-PAL_CLAY = PAL_STONE_LIGHT
+PAL_WATER_DEEP = 40
+PAL_WATER_MID = 41
+PAL_WATER_HIGHLIGHT = 42
+PAL_LAVA_DARK = 43
+PAL_LAVA_ORANGE = 44
+PAL_LAVA_HOT = 45
+PAL_SAND = 46
+PAL_SAND_DARK = 47
+PAL_BRICK = 48
+PAL_BRICK_DARK = 49
+PAL_OBSIDIAN = 50
+PAL_OBSIDIAN_EDGE = 51
+PAL_CLAY = 52
 
 
 # RGB values for each palette index. Mirrors the table in
@@ -200,9 +191,19 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     37: (0xff, 0xff, 0xff),  # glass highlight
     38: (0xff, 0xd7, 0x79),  # lamp glow
     39: (0x6d, 0x53, 0x30),  # lamp frame
-    64: (0x2a, 0x52, 0x9c),  # unbanked underwater overlay deep
-    65: (0x3a, 0x6c, 0xc4),  # unbanked underwater overlay mid
-    66: (0x6f, 0x9d, 0xe4),  # unbanked underwater overlay highlight
+    40: (0x2a, 0x52, 0x9c),  # banked water deep
+    41: (0x3a, 0x6c, 0xc4),  # banked water mid
+    42: (0x6f, 0x9d, 0xe4),  # banked water highlight
+    43: (0x7a, 0x20, 0x10),  # lava dark
+    44: (0xe8, 0x5c, 0x18),  # lava orange
+    45: (0xff, 0xd8, 0x5a),  # lava hot
+    46: (0xd8, 0xc0, 0x74),  # sand
+    47: (0xa8, 0x90, 0x50),  # sand dark
+    48: (0xa0, 0x3f, 0x32),  # brick
+    49: (0x62, 0x24, 0x24),  # brick dark
+    50: (0x20, 0x1b, 0x2c),  # obsidian
+    51: (0x43, 0x36, 0x58),  # obsidian edge
+    52: (0x72, 0x82, 0x91),  # clay
 }
 
 # Tiles shown in the preview, one column per block type, one row per LOD.
@@ -430,14 +431,6 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_AIR_BUBBLE: (14, PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT, 5),
     TEX_TILE_AIR_BUBBLE_POP: (14, PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT, 5),
 }
-
-for source_tile, allowed_palette in SOURCE_TILE_ALLOWED_PALETTE.items():
-    reserved = sorted(set(allowed_palette) & RESERVED_DYNAMIC_SKY_PALETTE)
-    if reserved:
-        raise ValueError(
-            f"{TEXTURE_TILE_DEF}: tile {source_tile} allows generated sky palette "
-            f"indices {reserved}; texture texels must not use 40..63"
-        )
 
 HUD_SOURCE_TILES = {
     TEX_TILE_HEART,
@@ -1257,13 +1250,7 @@ def build_atlas() -> bytearray:
         base = tile * TEXELS_PER_TILE
         for y in range(TILE_SIZE):
             for x in range(TILE_SIZE):
-                value = texel(tile, x, y)
-                if value in RESERVED_DYNAMIC_SKY_PALETTE:
-                    raise ValueError(
-                        f"tile {tile} emitted reserved generated sky palette index "
-                        f"{value} at ({x},{y})"
-                    )
-                atlas[base + y * TILE_SIZE + x] = value
+                atlas[base + y * TILE_SIZE + x] = texel(tile, x, y)
 
     return atlas
 

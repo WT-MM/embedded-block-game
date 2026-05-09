@@ -129,10 +129,19 @@ static void upload_default_palette(GPUTransport *transport)
         { 37, 0xff, 0xff, 0xff }, /* glass highlight */
         { 38, 0xff, 0xd7, 0x79 }, /* lamp glow */
         { 39, 0x6d, 0x53, 0x30 }, /* lamp frame */
-        /* 40..63 are reserved for the generated sky-gradient palette. */
-        { 64, 0x2a, 0x52, 0x9c }, /* unbanked underwater overlay deep */
-        { 65, 0x3a, 0x6c, 0xc4 }, /* unbanked underwater overlay mid */
-        { 66, 0x6f, 0x9d, 0xe4 }, /* unbanked underwater overlay highlight */
+        { 40, 0x2a, 0x52, 0x9c }, /* banked water deep */
+        { 41, 0x3a, 0x6c, 0xc4 }, /* banked water mid */
+        { 42, 0x6f, 0x9d, 0xe4 }, /* banked water highlight */
+        { 43, 0x7a, 0x20, 0x10 }, /* lava dark */
+        { 44, 0xe8, 0x5c, 0x18 }, /* lava orange */
+        { 45, 0xff, 0xd8, 0x5a }, /* lava hot */
+        { 46, 0xd8, 0xc0, 0x74 }, /* sand */
+        { 47, 0xa8, 0x90, 0x50 }, /* sand dark */
+        { 48, 0xa0, 0x3f, 0x32 }, /* brick */
+        { 49, 0x62, 0x24, 0x24 }, /* brick dark */
+        { 50, 0x20, 0x1b, 0x2c }, /* obsidian */
+        { 51, 0x43, 0x36, 0x58 }, /* obsidian edge */
+        { 52, 0x72, 0x82, 0x91 }, /* clay */
     };
 
     for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
@@ -165,6 +174,10 @@ struct RenderContext {
     uint8_t palette_valid[256];
     struct voxel_palette_entry palette_pending[256];
     uint8_t palette_dirty[256];
+    uint16_t sky_palette_cache[SKY_GRADIENT_BANDS];
+    uint8_t sky_palette_valid[SKY_GRADIENT_BANDS];
+    struct voxel_sky_palette_entry sky_palette_pending[SKY_GRADIENT_BANDS];
+    uint8_t sky_palette_dirty[SKY_GRADIENT_BANDS];
     struct voxel_fog_state fog_cache;
     struct voxel_fog_state fog_pending;
     uint8_t fog_valid;
@@ -242,9 +255,19 @@ static RGB24 default_palette_color(uint8_t index)
     case 37: return rgb24(0xff, 0xff, 0xff);
     case 38: return rgb24(0xff, 0xd7, 0x79);
     case 39: return rgb24(0x6d, 0x53, 0x30);
-    case 64: return rgb24(0x2a, 0x52, 0x9c);
-    case 65: return rgb24(0x3a, 0x6c, 0xc4);
-    case 66: return rgb24(0x6f, 0x9d, 0xe4);
+    case 40: return rgb24(0x2a, 0x52, 0x9c);
+    case 41: return rgb24(0x3a, 0x6c, 0xc4);
+    case 42: return rgb24(0x6f, 0x9d, 0xe4);
+    case 43: return rgb24(0x7a, 0x20, 0x10);
+    case 44: return rgb24(0xe8, 0x5c, 0x18);
+    case 45: return rgb24(0xff, 0xd8, 0x5a);
+    case 46: return rgb24(0xd8, 0xc0, 0x74);
+    case 47: return rgb24(0xa8, 0x90, 0x50);
+    case 48: return rgb24(0xa0, 0x3f, 0x32);
+    case 49: return rgb24(0x62, 0x24, 0x24);
+    case 50: return rgb24(0x20, 0x1b, 0x2c);
+    case 51: return rgb24(0x43, 0x36, 0x58);
+    case 52: return rgb24(0x72, 0x82, 0x91);
     default: return rgb24(0x00, 0x00, 0x00);
     }
 }
@@ -316,6 +339,30 @@ static bool renderer_set_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 co
     return true;
 }
 
+static bool renderer_set_sky_palette_rgb(RenderContext *ctx, uint8_t index, RGB24 color)
+{
+    uint16_t packed;
+
+    if (!ctx || index >= SKY_GRADIENT_BANDS)
+        return false;
+
+    packed = rgb24_to_rgb565(color);
+    if (ctx->sky_palette_valid[index] &&
+        ctx->sky_palette_cache[index] == packed)
+        return true;
+
+    ctx->sky_palette_valid[index] = 1;
+    ctx->sky_palette_cache[index] = packed;
+    ctx->sky_palette_pending[index] = (struct voxel_sky_palette_entry){
+        .index = index,
+        .r = color.r,
+        .g = color.g,
+        .b = color.b,
+    };
+    ctx->sky_palette_dirty[index] = 1;
+    return true;
+}
+
 static bool same_fog_state(const struct voxel_fog_state *a,
                            const struct voxel_fog_state *b)
 {
@@ -341,6 +388,15 @@ static bool renderer_set_fog_state(RenderContext *ctx,
 
 static bool renderer_flush_gpu_state(RenderContext *ctx)
 {
+    for (int i = 0; i < SKY_GRADIENT_BANDS; i++) {
+        if (!ctx->sky_palette_dirty[i])
+            continue;
+        if (gpu_transport_set_sky_palette(ctx->transport,
+                                          &ctx->sky_palette_pending[i]) < 0)
+            return false;
+        ctx->sky_palette_dirty[i] = 0;
+    }
+
     for (int i = 0; i < 256; i++) {
         if (!ctx->palette_dirty[i])
             continue;
@@ -2485,7 +2541,7 @@ static void draw_sky_gradient(RenderContext *ctx, const SkyPalette *palette)
         uint8_t palette_index = (uint8_t)(PAL_SKY_GRADIENT_BASE + band);
         RGB24 color = sample_sky_gradient(palette, t);
 
-        renderer_set_palette_rgb(ctx, palette_index, color);
+        renderer_set_sky_palette_rgb(ctx, (uint8_t)band, color);
         push_screen_flat_quad(ctx, 0.0f, y0, SCREEN_WIDTH, y1, palette_index);
     }
 }

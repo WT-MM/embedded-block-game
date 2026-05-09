@@ -863,9 +863,9 @@ static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
 static void draw_underwater_overlay(RenderContext *ctx)
 {
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
-                       64, QUAD_ALPHA_50);
+                       36, QUAD_ALPHA_50);
     renderer_fill_rect(ctx, 0.0f, 0.0f, SCREEN_WIDTH, SCREEN_HEIGHT,
-                       65, QUAD_ALPHA_25);
+                       7, QUAD_ALPHA_25);
 }
 
 static void draw_damage_overlay(RenderContext *ctx, float damage_flash_timer)

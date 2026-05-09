@@ -451,6 +451,24 @@ static long voxel_ioc_set_palette(void __user *uarg)
 	return 0;
 }
 
+static long voxel_ioc_set_sky_palette(void __user *uarg)
+{
+	struct voxel_sky_palette_entry e;
+	u32 data;
+
+	if (copy_from_user(&e, uarg, sizeof(e)))
+		return -EFAULT;
+
+	data = ((u32)e.r << 16) | ((u32)e.g << 8) | (u32)e.b;
+
+	mutex_lock(&voxdev.lock);
+	voxel_wr(VOXEL_REG_SKY_PALETTE_ADDR, e.index);
+	voxel_wr(VOXEL_REG_SKY_PALETTE_DATA, data);
+	mutex_unlock(&voxdev.lock);
+
+	return 0;
+}
+
 static long voxel_ioc_get_status(void __user *uarg)
 {
 	struct voxel_status s;
@@ -593,6 +611,8 @@ static long voxel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return voxel_ioc_wait_flip();
 	case VOXEL_IOC_SET_PALETTE:
 		return voxel_ioc_set_palette((void __user *)arg);
+	case VOXEL_IOC_SET_SKY_PALETTE:
+		return voxel_ioc_set_sky_palette((void __user *)arg);
 	case VOXEL_IOC_GET_STATUS:
 		return voxel_ioc_get_status((void __user *)arg);
 	case VOXEL_IOC_GET_FRAME_COUNT:

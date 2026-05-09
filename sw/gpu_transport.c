@@ -141,6 +141,7 @@ static int g_diag_log_flip_next;
 enum {
     DIAG_SKY_GRADIENT_BASE = 40,
     DIAG_SKY_GRADIENT_LAST = 63,
+    DIAG_SKY_GRADIENT_COLORS = DIAG_SKY_GRADIENT_LAST - DIAG_SKY_GRADIENT_BASE + 1,
     DIAG_EXTMEM_COPY_TARGET_SHIFT = 11,
     HW_EPOCH_INITIAL = 1,
     DIAG_NONSKIP_DESC_OVERHEAD_CYCLES = 17,
@@ -242,10 +243,9 @@ static int diag_desc_is_redundant_sky_clear(const struct quad_desc *desc)
            desc->x_max == (int16_t)(VOXEL_RENDER_WIDTH - 1);
 }
 
-static int palette_index_is_generated_sky(uint8_t index)
+static int sky_palette_index_is_valid(uint8_t index)
 {
-    return index >= DIAG_SKY_GRADIENT_BASE &&
-           index <= DIAG_SKY_GRADIENT_LAST;
+    return index < DIAG_SKY_GRADIENT_COLORS;
 }
 
 static uint64_t hash_band_bytes(const void *data, size_t bytes)
@@ -507,7 +507,7 @@ static void gpu_transport_note_render_state_write(GPUTransport *transport)
 static void gpu_transport_note_generated_sky_palette_write(GPUTransport *transport,
                                                            uint8_t index)
 {
-    if (!transport || !palette_index_is_generated_sky(index))
+    if (!transport || !sky_palette_index_is_valid(index))
         return;
 
     transport->hw_sky_epoch++;
@@ -1916,10 +1916,42 @@ int gpu_transport_set_palette(GPUTransport *transport,
         }
     }
 
-    if (hw_written) {
+    if (hw_written)
         gpu_transport_note_render_state_write(transport);
-        gpu_transport_note_generated_sky_palette_write(transport, entry->index);
+
+    return ret;
+}
+
+int gpu_transport_set_sky_palette(GPUTransport *transport,
+                                  const struct voxel_sky_palette_entry *entry)
+{
+    int ret = gpu_transport_pipeline_wait_idle(transport);
+    int hw_written = 0;
+
+    if (ret < 0)
+        return ret;
+
+    if (transport_needs_hw(transport)) {
+        if (ioctl(transport->hw_fd, VOXEL_IOC_SET_SKY_PALETTE, entry) < 0) {
+            perror("ioctl(SET_SKY_PALETTE)");
+            ret = -errno;
+        } else {
+            hw_written = 1;
+        }
     }
+
+    if (transport_needs_socket(transport)) {
+        int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_SET_SKY_PALETTE,
+                                      entry, sizeof(*entry), NULL, NULL);
+        if (sock_ret < 0 && ret == 0) {
+            fprintf(stderr, "renderer: socket SET_SKY_PALETTE failed: %s\n",
+                    strerror(-sock_ret));
+            ret = sock_ret;
+        }
+    }
+
+    if (hw_written)
+        gpu_transport_note_generated_sky_palette_write(transport, entry->index);
 
     return ret;
 }

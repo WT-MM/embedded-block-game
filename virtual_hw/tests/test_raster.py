@@ -213,6 +213,15 @@ class RasterBehaviorTest(unittest.TestCase):
 
         self.assertTrue(np.array_equal(fast.back_buffer, generic.back_buffer))
 
+    def test_generated_sky_uses_separate_palette(self) -> None:
+        gpu = VirtualGPU()
+        gpu.set_palette_entry(40, 0xFF, 0x00, 0x00)
+        gpu.set_sky_palette_entry(0, 0x00, 0x20, 0xFF)
+
+        gpu.submit_quads([solid_bbox_quad(0, 0, 1, 1, tex_or_color=40, flags=0)])
+
+        self.assertEqual(gpu.back_buffer[0], rgb888_to_rgb565((0x00, 0x20, 0xFF)))
+
     def test_alpha_keyed_transparent_texel_does_not_write_z(self) -> None:
         gpu = VirtualGPU(textures=bytes(TEXTURE_BYTES))
         gpu.set_palette_entry(2, 0x00, 0x00, 0xFF)

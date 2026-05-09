@@ -76,6 +76,8 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_PERF_FLUSH_FIFO  = 13'h017;
     localparam logic [12:0] ADDR_PERF_FLUSH_DATA  = 13'h018;
     localparam logic [12:0] ADDR_PERF_FLUSH_DRAIN = 13'h019;
+    localparam logic [12:0] ADDR_SKY_PAL_ADDR = 13'h01A;
+    localparam logic [12:0] ADDR_SKY_PAL_DATA = 13'h01B;
     localparam logic [12:0] ADDR_FIFO_LO  = 13'h400;  // 0x1000
     localparam logic [12:0] ADDR_FIFO_HI  = 13'h800;  // 0x2000 (exclusive)
 
@@ -126,6 +128,9 @@ module voxel_gpu (
     localparam int EXTMEM_SKY_GRADIENT_CLEAR_BIT = 5;
     localparam logic [7:0] PAL_SKY_GRADIENT_BASE = 8'd40;
     localparam logic [7:0] PAL_SKY_GRADIENT_LAST = 8'd63;
+    localparam int SKY_GRADIENT_COLORS = 24;
+    localparam logic [4:0] SKY_GRADIENT_LAST_INDEX = 5'd23;
+    localparam logic [5:0] SKY_GRADIENT_COLORS_6 = 6'd24;
     localparam logic [15:0] Z_CLEAR_SENTINEL = 16'hFFFF;
     localparam logic [15:0] Z_VALID_FAR      = 16'hFFFE;
     localparam logic [31:0] DEFAULT_EXTMEM_CTRL = 32'h0000_002B;
@@ -173,6 +178,7 @@ module voxel_gpu (
     logic        clear_pending;
     logic [31:0] frame_count;
     logic  [7:0] pal_addr;
+    logic  [4:0] sky_pal_addr;
     logic        fog_enable;
     logic  [7:0] fog_color;
     logic [15:0] fog_start_dist;
@@ -216,6 +222,7 @@ module voxel_gpu (
     // the read cheap on paper; the explicit two-stage pipeline is the
     // correctness guarantee. See PROJECT_NOTES.md for the history.
     (* ramstyle = "logic" *) logic [23:0] palette [0:255];
+    (* ramstyle = "logic" *) logic [23:0] sky_palette [0:SKY_GRADIENT_COLORS-1];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
     // texture_mem is implemented as an explicit altsyncram ROM below
     // (see voxel_texture_rom). Do NOT reintroduce an inferred array here:
@@ -440,6 +447,8 @@ module voxel_gpu (
     logic [15:0] pal_rd_z;
     logic  [7:0] pal_rd_src_addr;
     logic  [7:0] pal_rd_fog_addr;
+    logic        pal_rd_src_sky;
+    logic  [4:0] pal_rd_sky_index;
     logic [15:0] pal_rd_dst_rgb565;
     logic [31:0] pal_rd_w_q;
     logic [33:0] pal_rd_ray_scale_q16;
@@ -650,6 +659,8 @@ module voxel_gpu (
     logic [15:0] pal_rd_z_o;
     logic  [7:0] pal_rd_src_addr_o;
     logic  [7:0] pal_rd_fog_addr_o;
+    logic        pal_rd_src_sky_o;
+    logic  [4:0] pal_rd_sky_index_o;
     logic [15:0] pal_rd_dst_rgb565_o;
     logic [31:0] pal_rd_w_q_o;
     logic [33:0] pal_rd_ray_scale_q16_o;
@@ -816,7 +827,7 @@ module voxel_gpu (
     logic        flush_generated_sky;      // source is sky palette, not local cache
     logic  [9:0] flush_sky_x;
     logic  [4:0] flush_sky_row_count;
-    logic  [7:0] flush_sky_palette;
+    logic  [4:0] flush_sky_palette;
     logic [15:0] flush_fetch_clear_rgb565; // clear color aligned with cache read
 
     /*
@@ -1474,6 +1485,26 @@ module voxel_gpu (
         draw_pipe_textured_o ? tex_rd_data_o : draw_pipe_tex_or_color_o;
     wire  [7:0] draw_pipe_color_o =
         apply_light_bank(draw_pipe_raw_color_o, draw_pipe_light_bank_o);
+    wire        draw_pipe_generated_sky =
+        !draw_pipe_textured &&
+        !draw_pipe_ztest &&
+        !draw_pipe_fog &&
+        (draw_pipe_alpha == 2'd0) &&
+        (draw_pipe_light_bank == 2'd0) &&
+        (draw_pipe_raw_color >= PAL_SKY_GRADIENT_BASE) &&
+        (draw_pipe_raw_color <= PAL_SKY_GRADIENT_LAST);
+    wire        draw_pipe_generated_sky_o =
+        !draw_pipe_textured_o &&
+        !draw_pipe_ztest_o &&
+        !draw_pipe_fog_o &&
+        (draw_pipe_alpha_o == 2'd0) &&
+        (draw_pipe_light_bank_o == 2'd0) &&
+        (draw_pipe_raw_color_o >= PAL_SKY_GRADIENT_BASE) &&
+        (draw_pipe_raw_color_o <= PAL_SKY_GRADIENT_LAST);
+    wire  [4:0] draw_pipe_sky_index =
+        draw_pipe_raw_color[4:0] - PAL_SKY_GRADIENT_BASE[4:0];
+    wire  [4:0] draw_pipe_sky_index_o =
+        draw_pipe_raw_color_o[4:0] - PAL_SKY_GRADIENT_BASE[4:0];
     wire  [7:0] palette_src_addr = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color;
     wire  [7:0] palette_src_addr_o = (state == ST_CLEAR) ? 8'd0 : draw_pipe_color_o;
     /* Palette reads for the draw pipeline are sampled into plr_* one
@@ -1495,11 +1526,11 @@ module voxel_gpu (
         extmem_ctrl[EXTMEM_SKY_GRADIENT_CLEAR_BIT];
     wire [15:0] flush_clear_rgb565 =
         sky_gradient_clear_enabled ?
-        rgb888_to_rgb565(palette[flush_sky_palette]) :
+        rgb888_to_rgb565(sky_palette[flush_sky_palette]) :
         clear_rgb565;
     wire [15:0] draw_clear_rgb565 =
         sky_gradient_clear_enabled ?
-        rgb888_to_rgb565(palette[sky_palette_for_y(recip0_y)]) :
+        rgb888_to_rgb565(sky_palette[sky_palette_for_y(recip0_y)]) :
         clear_rgb565;
     wire draw_pipe_transparent = draw_pipe_textured &&
                                  draw_pipe_alpha_key &&
@@ -1694,28 +1725,28 @@ module voxel_gpu (
         end
     endfunction
 
-    function automatic [7:0] sky_clear_start_palette(input logic [2:0] band);
+    function automatic [4:0] sky_clear_start_index(input logic [2:0] band);
         begin
             case (band)
-                3'd0: sky_clear_start_palette = 8'd40;  // row 0
-                3'd1: sky_clear_start_palette = 8'd43;  // row 60
-                3'd2: sky_clear_start_palette = 8'd46;  // row 120
-                3'd3: sky_clear_start_palette = 8'd49;  // row 180
-                3'd4: sky_clear_start_palette = 8'd52;  // row 240
-                3'd5: sky_clear_start_palette = 8'd55;  // row 300
-                3'd6: sky_clear_start_palette = 8'd58;  // row 360
-                default: sky_clear_start_palette = 8'd61; // row 420
+                3'd0: sky_clear_start_index = 5'd0;   // row 0
+                3'd1: sky_clear_start_index = 5'd3;   // row 60
+                3'd2: sky_clear_start_index = 5'd6;   // row 120
+                3'd3: sky_clear_start_index = 5'd9;   // row 180
+                3'd4: sky_clear_start_index = 5'd12;  // row 240
+                3'd5: sky_clear_start_index = 5'd15;  // row 300
+                3'd6: sky_clear_start_index = 5'd18;  // row 360
+                default: sky_clear_start_index = 5'd21; // row 420
             endcase
         end
     endfunction
 
-    function automatic [7:0] sky_palette_for_y(input logic [8:0] y);
+    function automatic [4:0] sky_palette_for_y(input logic [8:0] y);
         logic [2:0] band;
         logic [8:0] local_y_wide;
         logic [5:0] local_y;
         logic [6:0] row_sum;
         logic [1:0] pal_offset;
-        logic [8:0] pal;
+        logic [5:0] pal;
         begin
             band = y_to_band(y);
             local_y_wide = y - band_base_row(band);
@@ -1730,10 +1761,10 @@ module voxel_gpu (
             else
                 pal_offset = 2'd0;
 
-            pal = {1'b0, sky_clear_start_palette(band)} +
-                  {7'b0, pal_offset};
-            sky_palette_for_y = (pal > {1'b0, PAL_SKY_GRADIENT_LAST}) ?
-                                PAL_SKY_GRADIENT_LAST : pal[7:0];
+            pal = {1'b0, sky_clear_start_index(band)} +
+                  {4'b0, pal_offset};
+            sky_palette_for_y = (pal >= SKY_GRADIENT_COLORS_6) ?
+                                SKY_GRADIENT_LAST_INDEX : pal[4:0];
         end
     endfunction
 
@@ -2061,6 +2092,7 @@ module voxel_gpu (
         clear_pending    = 1'b0;
         frame_count      = 32'h0;
         pal_addr         = 8'h0;
+        sky_pal_addr     = 5'd0;
         fog_enable       = 1'b0;
         fog_color        = 8'd0;
         fog_start_dist   = 16'd0;
@@ -2272,6 +2304,8 @@ module voxel_gpu (
         pal_rd_z         = 16'd0;
         pal_rd_src_addr  = 8'd0;
         pal_rd_fog_addr  = 8'd0;
+        pal_rd_src_sky   = 1'b0;
+        pal_rd_sky_index = 5'd0;
         pal_rd_dst_rgb565 = 16'h0000;
         pal_rd_w_q       = 32'd0;
         pal_rd_ray_scale_q16 = 34'd0;
@@ -2325,6 +2359,8 @@ module voxel_gpu (
         pipe2_valid_o    = 1'b0;
         draw_pipe_valid_o = 1'b0;
         pal_rd_valid_o   = 1'b0;
+        pal_rd_src_sky_o = 1'b0;
+        pal_rd_sky_index_o = 5'd0;
         plr_valid_o      = 1'b0;
         fog0_valid_o     = 1'b0;
         fog1_valid_o     = 1'b0;
@@ -2391,7 +2427,7 @@ module voxel_gpu (
         flush_generated_sky = 1'b0;
         flush_sky_x = 10'd0;
         flush_sky_row_count = 5'd0;
-        flush_sky_palette = PAL_SKY_GRADIENT_BASE;
+        flush_sky_palette = 5'd0;
         flush_fetch_clear_rgb565 = 16'h0000;
         sdram_powerup_counter = 18'd0;
         sdram_init_wait_counter = 16'd0;
@@ -2426,6 +2462,8 @@ module voxel_gpu (
         palette[24] = 24'h9A9A9A;
         for (i = 25; i < 256; i = i + 1)
             palette[i] = {i[7:0], i[7:0], i[7:0]};
+        for (i = 0; i < SKY_GRADIENT_COLORS; i = i + 1)
+            sky_palette[i] = 24'h78B4F0;
 
         for (i = 0; i < FIFO_DEPTH; i = i + 1)
             fifo_mem[i] = 32'h0;
@@ -2729,6 +2767,7 @@ module voxel_gpu (
             clear_pending    <= 1'b0;
             frame_count      <= 32'h0;
             pal_addr         <= 8'h0;
+            sky_pal_addr     <= 5'd0;
             fog_enable       <= 1'b0;
             fog_color        <= 8'd0;
             fog_start_dist   <= 16'd0;
@@ -2940,6 +2979,8 @@ module voxel_gpu (
             pal_rd_z         <= 16'd0;
             pal_rd_src_addr  <= 8'd0;
             pal_rd_fog_addr  <= 8'd0;
+            pal_rd_src_sky   <= 1'b0;
+            pal_rd_sky_index <= 5'd0;
             pal_rd_dst_rgb565 <= 16'h0000;
             pal_rd_w_q       <= 32'd0;
             pal_rd_ray_scale_q16 <= 34'd0;
@@ -2993,6 +3034,8 @@ module voxel_gpu (
             pipe2_valid_o    <= 1'b0;
             draw_pipe_valid_o <= 1'b0;
             pal_rd_valid_o   <= 1'b0;
+            pal_rd_src_sky_o <= 1'b0;
+            pal_rd_sky_index_o <= 5'd0;
             plr_valid_o      <= 1'b0;
             fog0_valid_o     <= 1'b0;
             fog1_valid_o     <= 1'b0;
@@ -3069,7 +3112,7 @@ module voxel_gpu (
             flush_generated_sky <= 1'b0;
             flush_sky_x <= 10'd0;
             flush_sky_row_count <= 5'd0;
-            flush_sky_palette <= PAL_SKY_GRADIENT_BASE;
+            flush_sky_palette <= 5'd0;
             flush_fetch_clear_rgb565 <= 16'h0000;
             draw_row_inside <= 1'b0;
             sdram_powerup_counter <= 18'd0;
@@ -3206,6 +3249,13 @@ module voxel_gpu (
                     ADDR_PAL_DATA: begin
                         palette[pal_addr] <= writedata[23:0];
                         pal_addr <= pal_addr + 8'd1;
+                    end
+                    ADDR_SKY_PAL_ADDR: sky_pal_addr <= writedata[4:0];
+                    ADDR_SKY_PAL_DATA: begin
+                        if (sky_pal_addr <= SKY_GRADIENT_LAST_INDEX)
+                            sky_palette[sky_pal_addr] <= writedata[23:0];
+                        sky_pal_addr <= (sky_pal_addr == SKY_GRADIENT_LAST_INDEX) ?
+                                        5'd0 : sky_pal_addr + 5'd1;
                     end
                     ADDR_FOG_RANGE: begin
                         fog_start_dist <= writedata[15:0];
@@ -3499,8 +3549,8 @@ module voxel_gpu (
                         flush_sky_x <= 10'd0;
                         if (flush_sky_row_count == 5'd19) begin
                             flush_sky_row_count <= 5'd0;
-                            if (flush_sky_palette != PAL_SKY_GRADIENT_LAST)
-                                flush_sky_palette <= flush_sky_palette + 8'd1;
+                            if (flush_sky_palette != SKY_GRADIENT_LAST_INDEX)
+                                flush_sky_palette <= flush_sky_palette + 5'd1;
                         end else begin
                             flush_sky_row_count <= flush_sky_row_count + 5'd1;
                         end
@@ -3556,6 +3606,8 @@ module voxel_gpu (
             pal_rd_z           <= draw_pipe_z;
             pal_rd_src_addr    <= palette_src_addr;
             pal_rd_fog_addr    <= fog_color;
+            pal_rd_src_sky     <= draw_pipe_generated_sky;
+            pal_rd_sky_index   <= draw_pipe_sky_index;
             pal_rd_dst_rgb565  <= draw_pipe_dst_rgb565;
             pal_rd_w_q         <= draw_pipe_w_q;
             pal_rd_ray_scale_q16 <= draw_pipe_ray_scale_q16;
@@ -3568,6 +3620,8 @@ module voxel_gpu (
             pal_rd_z_o           <= draw_pipe_z_o;
             pal_rd_src_addr_o    <= palette_src_addr_o;
             pal_rd_fog_addr_o    <= fog_color;
+            pal_rd_src_sky_o     <= draw_pipe_generated_sky_o;
+            pal_rd_sky_index_o   <= draw_pipe_sky_index_o;
             pal_rd_dst_rgb565_o  <= draw_pipe_dst_rgb565_o;
             pal_rd_w_q_o         <= draw_pipe_w_q_o;
             pal_rd_ray_scale_q16_o <= draw_pipe_ray_scale_q16_o;
@@ -3586,7 +3640,9 @@ module voxel_gpu (
             plr_fog            <= pal_rd_fog;
             plr_addr           <= pal_rd_addr;
             plr_z              <= pal_rd_z;
-            plr_src_rgb        <= palette[pal_rd_src_addr];
+            plr_src_rgb        <= pal_rd_src_sky ?
+                                  sky_palette[pal_rd_sky_index] :
+                                  palette[pal_rd_src_addr];
             plr_dst_rgb565     <= pal_rd_dst_rgb565;
             plr_fog_rgb        <= palette[pal_rd_fog_addr];
             plr_w_q            <= pal_rd_w_q;
@@ -3598,7 +3654,9 @@ module voxel_gpu (
             plr_fog_o            <= pal_rd_fog_o;
             plr_addr_o           <= pal_rd_addr_o;
             plr_z_o              <= pal_rd_z_o;
-            plr_src_rgb_o        <= palette[pal_rd_src_addr_o];
+            plr_src_rgb_o        <= pal_rd_src_sky_o ?
+                                    sky_palette[pal_rd_sky_index_o] :
+                                    palette[pal_rd_src_addr_o];
             plr_dst_rgb565_o     <= pal_rd_dst_rgb565_o;
             plr_fog_rgb_o        <= palette[pal_rd_fog_addr_o];
             plr_w_q_o            <= pal_rd_w_q_o;
@@ -3769,7 +3827,7 @@ module voxel_gpu (
                                                    !cache_draw_dirty;
                             flush_sky_x <= 10'd0;
                             flush_sky_row_count <= 5'd0;
-                            flush_sky_palette <= sky_clear_start_palette(cache_band_index);
+                            flush_sky_palette <= sky_clear_start_index(cache_band_index);
                             flush_sdram_wr_addr <= copy_target_base_words +
                                                    band_word_offset(cache_band_index);
                             flush_sdram_wr_max_addr <= copy_target_base_words +
@@ -4764,6 +4822,7 @@ module voxel_gpu (
             ADDR_STATUS  : readdata = status_word;
             ADDR_FRAMECNT: readdata = frame_count;
             ADDR_PAL_ADDR: readdata = {24'h0, pal_addr};
+            ADDR_SKY_PAL_ADDR: readdata = {27'h0, sky_pal_addr};
             ADDR_FOG_RANGE: readdata = {fog_end_dist, fog_start_dist};
             ADDR_FOG_CTRL: readdata = {fog_inv_proj_sq, 7'h0, fog_enable, fog_color};
             ADDR_EXTMEM_CTRL: readdata = extmem_ctrl;

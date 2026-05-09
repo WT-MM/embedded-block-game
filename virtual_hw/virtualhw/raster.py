@@ -23,6 +23,9 @@ CLEAR_DEPTH = 0xFFFF
 TEXTURE_TILE_SIZE = 16
 TEXTURE_TILE_COUNT = 128
 TEXTURE_BYTES = TEXTURE_TILE_COUNT * TEXTURE_TILE_SIZE * TEXTURE_TILE_SIZE
+SKY_GRADIENT_BASE = 40
+SKY_GRADIENT_LAST = 63
+SKY_GRADIENT_COLORS = SKY_GRADIENT_LAST - SKY_GRADIENT_BASE + 1
 RECIP_LUT_SIZE = 1025
 RECIP_LUT_STEP = 64
 Q16 = 1 << 16
@@ -257,6 +260,7 @@ def _k_rasterize_quad(
     width: int,
     height: int,
     palette_rgb565,
+    sky_palette_rgb565,
     textures,
     recip_lut,
     fog_enabled: int,
@@ -305,6 +309,16 @@ def _k_rasterize_quad(
     alpha_key = 1 if (flags & 0x4) != 0 else 0
     fog_flag = 1 if (flags & 0x8) != 0 else 0
     alpha = (flags & 0xC0) >> 6
+    generated_sky = (
+        1
+        if (
+            textured == 0
+            and flags == 0
+            and tex_or_color >= SKY_GRADIENT_BASE
+            and tex_or_color <= SKY_GRADIENT_LAST
+        )
+        else 0
+    )
 
     a0 = edges[0, 0]; b0 = edges[0, 1]; c0 = edges[0, 2]
     a1 = edges[1, 0]; b1 = edges[1, 1]; c1 = edges[1, 2]
@@ -324,8 +338,11 @@ def _k_rasterize_quad(
             elif a3 * xx + b3 * yy + c3 < 0:
                 covers = 0
         if covers == 1:
-            color_index = _k_apply_light_bank(tex_or_color, flags)
-            src_rgb565 = palette_rgb565[color_index]
+            if generated_sky != 0:
+                src_rgb565 = sky_palette_rgb565[tex_or_color - SKY_GRADIENT_BASE]
+            else:
+                color_index = _k_apply_light_bank(tex_or_color, flags)
+                src_rgb565 = palette_rgb565[color_index]
             for y in range(y_min, y_max + 1):
                 row_start = y * width
                 for x in range(x_min, x_max + 1):
@@ -421,13 +438,19 @@ def _k_rasterize_quad(
                         else:
                             color_index = _k_apply_light_bank(raw_color, flags)
                     else:
-                        color_index = color_index_flat
+                        if generated_sky != 0:
+                            color_index = 0
+                        else:
+                            color_index = color_index_flat
 
                     if transparent == 0:
                         if ztest != 0:
                             z_buffer[pixel_index] = z_value
 
-                        src_rgb565 = palette_rgb565[color_index]
+                        if generated_sky != 0:
+                            src_rgb565 = sky_palette_rgb565[tex_or_color - SKY_GRADIENT_BASE]
+                        else:
+                            src_rgb565 = palette_rgb565[color_index]
                         src_rgb565 = _k_apply_fog_rgb565(
                             src_rgb565,
                             fog_color_rgb565,
@@ -593,6 +616,8 @@ class VirtualGPU:
         self.z_buffer = np.full(self.pixel_count, CLEAR_DEPTH, dtype=np.uint16)
         self.palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
         self.palette_rgb565 = np.zeros(256, dtype=np.uint16)
+        self.sky_palette: list[tuple[int, int, int]] = [(0, 0, 0)] * SKY_GRADIENT_COLORS
+        self.sky_palette_rgb565 = np.zeros(SKY_GRADIENT_COLORS, dtype=np.uint16)
         self.frame_count = 0
         self.vsync_latch = 0
         self.fog_start = 0
@@ -619,6 +644,13 @@ class VirtualGPU:
     def set_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
         self.palette[index] = (r, g, b)
         self.palette_rgb565[index] = rgb888_to_rgb565((r, g, b))
+
+    def set_sky_palette_entry(self, index: int, r: int, g: int, b: int) -> None:
+        index &= 0xFF
+        if index >= SKY_GRADIENT_COLORS:
+            return
+        self.sky_palette[index] = (r, g, b)
+        self.sky_palette_rgb565[index] = rgb888_to_rgb565((r, g, b))
 
     def set_fog(
         self,
@@ -668,6 +700,7 @@ class VirtualGPU:
             self.width,
             self.height,
             self.palette_rgb565,
+            self.sky_palette_rgb565,
             self._textures_np,
             RECIP_LUT_NP,
             1 if self.fog_enabled else 0,

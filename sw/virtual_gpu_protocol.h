@@ -14,6 +14,7 @@ enum {
     VGPU_SOCKET_CMD_GET_STATUS = 5,
     VGPU_SOCKET_CMD_GET_FRAME_COUNT = 6,
     VGPU_SOCKET_CMD_SET_FOG = 7,
+    VGPU_SOCKET_CMD_SET_SKY_PALETTE = 8,
 };
 
 struct vgpu_socket_header {

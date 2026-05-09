@@ -18,6 +18,7 @@ from .protocol import (
     CMD_GET_STATUS,
     CMD_SET_FOG,
     CMD_SET_PALETTE,
+    CMD_SET_SKY_PALETTE,
     CMD_SUBMIT_QUADS,
     DEFAULT_SOCKET_PATH,
     ProtocolError,
@@ -256,6 +257,9 @@ def handle_request(
         return b""
     if opcode == CMD_SET_PALETTE:
         gpu.set_palette_entry(*parse_palette_entry(payload))
+        return b""
+    if opcode == CMD_SET_SKY_PALETTE:
+        gpu.set_sky_palette_entry(*parse_palette_entry(payload))
         return b""
     if opcode == CMD_SET_FOG:
         gpu.set_fog(*parse_fog_state(payload))

@@ -21,6 +21,8 @@
  *   0x0030  EXTMEM_STAT  SDRAM copy/scanout status                (R)
  *   0x0034  BAND_INDEX   active 60-line render band index          (R/W)
  *   0x0038  BAND_CTRL    [1]=FLUSH [0]=BEGIN band command pulses   (W)
+ *   0x0068  SKY_PALETTE_ADDR [4:0] = generated sky gradient index  (W)
+ *   0x006C  SKY_PALETTE_DATA [23:16]=R [15:8]=G [7:0]=B            (W)
  *   0x1000..0x1FFF  FIFO_WINDOW (4 KB / 1024 words)              (W)
  *
  * The driver itself is intentionally dumb: it streams bytes from
@@ -70,6 +72,8 @@ typedef int32_t  __s32;
 #define VOXEL_REG_PERF_FLUSH_FIFO  0x005C
 #define VOXEL_REG_PERF_FLUSH_DATA  0x0060
 #define VOXEL_REG_PERF_FLUSH_DRAIN 0x0064
+#define VOXEL_REG_SKY_PALETTE_ADDR 0x0068
+#define VOXEL_REG_SKY_PALETTE_DATA 0x006C
 
 #define VOXEL_FIFO_BASE         0x1000
 #define VOXEL_FIFO_END          0x2000          /* exclusive */
@@ -113,6 +117,13 @@ typedef int32_t  __s32;
 /* ----- ioctl payloads ----- */
 struct voxel_palette_entry {
 	__u8 index;
+	__u8 r;
+	__u8 g;
+	__u8 b;
+};
+
+struct voxel_sky_palette_entry {
+	__u8 index;             /* generated sky gradient entry, 0..23 */
 	__u8 r;
 	__u8 g;
 	__u8 b;
@@ -182,8 +193,9 @@ struct voxel_perf_counters_v2 {
 #define VOXEL_IOC_WAIT_FLIP        _IO(VOXEL_IOC_MAGIC, 12)
 #define VOXEL_IOC_GET_PERF         _IOR(VOXEL_IOC_MAGIC, 13, struct voxel_perf_counters)
 #define VOXEL_IOC_GET_PERF2        _IOR(VOXEL_IOC_MAGIC, 14, struct voxel_perf_counters_v2)
+#define VOXEL_IOC_SET_SKY_PALETTE  _IOW(VOXEL_IOC_MAGIC, 15, struct voxel_sky_palette_entry)
 
-#define VOXEL_IOC_MAXNR            14
+#define VOXEL_IOC_MAXNR            15
 
 #define VOXEL_EXTMEM_CTRL_ENABLE        (1u << 0)
 #define VOXEL_EXTMEM_CTRL_SCANOUT_EN    (1u << 1)

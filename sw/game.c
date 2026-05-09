@@ -39,7 +39,7 @@
 #define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define STONE_SEED   0x48403421u
 #define STONE_TRIES_PER_CHUNK 24
-#define HOTBAR_SLOT_COUNT 8
+#define HOTBAR_SLOT_COUNT 9
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define DEFAULT_WORLD_SAVE_DIR "../worlds/default"
@@ -89,6 +89,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_SLOT_COUNT] = {
     BLOCK_GLASS,
     BLOCK_LAMP,
     BLOCK_LEAVES,
+    BLOCK_WATER,
 };
 
 static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
@@ -100,6 +101,7 @@ static const uint8_t HOTBAR_DIGITS[HOTBAR_SLOT_COUNT][5] = {
     { 0x7, 0x4, 0x7, 0x5, 0x7 }, /* 6 */
     { 0x7, 0x1, 0x1, 0x1, 0x1 }, /* 7 */
     { 0x7, 0x5, 0x7, 0x5, 0x7 }, /* 8 */
+    { 0x7, 0x5, 0x7, 0x1, 0x7 }, /* 9 */
 };
 
 static long ns_diff(const struct timespec *a, const struct timespec *b)
@@ -803,7 +805,7 @@ static bool try_place_targeted_block(VoxelWorld *world, const Camera *cam,
         return false;
     if (world_get_block(world, target.place_x, target.place_y, target.place_z) != BLOCK_AIR)
         return false;
-    if (player_intersects_block(player, target.place_x, target.place_y, target.place_z))
+    if (!block_is_passable(type) && player_intersects_block(player, target.place_x, target.place_y, target.place_z))
         return false;
 
     if (!world_set_block(world,
@@ -1208,7 +1210,7 @@ int main(void)
                 physics_steps < max_physics_steps_per_frame)) {
             bool jump_input = flying ? up_input : jump_pressed;
             player_update(&player, &world, wish_x, wish_z,
-                          jump_input, down_input, sprint_input, PHYSICS_DT);
+                          jump_input, up_input, down_input, sprint_input, PHYSICS_DT);
             jump_pressed = false;
             physics_accumulator -= PHYSICS_DT;
             physics_steps++;

@@ -314,6 +314,9 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_WOOD_PLANK: "oak_planks.png",
     TEX_TILE_GLASS: "glass.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
+    # Drop water_still.png in assets/minecraft_source/ to use the vanilla
+    # texture; otherwise base_texel falls back to the procedural water().
+    TEX_TILE_WATER: "water_still.png",
 }
 
 # Restrict quantization per tile so imported textures remain faithful while
@@ -327,11 +330,14 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_WOOD_TOP: (11, 3, 21, 22),
     TEX_TILE_WOOD_PLANK: (11, 3, 21, 22),
     TEX_TILE_GLASS: (0, 35, 36, 37),
-    # Drop bright-green (18) and the dirt browns from the leaf palette so
-    # quantization can only land on transparent / medium-green / dark-green.
-    # Without this the lighter source pixels would still pull a few texels
-    # into bright/brown and look washed-out next to the grass top.
-    TEX_TILE_LEAVES: (0, 9, 17),
+    # Restrict leaves to two greens for opaque texels. We deliberately exclude
+    # PAL_TRANSPARENT (0) here even though leaves use cutout transparency:
+    # genuinely-transparent texels short-circuit at the alpha<96 check at the
+    # top of _quantize_to_palette, so they never reach this list. Including 0
+    # would let nearest-color route any sufficiently dark opaque pixel to the
+    # background color (because the dark forest tint is closer to (16,16,24)
+    # than to (92,134,52)) and the leaves would render as solid sky blobs.
+    TEX_TILE_LEAVES: (9, 17),
 }
 
 # Vanilla grass/leaves textures are grayscale masks intended for biome tinting.
@@ -585,17 +591,32 @@ def leaves(x: int, y: int) -> int:
     )
 
 
+_WATER_RIPPLE_OFFSETS = (0, 1, 1, 2, 2, 1, 1, 0, -1, -2, -2, -3, -3, -2, -2, -1)
+_WATER_RIPPLE_LEN = len(_WATER_RIPPLE_OFFSETS)
+
+
 def water(x: int, y: int) -> int:
-    # Three-tone wavy stipple. Diagonal bands give a flowing-ripple look that
-    # tiles cleanly across face borders, with a sparse highlight pixel for
-    # specular sparkle. Translucent rendering relies on QUAD_ALPHA_50, so the
-    # body texels can stay fully opaque palette entries.
-    band = (x + y) & 7
-    if band == 0:
+    # Mostly-flat blue body with two superimposed sine-like horizontal ripple
+    # lines that tile cleanly across 16x16 borders, plus sparse highlight
+    # texels for sparkle. Translucent rendering relies on QUAD_ALPHA_50, so
+    # the body texels stay fully opaque palette entries. The ripples thread
+    # through the texture rather than sit as parallel diagonals so the
+    # surface reads as water instead of a striped flag.
+    if (x ^ (y * 5)) & 0x1F == 7:
         return PAL_WATER_HIGHLIGHT
-    if band in (1, 2):
-        return PAL_WATER_MID
-    if band in (3, 4, 5):
+
+    ripple_a = (y + _WATER_RIPPLE_OFFSETS[x % _WATER_RIPPLE_LEN]) & 0x0F
+    if ripple_a == 4:
+        return PAL_WATER_DEEP
+    ripple_b = (y + _WATER_RIPPLE_OFFSETS[(x + 8) % _WATER_RIPPLE_LEN] + 8) & 0x0F
+    if ripple_b == 4:
+        return PAL_WATER_DEEP
+
+    # A few mid-tone speckles to break up the flat fill.
+    n = noise(x, y, 311)
+    if n >= 224:
+        return PAL_WATER_HIGHLIGHT
+    if n >= 200:
         return PAL_WATER_DEEP
     return PAL_WATER_MID
 

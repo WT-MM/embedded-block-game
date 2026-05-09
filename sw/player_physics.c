@@ -60,14 +60,40 @@ static bool check_collision(VoxelWorld *world, float px, float py, float pz) {
     return false;
 }
 
+/* Any water voxel overlapping the player AABB counts as "in water" — the
+ * player only needs ankle-deep contact to start swimming. */
+static bool player_in_water(VoxelWorld *world, const Player *p) {
+    int min_x = (int)floorf(p->x - PLAYER_WIDTH / 2.0f);
+    int max_x = (int)floorf(p->x + PLAYER_WIDTH / 2.0f);
+    int min_y = (int)floorf(p->y);
+    int max_y = (int)floorf(p->y + PLAYER_HEIGHT);
+    int min_z = (int)floorf(p->z - PLAYER_DEPTH / 2.0f);
+    int max_z = (int)floorf(p->z + PLAYER_DEPTH / 2.0f);
+
+    for (int y = min_y; y <= max_y; y++)
+        for (int z = min_z; z <= max_z; z++)
+            for (int x = min_x; x <= max_x; x++)
+                if (world_get_block(world, x, y, z) == BLOCK_WATER)
+                    return true;
+    return false;
+}
+
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
-                   bool jump, bool shift, bool sprint, float dt) {
+                   bool jump, bool up_held, bool shift, bool sprint, float dt) {
     bool apply_gravity   = (p->mode == PLAYER_MODE_SURVIVAL);
     bool apply_collision = (p->mode != PLAYER_MODE_SPECTATOR);
+    /* Water physics is a survival-mode feature: creative/spectator keep
+     * their normal fly controls so the player can plow through water at
+     * full speed when building. */
+    bool in_water = apply_gravity && apply_collision &&
+                    player_in_water(world, p);
 
     /* Horizontal slewing (same in all modes). Sprint scales the target
-     * speed — not the current velocity — so acceleration feels natural. */
+     * speed — not the current velocity — so acceleration feels natural.
+     * Water drag scales the resulting target down so swimming feels heavy. */
     float horiz_speed = sprint ? (MAX_SPEED * SPRINT_MULTIPLIER) : MAX_SPEED;
+    if (in_water)
+        horiz_speed *= WATER_HORIZONTAL_DRAG;
     float target_vx = wish_dir_x * horiz_speed;
     float target_vz = wish_dir_z * horiz_speed;
     float accel_rate = (wish_dir_x != 0.0f || wish_dir_z != 0.0f) ? ACCELERATION : FRICTION;
@@ -76,14 +102,26 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
     p->vz = approach(p->vz, target_vz, accel_rate * dt);
 
     /* Vertical control: gravity + jump in survival, direct fly in creative/spectator.
-     * In flying modes jump=ascend, shift=descend, and eye-height crouch is disabled. */
+     * In flying modes jump=ascend, shift=descend, and eye-height crouch is disabled.
+     * Water replaces gravity with a slow sink + held-Space swim-up. */
     if (apply_gravity) {
-        p->vy -= GRAVITY * dt;
-        if (jump && p->is_grounded) {
-            p->vy = JUMP_VELOCITY;
-            p->is_grounded = false;
+        if (in_water) {
+            p->vy -= GRAVITY * WATER_GRAVITY_FACTOR * dt;
+            if (p->vy < WATER_SINK_TERMINAL)
+                p->vy = WATER_SINK_TERMINAL;
+            /* Held Space (not edge-triggered jump) drives the swim — this
+             * keeps the player rising as long as the key is down, the way
+             * Minecraft swimming works. */
+            if (up_held)
+                p->vy = WATER_SWIM_UP_VELOCITY;
+        } else {
+            p->vy -= GRAVITY * dt;
+            if (jump && p->is_grounded) {
+                p->vy = JUMP_VELOCITY;
+                p->is_grounded = false;
+            }
         }
-        p->is_shifting = shift;
+        p->is_shifting = shift && !in_water;
     } else {
         float fly_target = 0.0f;
         if (jump)  fly_target += FLY_SPEED;

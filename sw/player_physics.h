@@ -19,6 +19,14 @@
 #define FRICTION           10.0f /* deceleration when no input is applied */
 #define FLY_SPEED          6.0f  /* vertical speed in creative/spectator */
 
+/* Water physics: gravity is dampened, terminal sink rate is clamped, and
+ * a held jump key lets the player swim up. Horizontal speed is also
+ * scaled down so movement feels heavy. */
+#define WATER_GRAVITY_FACTOR     0.30f
+#define WATER_SINK_TERMINAL      -1.4f
+#define WATER_SWIM_UP_VELOCITY   3.2f
+#define WATER_HORIZONTAL_DRAG    0.55f
+
 typedef enum {
     PLAYER_MODE_SURVIVAL  = 0, /* gravity + collision */
     PLAYER_MODE_CREATIVE  = 1, /* fly, no gravity, collision */
@@ -37,7 +45,7 @@ typedef struct {
 
 void player_init(Player *p, float start_x, float start_y, float start_z);
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
-                   bool jump, bool shift, bool sprint, float dt);
+                   bool jump, bool up_held, bool shift, bool sprint, float dt);
 float player_get_eye_height(const Player *p);
 void player_cycle_mode(Player *p);
 const char *player_mode_name(PlayerMode mode);

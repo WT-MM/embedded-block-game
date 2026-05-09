@@ -1142,6 +1142,13 @@ static bool face_should_render(BlockID current, BlockID neighbor)
         return true;
     if (block_is_translucent(current))
         return false;
+    /* Hide alpha-keyed faces against the same block: leaf canopies stack
+     * dense enough that emitting every leaf-vs-leaf interior face was
+     * doubling chunk quad counts and tanking FPS. Adjacent leaves share
+     * the same texture and lighting, so the interior face was never the
+     * one the camera actually sees. */
+    if (current == neighbor && block_is_alpha_keyed(current))
+        return false;
     return block_is_transparent(neighbor);
 }
 
@@ -1296,6 +1303,7 @@ BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz)
     return chunk->blocks[wy][lz][lx];
 }
 
+__attribute__((unused))
 static uint8_t world_get_sky_light(const VoxelWorld *world, int wx, int wy, int wz)
 {
     if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
@@ -1330,6 +1338,7 @@ static uint8_t world_get_block_light(const VoxelWorld *world, int wx, int wy, in
     return chunk->block_light[wy][lz][lx];
 }
 
+__attribute__((unused))
 static bool world_set_sky_light(VoxelWorld *world, int wx, int wy, int wz,
                                 uint8_t value)
 {
@@ -1854,6 +1863,7 @@ bool world_rebuild_lighting(VoxelWorld *world)
 static int count_exposed_faces_for_chunk_nb(const VoxelWorld *world, const Chunk *chunk,
                                               const Chunk *nb[3][3])
 {
+    (void)world;
     int ccx = chunk->chunk_x;
     int ccz = chunk->chunk_z;
     int count = 0;

@@ -76,9 +76,11 @@ static float worldgen_biome_value(int wx, int wz, uint32_t base_seed)
 
 static WorldBiome worldgen_biome_from_value(float b)
 {
-    if (b < 0.42f)
+    if (b < 0.32f)
         return WORLD_BIOME_PLAINS;
-    if (b < 0.62f)
+    if (b < 0.50f)
+        return WORLD_BIOME_DESERT;
+    if (b < 0.66f)
         return WORLD_BIOME_HILLS;
     return WORLD_BIOME_MOUNTAINS;
 }
@@ -88,6 +90,8 @@ const char *world_biome_name(WorldBiome biome)
     switch (biome) {
     case WORLD_BIOME_PLAINS:
         return "plains";
+    case WORLD_BIOME_DESERT:
+        return "desert";
     case WORLD_BIOME_HILLS:
         return "hills";
     case WORLD_BIOME_MOUNTAINS:
@@ -121,13 +125,22 @@ static int worldgen_surface_y_at(int wx, int wz, uint32_t base_seed,
     float mid  = value_noise_octave(wx, wz, 12, base_seed, 0xb2u);
     float fine = value_noise_octave(wx, wz, 4,  base_seed, 0xc3u);
     float biome_value = worldgen_biome_value(wx, wz, base_seed);
-    float plains_w = 1.0f - smoothstep_range(0.34f, 0.54f, biome_value);
-    float mountain_w = smoothstep_range(0.58f, 0.80f, biome_value);
-    float hills_w = 1.0f - plains_w - mountain_w;
+    float plains_w = 1.0f - smoothstep_range(0.28f, 0.40f, biome_value);
+    float desert_w = smoothstep_range(0.28f, 0.40f, biome_value) *
+                     (1.0f - smoothstep_range(0.46f, 0.58f, biome_value));
+    float hills_w = smoothstep_range(0.46f, 0.58f, biome_value) *
+                    (1.0f - smoothstep_range(0.62f, 0.78f, biome_value));
+    float mountain_w = smoothstep_range(0.62f, 0.78f, biome_value);
+    float weight_sum = plains_w + desert_w + hills_w + mountain_w;
     float ridge = fabsf(value_noise_octave(wx, wz, 24, base_seed, 0xa44u) - 0.5f) * 2.0f;
+    float dune = fabsf(value_noise_octave(wx, wz, 20, base_seed, 0xde57u) - 0.5f) * 2.0f;
     float plains_h = (float)WORLDGEN_SEA_LEVEL + 1.0f +
                      (low - 0.5f) * 3.0f +
                      (fine - 0.5f) * 1.2f;
+    float desert_h = (float)WORLDGEN_SEA_LEVEL + 1.0f +
+                     (low - 0.5f) * 2.0f +
+                     dune * 2.6f +
+                     (fine - 0.5f) * 0.8f;
     float hills_h = (float)WORLDGEN_SEA_LEVEL + 3.0f +
                     (low - 0.5f) * 5.5f +
                     (mid - 0.5f) * 8.0f +
@@ -139,9 +152,12 @@ static int worldgen_surface_y_at(int wx, int wz, uint32_t base_seed,
     float h_f;
     int h;
 
-    if (hills_w < 0.0f)
-        hills_w = 0.0f;
-    h_f = plains_h * plains_w + hills_h * hills_w + mountain_h * mountain_w;
+    if (weight_sum <= 0.0001f)
+        weight_sum = 1.0f;
+    h_f = (plains_h * plains_w +
+           desert_h * desert_w +
+           hills_h * hills_w +
+           mountain_h * mountain_w) / weight_sum;
     h = (int)floorf(h_f + 0.5f);
 
     if (h < 2) h = 2;
@@ -189,7 +205,8 @@ static BlockID worldgen_column_block(const WorldgenColumn *column, int y)
     if (y == column->surface_y) {
         if (column->clay_patch && column->underwater)
             return BLOCK_CLAY;
-        if (column->underwater || column->beach)
+        if (column->underwater || column->beach ||
+            column->biome == WORLD_BIOME_DESERT)
             return BLOCK_SAND;
         if (column->surface_y >= WORLDGEN_SEA_LEVEL + 8)
             return BLOCK_STONE;
@@ -200,14 +217,17 @@ static BlockID worldgen_column_block(const WorldgenColumn *column, int y)
         if (column->clay_patch && column->underwater &&
             y >= column->surface_y - 1)
             return BLOCK_CLAY;
-        if (column->underwater || column->beach)
+        if (column->underwater || column->beach ||
+            column->biome == WORLD_BIOME_DESERT)
             return (y <= column->surface_y - 2) ? BLOCK_SANDSTONE : BLOCK_SAND;
         if (column->surface_y >= WORLDGEN_SEA_LEVEL + 8)
             return BLOCK_STONE;
         return BLOCK_DIRT;
     }
 
-    if ((column->underwater || column->beach) && y >= column->surface_y - 5)
+    if ((column->underwater || column->beach ||
+         column->biome == WORLD_BIOME_DESERT) &&
+        y >= column->surface_y - 5)
         return BLOCK_SANDSTONE;
     return BLOCK_STONE;
 }
@@ -218,6 +238,7 @@ static bool worldgen_tree_candidate(int wx, int wz, uint32_t base_seed)
     uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
 
     if (column.underwater || column.beach ||
+        column.biome == WORLD_BIOME_DESERT ||
         column.biome == WORLD_BIOME_MOUNTAINS ||
         column.surface_y >= WORLDGEN_SEA_LEVEL + 8 ||
         column.surface_y < WORLDGEN_TREE_MIN_Y)
@@ -257,11 +278,37 @@ static bool worldgen_wants_flower(int wx, int wz, uint32_t base_seed,
     uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xf10fu);
     uint32_t threshold;
 
-    if (biome == WORLD_BIOME_MOUNTAINS)
+    if (biome == WORLD_BIOME_DESERT || biome == WORLD_BIOME_MOUNTAINS)
         return false;
 
     threshold = (biome == WORLD_BIOME_PLAINS) ? 5u : 2u;
     return (roll & 0xffu) < threshold;
+}
+
+static bool worldgen_wants_mushroom(int wx, int wz, uint32_t base_seed,
+                                    WorldBiome biome)
+{
+    uint32_t roll = hash_world_coord(wx, wz, base_seed, 0x6d45u);
+    float shade = value_noise_octave(wx, wz, 10, base_seed, 0x5adeu);
+
+    if (biome == WORLD_BIOME_DESERT || biome == WORLD_BIOME_MOUNTAINS)
+        return false;
+
+    return (roll & 0xffu) < 6u && shade > 0.48f;
+}
+
+static bool worldgen_wants_cactus(int wx, int wz, uint32_t base_seed,
+                                  const WorldgenColumn *column)
+{
+    uint32_t roll;
+
+    if (!column || column->biome != WORLD_BIOME_DESERT ||
+        column->underwater || column->beach ||
+        column->surface_y < WORLDGEN_SEA_LEVEL)
+        return false;
+
+    roll = hash_world_coord(wx, wz, base_seed, 0xcac7u);
+    return (roll & 0xffu) < 5u;
 }
 
 static void worldgen_set_block_local(Chunk *chunk, int lx, int ly, int lz,
@@ -304,6 +351,16 @@ static void worldgen_place_tree(Chunk *chunk, int local_x, int trunk_top_y,
     }
     worldgen_set_block_local(chunk, local_x, canopy_y + 2, local_z,
                              BLOCK_LEAVES, false);
+}
+
+static void worldgen_place_cactus(Chunk *chunk, int local_x, int base_y,
+                                  int local_z, uint32_t roll)
+{
+    int height = 2 + (int)(roll % 3u);
+
+    for (int i = 0; i < height; i++)
+        worldgen_set_block_local(chunk, local_x, base_y + i, local_z,
+                                 BLOCK_CACTUS, false);
 }
 
 void world_generate_chunk_terrain(Chunk *chunk,
@@ -364,6 +421,27 @@ void world_generate_chunk_terrain(Chunk *chunk,
             int wx = origin_x + lx;
             int wz = origin_z + lz;
             WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
+            int cactus_y = column.surface_y + 1;
+            uint32_t roll;
+
+            if (cactus_y + 3 >= WORLD_CHUNK_HEIGHT)
+                continue;
+            if (chunk->blocks[column.surface_y][lz][lx] != BLOCK_SAND ||
+                chunk->blocks[cactus_y][lz][lx] != BLOCK_AIR)
+                continue;
+            if (!worldgen_wants_cactus(wx, wz, base_seed, &column))
+                continue;
+
+            roll = hash_world_coord(wx, wz, base_seed, 0xcac7u);
+            worldgen_place_cactus(chunk, lx, cactus_y, lz, roll);
+        }
+    }
+
+    for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
+        for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
+            int wx = origin_x + lx;
+            int wz = origin_z + lz;
+            WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
             int flower_y = column.surface_y + 1;
 
             if (column.underwater || column.beach ||
@@ -372,6 +450,12 @@ void world_generate_chunk_terrain(Chunk *chunk,
             if (chunk->blocks[column.surface_y][lz][lx] != BLOCK_GRASS ||
                 chunk->blocks[flower_y][lz][lx] != BLOCK_AIR)
                 continue;
+            if (worldgen_wants_mushroom(wx, wz, base_seed, column.biome)) {
+                chunk->blocks[flower_y][lz][lx] =
+                    (hash_world_coord(wx, wz, base_seed, 0x6d46u) & 1u) ?
+                    BLOCK_RED_MUSHROOM : BLOCK_BROWN_MUSHROOM;
+                continue;
+            }
             if (!worldgen_wants_flower(wx, wz, base_seed, column.biome))
                 continue;
 

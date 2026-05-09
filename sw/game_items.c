@@ -66,6 +66,21 @@ static void item_entity_spawn_stack(ItemEntityPool *pool,
     }
 }
 
+static uint32_t item_drop_hash(int wx, int wy, int wz, uint32_t salt)
+{
+    uint32_t h = salt ^ 0x51ed5eedu;
+
+    h ^= (uint32_t)wx * 0x9e3779b9u;
+    h ^= (uint32_t)wy * 0x85ebca6bu;
+    h ^= (uint32_t)wz * 0xc2b2ae35u;
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return h;
+}
+
 void item_entity_spawn_block_drop(ItemEntityPool *pool,
                                   BlockID broken_block,
                                   int wx,
@@ -84,6 +99,13 @@ void item_entity_spawn_block_drop(ItemEntityPool *pool,
         2.2f,
         push_dir.z * 1.2f,
     };
+
+    if (broken_block == BLOCK_LEAVES) {
+        uint32_t roll = item_drop_hash(wx, wy, wz,
+                                       pool ? pool->spawn_counter : 0u);
+
+        drop = (roll % 5u == 0u) ? ITEM_APPLE : ITEM_NONE;
+    }
 
     if (drop == ITEM_NONE)
         return;
@@ -107,6 +129,22 @@ static void item_entity_spawn_near_player(ItemEntityPool *pool,
     Vec3 vel = { 0.0f, 2.0f, 0.0f };
 
     item_entity_spawn_stack(pool, stack->item, stack->count, pos, vel, 0.0f);
+}
+
+void item_entity_spawn_item_near_player(ItemEntityPool *pool,
+                                        const Player *player,
+                                        ItemID item,
+                                        int count)
+{
+    ItemStack stack = { item, 0 };
+
+    if (count <= 0)
+        return;
+    if (count > ITEM_STACK_MAX)
+        count = ITEM_STACK_MAX;
+
+    stack.count = (uint8_t)count;
+    item_entity_spawn_near_player(pool, player, &stack);
 }
 
 static void return_stack_to_inventory_or_drop(SurvivalInventory *inv,
@@ -140,6 +178,7 @@ void close_survival_inventory(SurvivalInventory *inv,
     for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++)
         return_stack_to_inventory_or_drop(inv, drops, player, &inv->craft[i]);
     return_stack_to_inventory_or_drop(inv, drops, player, &inv->cursor);
+    survival_inventory_set_craft_grid_dim(inv, SURVIVAL_CRAFT_GRID_PLAYER);
     survival_inventory_refresh_craft_output(inv);
 }
 

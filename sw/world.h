@@ -17,6 +17,7 @@
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
+    WORLD_BIOME_DESERT,
     WORLD_BIOME_HILLS,
     WORLD_BIOME_MOUNTAINS,
 } WorldBiome;

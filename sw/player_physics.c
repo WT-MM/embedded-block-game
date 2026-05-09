@@ -1,6 +1,17 @@
 #include "player_physics.h"
 #include <math.h>
 
+PlayerPhysicsConfig player_default_physics(void) {
+    return (PlayerPhysicsConfig){
+        .gravity = GRAVITY,
+        .jump_velocity = JUMP_VELOCITY,
+        .jump_height = (JUMP_VELOCITY * JUMP_VELOCITY) / (2.0f * GRAVITY),
+        .max_speed = MAX_SPEED,
+        .sprint_multiplier = SPRINT_MULTIPLIER,
+        .fly_speed = FLY_SPEED,
+    };
+}
+
 static float approach(float current, float target, float delta) {
     if (current < target) {
         return (current + delta > target) ? target : current + delta;
@@ -19,10 +30,18 @@ void player_init(Player *p, float start_x, float start_y, float start_z) {
     p->is_grounded = false;
     p->is_shifting = false;
     p->current_eye_y = EYE_HEIGHT_NORMAL;
+    p->physics = player_default_physics();
     p->is_in_water = false;
     p->water_check_countdown = 0;
     p->water_flow_x = 0.0f;
     p->water_flow_z = 0.0f;
+}
+
+void player_reset_physics(Player *p) {
+    if (!p)
+        return;
+
+    p->physics = player_default_physics();
 }
 
 void player_set_mode(Player *p, PlayerMode mode) {
@@ -214,7 +233,14 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
     /* Horizontal slewing (same in all modes). Sprint scales the target
      * speed — not the current velocity — so acceleration feels natural.
      * Water drag scales the resulting target down so swimming feels heavy. */
-    float horiz_speed = sprint ? (MAX_SPEED * SPRINT_MULTIPLIER) : MAX_SPEED;
+    float max_speed = p->physics.max_speed;
+    float sprint_multiplier = p->physics.sprint_multiplier;
+    if (max_speed < 0.0f)
+        max_speed = 0.0f;
+    if (sprint_multiplier < 0.0f)
+        sprint_multiplier = 0.0f;
+
+    float horiz_speed = sprint ? (max_speed * sprint_multiplier) : max_speed;
     if (in_water)
         horiz_speed *= WATER_HORIZONTAL_DRAG;
     float target_vx = wish_dir_x * horiz_speed;
@@ -233,7 +259,7 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
      * Water replaces gravity with a slow sink + held-Space swim-up. */
     if (apply_gravity) {
         if (in_water) {
-            p->vy -= GRAVITY * WATER_GRAVITY_FACTOR * dt;
+            p->vy -= p->physics.gravity * WATER_GRAVITY_FACTOR * dt;
             if (p->vy < WATER_SINK_TERMINAL)
                 p->vy = WATER_SINK_TERMINAL;
             /* Held Space (not edge-triggered jump) drives the swim — this
@@ -242,17 +268,17 @@ void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_di
             if (up_held)
                 p->vy = WATER_SWIM_UP_VELOCITY;
         } else {
-            p->vy -= GRAVITY * dt;
+            p->vy -= p->physics.gravity * dt;
             if (jump && p->is_grounded) {
-                p->vy = JUMP_VELOCITY;
+                p->vy = p->physics.jump_velocity;
                 p->is_grounded = false;
             }
         }
         p->is_shifting = shift && !in_water;
     } else {
         float fly_target = 0.0f;
-        if (jump)  fly_target += FLY_SPEED;
-        if (shift) fly_target -= FLY_SPEED;
+        if (jump)  fly_target += p->physics.fly_speed;
+        if (shift) fly_target -= p->physics.fly_speed;
         p->vy = approach(p->vy, fly_target, ACCELERATION * dt);
         p->is_shifting = false;
         p->is_grounded = false;

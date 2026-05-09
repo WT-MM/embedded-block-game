@@ -33,6 +33,15 @@
  * The re-check triggers immediately whenever vy is non-zero. */
 #define WATER_CHECK_INTERVAL     3
 
+typedef struct {
+    float gravity;
+    float jump_velocity;
+    float jump_height;
+    float max_speed;
+    float sprint_multiplier;
+    float fly_speed;
+} PlayerPhysicsConfig;
+
 typedef enum {
     PLAYER_MODE_SURVIVAL  = 0, /* gravity + collision */
     PLAYER_MODE_CREATIVE  = 1, /* building mode, optional flight, collision */
@@ -47,6 +56,7 @@ typedef struct {
     bool is_grounded;
     bool is_shifting;
     float current_eye_y;  /* dynamic eye offset */
+    PlayerPhysicsConfig physics;
     /* Cached water state. Refreshed every WATER_CHECK_INTERVAL physics ticks
      * (or immediately whenever the player moves vertically). Running the full
      * AABB voxel scan at 60 Hz was the dominant cost in upd_phys at idle. */
@@ -55,11 +65,13 @@ typedef struct {
     float water_flow_x, water_flow_z;
 } Player;
 
+PlayerPhysicsConfig player_default_physics(void);
 void player_init(Player *p, float start_x, float start_y, float start_z);
 void player_update(Player *p, VoxelWorld *world, float wish_dir_x, float wish_dir_z,
                    bool jump, bool up_held, bool shift, bool sprint,
                    bool flight_enabled, float dt);
 float player_get_eye_height(const Player *p);
+void player_reset_physics(Player *p);
 void player_set_mode(Player *p, PlayerMode mode);
 void player_cycle_mode(Player *p);
 const char *player_mode_name(PlayerMode mode);

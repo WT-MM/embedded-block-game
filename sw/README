@@ -107,8 +107,10 @@ Then run any renderer-based binary with one of:
     VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
     VOXEL_GPU_BACKEND=socket ./game
 
-On Linux, `./game` opens on a world-select screen. Press W/S to choose an
-existing save or create a new random-seed world, then Enter or Space to start.
+On Linux, `./game` opens on a world-select screen. Press W/S or use the cursor
+to choose an existing save or create a new random-seed world, then Enter, Space,
+or click to start. Press Delete/Backspace twice, or click a world's Delete then
+Confirm button, to remove a saved world from that screen.
 On macOS, use the renderer tests with the socket backend; the game target needs
 Linux input headers and `/dev/input/event*` devices.
 
@@ -131,7 +133,7 @@ Environment variables:
     VOXEL_DEBUG_HUD=0|1                  # extra on-screen renderer/debug stats
     VOXEL_DIAG_BBOX=0|1                  # log band bbox/cost summaries
     VOXEL_DIAG_CACHE=0|1                 # log hardware band-cache hit/miss state
-    VOXEL_OCCLUSION_CULL=0|1             # coarse opaque occlusion culling; default: 1
+    VOXEL_OCCLUSION_CULL=0|1             # experimental coarse opaque occlusion culling; default: 0
     VOXEL_DIAG_OCCLUSION=0|1             # log culling counters every 60 frames
     VOXEL_HW_BAND_REUSE=0|1              # cached-band skip path; default: 1 for hw
     VOXEL_PIPELINE_FRAMES=0|1            # hw submit worker; default: 1 for hw

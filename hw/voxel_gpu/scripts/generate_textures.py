@@ -360,6 +360,9 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_GLASS: "glass.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
     TEX_TILE_WATER: "water_still.png",
+    TEX_TILE_CACTUS_SIDE: "cactus_side.tga",
+    TEX_TILE_CACTUS_TOP: "cactus_top.tga",
+    TEX_TILE_CACTUS_BOTTOM: "cactus_bottom.tga",
     TEX_TILE_SAND: "sand.png",
     TEX_TILE_GRAVEL: "gravel.png",
     TEX_TILE_COBBLESTONE: "cobblestone.png",
@@ -378,6 +381,11 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_DIAMOND_BLOCK: "diamond_block.png",
     TEX_TILE_RED_FLOWER: "flower_rose.png",
     TEX_TILE_YELLOW_FLOWER: "flower_dandelion.png",
+    TEX_TILE_RED_MUSHROOM: "mushroom_red.png",
+    TEX_TILE_BROWN_MUSHROOM: "mushroom_brown.png",
+    TEX_TILE_APPLE: "apple.png",
+    TEX_TILE_BOWL: "bowl.png",
+    TEX_TILE_MUSHROOM_STEW: "mushroom_stew.png",
     TEX_TILE_HEART_CONTAINER: "container.png",
     TEX_TILE_HEART: "full.png",
     TEX_TILE_DRUMSTICK: "food_full.png",
@@ -407,6 +415,9 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # background color (because the dark forest tint is closer to (16,16,24)
     # than to (92,134,52)) and the leaves would render as solid sky blobs.
     TEX_TILE_LEAVES: (9, 17),
+    TEX_TILE_CACTUS_SIDE: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
+    TEX_TILE_CACTUS_TOP: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
+    TEX_TILE_CACTUS_BOTTOM: (PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_WHITE),
     # Water: the vanilla texture is a grayscale brightness mask (alpha=180).
     # Map bright pixels to highlight and dark pixels to deep blue. The mid
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
@@ -430,6 +441,11 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_DIAMOND_BLOCK: (PAL_BLUE, PAL_GLASS, PAL_GLASS_HIGHLIGHT, PAL_WHITE),
     TEX_TILE_RED_FLOWER: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_RED, PAL_WHITE),
     TEX_TILE_YELLOW_FLOWER: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_YELLOW, PAL_SUN_CORE),
+    TEX_TILE_RED_MUSHROOM: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_RED, PAL_WHITE, PAL_WOOD_TOP),
+    TEX_TILE_BROWN_MUSHROOM: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT),
+    TEX_TILE_APPLE: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_RED, PAL_WHITE),
+    TEX_TILE_BOWL: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT),
+    TEX_TILE_MUSHROOM_STEW: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_WOOD_TOP, PAL_DIRT_LIGHT, PAL_RED, PAL_WHITE),
     TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
     TEX_TILE_HEART_HALF: (14, 6, 5),
@@ -777,6 +793,18 @@ def water(x: int, y: int) -> int:
     if n >= 200:
         return PAL_WATER_DEEP
     return PAL_WATER_MID
+
+
+def cactus(x: int, y: int, top: bool = False) -> int:
+    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
+        return PAL_GRASS_DARK
+    if top and 4 <= x <= 11 and 4 <= y <= 11:
+        return PAL_GRASS_LIGHT if noise(x, y, 377) > 128 else PAL_GRASS_SIDE
+    if x in (3, 12) and (y & 1) == 0:
+        return PAL_WHITE
+    if noise(x, y, 379) > 210:
+        return PAL_GRASS_LIGHT
+    return PAL_GRASS_SIDE
 
 
 def sand(x: int, y: int) -> int:
@@ -1165,6 +1193,10 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return leaves(x, y)
     if tile == TEX_TILE_WATER:
         return water(x, y)
+    if tile == TEX_TILE_CACTUS_SIDE:
+        return cactus(x, y, False)
+    if tile == TEX_TILE_CACTUS_TOP or tile == TEX_TILE_CACTUS_BOTTOM:
+        return cactus(x, y, True)
     if tile == TEX_TILE_SAND:
         return sand(x, y)
     if tile == TEX_TILE_GRAVEL:
@@ -1201,6 +1233,16 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return flower(x, y, PAL_RED, PAL_WHITE)
     if tile == TEX_TILE_YELLOW_FLOWER:
         return flower(x, y, PAL_YELLOW, PAL_SUN_CORE)
+    if tile == TEX_TILE_RED_MUSHROOM:
+        return flower(x, y, PAL_RED, PAL_WHITE)
+    if tile == TEX_TILE_BROWN_MUSHROOM:
+        return flower(x, y, PAL_WOOD, PAL_DIRT_LIGHT)
+    if tile == TEX_TILE_APPLE:
+        return flower(x, y, PAL_RED, PAL_WHITE)
+    if tile == TEX_TILE_BOWL:
+        return wood_top(x, y)
+    if tile == TEX_TILE_MUSHROOM_STEW:
+        return wood_plank(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:

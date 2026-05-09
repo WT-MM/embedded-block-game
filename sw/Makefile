@@ -49,7 +49,7 @@ module_laptop:
 tests/voxel_test: tests/voxel_test.c voxel_gpu.h
 	${CC} ${CFLAGS} -I. -o $@ tests/voxel_test.c
 
-tests/command_parser_test: tests/command_parser_test.c command_parser.c command_parser.h
+tests/command_parser_test: tests/command_parser_test.c command_parser.c command_parser.h block_types.h texture_tiles.def
 	${CC} ${CFLAGS} -I. -o $@ tests/command_parser_test.c command_parser.c
 
 tests/inventory_test: tests/inventory_test.c inventory.c inventory.h block_types.c block_types.h texture_tiles.def

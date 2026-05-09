@@ -47,6 +47,9 @@ typedef enum {
     BLOCK_LAVA_FLOW,   /* auto-spread flowing lava; hidden from the hotbar */
     BLOCK_CRAFTING_TABLE,
     BLOCK_DOOR,
+    BLOCK_CACTUS,
+    BLOCK_RED_MUSHROOM,
+    BLOCK_BROWN_MUSHROOM,
     NUM_BLOCK_TYPES
 } BlockID;
 

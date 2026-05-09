@@ -47,6 +47,7 @@ typedef struct {
     bool pause_toggle_pressed;
     bool debug_hud_toggle_pressed;
     bool menu_select_pressed;
+    bool menu_delete_pressed;
     bool look_left, look_right, look_up, look_down;
     bool quit;
     int hotbar_slot_pressed;
@@ -92,6 +93,7 @@ bool input_consume_inventory_toggle(InputState *inp);
 bool input_consume_pause_toggle(InputState *inp);
 bool input_consume_debug_hud_toggle(InputState *inp);
 bool input_consume_menu_select(InputState *inp);
+bool input_consume_menu_delete(InputState *inp);
 int input_consume_hotbar_slot(InputState *inp);
 bool input_consume_hotbar_page(InputState *inp);
 void input_set_pointer_capture(InputState *inp, bool on);

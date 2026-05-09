@@ -3,6 +3,7 @@
 #include <string.h>
 
 typedef struct {
+    bool shapeless;
     uint8_t width;
     uint8_t height;
     ItemID inputs[SURVIVAL_CRAFT_SLOT_COUNT];
@@ -12,6 +13,7 @@ typedef struct {
 
 static const CraftRecipe CRAFT_RECIPES[] = {
     {
+        .shapeless = false,
         .width = 1,
         .height = 1,
         .inputs = { (ItemID)BLOCK_WOOD, ITEM_NONE, ITEM_NONE, ITEM_NONE },
@@ -19,6 +21,7 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .output_count = 4,
     },
     {
+        .shapeless = false,
         .width = 1,
         .height = 2,
         .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
@@ -27,6 +30,7 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .output_count = 4,
     },
     {
+        .shapeless = false,
         .width = 2,
         .height = 2,
         .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
@@ -35,19 +39,104 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .output_count = 1,
     },
     {
+        .shapeless = false,
         .width = 2,
-        .height = 2,
-        .inputs = { (ItemID)BLOCK_PLANKS, ITEM_STICK,
-                    (ItemID)BLOCK_PLANKS, ITEM_STICK },
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    ITEM_NONE, ITEM_NONE, ITEM_NONE },
         .output = (ItemID)BLOCK_DOOR,
-        .output_count = 1,
+        .output_count = 3,
     },
     {
+        .shapeless = false,
         .width = 2,
         .height = 2,
         .inputs = { (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND,
                     (ItemID)BLOCK_SAND, (ItemID)BLOCK_SAND },
         .output = (ItemID)BLOCK_SANDSTONE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = true,
+        .width = 2,
+        .height = 1,
+        .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
+                    ITEM_NONE, ITEM_NONE },
+        .output = ITEM_BOWL,
+        .output_count = 4,
+    },
+    {
+        .shapeless = true,
+        .width = 2,
+        .height = 2,
+        .inputs = { ITEM_BOWL, ITEM_RED_MUSHROOM, ITEM_BROWN_MUSHROOM,
+                    ITEM_NONE },
+        .output = ITEM_MUSHROOM_STEW,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_CLAY, (ItemID)BLOCK_CLAY,
+                    (ItemID)BLOCK_CLAY, (ItemID)BLOCK_CLAY },
+        .output = (ItemID)BLOCK_BRICKS,
+        .output_count = 1,
+    },
+    {
+        .shapeless = true,
+        .width = 2,
+        .height = 1,
+        .inputs = { (ItemID)BLOCK_GLASS, (ItemID)BLOCK_REDSTONE_BLOCK,
+                    ITEM_NONE, ITEM_NONE },
+        .output = (ItemID)BLOCK_LAMP,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE,
+                    (ItemID)BLOCK_COBBLESTONE, (ItemID)BLOCK_COBBLESTONE },
+        .output = (ItemID)BLOCK_STONE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
+                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
+                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
+                    (ItemID)BLOCK_GOLD_ORE, (ItemID)BLOCK_GOLD_ORE,
+                    (ItemID)BLOCK_GOLD_ORE },
+        .output = (ItemID)BLOCK_GOLD_BLOCK,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
+                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
+                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
+                    (ItemID)BLOCK_DIAMOND_ORE, (ItemID)BLOCK_DIAMOND_ORE,
+                    (ItemID)BLOCK_DIAMOND_ORE },
+        .output = (ItemID)BLOCK_DIAMOND_BLOCK,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 3,
+        .inputs = { (ItemID)BLOCK_REDSTONE_ORE, (ItemID)BLOCK_REDSTONE_ORE,
+                    (ItemID)BLOCK_REDSTONE_ORE, (ItemID)BLOCK_REDSTONE_ORE,
+                    (ItemID)BLOCK_REDSTONE_ORE, (ItemID)BLOCK_REDSTONE_ORE,
+                    (ItemID)BLOCK_REDSTONE_ORE, (ItemID)BLOCK_REDSTONE_ORE,
+                    (ItemID)BLOCK_REDSTONE_ORE },
+        .output = (ItemID)BLOCK_REDSTONE_BLOCK,
         .output_count = 1,
     },
 };
@@ -57,7 +146,12 @@ static bool item_id_valid(ItemID item)
     if (item > ITEM_NONE && item < (ItemID)NUM_BLOCK_TYPES)
         return true;
 
-    return item == ITEM_STICK;
+    return item == ITEM_STICK ||
+           item == ITEM_APPLE ||
+           item == ITEM_RED_MUSHROOM ||
+           item == ITEM_BROWN_MUSHROOM ||
+           item == ITEM_BOWL ||
+           item == ITEM_MUSHROOM_STEW;
 }
 
 void item_stack_clear(ItemStack *stack)
@@ -127,6 +221,16 @@ const char *item_name(ItemID item)
         return BlockRegistry[(BlockID)item].name;
     if (item == ITEM_STICK)
         return "Stick";
+    if (item == ITEM_APPLE)
+        return "Apple";
+    if (item == ITEM_RED_MUSHROOM)
+        return "Red Mushroom";
+    if (item == ITEM_BROWN_MUSHROOM)
+        return "Brown Mushroom";
+    if (item == ITEM_BOWL)
+        return "Bowl";
+    if (item == ITEM_MUSHROOM_STEW)
+        return "Mushroom Stew";
 
     return "Unknown";
 }
@@ -137,6 +241,16 @@ uint8_t item_texture_id(ItemID item)
         return block_face_texture_id((BlockID)item, FACE_FRONT);
     if (item == ITEM_STICK)
         return TEX_TILE_WOOD_PLANK;
+    if (item == ITEM_APPLE)
+        return TEX_TILE_APPLE;
+    if (item == ITEM_RED_MUSHROOM)
+        return TEX_TILE_RED_MUSHROOM;
+    if (item == ITEM_BROWN_MUSHROOM)
+        return TEX_TILE_BROWN_MUSHROOM;
+    if (item == ITEM_BOWL)
+        return TEX_TILE_BOWL;
+    if (item == ITEM_MUSHROOM_STEW)
+        return TEX_TILE_MUSHROOM_STEW;
 
     return 0;
 }
@@ -154,6 +268,33 @@ BlockID item_place_block(ItemID item)
     return (BlockID)item;
 }
 
+int item_food_units(ItemID item)
+{
+    switch (item) {
+    case ITEM_APPLE:
+        return 4;
+    case ITEM_RED_MUSHROOM:
+    case ITEM_BROWN_MUSHROOM:
+        return 2;
+    case ITEM_MUSHROOM_STEW:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+bool item_food_returns_bowl(ItemID item)
+{
+    return item == ITEM_MUSHROOM_STEW;
+}
+
+static int clamp_craft_grid_dim(int grid_dim)
+{
+    if (grid_dim >= SURVIVAL_CRAFT_GRID_TABLE)
+        return SURVIVAL_CRAFT_GRID_TABLE;
+    return SURVIVAL_CRAFT_GRID_PLAYER;
+}
+
 void survival_inventory_init(SurvivalInventory *inv)
 {
     if (!inv)
@@ -166,6 +307,24 @@ void survival_inventory_init(SurvivalInventory *inv)
         item_stack_clear(&inv->craft[i]);
     item_stack_clear(&inv->craft_output);
     item_stack_clear(&inv->cursor);
+    inv->craft_grid_dim = SURVIVAL_CRAFT_GRID_PLAYER;
+}
+
+void survival_inventory_set_craft_grid_dim(SurvivalInventory *inv, int grid_dim)
+{
+    if (!inv)
+        return;
+
+    inv->craft_grid_dim = (uint8_t)clamp_craft_grid_dim(grid_dim);
+    survival_inventory_refresh_craft_output(inv);
+}
+
+int survival_inventory_craft_grid_dim(const SurvivalInventory *inv)
+{
+    if (!inv)
+        return SURVIVAL_CRAFT_GRID_PLAYER;
+
+    return clamp_craft_grid_dim(inv->craft_grid_dim);
 }
 
 int survival_inventory_add_item(SurvivalInventory *inv, ItemID item, int count)
@@ -209,12 +368,13 @@ bool survival_inventory_remove_storage(SurvivalInventory *inv, int slot, int cou
 
 static bool craft_recipe_matches_at(const SurvivalInventory *inv,
                                     const CraftRecipe *recipe,
+                                    int grid_dim,
                                     int offset_x,
                                     int offset_y)
 {
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 2; x++) {
-            int grid_index = y * 2 + x;
+    for (int y = 0; y < grid_dim; y++) {
+        for (int x = 0; x < grid_dim; x++) {
+            int grid_index = y * SURVIVAL_CRAFT_GRID_TABLE + x;
             bool inside =
                 x >= offset_x && x < offset_x + recipe->width &&
                 y >= offset_y && y < offset_y + recipe->height;
@@ -239,16 +399,82 @@ static bool craft_recipe_matches_at(const SurvivalInventory *inv,
     return true;
 }
 
+static bool craft_recipe_matches_shapeless(const SurvivalInventory *inv,
+                                           const CraftRecipe *recipe,
+                                           int grid_dim)
+{
+    bool used[SURVIVAL_CRAFT_SLOT_COUNT] = { false };
+    int want_count = 0;
+    int have_count = 0;
+
+    if (!inv || !recipe)
+        return false;
+
+    for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++) {
+        if (recipe->inputs[i] != ITEM_NONE)
+            want_count++;
+    }
+
+    for (int y = 0; y < grid_dim; y++) {
+        for (int x = 0; x < grid_dim; x++) {
+            int index = y * SURVIVAL_CRAFT_GRID_TABLE + x;
+
+            if (!item_stack_is_empty(&inv->craft[index]))
+                have_count++;
+        }
+    }
+    if (want_count != have_count)
+        return false;
+
+    for (int want = 0; want < SURVIVAL_CRAFT_SLOT_COUNT; want++) {
+        ItemID item = recipe->inputs[want];
+        bool found = false;
+
+        if (item == ITEM_NONE)
+            continue;
+
+        for (int y = 0; y < grid_dim && !found; y++) {
+            for (int x = 0; x < grid_dim; x++) {
+                int have = y * SURVIVAL_CRAFT_GRID_TABLE + x;
+
+                if (used[have] ||
+                    item_stack_is_empty(&inv->craft[have]) ||
+                    inv->craft[have].item != item)
+                    continue;
+
+                used[have] = true;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+            return false;
+    }
+
+    return true;
+}
+
 static bool craft_recipe_matches(const SurvivalInventory *inv,
                                  const CraftRecipe *recipe)
 {
+    int grid_dim;
+
     if (!inv || !recipe || recipe->width == 0 || recipe->height == 0 ||
-        recipe->width > 2 || recipe->height > 2)
+        recipe->width > SURVIVAL_CRAFT_GRID_TABLE ||
+        recipe->height > SURVIVAL_CRAFT_GRID_TABLE)
         return false;
 
-    for (int y = 0; y <= 2 - (int)recipe->height; y++) {
-        for (int x = 0; x <= 2 - (int)recipe->width; x++) {
-            if (craft_recipe_matches_at(inv, recipe, x, y))
+    grid_dim = survival_inventory_craft_grid_dim(inv);
+    if (recipe->width > grid_dim || recipe->height > grid_dim)
+        return false;
+
+    if (recipe->shapeless)
+        return craft_recipe_matches_shapeless(inv, recipe, grid_dim);
+
+    for (int y = 0; y <= grid_dim - (int)recipe->height; y++) {
+        for (int x = 0; x <= grid_dim - (int)recipe->width; x++) {
+            if (craft_recipe_matches_at(inv, recipe, grid_dim, x, y))
                 return true;
         }
     }
@@ -310,6 +536,7 @@ static bool cursor_accepts_stack(const ItemStack *cursor, const ItemStack *stack
 static bool take_craft_output(SurvivalInventory *inv)
 {
     ItemStack output;
+    int grid_dim = survival_inventory_craft_grid_dim(inv);
 
     survival_inventory_refresh_craft_output(inv);
     output = inv->craft_output;
@@ -321,9 +548,13 @@ static bool take_craft_output(SurvivalInventory *inv)
     else
         inv->cursor.count = (uint8_t)(inv->cursor.count + output.count);
 
-    for (int i = 0; i < SURVIVAL_CRAFT_SLOT_COUNT; i++) {
-        if (!item_stack_is_empty(&inv->craft[i]))
-            item_stack_remove(&inv->craft[i], 1);
+    for (int y = 0; y < grid_dim; y++) {
+        for (int x = 0; x < grid_dim; x++) {
+            int i = y * SURVIVAL_CRAFT_GRID_TABLE + x;
+
+            if (!item_stack_is_empty(&inv->craft[i]))
+                item_stack_remove(&inv->craft[i], 1);
+        }
     }
 
     survival_inventory_refresh_craft_output(inv);
@@ -438,6 +669,66 @@ const ItemStack *survival_inventory_hotbar_stack(const SurvivalInventory *inv,
     return &inv->storage[slot];
 }
 
+int survival_craft_recipe_count(void)
+{
+    return (int)(sizeof(CRAFT_RECIPES) / sizeof(CRAFT_RECIPES[0]));
+}
+
+static bool recipe_fits_grid(const CraftRecipe *recipe, int grid_dim)
+{
+    if (!recipe)
+        return false;
+
+    grid_dim = clamp_craft_grid_dim(grid_dim);
+    return recipe->width <= grid_dim && recipe->height <= grid_dim;
+}
+
+bool survival_craft_recipe_view(int index, CraftRecipeView *view)
+{
+    const CraftRecipe *recipe;
+
+    if (!view || index < 0 || index >= survival_craft_recipe_count())
+        return false;
+
+    recipe = &CRAFT_RECIPES[index];
+    view->shapeless = recipe->shapeless;
+    view->width = recipe->width;
+    view->height = recipe->height;
+    memcpy(view->inputs, recipe->inputs, sizeof(view->inputs));
+    view->output = recipe->output;
+    view->output_count = recipe->output_count;
+    return true;
+}
+
+int survival_craft_recipe_count_for_grid(int grid_dim)
+{
+    int count = 0;
+
+    for (int i = 0; i < survival_craft_recipe_count(); i++) {
+        if (recipe_fits_grid(&CRAFT_RECIPES[i], grid_dim))
+            count++;
+    }
+
+    return count;
+}
+
+bool survival_craft_recipe_view_for_grid(int index, int grid_dim,
+                                         CraftRecipeView *view)
+{
+    if (!view || index < 0)
+        return false;
+
+    for (int i = 0; i < survival_craft_recipe_count(); i++) {
+        if (!recipe_fits_grid(&CRAFT_RECIPES[i], grid_dim))
+            continue;
+        if (index == 0)
+            return survival_craft_recipe_view(i, view);
+        index--;
+    }
+
+    return false;
+}
+
 ItemID survival_drop_for_block(BlockID block)
 {
     switch (block) {
@@ -451,6 +742,12 @@ ItemID survival_drop_for_block(BlockID block)
         return (ItemID)BLOCK_DIRT;
     case BLOCK_STONE:
         return (ItemID)BLOCK_COBBLESTONE;
+    case BLOCK_LEAVES:
+        return ITEM_NONE;
+    case BLOCK_RED_MUSHROOM:
+        return ITEM_RED_MUSHROOM;
+    case BLOCK_BROWN_MUSHROOM:
+        return ITEM_BROWN_MUSHROOM;
     default:
         if (block > BLOCK_AIR && block < NUM_BLOCK_TYPES)
             return (ItemID)block;

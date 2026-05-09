@@ -521,6 +521,11 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 if (press_edge)
                     inp->menu_select_pressed = true;
                 break;
+            case KEY_BACKSPACE:
+            case KEY_DELETE:
+                if (press_edge)
+                    inp->menu_delete_pressed = true;
+                break;
             case KEY_LEFTSHIFT:
             case KEY_RIGHTSHIFT:             inp->down    = down; break;
             case KEY_G:
@@ -710,6 +715,13 @@ bool input_consume_menu_select(InputState *inp)
     return pressed;
 }
 
+bool input_consume_menu_delete(InputState *inp)
+{
+    bool pressed = inp->menu_delete_pressed;
+    inp->menu_delete_pressed = false;
+    return pressed;
+}
+
 int input_consume_hotbar_slot(InputState *inp)
 {
     int slot = inp->hotbar_slot_pressed;
@@ -769,6 +781,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->place_pressed = false;
         inp->inventory_toggle_pressed = false;
         inp->menu_select_pressed = false;
+        inp->menu_delete_pressed = false;
         inp->hotbar_slot_pressed = -1;
         inp->hotbar_page_pressed = false;
         inp->_forward_tap_armed = false;

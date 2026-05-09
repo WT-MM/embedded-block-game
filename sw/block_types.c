@@ -206,6 +206,25 @@ void init_block_types(void)
     BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_FRONT] = TEX_TILE_WOOD_SIDE;
     BlockRegistry[BLOCK_DOOR].face_texture_ids[FACE_BACK] = TEX_TILE_WOOD_SIDE;
     BlockRegistry[BLOCK_DOOR].hardness_seconds = 0.9f;
+
+    BlockRegistry[BLOCK_CACTUS].id = BLOCK_CACTUS;
+    BlockRegistry[BLOCK_CACTUS].name = "Cactus";
+    set_all_faces(&BlockRegistry[BLOCK_CACTUS], TEX_TILE_CACTUS_SIDE);
+    BlockRegistry[BLOCK_CACTUS].face_texture_ids[FACE_TOP] = TEX_TILE_CACTUS_TOP;
+    BlockRegistry[BLOCK_CACTUS].face_texture_ids[FACE_BOTTOM] = TEX_TILE_CACTUS_BOTTOM;
+    BlockRegistry[BLOCK_CACTUS].hardness_seconds = 0.45f;
+
+    BlockRegistry[BLOCK_RED_MUSHROOM].id = BLOCK_RED_MUSHROOM;
+    BlockRegistry[BLOCK_RED_MUSHROOM].name = "Red Mushroom";
+    set_all_faces(&BlockRegistry[BLOCK_RED_MUSHROOM], TEX_TILE_RED_MUSHROOM);
+    BlockRegistry[BLOCK_RED_MUSHROOM].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_RED_MUSHROOM].render_model = BLOCK_RENDER_CROSS;
+
+    BlockRegistry[BLOCK_BROWN_MUSHROOM].id = BLOCK_BROWN_MUSHROOM;
+    BlockRegistry[BLOCK_BROWN_MUSHROOM].name = "Brown Mushroom";
+    set_all_faces(&BlockRegistry[BLOCK_BROWN_MUSHROOM], TEX_TILE_BROWN_MUSHROOM);
+    BlockRegistry[BLOCK_BROWN_MUSHROOM].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_BROWN_MUSHROOM].render_model = BLOCK_RENDER_CROSS;
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)

@@ -48,6 +48,14 @@ a slash. Lines starting with `/` are parsed as commands:
 - `/gamemode set creative` or `/gamemode creative`
 - `/gamemode set spectator` or `/gamemode spectator`
 - `/gm ...` and `/mode ...` are shorthand aliases for `/gamemode ...`.
+- `/physics set gravity 12.5`, `/physics set speed 6`,
+  `/physics set jump_height 2`, `/physics set fly_speed 10`, and
+  `/physics reset`.
+- `/setblock <x> <y> <z> <block>` edits one block.
+- `/fill <x1> <y1> <z1> <x2> <y2> <z2> <block>` edits a region.
+- Coordinates can be absolute integers or Minecraft-style relative values
+  such as `~`, `~-1`, and `~3`; block names use underscores, e.g.
+  `air`, `stone`, `glass`, `diamond_block`.
 - `/kill` respawns the player at spawn, preserving the current mode.
 - `/help` prints the supported command forms in chat.
 

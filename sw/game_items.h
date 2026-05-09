@@ -33,6 +33,10 @@ void item_entity_spawn_block_drop(ItemEntityPool *pool,
                                   int wy,
                                   int wz,
                                   Vec3 push_dir);
+void item_entity_spawn_item_near_player(ItemEntityPool *pool,
+                                        const Player *player,
+                                        ItemID item,
+                                        int count);
 void close_survival_inventory(SurvivalInventory *inv,
                               ItemEntityPool *drops,
                               const Player *player,

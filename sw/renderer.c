@@ -1295,13 +1295,6 @@ static void fit_uv_plane(const Vertex2D v[4], const PlaneBasis *basis,
     uv->one_over_w_dy = to_q16_16(diw_dy);
 }
 
-static int env_flag_default_on(const char *name)
-{
-    const char *value = getenv(name);
-
-    return !(value && value[0] == '0' && value[1] == '\0');
-}
-
 static int env_flag_default_off(const char *name)
 {
     const char *value = getenv(name);
@@ -2138,7 +2131,7 @@ RenderContext *renderer_init(void)
     ctx->lookup_capacity = 0;
     ctx->translucent_scratch = NULL;
     ctx->translucent_scratch_capacity = 0;
-    ctx->occlusion_enabled = env_flag_default_on("VOXEL_OCCLUSION_CULL") ? 1 : 0;
+    ctx->occlusion_enabled = env_flag_default_off("VOXEL_OCCLUSION_CULL") ? 1 : 0;
     ctx->occlusion_diag = env_flag_default_off("VOXEL_DIAG_OCCLUSION") ? 1 : 0;
     if (!ctx->submit_buffer) {
         free(ctx->submit_buffer);

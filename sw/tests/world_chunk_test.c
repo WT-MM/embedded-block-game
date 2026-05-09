@@ -88,6 +88,8 @@ typedef struct {
     int stone_surfaces;
     int water_blocks;
     int flowers;
+    int mushrooms;
+    int cacti;
     int lowest_surface_y;
     int highest_surface_y;
 } WorldgenSample;
@@ -97,7 +99,10 @@ static bool block_is_worldgen_decoration(BlockID id)
     return id == BLOCK_WOOD ||
            id == BLOCK_LEAVES ||
            id == BLOCK_RED_FLOWER ||
-           id == BLOCK_YELLOW_FLOWER;
+           id == BLOCK_YELLOW_FLOWER ||
+           id == BLOCK_RED_MUSHROOM ||
+           id == BLOCK_BROWN_MUSHROOM ||
+           id == BLOCK_CACTUS;
 }
 
 static WorldgenSample sample_worldgen(const VoxelWorld *world)
@@ -125,6 +130,11 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
                         sample.water_blocks++;
                     if (id == BLOCK_RED_FLOWER || id == BLOCK_YELLOW_FLOWER)
                         sample.flowers++;
+                    if (id == BLOCK_RED_MUSHROOM ||
+                        id == BLOCK_BROWN_MUSHROOM)
+                        sample.mushrooms++;
+                    if (id == BLOCK_CACTUS)
+                        sample.cacti++;
                     if (id == BLOCK_AIR ||
                         id == BLOCK_WATER ||
                         id == BLOCK_WATER_FLOW ||
@@ -212,6 +222,18 @@ int main(void)
         return check_failed("biome worldgen did not create grass, beach, clay, and water");
     if (initial_sample.highest_surface_y - initial_sample.lowest_surface_y < 4)
         return check_failed("biome worldgen terrain was too flat");
+    bool found_desert_biome = false;
+    for (int z = -128; z <= 128 && !found_desert_biome; z += 16) {
+        for (int x = -128; x <= 128; x += 16) {
+            if (world_biome_at(&world, x, z) == WORLD_BIOME_DESERT) {
+                found_desert_biome = true;
+                break;
+            }
+        }
+    }
+    if (!found_desert_biome ||
+        strcmp(world_biome_name(WORLD_BIOME_DESERT), "desert") != 0)
+        return check_failed("desert biome was not reachable by worldgen");
 
     if (!world_init_infinite_procedural(&biome_world,
                                         TEST_WORLD_SEED,
@@ -312,8 +334,13 @@ int main(void)
 
     if (block_render_model(BLOCK_RED_FLOWER) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_RED_FLOWER) ||
-        !block_is_passable(BLOCK_RED_FLOWER))
-        return check_failed("flower metadata missing");
+        !block_is_passable(BLOCK_RED_FLOWER) ||
+        block_render_model(BLOCK_RED_MUSHROOM) != BLOCK_RENDER_CROSS ||
+        !block_is_alpha_keyed(BLOCK_RED_MUSHROOM) ||
+        !block_is_passable(BLOCK_RED_MUSHROOM) ||
+        block_render_model(BLOCK_CACTUS) != BLOCK_RENDER_CUBE ||
+        block_is_passable(BLOCK_CACTUS))
+        return check_failed("plant metadata missing");
     const int flower_x = 9;
     const int flower_y = 26;
     const int flower_z = 2;

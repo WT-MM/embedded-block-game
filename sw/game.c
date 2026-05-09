@@ -1349,17 +1349,34 @@ int main(void)
             fflush(stdout);
         }
 
-        /* Sleep for the remainder of the frame budget */
+        /* Sleep for the remainder of the frame budget.
+         *
+         * Vsync alignment: renderer_end_frame() fires FLIP_ASYNC (returns
+         * immediately) but the next call to gpu_transport_clear() inside
+         * renderer_end_frame() on the FOLLOWING frame would block waiting
+         * for that vsync.  By doing the wait HERE — before nanosleep — the
+         * stall is charged to "sleep" rather than "end", so "end" reflects
+         * only real work (band submits + FLIP_ASYNC dispatch, ~2-5 ms).
+         * gpu_transport_wait_vsync() is idempotent: if the flip already
+         * resolved it returns immediately. */
+        double sleep_ns = 0.0;
+        {
+            struct timespec vsync_start, vsync_end;
+            clock_gettime(CLOCK_MONOTONIC, &vsync_start);
+            renderer_wait_vsync(ctx);
+            clock_gettime(CLOCK_MONOTONIC, &vsync_end);
+            sleep_ns += (double)ns_diff(&vsync_end, &vsync_start);
+        }
+
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
         long used = ns_diff(&frame_end, &loop_start);
-        double sleep_ns = 0.0;
         if (used < frame_ns) {
             struct timespec ts = { 0, frame_ns - used };
             struct timespec sleep_start, sleep_end;
             clock_gettime(CLOCK_MONOTONIC, &sleep_start);
             nanosleep(&ts, NULL);
             clock_gettime(CLOCK_MONOTONIC, &sleep_end);
-            sleep_ns = (double)ns_diff(&sleep_end, &sleep_start);
+            sleep_ns += (double)ns_diff(&sleep_end, &sleep_start);
         }
 
         perf_frames++;

@@ -74,6 +74,10 @@ void renderer_shutdown(RenderContext* ctx);
 /* --- Frame Operations --- */
 void renderer_begin_frame(RenderContext* ctx);
 void renderer_end_frame(RenderContext* ctx);
+/* Block until the previous FLIP_ASYNC vsync completes.  Call this before
+ * nanosleep() in the game loop so the stall is charged to "sleep" rather
+ * than "end".  Idempotent — safe to call even if no flip is pending. */
+void renderer_wait_vsync(RenderContext* ctx);
 
 /* --- Camera & Geometry --- */
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);

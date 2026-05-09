@@ -1806,6 +1806,12 @@ void renderer_end_frame(RenderContext *ctx)
     gpu_transport_flip(ctx->transport);
 }
 
+void renderer_wait_vsync(RenderContext *ctx)
+{
+    if (ctx && ctx->transport)
+        gpu_transport_wait_vsync(ctx->transport);
+}
+
 void renderer_set_camera(RenderContext *ctx, const Camera *camera)
 {
     ctx->current_camera = *camera;

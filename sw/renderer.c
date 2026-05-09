@@ -1806,12 +1806,6 @@ void renderer_end_frame(RenderContext *ctx)
     gpu_transport_flip(ctx->transport);
 }
 
-void renderer_wait_vsync(RenderContext *ctx)
-{
-    if (ctx && ctx->transport)
-        gpu_transport_wait_vsync(ctx->transport);
-}
-
 void renderer_set_camera(RenderContext *ctx, const Camera *camera)
 {
     ctx->current_camera = *camera;
@@ -2073,10 +2067,20 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      * so emitting them first would cause opaque geometry behind the glass
      * to be Z-rejected and we'd blend glass against sky instead of against
      * the stone behind it.
-     */
+     *
+     * Early back-face cull: face normals are axis-aligned (exactly one
+     * component ±1, rest zero). The full dot-product in is_face_visible
+     * reduces to a single comparison per face direction:
+     *   sign > 0 axis: skip if (block_pos[axis] + 1.0) - cam[axis] >= 0
+     *   sign < 0 axis: skip if   block_pos[axis]        - cam[axis] <= 0
+     * Doing this before choose_chunk_face_light_flags saves the light
+     * lookup + function call for all back-facing faces (~50% of faces). */
+    const Vec3 cam_pos = ctx->current_camera.position;
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
         const ChunkMesh *mesh = candidates[i].mesh;
+        const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+        const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
 
         for (int face_index = 0; face_index < mesh->face_count; face_index++) {
             const ChunkFace *face = &mesh->faces[face_index];
@@ -2085,11 +2089,21 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
             if (block_is_translucent(id))
                 continue;
 
-            Vec3 block_pos = {
-                (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x),
-                (float)face->y,
-                (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z),
-            };
+            /* Early back-face cull using axis-aligned normal. */
+            float wx = chunk_ox + (float)face->x;
+            float wy = (float)face->y;
+            float wz = chunk_oz + (float)face->z;
+            switch ((BlockFace)face->face) {
+            case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
+            case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
+            case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
+            case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
+            case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
+            case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
+            default: break;
+            }
+
+            Vec3 block_pos = { wx, wy, wz };
             uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
                                                                 (BlockFace)face->face,
                                                                 face->sky_light,
@@ -2131,17 +2145,28 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
         for (int i = 0; i < candidate_count; i++) {
             const Chunk *chunk = candidates[i].chunk;
             const ChunkMesh *mesh = candidates[i].mesh;
+            const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
+            const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
 
             for (int face_index = 0; face_index < mesh->face_count; face_index++) {
                 const ChunkFace *face = &mesh->faces[face_index];
                 if (!block_is_translucent((BlockID)face->type))
                     continue;
 
-                Vec3 block_center = {
-                    (float)(chunk->chunk_x * WORLD_CHUNK_SIZE + face->x) + 0.5f,
-                    (float)face->y + 0.5f,
-                    (float)(chunk->chunk_z * WORLD_CHUNK_SIZE + face->z) + 0.5f,
-                };
+                float wx = chunk_ox + (float)face->x;
+                float wy = (float)face->y;
+                float wz = chunk_oz + (float)face->z;
+                switch ((BlockFace)face->face) {
+                case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
+                case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
+                case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
+                case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
+                case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
+                case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
+                default: break;
+                }
+
+                Vec3 block_center = { wx + 0.5f, wy + 0.5f, wz + 0.5f };
                 CameraVertex cv;
                 world_to_camera(ctx, block_center, &cv);
 
@@ -2222,6 +2247,26 @@ bool renderer_draw_screen_tile(RenderContext *ctx,
                                      0.0f, 0.0f, 16.0f, 16.0f,
                                      texture_id,
                                      extra_flags);
+}
+
+bool renderer_draw_custom_screen_quad(RenderContext *ctx,
+                                      float x0, float y0,
+                                      float x1, float y1,
+                                      float x2, float y2,
+                                      float x3, float y3,
+                                      uint8_t texture_id, uint8_t extra_flags)
+{
+    RenderQuad quad = {0};
+
+    quad.texture_id = texture_id;
+    quad.flags = QUAD_FLAG_TEX | extra_flags;
+    quad.vertices[0] = (Vertex2D){ x0, y0, 0.0f, 0.0f,  0.0f,  1.0f };
+    quad.vertices[1] = (Vertex2D){ x1, y1, 0.0f, 16.0f, 0.0f,  1.0f };
+    quad.vertices[2] = (Vertex2D){ x2, y2, 0.0f, 16.0f, 16.0f, 1.0f };
+    quad.vertices[3] = (Vertex2D){ x3, y3, 0.0f, 0.0f,  16.0f, 1.0f };
+    if (projected_quad_fully_inside_viewport(quad.vertices))
+        return stage_projected_quad_no_clip(ctx, &quad);
+    return renderer_push_quad(ctx, &quad);
 }
 
 bool renderer_fill_rect(RenderContext *ctx,

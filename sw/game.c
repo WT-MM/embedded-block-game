@@ -841,7 +841,7 @@ static void draw_hotbar_digit(RenderContext *ctx, int digit,
     }
 }
 
-static void draw_hotbar(RenderContext *ctx, int selected_slot)
+static void draw_hotbar(RenderContext *ctx, int selected_slot, PlayerMode mode)
 {
     const float s = HUD_SCALE;
     const float slot_size = 20.0f * s;
@@ -855,29 +855,32 @@ static void draw_hotbar(RenderContext *ctx, int selected_slot)
                        slot_left - 4.0f * s, slot_top - 4.0f * s,
                        slot_left + total_width + 4.0f * s,
                        slot_top + slot_size + 4.0f * s,
-                       14, 0);
+                       14, 0); // Palette 14 is dark grey, good for background outline
     renderer_fill_rect(ctx,
                        slot_left - 3.0f * s, slot_top - 3.0f * s,
                        slot_left + total_width + 3.0f * s,
                        slot_top + slot_size + 3.0f * s,
-                       0, 0);
+                       0, 0); // Palette 0 is probably black or transparent bg
 
     for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
         float x0 = slot_left + (slot_size + gap) * (float)i;
         float x1 = x0 + slot_size;
         float y0 = slot_top;
         float y1 = y0 + slot_size;
-        uint8_t border = (i == selected_slot) ? 5 : 14;
+        uint8_t border = (i == selected_slot) ? 5 : 14; // 5 is white
         uint8_t number = (i == selected_slot) ? 8 : 5;
 
         renderer_fill_rect(ctx, x0, y0, x1, y1, border, 0);
         renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
                            x1 - 1.0f * s, y1 - 1.0f * s, 0, 0);
-        renderer_draw_screen_tile(ctx,
-                                  x0 + 2.0f * s, y0 + 2.0f * s,
-                                  x1 - 2.0f * s, y1 - 2.0f * s,
-                                  block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
-                                  0);
+        
+        if (mode != PLAYER_MODE_SURVIVAL && HOTBAR_BLOCKS[i] != BLOCK_AIR) {
+            renderer_draw_screen_tile(ctx,
+                                      x0 + 2.0f * s, y0 + 2.0f * s,
+                                      x1 - 2.0f * s, y1 - 2.0f * s,
+                                      block_face_texture_id(HOTBAR_BLOCKS[i], FACE_FRONT),
+                                      0);
+        }
         renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
                            x0 + 5.0f * s, y0 + 7.0f * s, 0, 0);
         draw_hotbar_digit(ctx, i + 1, x0 + 2.0f * s, y0 + 2.0f * s, number);
@@ -896,22 +899,13 @@ static void draw_healthbar(RenderContext *ctx)
     const float s = HUD_SCALE;
     const float slot_size = 20.0f * s;
     const float gap = 4.0f * s;
-    const float total_width =
-        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+    const float total_width = HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
     const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
     const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
 
     for (int i = 0; i < 10; i++) {
-        float x0 = slot_left + (float)i * 8.0f * s;
-        float y0 = health_top;
-        float x1 = x0 + 7.0f * s;
-        float y1 = y0 + 7.0f * s;
-        
-        renderer_fill_rect(ctx, x0, y0, x1, y1, 14, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
-                           x1 - 1.0f * s, y1 - 1.0f * s, 6, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
-                           x0 + 3.0f * s, y0 + 3.0f * s, 5, 0);
+        float x0 = slot_left + (float)i * 9.0f * s;
+        renderer_draw_screen_tile(ctx, x0, health_top, x0 + 8.0f * s, health_top + 8.0f * s, TEX_TILE_HEART, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
@@ -920,43 +914,74 @@ static void draw_hungerbar(RenderContext *ctx)
     const float s = HUD_SCALE;
     const float slot_size = 20.0f * s;
     const float gap = 4.0f * s;
-    const float total_width =
-        HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
+    const float total_width = HOTBAR_SLOT_COUNT * slot_size + (HOTBAR_SLOT_COUNT - 1) * gap;
     const float slot_left = floorf((SCREEN_WIDTH - total_width) * 0.5f);
     const float health_top = SCREEN_HEIGHT - slot_size - 8.0f * s - 12.0f * s;
 
     float hunger_right = slot_left + total_width;
 
     for (int i = 0; i < 10; i++) {
-        float x1 = hunger_right - (float)i * 8.0f * s;
-        float x0 = x1 - 7.0f * s;
-        float y0 = health_top;
-        float y1 = y0 + 7.0f * s;
-        
-        renderer_fill_rect(ctx, x0, y0, x1, y1, 14, 0);
-        renderer_fill_rect(ctx, x0 + 1.0f * s, y0 + 1.0f * s,
-                           x1 - 1.0f * s, y1 - 1.0f * s, 2, 0);
+        float x0 = hunger_right - (float)(i + 1) * 9.0f * s;
+        renderer_draw_screen_tile(ctx, x0, health_top, x0 + 8.0f * s, health_top + 8.0f * s, TEX_TILE_DRUMSTICK, QUAD_FLAG_ALPHA_KEY);
     }
 }
 
-static void draw_player_hand(RenderContext *ctx, int selected_slot)
+static void draw_player_hand(RenderContext *ctx, int selected_slot, float break_timer)
 {
     BlockID type = HOTBAR_BLOCKS[selected_slot];
     const float s = HUD_SCALE;
-    const float hand_size = 64.0f * s;
-    float x0 = SCREEN_WIDTH - hand_size + 16.0f * s;
-    float y0 = SCREEN_HEIGHT - hand_size + 16.0f * s;
-    float x1 = x0 + hand_size;
-    float y1 = y0 + hand_size;
+    const float hand_size = 48.0f * s;
+    
+    float swing_offset_y = sinf(break_timer * 15.0f) * 20.0f * s;
+    float swing_offset_x = sinf(break_timer * 15.0f) * 10.0f * s;
+    
+    float cx = SCREEN_WIDTH - hand_size + 16.0f * s + swing_offset_x;
+    float cy = SCREEN_HEIGHT - hand_size + 16.0f * s + swing_offset_y;
+    float w = hand_size * 0.8f;
+    float h = hand_size * 0.4f;
+    float h2 = hand_size * 0.8f;
 
     if (type == BLOCK_AIR) {
-        // Draw bare hand (skin-colored block, palette index 20)
-        renderer_fill_rect(ctx, x0, y0, x1, y1, 20, 0);
+        // Draw bare hand (rectangular prism)
+        // Top face
+        renderer_draw_custom_screen_quad(ctx,
+            cx, cy,
+            cx + w, cy - h,
+            cx, cy - 2.0f * h,
+            cx - w, cy - h,
+            0, QUAD_FLAG_ALPHA_KEY); // Or just don't use texture, wait!
+            // Custom quad requires a texture_id!
+        // We will just draw the faces using fill_rect.
+        // Wait, fill_rect is only axis-aligned. So we can't easily draw an isometric bare hand without a texture.
+        // Let's use TEX_TILE_WOOD_SIDE or TEX_TILE_DIRT with color tint, or just draw a flat hand for BLOCK_AIR.
+        // Since we can't draw arbitrary polygons with fill_rect, we use custom screen quad with a solid texture or just dirt.
+        renderer_draw_custom_screen_quad(ctx, cx, cy, cx + w, cy - h, cx, cy - 2.0f*h, cx - w, cy - h, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
+        renderer_draw_custom_screen_quad(ctx, cx + w, cy - h + h2, cx + w, cy - h, cx, cy, cx, cy + h2, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
+        renderer_draw_custom_screen_quad(ctx, cx, cy + h2, cx, cy, cx - w, cy - h, cx - w, cy - h + h2, TEX_TILE_WOOD_SIDE, QUAD_ALPHA_75);
         return;
     }
 
-    renderer_draw_screen_tile(ctx, x0, y0, x1, y1,
-                              block_face_texture_id(type, FACE_FRONT), 0);
+    // Top Face
+    renderer_draw_custom_screen_quad(ctx,
+        cx, cy,
+        cx + w, cy - h,
+        cx, cy - 2.0f * h,
+        cx - w, cy - h,
+        block_face_texture_id(type, FACE_TOP), 0);
+    // Right Face
+    renderer_draw_custom_screen_quad(ctx,
+        cx + w, cy - h + h2,
+        cx + w, cy - h,
+        cx, cy,
+        cx, cy + h2,
+        block_face_texture_id(type, FACE_RIGHT), QUAD_LIGHT_LEVEL(2));
+    // Left Face (Front)
+    renderer_draw_custom_screen_quad(ctx,
+        cx, cy + h2,
+        cx, cy,
+        cx - w, cy - h,
+        cx - w, cy - h + h2,
+        block_face_texture_id(type, FACE_FRONT), QUAD_LIGHT_LEVEL(1));
 }
 
 /* Debug HUD: player position, chunk coords, render distance, loaded chunks.
@@ -1123,6 +1148,8 @@ int main(void)
     float world_time = 0.0f;
     float physics_accumulator = 0.0f;
     float water_tick_accumulator = 0.0f;
+    float break_timer = 0.0f;
+    BlockTarget break_target = {0};
 #define WATER_TICK_INTERVAL 0.25f  /* 5 game ticks @ 20 ticks/s, like Minecraft */
     int perf_frames = 0;
     int perf_quads = 0;
@@ -1324,8 +1351,34 @@ int main(void)
                          BlockRegistry[HOTBAR_BLOCKS[selected_hotbar_slot]].name);
             }
 
-            if (input_consume_break(&inp))
-                try_break_targeted_block(&world, &cam);
+            if (player.mode == PLAYER_MODE_CREATIVE) {
+                if (input_consume_break(&inp))
+                    try_break_targeted_block(&world, &cam);
+                break_timer = 0.0f;
+            } else {
+                if (inp.break_down) {
+                    BlockTarget target = {0};
+                    if (trace_target_block(&world, &cam, BLOCK_REACH_DISTANCE, &target)) {
+                        if (target.hit_x == break_target.hit_x &&
+                            target.hit_y == break_target.hit_y &&
+                            target.hit_z == break_target.hit_z) {
+                            break_timer += frame_dt;
+                            if (break_timer >= 0.3f) {
+                                try_break_targeted_block(&world, &cam);
+                                break_timer = 0.0f;
+                            }
+                        } else {
+                            break_target = target;
+                            break_timer = 0.0f;
+                        }
+                    } else {
+                        break_timer = 0.0f;
+                    }
+                } else {
+                    break_timer = 0.0f;
+                    (void)input_consume_break(&inp);
+                }
+            }
             if (input_consume_place(&inp)) {
                 try_place_targeted_block(&world, &cam, &player,
                                          HOTBAR_BLOCKS[selected_hotbar_slot]);
@@ -1389,14 +1442,15 @@ int main(void)
         chat_draw(&chat, ctx);
         if (!paused && !chat_is_open(&chat)) {
             if (player.mode == PLAYER_MODE_CREATIVE) {
-                draw_hotbar(ctx, selected_hotbar_slot);
+                draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 renderer_draw_crosshair(ctx);
-                draw_player_hand(ctx, selected_hotbar_slot);
+                draw_player_hand(ctx, selected_hotbar_slot, break_timer);
             } else if (player.mode == PLAYER_MODE_SURVIVAL) {
+                draw_hotbar(ctx, selected_hotbar_slot, player.mode);
                 draw_healthbar(ctx);
                 draw_hungerbar(ctx);
                 renderer_draw_crosshair(ctx);
-                draw_player_hand(ctx, selected_hotbar_slot);
+                draw_player_hand(ctx, selected_hotbar_slot, break_timer);
             }
         }
         pause_menu_draw(&pause, ctx, &pause_settings);
@@ -1426,34 +1480,17 @@ int main(void)
             fflush(stdout);
         }
 
-        /* Sleep for the remainder of the frame budget.
-         *
-         * Vsync alignment: renderer_end_frame() fires FLIP_ASYNC (returns
-         * immediately) but the next call to gpu_transport_clear() inside
-         * renderer_end_frame() on the FOLLOWING frame would block waiting
-         * for that vsync.  By doing the wait HERE — before nanosleep — the
-         * stall is charged to "sleep" rather than "end", so "end" reflects
-         * only real work (band submits + FLIP_ASYNC dispatch, ~2-5 ms).
-         * gpu_transport_wait_vsync() is idempotent: if the flip already
-         * resolved it returns immediately. */
-        double sleep_ns = 0.0;
-        {
-            struct timespec vsync_start, vsync_end;
-            clock_gettime(CLOCK_MONOTONIC, &vsync_start);
-            renderer_wait_vsync(ctx);
-            clock_gettime(CLOCK_MONOTONIC, &vsync_end);
-            sleep_ns += (double)ns_diff(&vsync_end, &vsync_start);
-        }
-
+        /* Sleep for the remainder of the frame budget */
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
         long used = ns_diff(&frame_end, &loop_start);
+        double sleep_ns = 0.0;
         if (used < frame_ns) {
             struct timespec ts = { 0, frame_ns - used };
             struct timespec sleep_start, sleep_end;
             clock_gettime(CLOCK_MONOTONIC, &sleep_start);
             nanosleep(&ts, NULL);
             clock_gettime(CLOCK_MONOTONIC, &sleep_end);
-            sleep_ns += (double)ns_diff(&sleep_end, &sleep_start);
+            sleep_ns = (double)ns_diff(&sleep_end, &sleep_start);
         }
 
         perf_frames++;

@@ -41,6 +41,7 @@ typedef struct {
     bool mode_toggle_pressed;
     bool chat_toggle_pressed;
     bool break_pressed;
+    bool break_down;
     bool place_pressed;
     bool pause_toggle_pressed;
     bool debug_hud_toggle_pressed;

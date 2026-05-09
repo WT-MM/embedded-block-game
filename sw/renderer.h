@@ -74,10 +74,6 @@ void renderer_shutdown(RenderContext* ctx);
 /* --- Frame Operations --- */
 void renderer_begin_frame(RenderContext* ctx);
 void renderer_end_frame(RenderContext* ctx);
-/* Block until the previous FLIP_ASYNC vsync completes.  Call this before
- * nanosleep() in the game loop so the stall is charged to "sleep" rather
- * than "end".  Idempotent — safe to call even if no flip is pending. */
-void renderer_wait_vsync(RenderContext* ctx);
 
 /* --- Camera & Geometry --- */
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);
@@ -89,6 +85,12 @@ bool renderer_draw_crosshair(RenderContext* ctx);
 bool renderer_draw_screen_tile(RenderContext* ctx,
                                float x0, float y0, float x1, float y1,
                                uint8_t texture_id, uint8_t extra_flags);
+bool renderer_draw_custom_screen_quad(RenderContext *ctx,
+                                      float x0, float y0,
+                                      float x1, float y1,
+                                      float x2, float y2,
+                                      float x3, float y3,
+                                      uint8_t texture_id, uint8_t extra_flags);
 bool renderer_push_quad(RenderContext* ctx, const RenderQuad* quad);
 bool renderer_fill_rect(RenderContext* ctx,
                         float x0, float y0, float x1, float y1,

@@ -1876,18 +1876,6 @@ int gpu_transport_flip(GPUTransport *transport)
     return ret;
 }
 
-int gpu_transport_wait_vsync(GPUTransport *transport)
-{
-    if (!transport)
-        return 0;
-    /* pipeline_wait_idle first so we don't race with the worker thread
-     * that may still be running submit_hw_prebinned+flip_hw_only. */
-    int ret = gpu_transport_pipeline_wait_idle(transport);
-    if (ret < 0)
-        return ret;
-    return gpu_transport_wait_pending_flip(transport);
-}
-
 int gpu_transport_set_palette(GPUTransport *transport,
                               const struct voxel_palette_entry *entry)
 {

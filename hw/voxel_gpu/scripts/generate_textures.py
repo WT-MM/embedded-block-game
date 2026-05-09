@@ -314,9 +314,9 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_WOOD_PLANK: "oak_planks.png",
     TEX_TILE_GLASS: "glass.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
-    # Drop water_still.png in assets/minecraft_source/ to use the vanilla
-    # texture; otherwise base_texel falls back to the procedural water().
     TEX_TILE_WATER: "water_still.png",
+    TEX_TILE_HEART: "heart.png",
+    TEX_TILE_DRUMSTICK: "drumstick.png",
 }
 
 # Restrict quantization per tile so imported textures remain faithful while
@@ -343,6 +343,8 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     # entry gives the body tone. Semi-transparent pixels (alpha<96) won't reach
     # this list because the quantizer early-exits to PAL_TRANSPARENT first.
     TEX_TILE_WATER: (64, 65, 66),
+    TEX_TILE_HEART: (14, 6, 5),
+    TEX_TILE_DRUMSTICK: (14, 2, 11, 15, 16, 24, 5),
 }
 
 # Vanilla grass/leaves/water textures are grayscale masks intended for biome tinting.
@@ -648,7 +650,6 @@ def crosshair(x: int, y: int) -> int:
     if (x == 8 and 5 <= y <= 10) or (y == 8 and 5 <= x <= 10):
         return PAL_WHITE
     return PAL_TRANSPARENT
-
 
 def sky(x: int, y: int) -> int:
     if y <= 2:

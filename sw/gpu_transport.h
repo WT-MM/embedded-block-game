@@ -13,10 +13,6 @@ void gpu_transport_close(GPUTransport *transport);
 
 int gpu_transport_clear(GPUTransport *transport);
 int gpu_transport_flip(GPUTransport *transport);
-/* Block until the previous FLIP_ASYNC vsync completes.  Call this during the
- * frame sleep phase so the wait is charged to "sleep" rather than "end".
- * Safe to call redundantly — a no-op if no flip is pending. */
-int gpu_transport_wait_vsync(GPUTransport *transport);
 int gpu_transport_set_palette(GPUTransport *transport,
                               const struct voxel_palette_entry *entry);
 int gpu_transport_set_fog(GPUTransport *transport,

@@ -514,6 +514,7 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 break;
             case KEY_F:
             case BTN_LEFT:
+                inp->break_down = down;
                 if (press_edge)
                     inp->break_pressed = true;
                 break;
@@ -701,6 +702,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->jump_pressed = false;
         inp->mode_toggle_pressed = false;
         inp->break_pressed = false;
+        inp->break_down = false;
         inp->place_pressed = false;
         inp->menu_select_pressed = false;
         inp->hotbar_slot_pressed = -1;

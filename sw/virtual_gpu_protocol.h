@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define VGPU_SOCKET_DEFAULT_PATH "/tmp/voxel_gpu.sock"
-#define VGPU_SOCKET_VERSION 1u
+#define VGPU_SOCKET_VERSION 2u
 
 enum {
     VGPU_SOCKET_CMD_CLEAR = 1,

@@ -87,8 +87,10 @@ module voxel_gpu (
     localparam int BAND_COUNT     = 8;
     localparam int FIFO_DEPTH     = 1024;
     localparam int BASE_QUAD_WORDS = 16;
-    localparam int UV_QUAD_WORDS   = 16;
+    localparam int UV_QUAD_WORDS   = 9;
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
+    localparam logic [5:0] BASE_QUAD_WORDS_6 = 6'd16;
+    localparam logic [5:0] MAX_DESC_WORDS_6  = 6'd25;
     localparam int TEXTURE_BYTES   = 128 * 16 * 16;
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 128;
@@ -231,6 +233,11 @@ module voxel_gpu (
 
     logic [31:0] desc_words [0:MAX_DESC_WORDS-1];
     logic  [5:0] fetch_count;
+    logic [31:0] prefetch_words [0:MAX_DESC_WORDS-1];
+    logic  [5:0] prefetch_count;
+    logic  [5:0] prefetch_target_words;
+    logic        prefetch_active;
+    logic        prefetch_valid;
     logic  [3:0] draw_flush_count;
 
     logic [15:0] clear_addr;
@@ -873,8 +880,31 @@ module voxel_gpu (
     wire ctrl_clear_write = wr && (address == ADDR_CONTROL) && writedata[3];
     wire fifo_push_req = wr && (address >= ADDR_FIFO_LO) && (address < ADDR_FIFO_HI) && !fifo_full;
     wire desc_has_uv = desc_flags[FLAG_TEX_BIT];
-    wire [5:0] fetch_target_words = ((fetch_count >= 6'd16) && desc_has_uv) ? 6'd32 : 6'd16;
-    wire fifo_pop_req = (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
+    wire [5:0] fetch_target_words =
+        ((fetch_count >= BASE_QUAD_WORDS_6) && desc_has_uv) ?
+        MAX_DESC_WORDS_6 : BASE_QUAD_WORDS_6;
+    wire fetch_pop_req =
+        (state == ST_FETCH) && (fetch_count < fetch_target_words) && !fifo_empty;
+    wire [7:0] prefetch_flags = prefetch_words[15][31:24];
+    wire prefetch_has_uv = prefetch_flags[FLAG_TEX_BIT];
+    wire [5:0] prefetch_target_words_current =
+        ((prefetch_count >= BASE_QUAD_WORDS_6) && prefetch_has_uv) ?
+        MAX_DESC_WORDS_6 : BASE_QUAD_WORDS_6;
+    wire [5:0] prefetch_capture_target_words =
+        ((prefetch_count == (BASE_QUAD_WORDS_6 - 6'd1)) &&
+         fifo_head[24 + FLAG_TEX_BIT]) ?
+        MAX_DESC_WORDS_6 : prefetch_target_words_current;
+    wire prefetch_can_start =
+        ctrl_en && !prefetch_active && !prefetch_valid && !band_flush_pending &&
+        ((state == ST_DRAW) || (state == ST_DRAW_FLUSH)) &&
+        (fifo_count >= {5'd0, BASE_QUAD_WORDS_6});
+    wire prefetch_pop_req =
+        prefetch_active && (prefetch_count < prefetch_target_words_current) &&
+        !fifo_empty;
+    wire prefetch_finishes_on_pop =
+        prefetch_pop_req &&
+        ((prefetch_count + 6'd1) >= prefetch_capture_target_words);
+    wire fifo_pop_req = fetch_pop_req || prefetch_pop_req;
     /*
      * band_flush_pending is intentionally excluded from engine_busy.
      * The background flush runs independently via flush_active; including
@@ -885,7 +915,8 @@ module voxel_gpu (
      * gate handle the ordering correctly without blocking the driver.
      */
     wire engine_busy = (state != ST_IDLE) || clear_pending ||
-                       band_begin_pending;
+                       band_begin_pending || prefetch_active ||
+                       prefetch_valid;
     wire vsync_pulse = vga_vs_d & ~VGA_VS;
     wire [24:0] extmem_front_base_words = extmem_front_base[25:1];
     wire [24:0] extmem_back_base_words  = extmem_back_base[25:1];
@@ -1294,8 +1325,8 @@ module voxel_gpu (
         (state == ST_FETCH) &&
         (fetch_count == fetch_target_words) &&
         desc_redundant_sky_clear;
-    // Perspective-correct UV: 9 Q16.16 plane coefficients packed into the
-    // second 64-byte block (words 16..24). One_over_w is guaranteed positive
+    // Perspective-correct UV: 9 Q16.16 plane coefficients packed directly
+    // after the base descriptor (words 16..24). One_over_w is guaranteed positive
     // at any pixel in front of the near plane — software does not emit quads
     // that touch w <= 0.
     wire signed [31:0] desc_uw_0    = $signed(desc_words[16]);
@@ -2046,6 +2077,10 @@ module voxel_gpu (
         fifo_rd_ptr      = 10'd0;
         fifo_count       = 11'd0;
         fetch_count      = 6'd0;
+        prefetch_count   = 6'd0;
+        prefetch_target_words = BASE_QUAD_WORDS_6;
+        prefetch_active  = 1'b0;
+        prefetch_valid   = 1'b0;
         draw_flush_count = 4'd0;
         clear_addr       = 16'd0;
         draw_row_base    = 16'd0;
@@ -2399,6 +2434,8 @@ module voxel_gpu (
 
         for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
             desc_words[i] = 32'h0;
+        for (i = 0; i < MAX_DESC_WORDS; i = i + 1)
+            prefetch_words[i] = 32'h0;
 
         for (i = 0; i < 4; i = i + 1) begin
             edge_A[i] = 32'sd0;
@@ -2710,6 +2747,10 @@ module voxel_gpu (
             fifo_rd_ptr      <= 10'd0;
             fifo_count       <= 11'd0;
             fetch_count      <= 6'd0;
+            prefetch_count   <= 6'd0;
+            prefetch_target_words <= BASE_QUAD_WORDS_6;
+            prefetch_active  <= 1'b0;
+            prefetch_valid   <= 1'b0;
             draw_flush_count <= 4'd0;
             clear_addr       <= 16'd0;
             draw_row_base    <= 16'd0;
@@ -3192,8 +3233,24 @@ module voxel_gpu (
 
             if (fifo_push_req)
                 fifo_mem[fifo_wr_ptr] <= writedata;
-            if (fifo_pop_req)
+            if (fetch_pop_req)
                 desc_words[fetch_count[4:0]] <= fifo_head;
+            else if (prefetch_pop_req)
+                prefetch_words[prefetch_count[4:0]] <= fifo_head;
+
+            if (prefetch_can_start) begin
+                prefetch_active <= 1'b1;
+                prefetch_valid <= 1'b0;
+                prefetch_count <= 6'd0;
+                prefetch_target_words <= BASE_QUAD_WORDS_6;
+            end else if (prefetch_pop_req) begin
+                prefetch_count <= prefetch_count + 6'd1;
+                prefetch_target_words <= prefetch_capture_target_words;
+                if (prefetch_finishes_on_pop) begin
+                    prefetch_active <= 1'b0;
+                    prefetch_valid <= 1'b1;
+                end
+            end
 
             case ({fifo_push_req, fifo_pop_req})
                 2'b10: begin
@@ -3725,7 +3782,13 @@ module voxel_gpu (
                                 !copy_complete_pending && !flush_active) begin
                         copy_complete_pending <= 1'b1;
                         cache_final_flush <= 1'b0;
-                    end else if (ctrl_en && (fifo_count >= 11'd16) &&
+                    end else if (prefetch_valid && !band_flush_pending) begin
+                        for (ei = 0; ei < MAX_DESC_WORDS; ei = ei + 1)
+                            desc_words[ei] <= prefetch_words[ei];
+                        fetch_count <= prefetch_target_words;
+                        prefetch_valid <= 1'b0;
+                        state <= ST_FETCH;
+                    end else if (!prefetch_active && ctrl_en && (fifo_count >= 11'd16) &&
                                  !band_flush_pending) begin
                         /*
                          * Don't pull descriptors while a band flush is queued.
@@ -3759,6 +3822,10 @@ module voxel_gpu (
                     cache_final_flush <= 1'b0;
                     band_begin_pending <= 1'b0;
                     band_flush_pending <= 1'b0;
+                    prefetch_count <= 6'd0;
+                    prefetch_target_words <= BASE_QUAD_WORDS_6;
+                    prefetch_active <= 1'b0;
+                    prefetch_valid <= 1'b0;
                     copy_complete_pending <= 1'b0;
                     draw_cache_sel <= 1'b0;
                     /* Do not kill flush_active here — see the comment in
@@ -4314,7 +4381,18 @@ module voxel_gpu (
 
                         if (draw_flush_count == 4'd1) begin
                             draw_flush_count <= 4'd0;
-                            state <= ST_IDLE;
+                            if (prefetch_valid) begin
+                                for (ei = 0; ei < MAX_DESC_WORDS; ei = ei + 1)
+                                    desc_words[ei] <= prefetch_words[ei];
+                                fetch_count <= prefetch_target_words;
+                                prefetch_valid <= 1'b0;
+                                state <= ST_FETCH;
+                            end else if (prefetch_active) begin
+                                draw_flush_count <= 4'd1;
+                                state <= ST_DRAW_FLUSH;
+                            end else begin
+                                state <= ST_IDLE;
+                            end
                         end else begin
                             draw_flush_count <= draw_flush_count - 4'd1;
                         end
@@ -4562,6 +4640,10 @@ module voxel_gpu (
                 fifo_rd_ptr <= 10'd0;
                 fifo_count <= 11'd0;
                 fetch_count <= 6'd0;
+                prefetch_count <= 6'd0;
+                prefetch_target_words <= BASE_QUAD_WORDS_6;
+                prefetch_active <= 1'b0;
+                prefetch_valid <= 1'b0;
                 draw_flush_count <= 4'd0;
                 pipe0_valid <= 1'b0;
                 recip0_valid <= 1'b0;

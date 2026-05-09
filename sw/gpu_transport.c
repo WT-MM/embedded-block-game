@@ -596,82 +596,6 @@ static int quad_descriptor_size(const GPUTransport *transport,
     return 0;
 }
 
-static int socket_legacy_descriptor_payload(const void *descriptors,
-                                            size_t descriptor_bytes,
-                                            const void **payload,
-                                            uint32_t *payload_size,
-                                            uint8_t **owned_payload)
-{
-    const uint8_t *stream = descriptors;
-    size_t offset = 0;
-    size_t legacy_bytes = 0;
-    int needs_expand = 0;
-
-    *payload = descriptors;
-    *payload_size = (uint32_t)descriptor_bytes;
-    *owned_payload = NULL;
-
-    while (offset < descriptor_bytes) {
-        const struct quad_desc *desc;
-        size_t desc_size;
-        size_t legacy_size;
-
-        if (descriptor_bytes - offset < sizeof(struct quad_desc))
-            return -EINVAL;
-
-        desc = (const struct quad_desc *)(const void *)(stream + offset);
-        quad_descriptor_size(NULL, desc, &desc_size);
-        if (descriptor_bytes - offset < desc_size)
-            return -EINVAL;
-
-        legacy_size = (desc->flags & QUAD_FLAG_TEX) ?
-            QUAD_DESC_TEXTURED_LEGACY_BYTES : sizeof(struct quad_desc);
-        if (legacy_size != desc_size)
-            needs_expand = 1;
-        if (legacy_bytes > SIZE_MAX - legacy_size)
-            return -E2BIG;
-        legacy_bytes += legacy_size;
-        offset += desc_size;
-    }
-
-    if (legacy_bytes > UINT32_MAX)
-        return -E2BIG;
-    if (!needs_expand) {
-        *payload_size = (uint32_t)descriptor_bytes;
-        return 0;
-    }
-
-    uint8_t *expanded = malloc(legacy_bytes);
-    if (!expanded)
-        return -ENOMEM;
-
-    offset = 0;
-    size_t out = 0;
-    while (offset < descriptor_bytes) {
-        const struct quad_desc *desc =
-            (const struct quad_desc *)(const void *)(stream + offset);
-        size_t desc_size;
-
-        quad_descriptor_size(NULL, desc, &desc_size);
-        memcpy(expanded + out, stream + offset, sizeof(struct quad_desc));
-        out += sizeof(struct quad_desc);
-        if (desc->flags & QUAD_FLAG_TEX) {
-            memcpy(expanded + out,
-                   stream + offset + sizeof(struct quad_desc),
-                   QUAD_DESC_UV_LIVE_BYTES);
-            memset(expanded + out + QUAD_DESC_UV_LIVE_BYTES, 0,
-                   sizeof(struct quad_desc_uv) - QUAD_DESC_UV_LIVE_BYTES);
-            out += sizeof(struct quad_desc_uv);
-        }
-        offset += desc_size;
-    }
-
-    *payload = expanded;
-    *payload_size = (uint32_t)legacy_bytes;
-    *owned_payload = expanded;
-    return 0;
-}
-
 static uint16_t clamp_z_i64(int64_t value)
 {
     if (value < 0)
@@ -2056,28 +1980,14 @@ int gpu_transport_submit_descriptors(GPUTransport *transport,
     }
 
     if (transport_needs_socket(transport)) {
-        const void *socket_payload = descriptors;
-        uint32_t socket_payload_size = (uint32_t)descriptor_bytes;
-        uint8_t *owned_socket_payload = NULL;
-        int prep_ret = socket_legacy_descriptor_payload(
-            descriptors, descriptor_bytes, &socket_payload,
-            &socket_payload_size, &owned_socket_payload);
-        if (prep_ret < 0) {
-            if (ret == 0)
-                ret = prep_ret;
-            goto socket_done;
-        }
-
         int sock_ret = socket_request(transport, VGPU_SOCKET_CMD_SUBMIT_QUADS,
-                                      socket_payload, socket_payload_size,
+                                      descriptors, (uint32_t)descriptor_bytes,
                                       NULL, NULL);
         if (sock_ret < 0 && ret == 0) {
             fprintf(stderr, "renderer: socket SUBMIT_QUADS failed: %s\n",
                     strerror(-sock_ret));
             ret = sock_ret;
         }
-socket_done:
-        free(owned_socket_payload);
     }
 
     return ret;

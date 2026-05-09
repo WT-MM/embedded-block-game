@@ -6,7 +6,7 @@ import struct
 from dataclasses import dataclass
 
 MAGIC = b"VGPU"
-VERSION = 1
+VERSION = 2
 DEFAULT_SOCKET_PATH = "/tmp/voxel_gpu.sock"
 
 CMD_CLEAR = 1
@@ -34,7 +34,7 @@ FOG_STATE = struct.Struct("<HHBBH")
 STATUS_REPLY = struct.Struct("<IIBBBB")
 FRAME_COUNT_REPLY = struct.Struct("<I")
 QUAD_DESC = struct.Struct("<hhhh" + ("iii" * 4) + "HhhBB")
-QUAD_DESC_UV = struct.Struct("<iiiiiiiii28x")
+QUAD_DESC_UV = struct.Struct("<iiiiiiiii")
 
 Edge = tuple[int, int, int]
 QuadEdges = tuple[Edge, Edge, Edge, Edge]

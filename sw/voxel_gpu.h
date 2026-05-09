@@ -237,12 +237,11 @@ struct quad_desc {
  * Each plane is stored as (value at (x_min, y_min), dx gradient, dy gradient)
  * in Q16.16. 1/w is positive for any pixel in front of the near plane.
  *
- * The first 9 words are the live hardware payload. The trailing reserved bytes
- * exist for legacy 64-byte UV blocks used by the socket/tee debug backend; HW
- * submissions can omit them and send a 100-byte textured descriptor.
+ * Textured descriptors are 100 bytes total: 64 bytes of base descriptor plus
+ * these 9 UV words.
  */
-#define QUAD_DESC_UV_LIVE_WORDS 9u
-#define QUAD_DESC_UV_LIVE_BYTES (QUAD_DESC_UV_LIVE_WORDS * 4u)
+#define QUAD_DESC_UV_WORDS 9u
+#define QUAD_DESC_UV_BYTES (QUAD_DESC_UV_WORDS * 4u)
 
 struct quad_desc_uv {
 	__s32 u_over_w_0;         /* Q16.16, u/w at (x_min, y_min) */
@@ -254,18 +253,15 @@ struct quad_desc_uv {
 	__s32 one_over_w_0;       /* Q16.16, 1/w at (x_min, y_min) */
 	__s32 one_over_w_dx;      /* Q16.16, 1/w gradient along x */
 	__s32 one_over_w_dy;      /* Q16.16, 1/w gradient along y */
-	__u8  reserved[28];       /* write 0 */
 } __attribute__((packed));
 
 #define QUAD_DESC_TEXTURED_BYTES \
-	(sizeof(struct quad_desc) + QUAD_DESC_UV_LIVE_BYTES)
-#define QUAD_DESC_TEXTURED_LEGACY_BYTES \
 	(sizeof(struct quad_desc) + sizeof(struct quad_desc_uv))
 
 _Static_assert(sizeof(struct edge_coef) == 12, "edge_coef must be 12 bytes");
 _Static_assert(sizeof(struct quad_desc) == 64, "quad_desc must be 64 bytes");
-_Static_assert(sizeof(struct quad_desc_uv) == 64, "quad_desc_uv must be 64 bytes");
-_Static_assert(QUAD_DESC_UV_LIVE_BYTES == 36, "live UV payload must be 9 words");
+_Static_assert(sizeof(struct quad_desc_uv) == 36, "quad_desc_uv must be 9 words");
+_Static_assert(QUAD_DESC_UV_BYTES == 36, "UV payload must be 9 words");
 _Static_assert(sizeof(struct voxel_fog_state) == 8, "voxel_fog_state must be 8 bytes");
 _Static_assert(sizeof(struct voxel_extmem_state) == 24, "voxel_extmem_state must be 24 bytes");
 _Static_assert(sizeof(struct voxel_band_state) == 4, "voxel_band_state must be 4 bytes");

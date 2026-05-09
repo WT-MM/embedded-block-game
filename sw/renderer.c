@@ -2082,9 +2082,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     if (d->flags & QUAD_FLAG_TEX) {
         struct quad_desc_uv *uv = (struct quad_desc_uv *)
             (ctx->submit_buffer + ctx->submit_bytes + sizeof(*d));
-        size_t uv_payload_bytes = textured_descriptor_bytes - sizeof(*d);
-
-        memset(uv, 0, uv_payload_bytes);
+        memset(uv, 0, sizeof(*uv));
         fit_uv_plane(v, &basis, (float)x_min + 0.5f, (float)y_min + 0.5f, uv);
         emitted_size = textured_descriptor_bytes;
     } else {

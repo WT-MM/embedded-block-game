@@ -101,6 +101,13 @@ typedef struct {
 } BlockTarget;
 
 typedef struct {
+    BlockID type;
+    int wx;
+    int wy;
+    int wz;
+} BlockDropRequest;
+
+typedef struct {
     InventorySlotArea area;
     int index;
 } InventoryHit;
@@ -854,6 +861,59 @@ static void update_pressure_plate_depressions(VoxelWorld *world,
     }
 
     (void)world_update_pressure_plates_for_triggers(world, triggers, count);
+}
+
+static bool block_is_vertical_plant_drop(BlockID type)
+{
+    return type == BLOCK_SUGAR_CANE || type == BLOCK_CACTUS;
+}
+
+static size_t collect_vertical_plant_cascade_drops(
+    const VoxelWorld *world,
+    const BlockTarget *target,
+    BlockDropRequest drops[WORLD_CHUNK_HEIGHT],
+    size_t drop_cap)
+{
+    size_t count = 0;
+
+    if (!world || !target || !target->hit || !drops)
+        return 0;
+
+    for (int y = target->hit_y + 1;
+         y < WORLD_CHUNK_HEIGHT && count < drop_cap;
+         y++) {
+        BlockID type = world_get_block(world, target->hit_x, y,
+                                       target->hit_z);
+
+        if (!block_is_vertical_plant_drop(type))
+            break;
+        drops[count++] = (BlockDropRequest){
+            .type = type,
+            .wx = target->hit_x,
+            .wy = y,
+            .wz = target->hit_z,
+        };
+    }
+
+    return count;
+}
+
+static void spawn_block_drop_requests(ItemEntityPool *drops,
+                                      const BlockDropRequest requests[],
+                                      size_t request_count,
+                                      Vec3 push_dir)
+{
+    if (!drops || !requests)
+        return;
+
+    for (size_t i = 0; i < request_count; i++) {
+        item_entity_spawn_block_drop(drops,
+                                     requests[i].type,
+                                     requests[i].wx,
+                                     requests[i].wy,
+                                     requests[i].wz,
+                                     push_dir);
+    }
 }
 
 static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
@@ -4778,6 +4838,14 @@ home_menu_start:
                                 hand_swing_timer = 0.0f;
                             if (break_timer >= break_duration) {
                                 BlockID broken = BLOCK_AIR;
+                                BlockDropRequest cascade_drops[
+                                    WORLD_CHUNK_HEIGHT];
+                                size_t cascade_drop_count =
+                                    collect_vertical_plant_cascade_drops(
+                                        &world, &break_target,
+                                        cascade_drops,
+                                        WORLD_CHUNK_HEIGHT);
+                                Vec3 drop_push = camera_forward(&cam);
 
                                 if (break_block_target(&world, &break_target,
                                                        &broken)) {
@@ -4793,7 +4861,10 @@ home_menu_start:
                                         break_target.hit_x,
                                         break_target.hit_y,
                                         break_target.hit_z,
-                                        camera_forward(&cam));
+                                        drop_push);
+                                    spawn_block_drop_requests(
+                                        &item_drops, cascade_drops,
+                                        cascade_drop_count, drop_push);
                                 }
                                 break_timer = 0.0f;
                                 break_duration = 0.0f;

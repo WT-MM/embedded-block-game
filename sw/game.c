@@ -441,7 +441,7 @@ static bool read_hw_partial_band_flush_enabled(void)
 
 static bool read_fast_backface_cull_enabled(void)
 {
-    return env_flag("VOXEL_FAST_BACKFACE_CULL", false);
+    return env_flag("VOXEL_FAST_BACKFACE_CULL", true);
 }
 
 static float read_camera_fov_degrees(void)
@@ -4141,7 +4141,7 @@ home_menu_start:
         printf("Mesh opts: greedy=%s merged_far_quads=%s (set VOXEL_GREEDY_MESH=0 VOXEL_MERGE_FAR_QUADS=0 to disable)\n",
                greedy_mesh_enabled ? "on" : "off",
                merged_far_quads_enabled ? "on" : "off");
-        printf("Visual opts: texture_lod=%s partial_band_flush=%s fast_backface=%s (set VOXEL_TEXTURE_LOD=0 VOXEL_HW_PARTIAL_BAND_FLUSH=0 to disable; VOXEL_FAST_BACKFACE_CULL=1 to test)\n",
+        printf("Visual opts: texture_lod=%s partial_band_flush=%s fast_backface=%s (set VOXEL_TEXTURE_LOD=0 VOXEL_HW_PARTIAL_BAND_FLUSH=0 VOXEL_FAST_BACKFACE_CULL=0 to disable)\n",
                texture_lod_enabled ? "on" : "off",
                hw_partial_band_flush_enabled ? "on" : "off",
                fast_backface_cull_enabled ? "on" : "off");

@@ -2040,11 +2040,16 @@ static uint8_t redstone_wire_texture_for_mask(BlockID type,
 
     if (count == 2) {
         if (uv_rotation_out) {
-            if (mask == (REDSTONE_WIRE_E | REDSTONE_WIRE_S))
+            /*
+             * Flat top-face UVs map texture north to world south at rotation
+             * zero, so the canonical texture N+E corner appears as S+E until
+             * rotated.
+             */
+            if (mask == (REDSTONE_WIRE_N | REDSTONE_WIRE_E))
                 *uv_rotation_out = 1;
-            else if (mask == (REDSTONE_WIRE_S | REDSTONE_WIRE_W))
-                *uv_rotation_out = 2;
             else if (mask == (REDSTONE_WIRE_W | REDSTONE_WIRE_N))
+                *uv_rotation_out = 2;
+            else if (mask == (REDSTONE_WIRE_S | REDSTONE_WIRE_W))
                 *uv_rotation_out = 3;
         }
         return powered ? TEX_TILE_REDSTONE_WIRE_CORNER_ON :
@@ -2057,7 +2062,7 @@ static uint8_t redstone_wire_texture_for_mask(BlockID type,
 
             if (missing & REDSTONE_WIRE_W)
                 *uv_rotation_out = 1;
-            else if (missing & REDSTONE_WIRE_N)
+            else if (missing & REDSTONE_WIRE_S)
                 *uv_rotation_out = 2;
             else if (missing & REDSTONE_WIRE_E)
                 *uv_rotation_out = 3;
@@ -3397,7 +3402,7 @@ static bool fast_cube_backface_cull_enabled(void)
     static int cached = -1;
 
     if (cached < 0)
-        cached = env_flag("VOXEL_FAST_BACKFACE_CULL", false) ? 1 : 0;
+        cached = env_flag("VOXEL_FAST_BACKFACE_CULL", true) ? 1 : 0;
     return cached != 0;
 }
 
@@ -3462,9 +3467,7 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      *   sign > 0 axis: skip if (block_pos[axis] + 1.0) - cam[axis] >= 0
      *   sign < 0 axis: skip if   block_pos[axis]        - cam[axis] <= 0
      * Doing this before choose_chunk_face_light_flags saves the light
-     * lookup + function call for all back-facing faces (~50% of faces), but
-     * keep the older per-face cull as the default while visual artifacts are
-     * being isolated. */
+     * lookup + function call for all back-facing faces (~50% of faces). */
     const Vec3 cam_pos = ctx->current_camera.position;
     ctx->occlusion_pass = ctx->occlusion_enabled ?
                           OCCLUSION_PASS_OPAQUE_WORLD :

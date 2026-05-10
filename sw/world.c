@@ -1076,6 +1076,17 @@ static void mark_chunk_mesh_dirty(Chunk *chunk)
     if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
         return;
 
+    /*
+     * Mesh jobs validate only the target chunk generation. If a queued/running
+     * job exists and a neighbor edit or lighting pass dirties this mesh again,
+     * bump the generation so that stale snapshot cannot publish and clear the
+     * dirty bit.
+     */
+    if (chunk->flags & CHUNK_FLAG_MESH_QUEUED) {
+        chunk->generation++;
+        if (chunk->generation == 0)
+            chunk->generation = 1;
+    }
     chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
 }
 
@@ -1789,22 +1800,22 @@ static void mark_chunk_and_adjacent_dirty_for_block(VoxelWorld *world, int wx, i
     int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
 
     if (c)
-        c->flags |= CHUNK_FLAG_MESH_DIRTY;
+        mark_chunk_mesh_dirty(c);
 
     if (lx == 0) {
         Chunk *n = world_get_chunk_mut(world, chunk_x - 1, chunk_z);
-        if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        if (n) mark_chunk_mesh_dirty(n);
     } else if (lx == WORLD_CHUNK_SIZE - 1) {
         Chunk *n = world_get_chunk_mut(world, chunk_x + 1, chunk_z);
-        if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        if (n) mark_chunk_mesh_dirty(n);
     }
 
     if (lz == 0) {
         Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z - 1);
-        if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        if (n) mark_chunk_mesh_dirty(n);
     } else if (lz == WORLD_CHUNK_SIZE - 1) {
         Chunk *n = world_get_chunk_mut(world, chunk_x, chunk_z + 1);
-        if (n) n->flags |= CHUNK_FLAG_MESH_DIRTY;
+        if (n) mark_chunk_mesh_dirty(n);
     }
 }
 
@@ -2160,7 +2171,7 @@ static bool world_rebuild_lighting_locked(VoxelWorld *world)
                 }
             }
             if (dirty) {
-                chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+                mark_chunk_mesh_dirty(chunk);
                 any_dirty = true;
             }
         }
@@ -2785,7 +2796,7 @@ static void mark_near_far_transitions_dirty(VoxelWorld *world)
         bool was_near = (chunk->flags & CHUNK_FLAG_MESHED_NEAR) != 0;
 
         if (is_near != was_near)
-            chunk->flags |= CHUNK_FLAG_MESH_DIRTY;
+            mark_chunk_mesh_dirty(chunk);
     }
 }
 

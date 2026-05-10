@@ -2152,11 +2152,26 @@ int main(void)
         return check_failed("edit test chunks missing");
     uint32_t edited_generation = edited->generation;
     uint32_t neighbor_generation = neighbor->generation;
+    Chunk *queued_neighbor = NULL;
+    for (int i = 0; i < world.chunk_count; i++) {
+        if (world.chunks[i].chunk_x == 0 && world.chunks[i].chunk_z == 0) {
+            queued_neighbor = &world.chunks[i];
+            break;
+        }
+    }
+    if (!queued_neighbor)
+        return check_failed("queued neighbor chunk missing");
+    queued_neighbor->flags |= CHUNK_FLAG_MESH_QUEUED;
 
     if (!world_set_block(&world, WORLD_CHUNK_SIZE, 1, 0, BLOCK_WOOD))
         return check_failed("boundary block edit failed");
     if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("boundary block edit did not persist in loaded chunk");
+    if (queued_neighbor->generation == neighbor_generation)
+        return check_failed("queued boundary neighbor mesh job was not invalidated");
+    if (!(queued_neighbor->flags & CHUNK_FLAG_MESH_DIRTY))
+        return check_failed("queued boundary neighbor was not left dirty");
+    queued_neighbor->flags &= ~CHUNK_FLAG_MESH_QUEUED;
     const int saved_repeater_x = WORLD_CHUNK_SIZE + 2;
     const int saved_repeater_y = 2;
     const int saved_repeater_z = 2;
@@ -2197,8 +2212,8 @@ int main(void)
         return check_failed("boundary neighbor mesh was not rebuilt");
     if (edited->generation == edited_generation)
         return check_failed("edited chunk generation did not advance");
-    if (neighbor->generation != neighbor_generation)
-        return check_failed("unchanged neighbor content generation changed");
+    if (neighbor->generation == neighbor_generation)
+        return check_failed("dirty queued neighbor content generation did not change");
     if (world.meshes_rebuilt_last_stream < 2)
         return check_failed("boundary edit did not rebuild multiple meshes");
 

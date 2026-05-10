@@ -431,6 +431,11 @@ CACTUS_SOURCE_TILES = {
     TEX_TILE_CACTUS_BOTTOM,
 }
 
+ROTATE_180_SOURCE_TILES = {
+    TEX_TILE_REPEATER_OFF,
+    TEX_TILE_REPEATER_ON,
+}
+
 # Restrict quantization per tile so imported textures remain faithful while
 # still mapping to the renderer's fixed hardware palette.
 SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
@@ -768,6 +773,9 @@ def source_texel(tile: int, x: int, y: int) -> int | None:
     pixels = _load_source_tile(tile)
     if pixels is None:
         return None
+    if tile in ROTATE_180_SOURCE_TILES:
+        x = TILE_SIZE - 1 - x
+        y = TILE_SIZE - 1 - y
     rgba = pixels[y * TILE_SIZE + x]
     if tile in CACTUS_SOURCE_TILES and rgba[3] < 96:
         best_rgba = rgba

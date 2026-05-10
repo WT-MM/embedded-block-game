@@ -215,6 +215,12 @@ def repeater_line_z(world, x, y, z0, z1, repeater_name, interval=10):
         distance += 1
 
 
+def overhead_wire_z(world, x, y, z0, z1):
+    step = 1 if z0 <= z1 else -1
+    for z in range(z0, z1 + step, step):
+        world.set(x, y, z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+
+
 def place_rising_edge_detector(world, wx, wy, wz):
     """Place the 2x2 core for a compact comparator rising-edge detector.
 
@@ -314,7 +320,7 @@ SEG_F = 1 << 5
 SEG_G = 1 << 6
 
 
-SEGMENT_PATTERNS = [
+DISPLAY_STANDARD_PATTERNS = [
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
     SEG_B | SEG_C,
     SEG_A | SEG_B | SEG_D | SEG_E | SEG_G,
@@ -325,7 +331,27 @@ SEGMENT_PATTERNS = [
     SEG_A | SEG_B | SEG_C,
 ]
 
+
+def mirror_display_pattern(pattern):
+    mirrored = pattern & (SEG_A | SEG_D | SEG_G)
+    if pattern & SEG_B:
+        mirrored |= SEG_F
+    if pattern & SEG_C:
+        mirrored |= SEG_E
+    if pattern & SEG_E:
+        mirrored |= SEG_C
+    if pattern & SEG_F:
+        mirrored |= SEG_B
+    return mirrored
+
+
+SEGMENT_PATTERNS = [
+    mirror_display_pattern(pattern)
+    for pattern in DISPLAY_STANDARD_PATTERNS
+]
+
 DECODER_ROW_SPACING = 3
+DECODER_OUTPUT_LEFT_SHIFT = 14
 
 
 def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
@@ -463,12 +489,17 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     count_button_z = display_min_z - 2
     count_bus_z = count_button_z - 1
     count_input_x = first_input_x - 1
+    reset_button_x = count_button_x - 4
+    reset_button_z = count_button_z
+    reset_bus_y = y + 1
+    reset_bus_z = min(reset_z for _, _, reset_z in reset_targets) - 5
     count_repeater = (
         "BLOCK_REPEATER_EAST_OFF"
         if count_button_x <= count_input_x else
         "BLOCK_REPEATER_WEST_OFF"
     )
 
+    world.set(count_button_x, y - 1, count_button_z, "BLOCK_LAMP_OFF")
     world.set(count_button_x, y, count_button_z, "BLOCK_BUTTON")
     repeater_line_x(world, count_button_x, count_input_x, y,
                     count_bus_z, count_repeater, interval=8)
@@ -478,9 +509,25 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     for reset_x, _, reset_z in reset_targets:
         world.set(reset_x, y, reset_z, "BLOCK_BUTTON")
 
+    world.set(reset_button_x, y - 1, reset_button_z, "BLOCK_LAMP_OFF")
+    world.set(reset_button_x, y, reset_button_z, "BLOCK_BUTTON")
+    repeater_line_z(world, reset_button_x, reset_bus_y,
+                    reset_button_z, reset_bus_z,
+                    "BLOCK_REPEATER_OFF", interval=8)
+    repeater_line_x(world, reset_button_x,
+                    max(reset_x for reset_x, _, _ in reset_targets),
+                    reset_bus_y, reset_bus_z,
+                    "BLOCK_REPEATER_EAST_OFF", interval=8)
+    for reset_x, _, reset_z in reset_targets:
+        drop_z = reset_z - 1
+
+        world.set(reset_x, y, drop_z, "BLOCK_STONE")
+        overhead_wire_z(world, reset_x, reset_bus_y,
+                        reset_bus_z, drop_z)
+
     return {
         "button": (count_button_x, y, count_button_z),
-        "reset": reset_targets[-1],
+        "reset": (reset_button_x, y, reset_button_z),
     }
 
 
@@ -492,7 +539,7 @@ def place_connected_counter_display(world,
     row_zs = [16, 16, 16]
     q_bus = [cell_x + TFF_Q_BUS_DX for cell_x in cell_xs]
     nq_bus = [cell_x + TFF_NQ_BUS_DX for cell_x in cell_xs]
-    support_x = min(q_bus) - 3
+    support_x = min(q_bus) - 3 - DECODER_OUTPUT_LEFT_SHIFT
     row_start_x = support_x + 1
     row_end_x = max(nq_bus) + 1
     bus_z1 = decoder_z + 7 * DECODER_ROW_SPACING + 1
@@ -513,7 +560,7 @@ def place_connected_counter_display(world,
         row_z = decoder_z + value * DECODER_ROW_SPACING
         wire_x(world, row_start_x, row_end_x, decoder_y, row_z)
         literal_x = set(q_bus + nq_bus)
-        for rx in range(row_end_x - 5, row_start_x, -8):
+        for rx in range(row_end_x - 5, row_start_x, -6):
             if rx not in literal_x:
                 world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_WEST_OFF")
 

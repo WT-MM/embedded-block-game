@@ -1126,6 +1126,20 @@ static bool split_quads_at_hw_band_edges(void)
     return cached != 0;
 }
 
+static int textured_world_slice_height_px(void)
+{
+    static int cached = -1;
+
+    if (cached < 0) {
+        int slice_px = env_int_or_default("VOXEL_TEXTURE_SLICE_PX", 30, 0,
+                                          (int)VOXEL_BAND_CACHE_HEIGHT);
+        if (slice_px > 0 && slice_px < 4)
+            slice_px = 4;
+        cached = slice_px;
+    }
+    return cached;
+}
+
 static bool stage_polygon_as_quads(RenderContext *ctx,
                                    const RenderQuad *src,
                                    const Vertex2D *verts,
@@ -1199,9 +1213,14 @@ static bool stage_projected_polygon(RenderContext *ctx,
      * Clip in float space before descriptor packing so each per-band descriptor
      * gets its own freshly solved UV/depth planes. This avoids stitching bands
      * together by adding dy to already-quantized Q16.16/Q1.15 starts, which can
-     * show up as texture shimmer or a horizontal slice on tall faces.
+     * show up as texture shimmer or a horizontal slice on tall faces. Z-tested
+     * textured world geometry can also be split more finely inside each band
+     * with VOXEL_TEXTURE_SLICE_PX to reduce fixed-point edge/UV drift.
      */
     const float band_h = (float)VOXEL_BAND_CACHE_HEIGHT;
+    const bool ztested_textured = (quad->flags & QUAD_FLAG_ZTEST) != 0;
+    const int slice_px = ztested_textured ? textured_world_slice_height_px() : 0;
+    const float slice_h = (slice_px > 0) ? (float)slice_px : band_h;
     int first_band = (int)floorf(y_min / band_h);
     int last_band = (int)floorf(y_max / band_h);
     if (first_band < 0) first_band = 0;
@@ -1211,20 +1230,42 @@ static bool stage_projected_polygon(RenderContext *ctx,
     if (last_band >= (int)VOXEL_BAND_COUNT)
         last_band = (int)VOXEL_BAND_COUNT - 1;
 
-    if (first_band == last_band)
+    float bucket_y_max = y_max - 1e-4f;
+    if (bucket_y_max < y_min)
+        bucket_y_max = y_min;
+    int first_slice = slice_px > 0 ? (int)floorf(y_min / slice_h) : 0;
+    int last_slice = slice_px > 0 ? (int)floorf(bucket_y_max / slice_h) : 0;
+
+    if (first_band == last_band && (slice_px <= 0 || first_slice == last_slice))
         return stage_polygon_as_quads(ctx, quad, verts, count);
 
     bool emitted = false;
-    for (int band = first_band; band <= last_band; band++) {
+    float emit_y_min = fmaxf(y_min, 0.0f);
+    const float emit_y_max = fminf(y_max, (float)VOXEL_RENDER_HEIGHT);
+
+    while (emit_y_min < emit_y_max) {
         Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
-        float band_y_min = (float)band * band_h;
-        float band_y_max = (float)(band + 1) * band_h;
+
+        float next_band_y = (floorf(emit_y_min / band_h) + 1.0f) * band_h;
+        float emit_y_next = next_band_y;
+        if (slice_px > 0) {
+            float next_slice_y = (floorf(emit_y_min / slice_h) + 1.0f) * slice_h;
+            if (next_slice_y < emit_y_next)
+                emit_y_next = next_slice_y;
+        }
+        if (emit_y_next > emit_y_max)
+            emit_y_next = emit_y_max;
+        if (emit_y_next <= emit_y_min + 1e-4f)
+            emit_y_next = fminf(emit_y_min + slice_h, emit_y_max);
+
         int clipped_count = clip_polygon_to_y_range(verts, count, clipped,
-                                                    band_y_min, band_y_max);
+                                                    emit_y_min, emit_y_next);
 
         if (clipped_count >= 3 &&
             stage_polygon_as_quads(ctx, quad, clipped, clipped_count))
             emitted = true;
+
+        emit_y_min = emit_y_next;
     }
 
     return emitted;
@@ -2232,9 +2273,9 @@ static uint8_t redstone_wire_texture_for_mask(BlockID type,
 static int redstone_directional_uv_rotation(BlockID type)
 {
     /*
-     * Vanilla repeater/comparator textures point toward their bottom edge in
-     * atlas space. With the flat top-face vertex order here, rotations 1 and 3
-     * map that edge to west/east respectively.
+     * Directional redstone textures in the atlas point toward their bottom edge.
+     * Repeater source textures are rotated into that convention by the atlas
+     * generator so repeaters and comparators can share this map.
      */
     switch (block_redstone_facing(type)) {
     case BLOCK_DOOR_FACING_EAST:
@@ -2396,6 +2437,22 @@ static void emit_redstone_device_post(RenderContext *ctx,
     emit_model_quad_lit(ctx, face_world, texture_tile, light_flags);
 }
 
+static float repeater_moving_post_forward(uint8_t delay_ticks)
+{
+    if (delay_ticks < 1)
+        delay_ticks = 1;
+    if (delay_ticks > 4)
+        delay_ticks = 4;
+
+    /*
+     * Minecraft's repeater models move the adjustable torch two pixels toward
+     * the input side for each delay step: z centers 7, 9, 11, 13 in the default
+     * south-facing model. In our local space positive forward is the output
+     * direction, so that becomes +1, -1, -3, -5 pixels from center.
+     */
+    return (3.0f - 2.0f * (float)delay_ticks) / 16.0f;
+}
+
 static void emit_redstone_device_block_lit(RenderContext *ctx,
                                            BlockID type,
                                            Vec3 block_pos,
@@ -2425,16 +2482,11 @@ static void emit_redstone_device_block_lit(RenderContext *ctx,
         emit_redstone_device_post(ctx, block_pos, facing,
                                    0.0f, 0.20f, post_tile, light_flags);
     } else {
-        uint8_t delay_ticks = visual_state;
         float moving_post_forward;
 
-        if (delay_ticks < 1)
-            delay_ticks = 1;
-        if (delay_ticks > 4)
-            delay_ticks = 4;
-        moving_post_forward = -0.12f + (float)(delay_ticks - 1u) * 0.10f;
+        moving_post_forward = repeater_moving_post_forward(visual_state);
         emit_redstone_device_post(ctx, block_pos, facing,
-                                  0.0f, -0.24f, post_tile, light_flags);
+                                  0.0f, 0.3125f, post_tile, light_flags);
         emit_redstone_device_post(ctx, block_pos, facing,
                                   0.0f, moving_post_forward,
                                   post_tile, light_flags);

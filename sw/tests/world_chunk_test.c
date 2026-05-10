@@ -250,11 +250,11 @@ int main(void)
     if (setenv("VOXEL_MESH_REBUILDS_PER_FRAME", "0", 1) != 0)
         return check_failed("setenv VOXEL_MESH_REBUILDS_PER_FRAME failed");
 
-    VoxelWorld world;
-    VoxelWorld reloaded_world;
-    VoxelWorld capped_world;
-    VoxelWorld biome_world;
-    VoxelWorld lava_world;
+    static VoxelWorld world;
+    static VoxelWorld reloaded_world;
+    static VoxelWorld capped_world;
+    static VoxelWorld biome_world;
+    static VoxelWorld lava_world;
     int expected_chunks = expected_loaded_chunks(TEST_RENDER_DISTANCE);
     char world_dir_template[] = "/tmp/voxel-world-test-XXXXXX";
     char *world_dir;
@@ -823,7 +823,7 @@ int main(void)
      * initial fill so new slots come in as LOADING, then run the
      * offline + finalize halves by hand and confirm the result matches
      * what the synchronous path would have produced. */
-    VoxelWorld async_world;
+    static VoxelWorld async_world;
     char async_world_dir_template[] = "/tmp/voxel-world-async-XXXXXX";
     char *async_world_dir = mkdtemp(async_world_dir_template);
     if (!async_world_dir)
@@ -870,7 +870,7 @@ int main(void)
                         loading_z * WORLD_CHUNK_SIZE) != BLOCK_AIR)
         return check_failed("LOADING chunk leaked block data to world_get_block");
 
-    ChunkGenResult result;
+    static ChunkGenResult result;
     if (!world_async_chunk_gen_offline(&async_world,
                                        loading_x, loading_z, &result))
         return check_failed("offline gen failed");

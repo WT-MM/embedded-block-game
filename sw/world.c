@@ -460,7 +460,8 @@ static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     char path[WORLD_SAVE_PATH_MAX];
     char temp_path[WORLD_SAVE_PATH_MAX];
     ChunkSaveHeader header = {0};
-    uint8_t blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    size_t block_count = chunk_block_count();
+    uint8_t *blocks;
     FILE *file;
 
     if (!world || !chunk || !world->persistence_enabled)
@@ -479,25 +480,34 @@ static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     header.chunk_z = chunk->chunk_z;
     header.chunk_size = WORLD_CHUNK_SIZE;
     header.chunk_height = WORLD_CHUNK_HEIGHT;
-    header.block_count = (uint32_t)chunk_block_count();
+    header.block_count = (uint32_t)block_count;
 
+    blocks = malloc(block_count);
+    if (!blocks)
+        return false;
+
+    size_t out = 0;
     for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
         for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
             for (int x = 0; x < WORLD_CHUNK_SIZE; x++)
-                blocks[y][z][x] = (uint8_t)chunk->blocks[y][z][x];
+                blocks[out++] = (uint8_t)chunk->blocks[y][z][x];
         }
     }
 
     file = fopen(temp_path, "wb");
-    if (!file)
+    if (!file) {
+        free(blocks);
         return false;
+    }
     if (fwrite(&header, sizeof(header), 1, file) != 1 ||
-        fwrite(blocks, sizeof(blocks), 1, file) != 1 ||
+        fwrite(blocks, block_count, 1, file) != 1 ||
         fwrite(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
         fclose(file);
         unlink(temp_path);
+        free(blocks);
         return false;
     }
+    free(blocks);
     if (fclose(file) != 0) {
         unlink(temp_path);
         return false;
@@ -515,7 +525,8 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
 {
     char path[WORLD_SAVE_PATH_MAX];
     ChunkSaveHeader header = {0};
-    uint8_t blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    size_t block_count = chunk_block_count();
+    uint8_t *blocks;
     FILE *file;
 
     if (!world || !chunk || !world->persistence_enabled)
@@ -531,13 +542,10 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
         return false;
     }
 
-    if (fread(&header, sizeof(header), 1, file) != 1 ||
-        fread(blocks, sizeof(blocks), 1, file) != 1 ||
-        fread(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
+    if (fread(&header, sizeof(header), 1, file) != 1) {
         fclose(file);
         return false;
     }
-    fclose(file);
 
     if (memcmp(header.magic, "VCHK", 4) != 0 ||
         header.version != WORLD_CHUNK_VERSION ||
@@ -545,16 +553,35 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
         header.chunk_z != chunk->chunk_z ||
         header.chunk_size != WORLD_CHUNK_SIZE ||
         header.chunk_height != WORLD_CHUNK_HEIGHT ||
-        header.block_count != chunk_block_count())
+        header.block_count != block_count) {
+        fclose(file);
         return false;
+    }
 
+    blocks = malloc(block_count);
+    if (!blocks) {
+        fclose(file);
+        return false;
+    }
+
+    if (fread(blocks, block_count, 1, file) != 1 ||
+        fread(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
+        fclose(file);
+        free(blocks);
+        return false;
+    }
+    fclose(file);
+
+    size_t in = 0;
     for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
         for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
             for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
-                uint8_t id = blocks[y][z][x];
+                uint8_t id = blocks[in++];
 
-                if (id >= NUM_BLOCK_TYPES)
+                if (id >= NUM_BLOCK_TYPES) {
+                    free(blocks);
                     return false;
+                }
                 chunk->blocks[y][z][x] = (BlockID)id;
                 /* Sanitize water_level: only meaningful for fluid blocks. */
                 if (block_is_fluid_source((BlockID)id))
@@ -569,6 +596,7 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
         }
     }
 
+    free(blocks);
     chunk->flags &= ~CHUNK_FLAG_MODIFIED;
     return true;
 }
@@ -1859,6 +1887,13 @@ static void append_chunk_face(ChunkFace *faces, int *out,
     };
 }
 
+typedef struct {
+    BlockID mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE];
+    uint8_t sky_mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE];
+    uint8_t block_mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE];
+    bool used[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE];
+} FaceBuildScratch;
+
 static bool ensure_chunk_face_capacity(Chunk *chunk, int needed)
 {
     if (needed <= chunk->face_capacity)
@@ -1889,6 +1924,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 {
     int max_face_count;
     int out = 0;
+    FaceBuildScratch *scratch;
 
     if (!chunk)
         return NULL;
@@ -1907,6 +1943,10 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
     if (!ensure_chunk_face_capacity(chunk, max_face_count))
         return NULL;
 
+    scratch = malloc(sizeof(*scratch));
+    if (!scratch)
+        return NULL;
+
     for (int f = 0; f < NUM_FACES; f++) {
         int layers;
         int width;
@@ -1914,10 +1954,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
         face_grid_dims((BlockFace)f, &layers, &width, &height);
         for (int layer = 0; layer < layers; layer++) {
-            BlockID mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
-            uint8_t sky_mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
-            uint8_t block_mask[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
-            bool used[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE] = {{0}};
+            memset(scratch, 0, sizeof(*scratch));
 
             for (int v = 0; v < height; v++) {
                 for (int u = 0; u < width; u++) {
@@ -1936,27 +1973,31 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                         int light_wy = y + FACE_NY[f];
                         int light_wz = wz + FACE_NZ[f];
 
-                        mask[v][u] = id;
-                        sky_mask[v][u] = read_sky_light_cached(nb, ccx, ccz,
-                                                               light_wx, light_wy, light_wz);
-                        block_mask[v][u] = read_block_light_cached(nb, ccx, ccz,
-                                                                   light_wx, light_wy, light_wz);
-                        if (block_emission_level(id) > block_mask[v][u])
-                            block_mask[v][u] = block_emission_level(id);
+                        scratch->mask[v][u] = id;
+                        scratch->sky_mask[v][u] =
+                            read_sky_light_cached(nb, ccx, ccz,
+                                                  light_wx, light_wy, light_wz);
+                        scratch->block_mask[v][u] =
+                            read_block_light_cached(nb, ccx, ccz,
+                                                    light_wx, light_wy, light_wz);
+                        if (block_emission_level(id) >
+                            scratch->block_mask[v][u])
+                            scratch->block_mask[v][u] =
+                                block_emission_level(id);
                     }
                 }
             }
 
             for (int v = 0; v < height; v++) {
                 for (int u = 0; u < width; u++) {
-                    BlockID id = mask[v][u];
-                    uint8_t sky_light = sky_mask[v][u];
-                    uint8_t block_light = block_mask[v][u];
+                    BlockID id = scratch->mask[v][u];
+                    uint8_t sky_light = scratch->sky_mask[v][u];
+                    uint8_t block_light = scratch->block_mask[v][u];
                     int merge_w = 1;
                     int merge_h = 1;
                     int x, y, z;
 
-                    if (id == BLOCK_AIR || used[v][u])
+                    if (id == BLOCK_AIR || scratch->used[v][u])
                         continue;
 
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
@@ -1972,7 +2013,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                                                     y,
                                                     ccz * WORLD_CHUNK_SIZE + z);
                         }
-                        used[v][u] = true;
+                        scratch->used[v][u] = true;
                         append_chunk_face(chunk->faces, &out, x, y, z,
                                           (BlockFace)f, id, 1, 1,
                                           sky_light, block_light, h);
@@ -1988,20 +2029,20 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                      */
                     if (!is_near && greedy_meshing_enabled()) {
                         while (u + merge_w < width &&
-                               !used[v][u + merge_w] &&
-                               mask[v][u + merge_w] == id &&
-                               sky_mask[v][u + merge_w] == sky_light &&
-                               block_mask[v][u + merge_w] == block_light) {
+                               !scratch->used[v][u + merge_w] &&
+                               scratch->mask[v][u + merge_w] == id &&
+                               scratch->sky_mask[v][u + merge_w] == sky_light &&
+                               scratch->block_mask[v][u + merge_w] == block_light) {
                             merge_w++;
                         }
 
                         bool can_extend = true;
                         while (v + merge_h < height && can_extend) {
                             for (int du = 0; du < merge_w; du++) {
-                                if (used[v + merge_h][u + du] ||
-                                    mask[v + merge_h][u + du] != id ||
-                                    sky_mask[v + merge_h][u + du] != sky_light ||
-                                    block_mask[v + merge_h][u + du] != block_light) {
+                                if (scratch->used[v + merge_h][u + du] ||
+                                    scratch->mask[v + merge_h][u + du] != id ||
+                                    scratch->sky_mask[v + merge_h][u + du] != sky_light ||
+                                    scratch->block_mask[v + merge_h][u + du] != block_light) {
                                     can_extend = false;
                                     break;
                                 }
@@ -2012,10 +2053,10 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                         for (int dv = 0; dv < merge_h; dv++) {
                             for (int du = 0; du < merge_w; du++)
-                                used[v + dv][u + du] = true;
+                                scratch->used[v + dv][u + du] = true;
                         }
                     } else {
-                        used[v][u] = true;
+                        scratch->used[v][u] = true;
                     }
 
                     append_chunk_face(chunk->faces, &out, x, y, z,
@@ -2063,13 +2104,16 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
     chunk->face_count = out;
 
     ChunkMesh *snapshot = chunk_mesh_alloc(out);
-    if (!snapshot)
+    if (!snapshot) {
+        free(scratch);
         return NULL;
+    }
     if (out > 0)
         memcpy(snapshot->faces, chunk->faces,
                (size_t)out * sizeof(ChunkFace));
     snapshot->generation = chunk->generation;
     snapshot->meshed_near = is_near;
+    free(scratch);
     return snapshot;
 }
 

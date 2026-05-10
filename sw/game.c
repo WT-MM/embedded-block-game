@@ -3606,19 +3606,19 @@ int main(void)
     thread_affinity_pin_current("main", "VOXEL_MAIN_CPU", 0);
 
     RenderContext *ctx = renderer_init();
-    VoxelWorld world;
+    static VoxelWorld world;
     if (!ctx) {
         fprintf(stderr, "renderer_init failed\n");
         return 1;
     }
 
-    InputState inp;
+    static InputState inp;
     input_init(&inp);
 
-    Chat chat;
+    static Chat chat;
     chat_init(&chat);
 
-    PauseMenu pause;
+    static PauseMenu pause;
     pause_menu_init(&pause);
 
     init_block_types();
@@ -3630,19 +3630,19 @@ int main(void)
     int render_distance_chunks = read_render_distance_chunks();
     int stream_chunks_per_frame = read_stream_chunks_per_frame();
     int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
-    SelectedWorld selected_world = {0};
+    static SelectedWorld selected_world;
     int selected_hotbar_slot = 0;
     int selected_hotbar_page = 0;
-    SurvivalInventory survival_inventory;
-    ItemEntityPool item_drops;
-    FurnaceState furnace_states[FURNACE_MAX_STATES] = {0};
+    static SurvivalInventory survival_inventory;
+    static ItemEntityPool item_drops;
+    static FurnaceState furnace_states[FURNACE_MAX_STATES];
     bool inventory_open = false;
     bool furnace_open = false;
     int open_furnace_index = -1;
     int inventory_recipe_page = 0;
     float inventory_cursor_x = SCREEN_WIDTH * 0.5f;
     float inventory_cursor_y = SCREEN_HEIGHT * 0.5f;
-    PauseMenuSettings pause_settings = {0};
+    static PauseMenuSettings pause_settings;
 
 home_menu_start:
     chat_init(&chat);

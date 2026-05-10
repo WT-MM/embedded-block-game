@@ -668,7 +668,7 @@ bool run_home_menu(RenderContext *ctx, InputState *inp,
 {
     const char *direct_world = env_get_nonempty("VOXEL_WORLD_DIR");
     const char *worlds_root = read_worlds_dir();
-    HomeMenuState menu = {0};
+    static HomeMenuState menu;
     long frame_ns = 1000000000L / target_fps;
 
     if (!selection)
@@ -676,6 +676,7 @@ bool run_home_menu(RenderContext *ctx, InputState *inp,
     if (direct_world)
         return select_world_direct(selection);
 
+    memset(&menu, 0, sizeof(menu));
     menu.world_count = scan_saved_worlds(worlds_root, menu.worlds,
                                          HOME_MAX_WORLDS);
     menu.desert_lava_pools_enabled = DEFAULT_DESERT_LAVA_POOLS;

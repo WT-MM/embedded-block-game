@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "env_util.h"
@@ -133,20 +134,28 @@ static void *gen_worker_thread(void *arg)
         /* Generate without holding world_mu - terrain gen and snapshot
          * load only read fields that are immutable post-init. The
          * finalize call takes world_mu briefly to copy the result in. */
-        ChunkGenResult result;
+        ChunkGenResult *result = malloc(sizeof(*result));
+        if (!result) {
+            fprintf(stderr,
+                    "gen_worker: result alloc failed for (%d, %d)\n",
+                    job.chunk_x, job.chunk_z);
+            continue;
+        }
         if (!world_async_chunk_gen_offline(world, job.chunk_x, job.chunk_z,
-                                           &result)) {
+                                           result)) {
             /* Snapshot I/O or alloc failure. Slot stays LOADING |
              * GEN_QUEUED until eviction; rare enough that we accept
              * the leaked-chunk-until-eviction behaviour for v1. */
             fprintf(stderr,
                     "gen_worker: offline gen failed for (%d, %d)\n",
                     job.chunk_x, job.chunk_z);
+            free(result);
             continue;
         }
         (void)world_finalize_async_chunk_load(world,
                                               job.chunk_x, job.chunk_z,
-                                              job.generation, &result);
+                                              job.generation, result);
+        free(result);
     }
 
     return NULL;

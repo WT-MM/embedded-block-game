@@ -66,6 +66,8 @@
 #define CACTUS_DAMAGE_INTERVAL_SECONDS 0.50f
 #define CACTUS_DAMAGE_UNITS 1
 #define CACTUS_CONTACT_MARGIN 0.08f
+#define LAVA_DAMAGE_INTERVAL_SECONDS 0.50f
+#define LAVA_DAMAGE_UNITS 4
 #define FALL_DAMAGE_SAFE_DISTANCE 3.0f
 #define FALL_DAMAGE_EPSILON 0.01f
 #define FALL_DAMAGE_MULTIPLIER 1.0f
@@ -508,6 +510,11 @@ static bool game_block_is_water(BlockID id)
     return id == BLOCK_WATER || id == BLOCK_WATER_FLOW;
 }
 
+static bool game_block_is_lava(BlockID id)
+{
+    return id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW;
+}
+
 static bool game_block_is_fluid_source(BlockID id)
 {
     return id == BLOCK_WATER || id == BLOCK_LAVA;
@@ -689,6 +696,52 @@ static bool trace_target_fluid_source(const VoxelWorld *world, const Camera *cam
         }
         if (!game_block_is_trace_passable(block))
             return false;
+    }
+
+    return false;
+}
+
+static bool player_touches_lava(const VoxelWorld *world, const Player *player)
+{
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float min_z;
+    float max_z;
+    int block_min_x;
+    int block_max_x;
+    int block_min_y;
+    int block_max_y;
+    int block_min_z;
+    int block_max_z;
+
+    if (!world || !player)
+        return false;
+
+    min_x = player->x - PLAYER_WIDTH * 0.5f;
+    max_x = player->x + PLAYER_WIDTH * 0.5f;
+    min_y = player->y;
+    max_y = player->y + PLAYER_HEIGHT;
+    min_z = player->z - PLAYER_DEPTH * 0.5f;
+    max_z = player->z + PLAYER_DEPTH * 0.5f;
+
+    block_min_x = (int)floorf(min_x);
+    block_max_x = (int)floorf(max_x);
+    block_min_y = (int)floorf(min_y);
+    block_max_y = (int)floorf(max_y);
+    block_min_z = (int)floorf(min_z);
+    block_max_z = (int)floorf(max_z);
+
+    for (int y = block_min_y; y <= block_max_y; y++) {
+        if (y < 0 || y >= WORLD_CHUNK_HEIGHT)
+            continue;
+        for (int z = block_min_z; z <= block_max_z; z++) {
+            for (int x = block_min_x; x <= block_max_x; x++) {
+                if (game_block_is_lava(world_get_block(world, x, y, z)))
+                    return true;
+            }
+        }
     }
 
     return false;
@@ -4012,6 +4065,7 @@ home_menu_start:
     float player_air_seconds = PLAYER_MAX_AIR_SECONDS;
     float drown_timer = 0.0f;
     float cactus_damage_timer = 0.0f;
+    float lava_damage_timer = 0.0f;
     float damage_flash_timer = 0.0f;
     bool creative_flight_enabled = false;
     float creative_jump_tap_timer = 0.0f;
@@ -4031,6 +4085,7 @@ home_menu_start:
         player_air_seconds = PLAYER_MAX_AIR_SECONDS; \
         drown_timer = 0.0f; \
         cactus_damage_timer = 0.0f; \
+        lava_damage_timer = 0.0f; \
         damage_flash_timer = 0.0f; \
         physics_accumulator = 0.0f; \
         break_timer = 0.0f; \
@@ -4453,6 +4508,7 @@ home_menu_start:
             player_air_seconds = PLAYER_MAX_AIR_SECONDS;
             drown_timer = 0.0f;
             cactus_damage_timer = 0.0f;
+            lava_damage_timer = 0.0f;
             food_regen_timer = 0.0f;
         }
 
@@ -4473,6 +4529,25 @@ home_menu_start:
             }
         } else {
             cactus_damage_timer = 0.0f;
+        }
+
+        if (!paused && player.mode == PLAYER_MODE_SURVIVAL) {
+            if (player_touches_lava(&world, &player)) {
+                lava_damage_timer += frame_dt;
+                while (lava_damage_timer >= LAVA_DAMAGE_INTERVAL_SECONDS) {
+                    lava_damage_timer -= LAVA_DAMAGE_INTERVAL_SECONDS;
+                    if (apply_survival_damage(&player_health_units,
+                                              LAVA_DAMAGE_UNITS,
+                                              &damage_flash_timer)) {
+                        RESET_PLAYER_AFTER_DEATH("tried to swim in lava");
+                        break;
+                    }
+                }
+            } else {
+                lava_damage_timer = LAVA_DAMAGE_INTERVAL_SECONDS;
+            }
+        } else {
+            lava_damage_timer = 0.0f;
         }
 
         if (!paused && player.mode == PLAYER_MODE_SURVIVAL &&

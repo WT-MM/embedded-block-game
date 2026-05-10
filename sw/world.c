@@ -142,6 +142,12 @@ typedef struct {
     BlockID flow;
 } FluidDef;
 
+enum {
+    FLUID_FAMILY_NONE = 0,
+    FLUID_FAMILY_WATER = 1,
+    FLUID_FAMILY_LAVA = 2,
+};
+
 static const FluidDef WATER_FLUID = { BLOCK_WATER, BLOCK_WATER_FLOW };
 static const FluidDef LAVA_FLUID = { BLOCK_LAVA, BLOCK_LAVA_FLOW };
 
@@ -160,12 +166,12 @@ static int block_fluid_family(BlockID id)
     switch (id) {
     case BLOCK_WATER:
     case BLOCK_WATER_FLOW:
-        return 1;
+        return FLUID_FAMILY_WATER;
     case BLOCK_LAVA:
     case BLOCK_LAVA_FLOW:
-        return 2;
+        return FLUID_FAMILY_LAVA;
     default:
-        return 0;
+        return FLUID_FAMILY_NONE;
     }
 }
 
@@ -2086,8 +2092,11 @@ static bool append_chunk_face_checked(Chunk *chunk, int *out,
     if (!chunk || !out)
         return false;
 
+    if (*out < 0 || *out >= INT_MAX)
+        return false;
+
     needed = *out + 1;
-    if (needed < *out || !ensure_chunk_face_capacity(chunk, needed))
+    if (!ensure_chunk_face_capacity(chunk, needed))
         return false;
 
     append_chunk_face(chunk->faces, out, x, y, z, face, type, u_size, v_size,
@@ -3166,7 +3175,32 @@ bool world_flush(VoxelWorld *world)
     return true;
 }
 
-static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
+static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
+                                   BlockID type);
+
+static bool block_can_support_sugar_cane(BlockID type)
+{
+    return type == BLOCK_SAND || type == BLOCK_SUGAR_CANE;
+}
+
+static bool world_clear_sugar_cane_above_locked(VoxelWorld *world,
+                                                int wx,
+                                                int wy,
+                                                int wz)
+{
+    bool success = true;
+
+    for (int y = wy + 1; y < WORLD_CHUNK_HEIGHT; y++) {
+        if (world_get_block(world, wx, y, wz) != BLOCK_SUGAR_CANE)
+            break;
+        success &= world_set_block_locked(world, wx, y, wz, BLOCK_AIR);
+    }
+
+    return success;
+}
+
+static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
+                                   BlockID type)
 {
     int chunk_x;
     int chunk_z;
@@ -3284,6 +3318,9 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
     else if (old_emission > 0)
         world_recompute_light_emitters_locked(world);
 
+    if (!block_can_support_sugar_cane(type))
+        success &= world_clear_sugar_cane_above_locked(world, wx, wy, wz);
+
     world->meshes_rebuilt_last_stream = 0;
     world->meshes_dirty = true;
     return success;
@@ -3331,6 +3368,8 @@ static bool redstone_block_can_hold_power(BlockID id)
 {
     return id != BLOCK_AIR &&
            id != BLOCK_REDSTONE_BLOCK &&
+           id != BLOCK_LAMP &&
+           id != BLOCK_LAMP_OFF &&
            block_render_model(id) == BLOCK_RENDER_CUBE &&
            !block_is_passable(id);
 }
@@ -5020,6 +5059,84 @@ static bool fluid_set_falling_lateral_locked(VoxelWorld *world,
     return placed;
 }
 
+static BlockID fluid_lava_water_collision_result_locked(const VoxelWorld *world,
+                                                        BlockID lava,
+                                                        int wx, int wy, int wz)
+{
+    bool touches_water_source = false;
+    bool touches_water_flow = false;
+    bool rests_on_water = false;
+
+    for (int f = 0; f < NUM_FACES; f++) {
+        int ny = wy + FACE_NY[f];
+
+        if (ny < 0 || ny >= WORLD_CHUNK_HEIGHT)
+            continue;
+
+        BlockID neighbor = world_get_block(world,
+                                           wx + FACE_NX[f],
+                                           ny,
+                                           wz + FACE_NZ[f]);
+        if (neighbor == BLOCK_WATER)
+            touches_water_source = true;
+        else if (neighbor == BLOCK_WATER_FLOW)
+            touches_water_flow = true;
+
+        if (f == FACE_BOTTOM && block_fluid_family(neighbor) ==
+            FLUID_FAMILY_WATER)
+            rests_on_water = true;
+    }
+
+    if (lava == BLOCK_LAVA && touches_water_source)
+        return BLOCK_OBSIDIAN;
+    if (lava == BLOCK_LAVA_FLOW && rests_on_water)
+        return BLOCK_STONE;
+    if (touches_water_flow)
+        return BLOCK_COBBLESTONE;
+    if (lava == BLOCK_LAVA_FLOW && touches_water_source)
+        return BLOCK_STONE;
+
+    return BLOCK_AIR;
+}
+
+static bool fluid_resolve_lava_water_collisions_locked(VoxelWorld *world)
+{
+    bool changed = false;
+
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        Chunk *chunk = &world->chunks[ci];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    BlockID id = chunk->blocks[y][z][x];
+
+                    if (id != BLOCK_LAVA && id != BLOCK_LAVA_FLOW)
+                        continue;
+
+                    int wx = ox + x;
+                    int wz = oz + z;
+                    BlockID solid =
+                        fluid_lava_water_collision_result_locked(world, id,
+                                                                 wx, y, wz);
+                    if (solid == BLOCK_AIR)
+                        continue;
+
+                    if (world_set_block_locked(world, wx, y, wz, solid))
+                        changed = true;
+                }
+            }
+        }
+    }
+
+    return changed;
+}
+
 static bool fluid_tick_locked(VoxelWorld *world,
                               const FluidDef *fluid,
                               WaterTickStats *stats)
@@ -5332,8 +5449,11 @@ bool world_water_tick(VoxelWorld *world)
     WaterTickStats stats = {0};
 
     world_lock(world);
+    changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= fluid_tick_locked(world, &WATER_FLUID, &stats);
+    changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= fluid_tick_locked(world, &LAVA_FLUID, &stats);
+    changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= falling_blocks_tick_locked(world, &stats);
     world_unlock(world);
 

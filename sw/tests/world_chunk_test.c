@@ -1,4 +1,5 @@
 #include <dirent.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,10 +103,10 @@ static bool test_wire_line_x(VoxelWorld *world,
                              int wy,
                              int wz)
 {
-    int step = x0 <= x1 ? 1 : -1;
+    int64_t step = x0 <= x1 ? 1 : -1;
 
-    for (int wx = x0;; wx += step) {
-        if (!test_set_wire(world, wx, wy, wz))
+    for (int64_t wx = x0;; wx += step) {
+        if (!test_set_wire(world, (int)wx, wy, wz))
             return false;
         if (wx == x1)
             break;
@@ -120,10 +121,10 @@ static bool test_wire_line_z(VoxelWorld *world,
                              int z0,
                              int z1)
 {
-    int step = z0 <= z1 ? 1 : -1;
+    int64_t step = z0 <= z1 ? 1 : -1;
 
-    for (int wz = z0;; wz += step) {
-        if (!test_set_wire(world, wx, wy, wz))
+    for (int64_t wz = z0;; wz += step) {
+        if (!test_set_wire(world, wx, wy, (int)wz))
             return false;
         if (wz == z1)
             break;
@@ -965,6 +966,29 @@ int main(void)
         block_is_alpha_keyed(BLOCK_CACTUS) ||
         block_is_passable(BLOCK_CACTUS))
         return check_failed("plant metadata missing");
+    const int cane_x = 5;
+    const int cane_y = 23;
+    const int cane_z = 11;
+    if (!world_set_block(&world, cane_x, cane_y - 1, cane_z, BLOCK_SAND) ||
+        !world_set_block(&world, cane_x, cane_y, cane_z, BLOCK_SUGAR_CANE) ||
+        !world_set_block(&world, cane_x, cane_y + 1, cane_z,
+                         BLOCK_SUGAR_CANE) ||
+        !world_set_block(&world, cane_x, cane_y + 2, cane_z,
+                         BLOCK_SUGAR_CANE))
+        return check_failed("sugar cane cascade fixture build failed");
+    if (!world_set_block(&world, cane_x, cane_y, cane_z, BLOCK_AIR))
+        return check_failed("sugar cane base break failed");
+    if (world_get_block(&world, cane_x, cane_y + 1, cane_z) != BLOCK_AIR ||
+        world_get_block(&world, cane_x, cane_y + 2, cane_z) != BLOCK_AIR)
+        return check_failed("sugar cane above base did not break");
+    if (!world_set_block(&world, cane_x, cane_y, cane_z, BLOCK_SUGAR_CANE) ||
+        !world_set_block(&world, cane_x, cane_y + 1, cane_z,
+                         BLOCK_SUGAR_CANE) ||
+        !world_set_block(&world, cane_x, cane_y - 1, cane_z, BLOCK_AIR))
+        return check_failed("sugar cane support break fixture failed");
+    if (world_get_block(&world, cane_x, cane_y, cane_z) != BLOCK_AIR ||
+        world_get_block(&world, cane_x, cane_y + 1, cane_z) != BLOCK_AIR)
+        return check_failed("sugar cane survived broken support");
     const int wire_x = 8;
     const int wire_y = 26;
     const int wire_z = 3;
@@ -1840,6 +1864,157 @@ int main(void)
         return check_failed("unsupported lava flow did not evaporate");
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-lava-flow-cleanup mesh rebuild failed");
+
+    const int generator_x = 10;
+    const int generator_y = 24;
+    const int generator_z = 12;
+    const int generator_floor_y = generator_y - 1;
+    for (int y = generator_floor_y; y <= generator_y + 1; y++) {
+        for (int z = generator_z - 1; z <= generator_z + 1; z++) {
+            for (int x = generator_x - 1; x <= generator_x + 4; x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("cobble-generator volume clear failed");
+            }
+        }
+    }
+    for (int x = generator_x; x <= generator_x + 3; x++) {
+        if (!world_set_block(&world, x, generator_floor_y, generator_z,
+                             BLOCK_STONE) ||
+            !world_set_block(&world, x, generator_y, generator_z - 1,
+                             BLOCK_STONE) ||
+            !world_set_block(&world, x, generator_y, generator_z + 1,
+                             BLOCK_STONE))
+            return check_failed("cobble-generator channel build failed");
+    }
+    if (!world_set_block(&world, generator_x - 1, generator_y, generator_z,
+                         BLOCK_STONE) ||
+        !world_set_block(&world, generator_x + 4, generator_y, generator_z,
+                         BLOCK_STONE) ||
+        !world_set_block(&world, generator_x, generator_y, generator_z,
+                         BLOCK_WATER) ||
+        !world_set_block(&world, generator_x + 3, generator_y, generator_z,
+                         BLOCK_LAVA))
+        return check_failed("cobble-generator source placement failed");
+    world_water_tick(&world);
+    if (world_get_block(&world, generator_x + 2, generator_y, generator_z) !=
+            BLOCK_COBBLESTONE ||
+        world_get_block(&world, generator_x + 3, generator_y, generator_z) !=
+            BLOCK_LAVA)
+        return check_failed("flowing lava did not become cobblestone");
+    for (int x = generator_x - 1; x <= generator_x + 4; x++) {
+        for (int z = generator_z - 1; z <= generator_z + 1; z++) {
+            if (!world_set_block(&world, x, generator_floor_y, z, BLOCK_AIR) ||
+                !world_set_block(&world, x, generator_y, z, BLOCK_AIR))
+                return check_failed("cobble-generator cleanup failed");
+        }
+    }
+
+    const int water_flow_lava_x = 3;
+    const int water_flow_lava_y = 24;
+    const int water_flow_lava_z = 14;
+    const int water_flow_lava_floor_y = water_flow_lava_y - 1;
+    for (int y = water_flow_lava_floor_y; y <= water_flow_lava_y + 1; y++) {
+        for (int z = water_flow_lava_z - 1; z <= water_flow_lava_z + 1; z++) {
+            for (int x = water_flow_lava_x - 1;
+                 x <= water_flow_lava_x + 3;
+                 x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("flowing-water lava volume clear failed");
+            }
+        }
+    }
+    for (int x = water_flow_lava_x - 1; x <= water_flow_lava_x + 3; x++) {
+        if (!world_set_block(&world, x, water_flow_lava_floor_y,
+                             water_flow_lava_z, BLOCK_STONE) ||
+            !world_set_block(&world, x, water_flow_lava_y,
+                             water_flow_lava_z - 1, BLOCK_STONE) ||
+            !world_set_block(&world, x, water_flow_lava_y,
+                             water_flow_lava_z + 1, BLOCK_STONE))
+            return check_failed("flowing-water lava channel build failed");
+    }
+    if (!world_set_block(&world, water_flow_lava_x - 1, water_flow_lava_y,
+                         water_flow_lava_z, BLOCK_STONE) ||
+        !world_set_block(&world, water_flow_lava_x, water_flow_lava_y,
+                         water_flow_lava_z, BLOCK_WATER) ||
+        !world_set_block(&world, water_flow_lava_x + 2, water_flow_lava_y,
+                         water_flow_lava_z, BLOCK_LAVA))
+        return check_failed("flowing-water lava fixture build failed");
+    world_water_tick(&world);
+    if (world_get_block(&world,
+                        water_flow_lava_x + 2,
+                        water_flow_lava_y,
+                        water_flow_lava_z) != BLOCK_COBBLESTONE)
+        return check_failed("flowing water hitting lava did not make cobble");
+    for (int x = water_flow_lava_x - 1; x <= water_flow_lava_x + 3; x++) {
+        for (int z = water_flow_lava_z - 1; z <= water_flow_lava_z + 1; z++) {
+            if (!world_set_block(&world, x, water_flow_lava_floor_y, z,
+                                 BLOCK_AIR) ||
+                !world_set_block(&world, x, water_flow_lava_y, z, BLOCK_AIR))
+                return check_failed("flowing-water lava cleanup failed");
+        }
+    }
+
+    const int stone_gen_x = 14;
+    const int stone_gen_y = 24;
+    const int stone_gen_z = 14;
+    for (int y = stone_gen_y - 1; y <= stone_gen_y + 2; y++) {
+        for (int z = stone_gen_z - 1; z <= stone_gen_z + 1; z++) {
+            for (int x = stone_gen_x - 1; x <= stone_gen_x + 1; x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("stone-generator volume clear failed");
+            }
+        }
+    }
+    if (!world_set_block(&world, stone_gen_x, stone_gen_y - 1, stone_gen_z,
+                         BLOCK_STONE) ||
+        !world_set_block(&world, stone_gen_x, stone_gen_y, stone_gen_z,
+                         BLOCK_WATER) ||
+        !world_set_block(&world, stone_gen_x, stone_gen_y + 2, stone_gen_z,
+                         BLOCK_LAVA))
+        return check_failed("stone-generator fixture build failed");
+    world_water_tick(&world);
+    if (world_get_block(&world, stone_gen_x, stone_gen_y + 1, stone_gen_z) !=
+            BLOCK_STONE ||
+        world_get_block(&world, stone_gen_x, stone_gen_y + 2, stone_gen_z) !=
+            BLOCK_LAVA)
+        return check_failed("lava flowing on water did not make stone");
+    for (int y = stone_gen_y - 1; y <= stone_gen_y + 2; y++) {
+        for (int z = stone_gen_z - 1; z <= stone_gen_z + 1; z++) {
+            for (int x = stone_gen_x - 1; x <= stone_gen_x + 1; x++) {
+                if (!world_set_block(&world, x, y, z, BLOCK_AIR))
+                    return check_failed("stone-generator cleanup failed");
+            }
+        }
+    }
+
+    const int obsidian_x = 6;
+    const int obsidian_y = 24;
+    const int obsidian_z = 12;
+    for (int z = obsidian_z - 1; z <= obsidian_z + 1; z++) {
+        for (int x = obsidian_x - 1; x <= obsidian_x + 2; x++) {
+            if (!world_set_block(&world, x, obsidian_y, z, BLOCK_AIR) ||
+                !world_set_block(&world, x, obsidian_y - 1, z, BLOCK_STONE))
+                return check_failed("obsidian collision volume build failed");
+        }
+    }
+    if (!world_set_block(&world, obsidian_x, obsidian_y, obsidian_z,
+                         BLOCK_WATER) ||
+        !world_set_block(&world, obsidian_x + 1, obsidian_y, obsidian_z,
+                         BLOCK_LAVA))
+        return check_failed("obsidian collision fixture build failed");
+    world_water_tick(&world);
+    if (world_get_block(&world, obsidian_x + 1, obsidian_y, obsidian_z) !=
+        BLOCK_OBSIDIAN)
+        return check_failed("lava source did not become obsidian");
+    for (int z = obsidian_z - 1; z <= obsidian_z + 1; z++) {
+        for (int x = obsidian_x - 1; x <= obsidian_x + 2; x++) {
+            if (!world_set_block(&world, x, obsidian_y, z, BLOCK_AIR) ||
+                !world_set_block(&world, x, obsidian_y - 1, z, BLOCK_AIR))
+                return check_failed("obsidian collision cleanup failed");
+        }
+    }
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-fluid-collision-cleanup mesh rebuild failed");
 
     const int gravity_x = 12;
     const int gravity_z = 8;

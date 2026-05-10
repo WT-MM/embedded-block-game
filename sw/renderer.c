@@ -2574,12 +2574,11 @@ static void emit_model_quad_lit_rotated(RenderContext *ctx,
                                         uint8_t light_flags,
                                         int uv_rotation)
 {
-    static const float tile_span = 16.0f;
     static const float base_uv[4][2] = {
-        { 0.0f,      tile_span },
-        { tile_span, tile_span },
-        { tile_span, 0.0f      },
-        { 0.0f,      0.0f      },
+        { 0.0f,  16.0f },
+        { 16.0f, 16.0f },
+        { 16.0f, 0.0f  },
+        { 0.0f,  0.0f  },
     };
     CameraVertex face_cam[4];
     uint8_t texture_id;

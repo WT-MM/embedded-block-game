@@ -1194,6 +1194,15 @@ static bool split_quads_at_hw_band_edges(void)
     return cached != 0;
 }
 
+static bool split_translucent_quads_at_hw_band_edges(void)
+{
+    static int cached = -1;
+
+    if (cached < 0)
+        cached = env_flag("VOXEL_SPLIT_TRANSLUCENT_QUADS", false) ? 1 : 0;
+    return cached != 0;
+}
+
 static int textured_world_slice_height_px(void)
 {
     static int cached = -1;
@@ -1274,6 +1283,11 @@ static bool stage_projected_polygon(RenderContext *ctx,
     if (!split_quads_at_hw_band_edges())
         return stage_polygon_as_quads(ctx, quad, verts, count);
     if (!(quad->flags & QUAD_FLAG_TEX))
+        return stage_polygon_as_quads(ctx, quad, verts, count);
+
+    const bool alpha_blended =
+        (quad->flags & QUAD_ALPHA_MASK) != QUAD_ALPHA_OPAQUE;
+    if (alpha_blended && !split_translucent_quads_at_hw_band_edges())
         return stage_polygon_as_quads(ctx, quad, verts, count);
 
     /*
@@ -1874,12 +1888,6 @@ static uint8_t choose_face_texture_lod(const RenderContext *ctx,
 {
     (void)ctx;
     static int texture_lod_enabled = -1;
-    static int water_texture_lod = -2;
-
-    if (water_texture_lod == -2)
-        water_texture_lod = env_int_or_default("VOXEL_WATER_TEXTURE_LOD", 2, -1, 2);
-    if (base_tile == TEX_TILE_WATER && water_texture_lod >= 0)
-        return texture_lod_tile_id(base_tile, water_texture_lod);
 
     if (texture_lod_enabled < 0)
         texture_lod_enabled = env_flag("VOXEL_TEXTURE_LOD", true) ? 1 : 0;
@@ -2652,7 +2660,7 @@ static void torch_face_vertices(Vec3 block_pos, uint8_t face,
 {
     const bool side_support =
         support_face >= FACE_LEFT && support_face <= FACE_BACK;
-    const float half = side_support ? 0.12f : 0.24f;
+    const float half = side_support ? 0.18f : 0.24f;
     Vec3 base;
     Vec3 tip;
     float ax;

@@ -1626,32 +1626,21 @@ static uint8_t fluid_flow_height_from_level(uint8_t level)
     return height ? height : 1;
 }
 
-static uint8_t water_source_surface_height_eighths(void)
-{
-    static int cached = -1;
-
-    if (cached < 0)
-        cached = env_int_or_default("VOXEL_WATER_SOURCE_HEIGHT", 7, 1, 8);
-    return (uint8_t)cached;
-}
-
 static uint8_t fluid_height_cached(const Chunk *nb[3][3], int ccx, int ccz,
                                    int wx, int wy, int wz)
 {
     BlockID id = read_block_cached(nb, ccx, ccz, wx, wy, wz);
     int family = block_fluid_family(id);
 
-    if (family != FLUID_FAMILY_NONE && wy + 1 < WORLD_CHUNK_HEIGHT &&
+    if (block_is_fluid_source(id))
+        return 8;
+    if (!block_is_fluid_flow(id))
+        return 0;
+
+    if (wy + 1 < WORLD_CHUNK_HEIGHT &&
         block_fluid_family(read_block_cached(nb, ccx, ccz,
                                              wx, wy + 1, wz)) == family)
         return 8;
-
-    if (block_is_fluid_source(id))
-        return family == FLUID_FAMILY_WATER
-            ? water_source_surface_height_eighths()
-            : 8;
-    if (!block_is_fluid_flow(id))
-        return 0;
 
     return fluid_flow_height_from_level(
         read_water_level_cached(nb, ccx, ccz, wx, wy, wz));
@@ -1738,6 +1727,11 @@ static uint8_t torch_support_face_cached(const Chunk *nb[3][3],
                                             wx, wy, wz, saved))
         return saved;
 
+    if (wy > 0 &&
+        mesh_block_can_support_torch(read_block_cached(nb, ccx, ccz,
+                                                       wx, wy - 1, wz)))
+        return CHUNK_TORCH_SUPPORT_FLOOR;
+
     for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
         BlockID support = read_block_cached(nb, ccx, ccz,
                                             wx + FACE_NX[face],
@@ -1747,11 +1741,6 @@ static uint8_t torch_support_face_cached(const Chunk *nb[3][3],
         if (mesh_block_can_support_torch(support))
             return (uint8_t)face;
     }
-
-    if (wy > 0 &&
-        mesh_block_can_support_torch(read_block_cached(nb, ccx, ccz,
-                                                       wx, wy - 1, wz)))
-        return CHUNK_TORCH_SUPPORT_FLOOR;
 
     return CHUNK_TORCH_SUPPORT_FLOOR;
 }
@@ -2554,11 +2543,12 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
 
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
                     if (block_is_translucent(id)) {
-                        /* Fluids render at the cached surface height; source
-                         * water is slightly lowered at open surfaces to avoid
-                         * sharing exact edges with neighboring solid blocks. */
+                        /* Fluid flows render at a partial height set by
+                         * their water_level (0..7, where higher = thinner).
+                         * Sources and all other translucent blocks get the
+                         * full 8/8 height. */
                         uint8_t h = 8;
-                        if (block_is_any_fluid(id)) {
+                        if (block_is_fluid_flow(id)) {
                             h = fluid_height_cached(nb, ccx, ccz,
                                                     ccx * WORLD_CHUNK_SIZE + x,
                                                     y,
@@ -3812,6 +3802,14 @@ static bool redstone_torch_support_locked(const VoxelWorld *world,
         return true;
     }
 
+    if (wy > 0 &&
+        redstone_block_can_hold_power(world_get_block(world, wx, wy - 1, wz))) {
+        support = (RedstoneCell){ .wx = wx, .wy = wy - 1, .wz = wz };
+        if (support_out)
+            *support_out = support;
+        return true;
+    }
+
     for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
         int sx = wx + FACE_NX[face];
         int sz = wz + FACE_NZ[face];
@@ -3819,14 +3817,6 @@ static bool redstone_torch_support_locked(const VoxelWorld *world,
         if (!redstone_block_can_hold_power(world_get_block(world, sx, wy, sz)))
             continue;
         support = (RedstoneCell){ .wx = sx, .wy = wy, .wz = sz };
-        if (support_out)
-            *support_out = support;
-        return true;
-    }
-
-    if (wy > 0 &&
-        redstone_block_can_hold_power(world_get_block(world, wx, wy - 1, wz))) {
-        support = (RedstoneCell){ .wx = wx, .wy = wy - 1, .wz = wz };
         if (support_out)
             *support_out = support;
         return true;

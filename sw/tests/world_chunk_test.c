@@ -690,8 +690,6 @@ int main(void)
      * chunk; override the runtime default (one chunk per pass). */
     if (setenv("VOXEL_MESH_REBUILDS_PER_FRAME", "0", 1) != 0)
         return check_failed("setenv VOXEL_MESH_REBUILDS_PER_FRAME failed");
-    if (setenv("VOXEL_WATER_SOURCE_HEIGHT", "7", 1) != 0)
-        return check_failed("setenv VOXEL_WATER_SOURCE_HEIGHT failed");
 
     static VoxelWorld world;
     static VoxelWorld reloaded_world;
@@ -1963,15 +1961,10 @@ int main(void)
     const ChunkFace *source_step = find_chunk_face(water_chunk,
                                                    water_x, water_y, water_z,
                                                    FACE_RIGHT, BLOCK_WATER);
-    const ChunkFace *source_top = find_chunk_face(water_chunk,
-                                                  water_x, water_y, water_z,
-                                                  FACE_TOP, BLOCK_WATER);
     if (!fall_side || fall_side->height != 8)
         return check_failed("falling water side did not render full height");
-    if (!source_top || source_top->height != 7)
-        return check_failed("water source top did not render lowered");
-    if (source_step && source_step->height != 7)
-        return check_failed("water source step height did not match surface");
+    if (!source_step || source_step->height != 8)
+        return check_failed("water step face between source and flow missing");
     if (!world_set_block(&world, water_x, water_y, water_z, BLOCK_AIR))
         return check_failed("water source removal failed");
     for (int i = 0; i < 8; i++)

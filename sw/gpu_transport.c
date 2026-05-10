@@ -1726,12 +1726,13 @@ GPUTransport *gpu_transport_open(void)
 
     if (!socket_env)
         socket_env = VGPU_SOCKET_DEFAULT_PATH;
-    if (strlen(socket_env) >= sizeof(transport->socket_path)) {
+    size_t socket_path_len = strlen(socket_env);
+    if (socket_path_len >= sizeof(transport->socket_path)) {
         fprintf(stderr, "renderer: socket path too long: %s\n", socket_env);
         free(transport);
         return NULL;
     }
-    strcpy(transport->socket_path, socket_env);
+    memcpy(transport->socket_path, socket_env, socket_path_len + 1);
 
     if (transport_needs_hw(transport)) {
         transport->hw_fd = open(DEV_PATH, O_RDWR);

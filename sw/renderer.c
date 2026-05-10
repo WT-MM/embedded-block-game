@@ -32,6 +32,10 @@
                            OCCLUSION_TILE_SIZE)
 #define OCCLUSION_TILE_COUNT (OCCLUSION_TILES_X * OCCLUSION_TILES_Y)
 #define OCCLUSION_DEPTH_EPSILON (2.0f / 32768.0f)
+#define REDSTONE_DEVICE_PLATE_INSET 0.09f
+#define REDSTONE_DEVICE_PLATE_HALF (0.5f - REDSTONE_DEVICE_PLATE_INSET)
+#define REDSTONE_DEVICE_PLATE_TEXEL (REDSTONE_DEVICE_PLATE_HALF / 8.0f)
+#define REDSTONE_DEVICE_POST_HALF 0.060f
 
 /* Quantization step for the sky-gradient palette computation. Continuous
  * world_time would re-derive every frame; even sub-pixel color drift bumps
@@ -2414,7 +2418,7 @@ static Vec3 redstone_device_local_point(Vec3 block_pos,
 
 static void redstone_device_plate_top_vertices(Vec3 block_pos, Vec3 out[4])
 {
-    const float inset = 0.09f;
+    const float inset = REDSTONE_DEVICE_PLATE_INSET;
     const float y = 0.080f;
 
     out[0] = (Vec3){ block_pos.x + inset,        block_pos.y + y,
@@ -2433,8 +2437,8 @@ static void emit_redstone_device_plate_side(RenderContext *ctx,
                                             int side_index,
                                             uint8_t light_flags)
 {
-    const float half_w = 0.41f;
-    const float half_l = 0.41f;
+    const float half_w = REDSTONE_DEVICE_PLATE_HALF;
+    const float half_l = REDSTONE_DEVICE_PLATE_HALF;
     const float bottom = 0.018f;
     const float top = 0.080f;
     Vec3 face_world[4];
@@ -2493,7 +2497,7 @@ static void emit_redstone_device_post(RenderContext *ctx,
                                       uint8_t texture_tile,
                                       uint8_t light_flags)
 {
-    const float half = 0.055f;
+    const float half = REDSTONE_DEVICE_POST_HALF;
     const float bottom = 0.080f;
     const float top = 0.430f;
     Vec3 face_world[4];
@@ -2521,18 +2525,22 @@ static void emit_redstone_device_post(RenderContext *ctx,
 
 static float repeater_moving_post_forward(uint8_t delay_ticks)
 {
+    static const float forward_texels_by_delay[4] = {
+        4.0f, 2.0f, 0.0f, -2.0f,
+    };
+
     if (delay_ticks < 1)
         delay_ticks = 1;
     if (delay_ticks > 4)
         delay_ticks = 4;
 
     /*
-     * Minecraft's repeater models move the adjustable torch two pixels toward
-     * the input side for each delay step: z centers 7, 9, 11, 13 in the default
-     * south-facing model. In our local space positive forward is the output
-     * direction, so that becomes +1, -1, -3, -5 pixels from center.
+     * Move the adjustable torch two texture texels toward the input side per
+     * delay step. Delay 1 should sit close to the fixed torch, then walk back
+     * along the inset red strip as the delay increases.
      */
-    return (3.0f - 2.0f * (float)delay_ticks) / 16.0f;
+    return forward_texels_by_delay[delay_ticks - 1u] *
+           REDSTONE_DEVICE_PLATE_TEXEL;
 }
 
 static void emit_redstone_device_block_lit(RenderContext *ctx,
@@ -2568,7 +2576,8 @@ static void emit_redstone_device_block_lit(RenderContext *ctx,
 
         moving_post_forward = repeater_moving_post_forward(visual_state);
         emit_redstone_device_post(ctx, block_pos, facing,
-                                  0.0f, 0.3125f, post_tile, light_flags);
+                                  0.0f, 5.0f * REDSTONE_DEVICE_PLATE_TEXEL,
+                                  post_tile, light_flags);
         emit_redstone_device_post(ctx, block_pos, facing,
                                   0.0f, moving_post_forward,
                                   post_tile, light_flags);
@@ -2592,6 +2601,12 @@ static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
         return;
 
     if (block_is_redstone_directional(type)) {
+        if (block_is_repeater(type) && world) {
+            uint8_t live_delay = world_repeater_delay_ticks(world, wx, wy, wz);
+
+            if (live_delay)
+                visual_state = live_delay;
+        }
         emit_redstone_device_block_lit(ctx, type, block_pos, visual_state,
                                        light_flags);
         return;

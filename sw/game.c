@@ -4656,7 +4656,7 @@ home_menu_start:
                 else if (ch == INPUT_TEXT_ENTER) {
                     char submitted[CHAT_LINE_MAX + 1];
 
-                    strcpy(submitted, chat.input);
+                    snprintf(submitted, sizeof(submitted), "%s", chat.input);
                     chat_handle_enter(&chat);
                     execute_chat_command(&chat, &player, &world,
                                          &survival_inventory, &world_time,

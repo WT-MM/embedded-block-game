@@ -822,32 +822,93 @@ typedef enum {
     PLACE_FAIL_NO_TRACE,
     PLACE_FAIL_NO_AIR_NEAR_HIT,
     PLACE_FAIL_TARGET_OCCUPIED,
+    PLACE_FAIL_NO_SUPPORT,
     PLACE_FAIL_PLAYER_BLOCKED,
     PLACE_FAIL_WORLD_REJECTED,
 } PlaceResult;
+
+static bool place_block_is_redstone_wire(BlockID type)
+{
+    return type == BLOCK_REDSTONE_WIRE_UNCONNECTED ||
+           type == BLOCK_REDSTONE_WIRE_OFF ||
+           type == BLOCK_REDSTONE_WIRE_ON;
+}
+
+static BlockID normalize_placed_block(BlockID type)
+{
+    if (place_block_is_redstone_wire(type))
+        return BLOCK_REDSTONE_WIRE_UNCONNECTED;
+    return type;
+}
+
+static bool placement_block_can_be_replaced(BlockID type)
+{
+    return type == BLOCK_AIR ||
+           type == BLOCK_WATER ||
+           type == BLOCK_WATER_FLOW ||
+           type == BLOCK_LAVA ||
+           type == BLOCK_LAVA_FLOW;
+}
+
+static bool placement_requires_floor_support(BlockID type)
+{
+    BlockRenderModel model = block_render_model(type);
+
+    return model == BLOCK_RENDER_CROSS ||
+           model == BLOCK_RENDER_TORCH ||
+           model == BLOCK_RENDER_FLAT;
+}
+
+static bool placement_has_floor_support(const VoxelWorld *world,
+                                        int wx,
+                                        int wy,
+                                        int wz)
+{
+    BlockID support;
+
+    if (wy <= 0)
+        return false;
+    support = world_get_block(world, wx, wy - 1, wz);
+    return support != BLOCK_AIR && !block_is_passable(support);
+}
 
 static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam,
                                             const Player *player, BlockID type)
 {
     BlockTarget target = {0};
+    BlockID place_type;
 
     if (type <= BLOCK_AIR || type >= NUM_BLOCK_TYPES)
         return PLACE_FAIL_BAD_TYPE;
+    place_type = normalize_placed_block(type);
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return PLACE_FAIL_NO_TRACE;
     if (!target.place_valid)
         return PLACE_FAIL_NO_AIR_NEAR_HIT;
-    /* Allow overwriting passable blocks (water) so players can fill water
-     * with solids or replace water-flow with a fresh source. */
-    BlockID at_place = world_get_block(world, target.place_x, target.place_y, target.place_z);
-    if (!block_is_passable(at_place))
+    /* Allow overwriting only cells that are actually empty/fluid. Decorative
+     * passable blocks still occupy their grid cell and should not stack. */
+    BlockID at_place = world_get_block(world,
+                                       target.place_x,
+                                       target.place_y,
+                                       target.place_z);
+    if (!placement_block_can_be_replaced(at_place))
         return PLACE_FAIL_TARGET_OCCUPIED;
-    if (!block_is_passable(type) && player_intersects_block(player, target.place_x, target.place_y, target.place_z))
+    if (placement_requires_floor_support(place_type) &&
+        !placement_has_floor_support(world,
+                                     target.place_x,
+                                     target.place_y,
+                                     target.place_z))
+        return PLACE_FAIL_NO_SUPPORT;
+    if (!block_is_passable(place_type) &&
+        player_intersects_block(player,
+                                target.place_x,
+                                target.place_y,
+                                target.place_z))
         return PLACE_FAIL_PLAYER_BLOCKED;
 
     if (!world_set_block(world,
                          target.place_x, target.place_y, target.place_z,
-                         type))
+                         place_type))
         return PLACE_FAIL_WORLD_REJECTED;
 
     world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
@@ -1055,14 +1116,14 @@ static PlaceResult try_place_targeted_door(VoxelWorld *world,
         return PLACE_FAIL_NO_AIR_NEAR_HIT;
     if (target.place_y + 1 >= WORLD_CHUNK_HEIGHT)
         return PLACE_FAIL_WORLD_REJECTED;
-    if (!block_is_passable(world_get_block(world,
-                                           target.place_x,
-                                           target.place_y,
-                                           target.place_z)) ||
-        !block_is_passable(world_get_block(world,
-                                           target.place_x,
-                                           target.place_y + 1,
-                                           target.place_z)))
+    if (!placement_block_can_be_replaced(world_get_block(world,
+                                                         target.place_x,
+                                                         target.place_y,
+                                                         target.place_z)) ||
+        !placement_block_can_be_replaced(world_get_block(world,
+                                                         target.place_x,
+                                                         target.place_y + 1,
+                                                         target.place_z)))
         return PLACE_FAIL_TARGET_OCCUPIED;
     if (player &&
         (player_intersects_block(player,
@@ -1156,6 +1217,35 @@ static bool try_toggle_targeted_door(VoxelWorld *world,
     world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
     if (chat)
         chat_log(chat, "door %s", next_open ? "opened" : "closed");
+    return true;
+}
+
+static bool try_press_targeted_button(VoxelWorld *world,
+                                      const Camera *cam,
+                                      Chat *chat)
+{
+    BlockTarget target = {0};
+
+    if (!world || !cam)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.hit)
+        return false;
+    if (world_get_block(world,
+                        target.hit_x,
+                        target.hit_y,
+                        target.hit_z) != BLOCK_BUTTON)
+        return false;
+    if (!world_press_button(world,
+                            target.hit_x,
+                            target.hit_y,
+                            target.hit_z))
+        return false;
+
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    if (chat)
+        chat_log(chat, "button pressed");
     return true;
 }
 
@@ -1634,6 +1724,7 @@ static const char *place_result_name(PlaceResult r)
     case PLACE_FAIL_NO_TRACE:         return "no-trace";
     case PLACE_FAIL_NO_AIR_NEAR_HIT:  return "no-air-near-hit";
     case PLACE_FAIL_TARGET_OCCUPIED:  return "target-occupied";
+    case PLACE_FAIL_NO_SUPPORT:       return "no-support";
     case PLACE_FAIL_PLAYER_BLOCKED:   return "player-blocked";
     case PLACE_FAIL_WORLD_REJECTED:   return "world-rejected";
     default:                          return "unknown";
@@ -3844,6 +3935,7 @@ home_menu_start:
         if (environment_tick_accumulator >= ENVIRONMENT_TICK_INTERVAL) {
             environment_tick_accumulator -= ENVIRONMENT_TICK_INTERVAL;
             world_water_tick(&world);
+            world_update_redstone(&world, ENVIRONMENT_TICK_INTERVAL);
             if (debug_enabled) {
                 WaterTickStats ws = world_water_tick_stats();
                 if (ws.sources_seen || ws.flows_seen || ws.spread_placed ||
@@ -4487,8 +4579,10 @@ home_menu_start:
                                                    selected_hotbar_slot);
                     PlaceResult pr = PLACE_OK;
 
-                    if (try_toggle_targeted_door(&world, &cam,
-                                                 &player, &chat)) {
+                    if (try_press_targeted_button(&world, &cam, &chat)) {
+                        pr = PLACE_OK;
+                    } else if (try_toggle_targeted_door(&world, &cam,
+                                                        &player, &chat)) {
                         pr = PLACE_OK;
                     } else if (held == BLOCK_DOOR) {
                         pr = try_place_targeted_door(&world, &cam, &player);
@@ -4506,8 +4600,12 @@ home_menu_start:
                         survival_inventory_hotbar_stack(&survival_inventory,
                                                         selected_hotbar_slot);
 
-                    if (try_toggle_targeted_door(&world, &cam,
-                                                 &player, &chat)) {
+                    if (try_press_targeted_button(&world, &cam, &chat)) {
+                        break_timer = 0.0f;
+                        break_duration = 0.0f;
+                        break_target_valid = false;
+                    } else if (try_toggle_targeted_door(&world, &cam,
+                                                        &player, &chat)) {
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;

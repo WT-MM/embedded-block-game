@@ -15,6 +15,7 @@
 #define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
 #define CHUNK_FACE_FLAT ((uint8_t)(NUM_FACES + 2))
 #define WORLD_MAX_FALLING_BLOCKS 256
+#define WORLD_MAX_REDSTONE_PULSES 128
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
@@ -112,6 +113,13 @@ typedef struct {
     float y;
 } FallingBlock;
 
+typedef struct {
+    int wx;
+    int wy;
+    int wz;
+    float seconds_left;
+} RedstonePulse;
+
 typedef struct VoxelWorld {
     Chunk *chunks;
     int chunk_count;
@@ -147,6 +155,8 @@ typedef struct VoxelWorld {
     uint64_t last_stream_body_ns;
     FallingBlock falling_blocks[WORLD_MAX_FALLING_BLOCKS];
     int falling_block_count;
+    RedstonePulse redstone_pulses[WORLD_MAX_REDSTONE_PULSES];
+    int redstone_pulse_count;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting
@@ -200,6 +210,8 @@ const char *world_biome_name(WorldBiome biome);
  * (sand/gravel) leave the integer grid and become smooth falling entities.
  * Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
+bool world_update_redstone(VoxelWorld *world, float dt);
+bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
 bool world_update_falling_blocks(VoxelWorld *world, float dt);
 int world_falling_block_count(const VoxelWorld *world);
 

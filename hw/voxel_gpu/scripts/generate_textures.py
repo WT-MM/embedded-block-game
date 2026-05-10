@@ -82,19 +82,6 @@ for tile in TEXTURE_TILES:
         globals()[f"TEX_TILE_{tile.name}_MIP1"] = tile.mip1
         globals()[f"TEX_TILE_{tile.name}_MIP2"] = tile.mip2
 
-BREAK_STAGE_TILES = (
-    TEX_TILE_BREAK_0,
-    TEX_TILE_BREAK_1,
-    TEX_TILE_BREAK_2,
-    TEX_TILE_BREAK_3,
-    TEX_TILE_BREAK_4,
-    TEX_TILE_BREAK_5,
-    TEX_TILE_BREAK_6,
-    TEX_TILE_BREAK_7,
-    TEX_TILE_BREAK_8,
-    TEX_TILE_BREAK_9,
-)
-
 PAL_TRANSPARENT = 0
 PAL_GRASS_TOP = 1
 PAL_DIRT = 2
@@ -358,6 +345,7 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_WOOD_TOP: "oak_log_top.png",
     TEX_TILE_WOOD_PLANK: "oak_planks.png",
     TEX_TILE_GLASS: "glass.png",
+    TEX_TILE_LAMP: "redstone_lamp_on.png",
     TEX_TILE_LEAVES: "oak_leaves.png",
     TEX_TILE_WATER: "water_still.png",
     TEX_TILE_CACTUS_SIDE: "cactus_side.tga",
@@ -398,6 +386,11 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_FURNACE_TOP: "furnace_top.png",
     TEX_TILE_FURNACE_SIDE: "furnace_side.png",
     TEX_TILE_FURNACE_FRONT: "furnace_front_off.png",
+    TEX_TILE_REDSTONE_TORCH_OFF: "redstone_torch_off.png",
+    TEX_TILE_REDSTONE_TORCH_ON: "redstone_torch_on.png",
+    TEX_TILE_REPEATER_OFF: "repeater_off.png",
+    TEX_TILE_REPEATER_ON: "repeater_on.png",
+    TEX_TILE_LAMP_OFF: "redstone_lamp_off.png",
     TEX_TILE_HEART_CONTAINER: "container.png",
     TEX_TILE_HEART: "full.png",
     TEX_TILE_DRUMSTICK: "food_full.png",
@@ -442,6 +435,7 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_WOOD_TOP: (11, 3, 21, 22),
     TEX_TILE_WOOD_PLANK: (11, 3, 21, 22),
     TEX_TILE_GLASS: (0, 35, 36, 37),
+    TEX_TILE_LAMP: (PAL_LAMP_FRAME, PAL_WOOD_DARK, PAL_LAMP_GLOW, PAL_YELLOW, PAL_SUN_CORE, PAL_WHITE),
     # Restrict leaves to two greens for opaque texels. We deliberately exclude
     # PAL_TRANSPARENT (0) here even though leaves use cutout transparency:
     # genuinely-transparent texels short-circuit at the alpha<96 check at the
@@ -493,6 +487,11 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_FURNACE_TOP: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
     TEX_TILE_FURNACE_SIDE: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT),
     TEX_TILE_FURNACE_FRONT: (PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_LAVA_DARK, PAL_LAVA_ORANGE),
+    TEX_TILE_REDSTONE_TORCH_OFF: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_LAVA_DARK, PAL_BRICK_DARK, PAL_RED),
+    TEX_TILE_REDSTONE_TORCH_ON: (PAL_TRANSPARENT, PAL_WOOD_DARK, PAL_WOOD, PAL_RED, PAL_LAVA_ORANGE, PAL_LAVA_HOT, PAL_SUN_CORE, PAL_WHITE),
+    TEX_TILE_REPEATER_OFF: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_BRICK_DARK, PAL_RED),
+    TEX_TILE_REPEATER_ON: (PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_RED, PAL_LAVA_ORANGE, PAL_LAVA_HOT),
+    TEX_TILE_LAMP_OFF: (PAL_LAMP_FRAME, PAL_WOOD_DARK, PAL_WOOD, PAL_BRICK_DARK, PAL_BRICK),
     TEX_TILE_HEART_CONTAINER: (14,),
     TEX_TILE_HEART: (14, 6, 5),
     TEX_TILE_HEART_HALF: (14, 6, 5),
@@ -562,6 +561,39 @@ def noise(x: int, y: int, seed: int) -> int:
 
 
 _SOURCE_TILE_CACHE: dict[int, list[tuple[int, int, int, int]]] = {}
+_NAMED_SOURCE_TILE_CACHE: dict[str, list[tuple[int, int, int, int]]] = {}
+
+
+def _load_named_source_tile(name: str) -> list[tuple[int, int, int, int]] | None:
+    if name in _NAMED_SOURCE_TILE_CACHE:
+        return _NAMED_SOURCE_TILE_CACHE[name]
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    root = Path(__file__).resolve().parents[1]
+    source_path = root / "assets" / "minecraft_source" / name
+    if not source_path.exists():
+        return None
+
+    with Image.open(source_path) as image:
+        rgba = image.convert("RGBA")
+        if rgba.size[0] == TILE_SIZE and rgba.size[1] > TILE_SIZE and rgba.size[1] % TILE_SIZE == 0:
+            rgba = rgba.crop((0, 0, TILE_SIZE, TILE_SIZE))
+        if rgba.size != (TILE_SIZE, TILE_SIZE):
+            raise ValueError(f"{source_path} must be {TILE_SIZE}x{TILE_SIZE}, got {rgba.size}")
+        pixels = list(rgba.getdata())
+        _NAMED_SOURCE_TILE_CACHE[name] = pixels
+        return pixels
+
+
+def named_source_pixel(name: str, x: int, y: int) -> tuple[int, int, int, int] | None:
+    pixels = _load_named_source_tile(name)
+    if pixels is None:
+        return None
+    return pixels[y * TILE_SIZE + x]
 
 
 def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int], x: int, y: int) -> int:
@@ -985,31 +1017,86 @@ def redstone_block(x: int, y: int) -> int:
     return PAL_BRICK
 
 
-def redstone_wire(x: int, y: int, connected: bool, powered: bool) -> int:
+REDSTONE_WIRE_N = 1
+REDSTONE_WIRE_E = 2
+REDSTONE_WIRE_S = 4
+REDSTONE_WIRE_W = 8
+
+
+def redstone_dust_palette(rgba: tuple[int, int, int, int], powered: bool) -> int:
+    r, g, b, a = rgba
+    if a < 96:
+        return PAL_TRANSPARENT
+
+    gray = (r + g + b) // 3
+    if powered:
+        if gray >= 248:
+            return PAL_LAVA_HOT
+        if gray >= 232:
+            return PAL_RED
+        return PAL_LAVA_ORANGE
+
+    if gray >= 248:
+        return PAL_RED
+    if gray >= 232:
+        return PAL_BRICK
+    return PAL_BRICK_DARK
+
+
+def redstone_cross_pixel_allowed(mask: int, x: int, y: int) -> bool:
+    if 5 <= x <= 10 and 5 <= y <= 10:
+        return True
+    if (mask & REDSTONE_WIRE_N) and y < 8 and 4 <= x <= 11:
+        return True
+    if (mask & REDSTONE_WIRE_E) and x >= 8 and 4 <= y <= 11:
+        return True
+    if (mask & REDSTONE_WIRE_S) and y >= 8 and 4 <= x <= 11:
+        return True
+    if (mask & REDSTONE_WIRE_W) and x < 8 and 4 <= y <= 11:
+        return True
+    return False
+
+
+def procedural_redstone_wire(x: int, y: int, mask: int, powered: bool) -> int:
     cx = x - 7.5
     cy = y - 7.5
     main = PAL_LAVA_ORANGE if powered else PAL_RED
     highlight = PAL_LAVA_HOT if powered else PAL_BRICK
     shadow = PAL_RED if powered else PAL_BRICK_DARK
 
-    if not connected:
+    if mask == 0:
         if cx * cx + cy * cy <= 7.5:
             return highlight if 6 <= x <= 9 and 6 <= y <= 9 else main
         if cx * cx + cy * cy <= 12.5 and ((x + y) & 1) == 0:
             return shadow
         return PAL_TRANSPARENT
 
-    horizontal = 6 <= y <= 9 and 1 <= x <= 14
-    vertical = 6 <= x <= 9 and 1 <= y <= 14
-    if horizontal or vertical:
-        if powered and ((x + y) & 7) == 0:
-            return PAL_LAVA_HOT
-        if (horizontal and y in (6, 9)) or (vertical and x in (6, 9)):
-            return shadow
+    if 5 <= x <= 10 and 5 <= y <= 10:
         return main
+    if (mask & REDSTONE_WIRE_N) and 6 <= x <= 9 and 1 <= y <= 8:
+        return shadow if x in (6, 9) else main
+    if (mask & REDSTONE_WIRE_E) and 7 <= y <= 9 and 7 <= x <= 14:
+        return shadow if y in (7, 9) else main
+    if (mask & REDSTONE_WIRE_S) and 6 <= x <= 9 and 7 <= y <= 14:
+        return shadow if x in (6, 9) else main
+    if (mask & REDSTONE_WIRE_W) and 7 <= y <= 9 and 1 <= x <= 8:
+        return shadow if y in (7, 9) else main
     if 5 <= x <= 10 and 5 <= y <= 10 and ((x + y) & 1) == 0:
         return shadow
     return PAL_TRANSPARENT
+
+
+def redstone_wire(x: int, y: int, mask: int, powered: bool) -> int:
+    if mask == (REDSTONE_WIRE_E | REDSTONE_WIRE_W):
+        rgba = named_source_pixel("redstone_dust_line.png", x, y)
+    else:
+        rgba = named_source_pixel("redstone_dust_cross.png", x, y)
+        if rgba is not None and not redstone_cross_pixel_allowed(mask, x, y):
+            rgba = (0, 0, 0, 0)
+
+    if rgba is not None:
+        return redstone_dust_palette(rgba, powered)
+    return procedural_redstone_wire(x, y, mask, powered)
 
 
 def redstone_torch(x: int, y: int, powered: bool) -> int:
@@ -1122,14 +1209,6 @@ def flower(x: int, y: int, petal: int, petal_highlight: int) -> int:
     return PAL_TRANSPARENT
 
 
-def crosshair(x: int, y: int) -> int:
-    if (x == 7 and 4 <= y <= 11) or (y == 7 and 4 <= x <= 11):
-        return PAL_WHITE
-    if (x == 8 and 5 <= y <= 10) or (y == 8 and 5 <= x <= 10):
-        return PAL_WHITE
-    return PAL_TRANSPARENT
-
-
 AIR_BUBBLE_ROWS = [
     "tttttwwwwttttttt",
     "tttwwbbbbwwttttt",
@@ -1185,64 +1264,6 @@ def air_bubble_pop(x: int, y: int) -> int:
         x,
         y,
     )
-
-
-BREAK_CRACK_SEGMENTS: tuple[tuple[int, float, float, float, float], ...] = (
-    (0, 7.5, 7.5, 7.5, 4.8),
-    (1, 7.5, 5.4, 4.8, 4.0),
-    (2, 7.3, 6.0, 10.5, 4.2),
-    (3, 7.5, 7.2, 5.3, 10.4),
-    (4, 8.0, 7.5, 11.6, 9.7),
-    (5, 5.6, 10.0, 3.4, 13.2),
-    (6, 10.8, 4.5, 13.5, 2.2),
-    (6, 10.9, 9.4, 13.7, 12.2),
-    (7, 4.9, 4.2, 2.2, 2.0),
-    (7, 7.5, 4.8, 7.0, 1.7),
-    (8, 13.2, 12.0, 15.0, 14.5),
-    (8, 3.5, 13.0, 1.2, 15.0),
-    (9, 2.5, 2.4, 0.4, 0.9),
-    (9, 13.0, 2.6, 15.0, 0.8),
-)
-
-
-def distance_to_segment(px: float, py: float,
-                        x0: float, y0: float,
-                        x1: float, y1: float) -> float:
-    dx = x1 - x0
-    dy = y1 - y0
-    length_sq = dx * dx + dy * dy
-    if length_sq <= 0.0001:
-        return ((px - x0) * (px - x0) + (py - y0) * (py - y0)) ** 0.5
-
-    t = ((px - x0) * dx + (py - y0) * dy) / length_sq
-    if t < 0.0:
-        t = 0.0
-    elif t > 1.0:
-        t = 1.0
-
-    cx = x0 + dx * t
-    cy = y0 + dy * t
-    return ((px - cx) * (px - cx) + (py - cy) * (py - cy)) ** 0.5
-
-
-def break_stage(stage: int, x: int, y: int) -> int:
-    px = float(x) + 0.5
-    py = float(y) + 0.5
-    width = 0.34 + 0.035 * float(stage)
-    nearest = 99.0
-
-    for unlock_stage, x0, y0, x1, y1 in BREAK_CRACK_SEGMENTS:
-        if unlock_stage > stage:
-            continue
-        dist = distance_to_segment(px, py, x0, y0, x1, y1)
-        if dist < nearest:
-            nearest = dist
-
-    if nearest <= width:
-        return PAL_STONE_DARK
-    if stage >= 5 and nearest <= width + 0.22 and noise(x, y, 991 + stage) > 170:
-        return PAL_STONE_DARK
-    return PAL_TRANSPARENT
 
 
 def sky(x: int, y: int) -> int:
@@ -1372,11 +1393,39 @@ def base_texel(tile: int, x: int, y: int) -> int:
     if tile == TEX_TILE_REDSTONE_BLOCK:
         return redstone_block(x, y)
     if tile == TEX_TILE_REDSTONE_WIRE_UNCONNECTED:
-        return redstone_wire(x, y, False, False)
+        return redstone_wire(x, y, 0, False)
+    if tile == TEX_TILE_REDSTONE_WIRE_DOT_ON:
+        return redstone_wire(x, y, 0, True)
     if tile == TEX_TILE_REDSTONE_WIRE_OFF:
-        return redstone_wire(x, y, True, False)
+        return redstone_wire(x, y, REDSTONE_WIRE_E | REDSTONE_WIRE_W, False)
     if tile == TEX_TILE_REDSTONE_WIRE_ON:
-        return redstone_wire(x, y, True, True)
+        return redstone_wire(x, y, REDSTONE_WIRE_E | REDSTONE_WIRE_W, True)
+    if tile == TEX_TILE_REDSTONE_WIRE_T_OFF:
+        return redstone_wire(x, y,
+                             REDSTONE_WIRE_N | REDSTONE_WIRE_E |
+                             REDSTONE_WIRE_W,
+                             False)
+    if tile == TEX_TILE_REDSTONE_WIRE_T_ON:
+        return redstone_wire(x, y,
+                             REDSTONE_WIRE_N | REDSTONE_WIRE_E |
+                             REDSTONE_WIRE_W,
+                             True)
+    if tile == TEX_TILE_REDSTONE_WIRE_CORNER_OFF:
+        return redstone_wire(x, y, REDSTONE_WIRE_N | REDSTONE_WIRE_E,
+                             False)
+    if tile == TEX_TILE_REDSTONE_WIRE_CORNER_ON:
+        return redstone_wire(x, y, REDSTONE_WIRE_N | REDSTONE_WIRE_E,
+                             True)
+    if tile == TEX_TILE_REDSTONE_WIRE_CROSS_OFF:
+        return redstone_wire(x, y,
+                             REDSTONE_WIRE_N | REDSTONE_WIRE_E |
+                             REDSTONE_WIRE_S | REDSTONE_WIRE_W,
+                             False)
+    if tile == TEX_TILE_REDSTONE_WIRE_CROSS_ON:
+        return redstone_wire(x, y,
+                             REDSTONE_WIRE_N | REDSTONE_WIRE_E |
+                             REDSTONE_WIRE_S | REDSTONE_WIRE_W,
+                             True)
     if tile == TEX_TILE_REDSTONE_TORCH_OFF:
         return redstone_torch(x, y, False)
     if tile == TEX_TILE_REDSTONE_TORCH_ON:
@@ -1433,10 +1482,6 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return air_bubble(x, y)
     if tile == TEX_TILE_AIR_BUBBLE_POP:
         return air_bubble_pop(x, y)
-    if tile == TEX_TILE_CROSSHAIR:
-        return crosshair(x, y)
-    if tile in BREAK_STAGE_TILES:
-        return break_stage(BREAK_STAGE_TILES.index(tile), x, y)
     return PAL_TRANSPARENT
 
 

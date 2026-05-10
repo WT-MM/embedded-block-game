@@ -371,10 +371,16 @@ int main(void)
     const int lamp_z = 2;
     const int gap_x = lamp_x + 1;
     const int stone_x = lamp_x + 2;
+    const int lamp_power_y = lamp_y - 1;
     if (!world_set_block(&world, gap_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("lamp air gap clear failed");
-    if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_LAMP))
+    if (!world_set_block(&world, lamp_x, lamp_power_y, lamp_z,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("lamp power placement failed");
+    if (!world_set_block(&world, lamp_x, lamp_y, lamp_z, BLOCK_LAMP_OFF))
         return check_failed("lamp placement failed");
+    if (world_get_block(&world, lamp_x, lamp_y, lamp_z) != BLOCK_LAMP)
+        return check_failed("powered lamp did not turn on");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_STONE))
         return check_failed("stone placement near lamp failed");
     if (!world_rebuild_dirty_meshes(&world))
@@ -404,6 +410,8 @@ int main(void)
         return check_failed("lamp light did not clear after removal");
     if (!world_set_block(&world, stone_x, lamp_y, lamp_z, BLOCK_AIR))
         return check_failed("stone cleanup failed");
+    if (!world_set_block(&world, lamp_x, lamp_power_y, lamp_z, BLOCK_AIR))
+        return check_failed("lamp power cleanup failed");
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-cleanup mesh rebuild failed");
 
@@ -488,8 +496,9 @@ int main(void)
     const int wire_x = 8;
     const int wire_y = 26;
     const int wire_z = 3;
+    const int wire_neighbor_x = wire_x + 1;
     if (!world_set_block(&world, wire_x, wire_y, wire_z,
-                         BLOCK_REDSTONE_WIRE_ON))
+                         BLOCK_REDSTONE_WIRE_UNCONNECTED))
         return check_failed("redstone wire placement failed");
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-redstone mesh rebuild failed");
@@ -497,9 +506,57 @@ int main(void)
     const ChunkFace *wire_flat = find_chunk_face(wire_chunk,
                                                  wire_x, wire_y, wire_z,
                                                  (BlockFace)CHUNK_FACE_FLAT,
-                                                 BLOCK_REDSTONE_WIRE_ON);
+                                                 BLOCK_REDSTONE_WIRE_UNCONNECTED);
     if (!wire_flat)
-        return check_failed("redstone flat mesh missing");
+        return check_failed("redstone unconnected flat mesh missing");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_STONE))
+        return check_failed("redstone neighbor placement failed");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("redstone wire did not connect as off line");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-redstone-off mesh rebuild failed");
+    wire_chunk = world_get_chunk(&world, 0, 0);
+    wire_flat = find_chunk_face(wire_chunk,
+                                wire_x, wire_y, wire_z,
+                                (BlockFace)CHUNK_FACE_FLAT,
+                                BLOCK_REDSTONE_WIRE_OFF);
+    if (!wire_flat)
+        return check_failed("redstone connected-off flat mesh missing");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("redstone source placement failed");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_ON)
+        return check_failed("redstone wire did not power on");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-redstone-on mesh rebuild failed");
+    wire_chunk = world_get_chunk(&world, 0, 0);
+    wire_flat = find_chunk_face(wire_chunk,
+                                wire_x, wire_y, wire_z,
+                                (BlockFace)CHUNK_FACE_FLAT,
+                                BLOCK_REDSTONE_WIRE_ON);
+    if (!wire_flat)
+        return check_failed("redstone connected-on flat mesh missing");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_BUTTON))
+        return check_failed("redstone button placement failed");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("redstone wire did not return to off line");
+    if (!world_press_button(&world, wire_neighbor_x, wire_y, wire_z))
+        return check_failed("redstone button press failed");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_ON)
+        return check_failed("redstone button did not power wire");
+    world_update_redstone(&world, 2.0f);
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("redstone button pulse did not expire");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z, BLOCK_AIR) ||
+        !world_set_block(&world, wire_x, wire_y, wire_z, BLOCK_AIR))
+        return check_failed("redstone cleanup failed");
     const int flower_x = 9;
     const int flower_y = 26;
     const int flower_z = 2;

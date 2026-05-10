@@ -1522,6 +1522,35 @@ static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4]
     return renderer_push_quad(ctx, &q);
 }
 
+static bool emit_camera_quad_color(RenderContext *ctx,
+                                   const CameraVertex verts_cam[4],
+                                   uint8_t color,
+                                   uint8_t extra_flags)
+{
+    Vertex2D verts[4];
+    uint8_t flags = QUAD_FLAG_ZTEST | extra_flags;
+
+    for (int i = 0; i < 4; i++) {
+        if (!project_camera_vertex(ctx, &verts_cam[i], &verts[i]))
+            return false;
+    }
+
+    if (projected_quad_fully_inside_viewport(verts)) {
+        RenderQuad q = {0};
+
+        memcpy(q.vertices, verts, sizeof(verts));
+        q.color_tint = color;
+        q.flags = flags;
+        return stage_projected_quad_no_clip(ctx, &q);
+    }
+
+    RenderQuad q = {0};
+    memcpy(q.vertices, verts, sizeof(verts));
+    q.color_tint = color;
+    q.flags = flags;
+    return renderer_push_quad(ctx, &q);
+}
+
 static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
                               int count, uint8_t texture_id, uint8_t extra_flags)
 {
@@ -1543,6 +1572,33 @@ static void emit_clipped_face(RenderContext *ctx, const CameraVertex *poly,
     for (int i = 1; i + 1 < count; i++) {
         CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
         emit_camera_quad(ctx, tri, texture_id, extra_flags);
+    }
+}
+
+static void emit_clipped_face_color(RenderContext *ctx,
+                                    const CameraVertex *poly,
+                                    int count,
+                                    uint8_t color,
+                                    uint8_t extra_flags)
+{
+    if (count < 3)
+        return;
+
+    if (count == 3) {
+        CameraVertex tri[4] = { poly[0], poly[1], poly[2], poly[2] };
+        emit_camera_quad_color(ctx, tri, color, extra_flags);
+        return;
+    }
+
+    if (count == 4) {
+        CameraVertex quad[4] = { poly[0], poly[1], poly[2], poly[3] };
+        emit_camera_quad_color(ctx, quad, color, extra_flags);
+        return;
+    }
+
+    for (int i = 1; i + 1 < count; i++) {
+        CameraVertex tri[4] = { poly[0], poly[i], poly[i + 1], poly[i + 1] };
+        emit_camera_quad_color(ctx, tri, color, extra_flags);
     }
 }
 
@@ -1839,6 +1895,11 @@ static void emit_cross_block_face_lit(RenderContext *ctx, BlockID type,
 static void emit_model_quad_lit(RenderContext *ctx,
                                 Vec3 face_world[4], uint8_t texture_tile,
                                 uint8_t light_flags);
+static void emit_model_quad_lit_rotated(RenderContext *ctx,
+                                        Vec3 face_world[4],
+                                        uint8_t texture_tile,
+                                        uint8_t light_flags,
+                                        int uv_rotation);
 
 static void flat_face_vertices(Vec3 block_pos, Vec3 out[4])
 {
@@ -1855,18 +1916,154 @@ static void flat_face_vertices(Vec3 block_pos, Vec3 out[4])
                      block_pos.z + 1.0f - inset };
 }
 
+enum {
+    REDSTONE_WIRE_N = 1u << 0,
+    REDSTONE_WIRE_E = 1u << 1,
+    REDSTONE_WIRE_S = 1u << 2,
+    REDSTONE_WIRE_W = 1u << 3,
+};
+
+static bool render_block_is_redstone_wire(BlockID id)
+{
+    return id == BLOCK_REDSTONE_WIRE_UNCONNECTED ||
+           id == BLOCK_REDSTONE_WIRE_OFF ||
+           id == BLOCK_REDSTONE_WIRE_ON;
+}
+
+static bool render_block_is_redstone_component(BlockID id)
+{
+    return render_block_is_redstone_wire(id) ||
+           id == BLOCK_REDSTONE_TORCH_OFF ||
+           id == BLOCK_REDSTONE_TORCH_ON ||
+           id == BLOCK_REPEATER_OFF ||
+           id == BLOCK_REPEATER_ON ||
+           id == BLOCK_LAMP_OFF ||
+           id == BLOCK_LAMP ||
+           id == BLOCK_REDSTONE_BLOCK ||
+           id == BLOCK_BUTTON;
+}
+
+static bool render_redstone_wire_connects_to(BlockID id)
+{
+    if (render_block_is_redstone_component(id))
+        return true;
+    return id != BLOCK_AIR &&
+           block_render_model(id) == BLOCK_RENDER_CUBE &&
+           !block_is_passable(id);
+}
+
+static uint8_t render_redstone_wire_mask(const VoxelWorld *world,
+                                         int wx,
+                                         int wy,
+                                         int wz)
+{
+    uint8_t mask = 0;
+
+    if (render_redstone_wire_connects_to(world_get_block(world, wx, wy, wz - 1)))
+        mask |= REDSTONE_WIRE_N;
+    if (render_redstone_wire_connects_to(world_get_block(world, wx + 1, wy, wz)))
+        mask |= REDSTONE_WIRE_E;
+    if (render_redstone_wire_connects_to(world_get_block(world, wx, wy, wz + 1)))
+        mask |= REDSTONE_WIRE_S;
+    if (render_redstone_wire_connects_to(world_get_block(world, wx - 1, wy, wz)))
+        mask |= REDSTONE_WIRE_W;
+    return mask;
+}
+
+static int redstone_mask_bit_count(uint8_t mask)
+{
+    int count = 0;
+
+    for (int bit = 0; bit < 4; bit++) {
+        if (mask & (1u << bit))
+            count++;
+    }
+    return count;
+}
+
+static uint8_t redstone_wire_texture_for_mask(BlockID type,
+                                              uint8_t mask,
+                                              int *uv_rotation_out)
+{
+    bool powered = type == BLOCK_REDSTONE_WIRE_ON;
+    int count = redstone_mask_bit_count(mask);
+
+    if (uv_rotation_out)
+        *uv_rotation_out = 0;
+
+    if (count == 0)
+        return powered ? TEX_TILE_REDSTONE_WIRE_DOT_ON :
+                         TEX_TILE_REDSTONE_WIRE_UNCONNECTED;
+
+    if (count == 1 ||
+        mask == (REDSTONE_WIRE_E | REDSTONE_WIRE_W) ||
+        mask == (REDSTONE_WIRE_N | REDSTONE_WIRE_S)) {
+        if ((mask & (REDSTONE_WIRE_N | REDSTONE_WIRE_S)) &&
+            !(mask & (REDSTONE_WIRE_E | REDSTONE_WIRE_W)) &&
+            uv_rotation_out)
+            *uv_rotation_out = 1;
+        return powered ? TEX_TILE_REDSTONE_WIRE_ON :
+                         TEX_TILE_REDSTONE_WIRE_OFF;
+    }
+
+    if (count == 2) {
+        if (uv_rotation_out) {
+            if (mask == (REDSTONE_WIRE_E | REDSTONE_WIRE_S))
+                *uv_rotation_out = 1;
+            else if (mask == (REDSTONE_WIRE_S | REDSTONE_WIRE_W))
+                *uv_rotation_out = 2;
+            else if (mask == (REDSTONE_WIRE_W | REDSTONE_WIRE_N))
+                *uv_rotation_out = 3;
+        }
+        return powered ? TEX_TILE_REDSTONE_WIRE_CORNER_ON :
+                         TEX_TILE_REDSTONE_WIRE_CORNER_OFF;
+    }
+
+    if (count == 3) {
+        if (uv_rotation_out) {
+            uint8_t missing = (uint8_t)(~mask & 0x0f);
+
+            if (missing & REDSTONE_WIRE_W)
+                *uv_rotation_out = 1;
+            else if (missing & REDSTONE_WIRE_N)
+                *uv_rotation_out = 2;
+            else if (missing & REDSTONE_WIRE_E)
+                *uv_rotation_out = 3;
+        }
+        return powered ? TEX_TILE_REDSTONE_WIRE_T_ON :
+                         TEX_TILE_REDSTONE_WIRE_T_OFF;
+    }
+
+    return powered ? TEX_TILE_REDSTONE_WIRE_CROSS_ON :
+                     TEX_TILE_REDSTONE_WIRE_CROSS_OFF;
+}
+
 static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
-                                     Vec3 block_pos, uint8_t light_flags)
+                                     const VoxelWorld *world,
+                                     Vec3 block_pos,
+                                     int wx,
+                                     int wy,
+                                     int wz,
+                                     uint8_t light_flags)
 {
     Vec3 face_world[4];
+    uint8_t texture_tile;
+    int uv_rotation = 0;
 
     if (type == BLOCK_AIR)
         return;
 
     flat_face_vertices(block_pos, face_world);
-    emit_model_quad_lit(ctx, face_world,
-                        block_face_texture_id(type, FACE_TOP),
-                        light_flags);
+    texture_tile = block_face_texture_id(type, FACE_TOP);
+    if (render_block_is_redstone_wire(type)) {
+        uint8_t mask = render_redstone_wire_mask(world, wx, wy, wz);
+
+        texture_tile = redstone_wire_texture_for_mask(type, mask,
+                                                      &uv_rotation);
+    }
+
+    emit_model_quad_lit_rotated(ctx, face_world, texture_tile, light_flags,
+                                uv_rotation);
 }
 
 static void torch_face_vertices(Vec3 block_pos, uint8_t face,
@@ -2074,15 +2271,33 @@ static void emit_model_quad_lit(RenderContext *ctx,
                                 Vec3 face_world[4], uint8_t texture_tile,
                                 uint8_t light_flags)
 {
+    emit_model_quad_lit_rotated(ctx, face_world, texture_tile, light_flags, 0);
+}
+
+static void emit_model_quad_lit_rotated(RenderContext *ctx,
+                                        Vec3 face_world[4],
+                                        uint8_t texture_tile,
+                                        uint8_t light_flags,
+                                        int uv_rotation)
+{
     static const float tile_span = 16.0f;
+    static const float base_uv[4][2] = {
+        { 0.0f,      tile_span },
+        { tile_span, tile_span },
+        { tile_span, 0.0f      },
+        { 0.0f,      0.0f      },
+    };
     CameraVertex face_cam[4];
     uint8_t texture_id;
     uint8_t face_flags = light_flags | QUAD_FLAG_FOG | QUAD_FLAG_ALPHA_KEY;
 
+    uv_rotation &= 3;
     for (int i = 0; i < 4; i++) {
+        int uv_index = (i + uv_rotation) & 3;
+
         world_to_camera(ctx, face_world[i], &face_cam[i]);
-        face_cam[i].u = (i == 1 || i == 2) ? tile_span : 0.0f;
-        face_cam[i].v = (i == 2 || i == 3) ? 0.0f : tile_span;
+        face_cam[i].u = base_uv[uv_index][0];
+        face_cam[i].v = base_uv[uv_index][1];
     }
     if (camera_quad_outside_view(ctx, face_cam))
         return;
@@ -2150,26 +2365,111 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
     emit_merged_block_face(ctx, type, block_pos, face, 1, 1);
 }
 
+typedef struct {
+    int unlock_stage;
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+} BreakCrackSegment;
+
+static const BreakCrackSegment BREAK_CRACK_SEGMENTS[] = {
+    { 0,  7.5f,  7.5f,  7.5f,  4.8f },
+    { 1,  7.5f,  5.4f,  4.8f,  4.0f },
+    { 2,  7.3f,  6.0f, 10.5f,  4.2f },
+    { 3,  7.5f,  7.2f,  5.3f, 10.4f },
+    { 4,  8.0f,  7.5f, 11.6f,  9.7f },
+    { 5,  5.6f, 10.0f,  3.4f, 13.2f },
+    { 6, 10.8f,  4.5f, 13.5f,  2.2f },
+    { 6, 10.9f,  9.4f, 13.7f, 12.2f },
+    { 7,  4.9f,  4.2f,  2.2f,  2.0f },
+    { 7,  7.5f,  4.8f,  7.0f,  1.7f },
+    { 8, 13.2f, 12.0f, 15.0f, 14.5f },
+    { 8,  3.5f, 13.0f,  1.2f, 15.0f },
+    { 9,  2.5f,  2.4f,  0.4f,  0.9f },
+    { 9, 13.0f,  2.6f, 15.0f,  0.8f },
+};
+
+static Vec3 vec3_add(Vec3 a, Vec3 b)
+{
+    return (Vec3){ a.x + b.x, a.y + b.y, a.z + b.z };
+}
+
+static Vec3 vec3_sub(Vec3 a, Vec3 b)
+{
+    return (Vec3){ a.x - b.x, a.y - b.y, a.z - b.z };
+}
+
+static Vec3 vec3_scale(Vec3 v, float scale)
+{
+    return (Vec3){ v.x * scale, v.y * scale, v.z * scale };
+}
+
+static Vec3 break_face_point_from_uv(const Vec3 corners[4], float u, float v)
+{
+    Vec3 du = vec3_sub(corners[1], corners[0]);
+    Vec3 dv = vec3_sub(corners[3], corners[0]);
+    Vec3 p = corners[0];
+
+    p = vec3_add(p, vec3_scale(du, u / 16.0f));
+    p = vec3_add(p, vec3_scale(dv, (16.0f - v) / 16.0f));
+    return p;
+}
+
+static void emit_break_crack_segment(RenderContext *ctx,
+                                     const Vec3 corners[4],
+                                     const BreakCrackSegment *segment,
+                                     float width,
+                                     uint8_t color,
+                                     uint8_t alpha)
+{
+    float dx = segment->x1 - segment->x0;
+    float dy = segment->y1 - segment->y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    float px;
+    float py;
+    Vec3 strip_world[4];
+    CameraVertex strip_cam[4];
+    CameraVertex clipped[6];
+
+    if (len <= 0.0001f)
+        return;
+
+    px = -dy / len * width;
+    py = dx / len * width;
+
+    strip_world[0] = break_face_point_from_uv(corners,
+                                              segment->x0 + px,
+                                              segment->y0 + py);
+    strip_world[1] = break_face_point_from_uv(corners,
+                                              segment->x1 + px,
+                                              segment->y1 + py);
+    strip_world[2] = break_face_point_from_uv(corners,
+                                              segment->x1 - px,
+                                              segment->y1 - py);
+    strip_world[3] = break_face_point_from_uv(corners,
+                                              segment->x0 - px,
+                                              segment->y0 - py);
+
+    for (int i = 0; i < 4; i++)
+        world_to_camera(ctx, strip_world[i], &strip_cam[i]);
+    if (camera_quad_outside_view(ctx, strip_cam))
+        return;
+
+    int clipped_count = clip_face_to_near_plane(strip_cam, clipped);
+    emit_clipped_face_color(ctx, clipped, clipped_count, color, alpha);
+}
+
 int renderer_draw_block_break_overlay(RenderContext *ctx,
                                       int block_x, int block_y, int block_z,
                                       float progress)
 {
     const float face_epsilon = 0.004f;
-    static const uint8_t break_tiles[] = {
-        TEX_TILE_BREAK_0,
-        TEX_TILE_BREAK_1,
-        TEX_TILE_BREAK_2,
-        TEX_TILE_BREAK_3,
-        TEX_TILE_BREAK_4,
-        TEX_TILE_BREAK_5,
-        TEX_TILE_BREAK_6,
-        TEX_TILE_BREAK_7,
-        TEX_TILE_BREAK_8,
-        TEX_TILE_BREAK_9,
-    };
     int before;
     int stage;
-    uint8_t texture_id;
+    uint8_t color;
+    uint8_t alpha;
+    float width;
     Vec3 block_pos;
 
     if (!ctx)
@@ -2180,19 +2480,20 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
         return 0;
 
     before = ctx->n_quads;
-    stage = (int)floorf(progress * (float)(sizeof(break_tiles) / sizeof(break_tiles[0])));
+    stage = (int)floorf(progress * 10.0f);
     if (stage < 0)
         stage = 0;
-    if (stage >= (int)(sizeof(break_tiles) / sizeof(break_tiles[0])))
-        stage = (int)(sizeof(break_tiles) / sizeof(break_tiles[0])) - 1;
-    texture_id = break_tiles[stage];
+    if (stage > 9)
+        stage = 9;
+    color = 14;
+    alpha = progress < 0.33f ? QUAD_ALPHA_25 :
+            (progress < 0.66f ? QUAD_ALPHA_50 : QUAD_ALPHA_75);
+    width = 0.20f + progress * 0.18f;
     block_pos = (Vec3){ (float)block_x, (float)block_y, (float)block_z };
 
     for (int face = 0; face < NUM_FACES; face++) {
         Vec3 corners[4];
         Vec3 normal = face_normals[face];
-        CameraVertex face_cam[4];
-        CameraVertex clipped[6];
 
         if (!is_face_visible(block_pos, normal, ctx->current_camera.position))
             continue;
@@ -2204,18 +2505,16 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
             corners[i].z += normal.z * face_epsilon;
         }
 
-        for (int i = 0; i < 4; i++) {
-            world_to_camera(ctx, corners[i], &face_cam[i]);
-            face_cam[i].u = (i == 1 || i == 2) ? 16.0f : 0.0f;
-            face_cam[i].v = (i == 2 || i == 3) ? 0.0f : 16.0f;
+        for (size_t i = 0;
+             i < sizeof(BREAK_CRACK_SEGMENTS) / sizeof(BREAK_CRACK_SEGMENTS[0]);
+             i++) {
+            if (BREAK_CRACK_SEGMENTS[i].unlock_stage > stage)
+                continue;
+            emit_break_crack_segment(ctx, corners, &BREAK_CRACK_SEGMENTS[i],
+                                     width, color, alpha);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
+                return ctx->n_quads - before;
         }
-
-        if (camera_quad_outside_view(ctx, face_cam))
-            continue;
-
-        int clipped_count = clip_face_to_near_plane(face_cam, clipped);
-        emit_clipped_face(ctx, clipped, clipped_count, texture_id,
-                          QUAD_FLAG_ALPHA_KEY);
     }
 
     return ctx->n_quads - before;
@@ -2858,7 +3157,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                     emit_door_block_face_lit(ctx, id, block_pos,
                                              face->face, light_flags);
                 else
-                    emit_flat_block_face_lit(ctx, id, block_pos, light_flags);
+                    emit_flat_block_face_lit(ctx, id, world, block_pos,
+                                             wxi, wyi, wzi, light_flags);
                 if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                     ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                     return ctx->n_quads - before;
@@ -3408,12 +3708,17 @@ bool renderer_draw_crosshair(RenderContext *ctx)
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
     const float half = 8.0f * HUD_SCALE;
-    const float x0 = cx - half, y0 = cy - half;
-    const float x1 = cx + half, y1 = cy + half;
+    const float thickness = 1.25f * HUD_SCALE;
+    const uint8_t white = 5;
+    bool ok = true;
 
-    return push_screen_textured_quad(ctx,
-                                     x0, y0, x1, y1,
-                                     0.0f, 0.0f, 16.0f, 16.0f,
-                                     TEX_TILE_CROSSHAIR,
-                                     QUAD_FLAG_ALPHA_KEY | QUAD_ALPHA_75);
+    ok &= renderer_fill_rect(ctx,
+                             cx - half, cy - thickness * 0.5f,
+                             cx + half, cy + thickness * 0.5f,
+                             white, QUAD_ALPHA_75);
+    ok &= renderer_fill_rect(ctx,
+                             cx - thickness * 0.5f, cy - half,
+                             cx + thickness * 0.5f, cy + half,
+                             white, QUAD_ALPHA_75);
+    return ok;
 }

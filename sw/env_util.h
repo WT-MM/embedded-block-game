@@ -22,6 +22,9 @@ static inline bool env_value_is_true(const char *value)
 
 static inline const char *env_get_nonempty(const char *name)
 {
+    if (!name || name[0] == '\0')
+        return NULL;
+
     const char *value = getenv(name);
 
     return env_value_is_set(value) ? value : NULL;

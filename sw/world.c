@@ -1753,6 +1753,103 @@ static bool propagate_block_light(VoxelWorld *world, LightNode **queue,
     return true;
 }
 
+static bool world_integrate_loaded_chunk_lighting_locked(VoxelWorld *world,
+                                                         Chunk *chunk)
+{
+    LightNode *queue = NULL;
+    size_t queue_head = 0;
+    size_t queue_tail = 0;
+    size_t queue_capacity = 0;
+    bool ok = true;
+
+    if (!world || !chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return true;
+
+    const int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+    const int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT && ok; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE && ok; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                uint8_t emission =
+                    block_emission_level(chunk->blocks[y][z][x]);
+
+                if (emission == 0)
+                    continue;
+
+                world->has_light_emitters = true;
+                chunk->block_light[y][z][x] = emission;
+                if (!light_queue_push(&queue, &queue_capacity, &queue_tail,
+                                      (LightNode){
+                                          .wx = ox + x,
+                                          .wy = y,
+                                          .wz = oz + z,
+                                      })) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT && ok; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE && ok; z++) {
+            int wz = oz + z;
+
+            if (world_get_block_light(world, ox - 1, y, wz) > 1 &&
+                !light_queue_push(&queue, &queue_capacity, &queue_tail,
+                                  (LightNode){ .wx = ox - 1, .wy = y, .wz = wz })) {
+                ok = false;
+                break;
+            }
+            if (world_get_block_light(world, ox + WORLD_CHUNK_SIZE, y, wz) > 1 &&
+                !light_queue_push(&queue, &queue_capacity, &queue_tail,
+                                  (LightNode){
+                                      .wx = ox + WORLD_CHUNK_SIZE,
+                                      .wy = y,
+                                      .wz = wz,
+                                  })) {
+                ok = false;
+                break;
+            }
+        }
+
+        for (int x = 0; x < WORLD_CHUNK_SIZE && ok; x++) {
+            int wx = ox + x;
+
+            if (world_get_block_light(world, wx, y, oz - 1) > 1 &&
+                !light_queue_push(&queue, &queue_capacity, &queue_tail,
+                                  (LightNode){ .wx = wx, .wy = y, .wz = oz - 1 })) {
+                ok = false;
+                break;
+            }
+            if (world_get_block_light(world, wx, y, oz + WORLD_CHUNK_SIZE) > 1 &&
+                !light_queue_push(&queue, &queue_capacity, &queue_tail,
+                                  (LightNode){
+                                      .wx = wx,
+                                      .wy = y,
+                                      .wz = oz + WORLD_CHUNK_SIZE,
+                                  })) {
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    if (ok)
+        ok = propagate_block_light(world, &queue, &queue_capacity,
+                                   queue_head, &queue_tail);
+
+    free(queue);
+
+    if (ok) {
+        mark_chunk_and_neighbors_dirty(world, chunk->chunk_x, chunk->chunk_z);
+        world->meshes_dirty = true;
+    }
+
+    return ok;
+}
+
 static bool remove_block_light(VoxelWorld *world,
                                LightRemovalNode **rem_queue, size_t *rem_cap, size_t rem_head, size_t *rem_tail,
                                LightNode **add_queue, size_t *add_cap, size_t *add_tail)
@@ -1989,14 +2086,13 @@ static bool world_handle_stream_lighting_locked(VoxelWorld *world,
                                                 bool initial_stream,
                                                 bool window_changed_or_filled)
 {
-    if (!world || !world->has_light_emitters)
+    (void)window_changed_or_filled;
+
+    if (!world)
         return true;
 
-    if (initial_stream)
+    if (initial_stream && world->has_light_emitters)
         return world_rebuild_lighting_locked(world);
-
-    if (window_changed_or_filled)
-        world->lighting_dirty = true;
 
     return true;
 }
@@ -2833,6 +2929,8 @@ static void retain_chunks_in_window(VoxelWorld *world,
             continue;
         }
 
+        if (chunk_has_light_emitters(chunk))
+            world->lighting_dirty = true;
         release_chunk(chunk);
 
         while (left < right) {
@@ -2844,6 +2942,8 @@ static void retain_chunks_in_window(VoxelWorld *world,
 
             if (tail_keep)
                 break;
+            if (chunk_has_light_emitters(tail))
+                world->lighting_dirty = true;
             release_chunk(tail);
             right--;
         }
@@ -2900,13 +3000,14 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     if (!load_chunk_snapshot(world, chunk))
         return false;
     rebuild_chunk_sky_lighting(chunk);
-    if (chunk_has_light_emitters(chunk))
-        world->has_light_emitters = true;
     world->redstone_dirty = true;
 
     world->chunk_count++;
     if (!chunk_lookup_insert(world, world->chunk_count - 1))
         return false;
+
+    if (!world_integrate_loaded_chunk_lighting_locked(world, chunk))
+        world->lighting_dirty = true;
 
     world->chunks_generated_last_stream++;
     mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
@@ -3023,9 +3124,6 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
         if (chunk->generation == generation &&
             (chunk->flags & CHUNK_FLAG_LOADING) &&
             !(chunk->flags & CHUNK_FLAG_LOADED)) {
-            bool needs_light_rebuild =
-                world->has_light_emitters || result->has_light_emitters;
-
             memcpy(chunk->blocks, result->blocks, sizeof(chunk->blocks));
             memcpy(chunk->sky_light, result->sky_light,
                    sizeof(chunk->sky_light));
@@ -3037,9 +3135,7 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
             chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY |
                             CHUNK_FLAG_ENV_DIRTY;
-            if (result->has_light_emitters)
-                world->has_light_emitters = true;
-            if (needs_light_rebuild)
+            if (!world_integrate_loaded_chunk_lighting_locked(world, chunk))
                 world->lighting_dirty = true;
             mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
             world->meshes_dirty = true;

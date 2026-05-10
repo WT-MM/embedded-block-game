@@ -2791,7 +2791,7 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
         stage = 0;
     if (stage > 9)
         stage = 9;
-    color = 0;
+    color = 14;
     alpha = QUAD_ALPHA_75;
     block_pos = (Vec3){ (float)block_x, (float)block_y, (float)block_z };
 

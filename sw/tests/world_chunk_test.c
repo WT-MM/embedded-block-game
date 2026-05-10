@@ -2311,6 +2311,10 @@ int main(void)
                                         async_world_dir))
         return check_failed("async world init failed");
 
+    if (!world_set_block(&async_world, 0, 20, 0, BLOCK_LAMP))
+        return check_failed("async lighting fixture placement failed");
+    async_world.lighting_dirty = false;
+
     /* Initial stream is sync; turn on async only for follow-up streams. */
     async_world.async_chunk_gen_enabled = true;
     if (!world_stream_around(&async_world,
@@ -2350,6 +2354,8 @@ int main(void)
                                          loading_x, loading_z,
                                          loading_gen, &result))
         return check_failed("finalize did not integrate async chunk");
+    if (async_world.lighting_dirty)
+        return check_failed("async finalize scheduled full lighting rebuild");
     const Chunk *finalized = world_get_chunk(&async_world, loading_x, loading_z);
     if (!finalized || !(finalized->flags & CHUNK_FLAG_LOADED) ||
         (finalized->flags & CHUNK_FLAG_LOADING))

@@ -109,7 +109,6 @@ module voxel_gpu (
     localparam int MAX_DESC_WORDS  = BASE_QUAD_WORDS + UV_QUAD_WORDS;
     localparam logic [5:0] BASE_QUAD_WORDS_6 = 6'd16;
     localparam logic [5:0] MAX_DESC_WORDS_6  = 6'd25;
-    localparam logic ENABLE_DESC_PREFETCH = 1'b0; // A/B-disable descriptor lookahead while chasing UV/clip artifacts.
     localparam int TEXTURE_BYTES   = 128 * 16 * 16;
     localparam int LINE_WORDS      = FB_WIDTH;
     localparam int COPY_BURST_WORDS = 128;
@@ -953,7 +952,6 @@ module voxel_gpu (
          fifo_head[24 + FLAG_TEX_BIT]) ?
         MAX_DESC_WORDS_6 : prefetch_target_words_current;
     wire prefetch_can_start =
-        ENABLE_DESC_PREFETCH &&
         ctrl_en && !prefetch_active && !prefetch_valid && !band_flush_pending &&
         ((state == ST_DRAW) || (state == ST_DRAW_FLUSH)) &&
         (fifo_count >= {5'd0, BASE_QUAD_WORDS_6});

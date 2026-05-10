@@ -1162,9 +1162,9 @@ static void ensure_clockwise_winding(Vertex2D v[4])
  * and 1/w are all exactly linear in screen space, so any 3 of the 4 projected
  * vertices should yield the same plane. Clip vertices, Q24.8 snapping and
  * floating-point rounding can still produce tiny disagreements between
- * triples; picking the first non-degenerate triple in a fixed order removes
- * the frame-to-frame jitter where the "winning" triple flipped under
- * sub-pixel camera motion.
+ * triples. Pick the largest-area screen-space triple: it is still
+ * deterministic, but avoids fitting UV/depth from a nearly collapsed edge-on
+ * triangle where one sub-pixel snap can explode the gradients.
  */
 static const int kAttrTriples[4][3] = {
     { 0, 1, 2 },
@@ -1187,6 +1187,9 @@ typedef struct {
 
 static PlaneBasis choose_plane_basis(const Vertex2D v[4])
 {
+    PlaneBasis best = { 0 };
+    float best_abs_det = 0.0f;
+
     for (int i = 0; i < 4; i++) {
         int a = kAttrTriples[i][0];
         int b = kAttrTriples[i][1];
@@ -1196,12 +1199,17 @@ static PlaneBasis choose_plane_basis(const Vertex2D v[4])
         float bx = v[c].x - v[a].x;
         float by = v[c].y - v[a].y;
         float det = ax * by - ay * bx;
+        float abs_det = fabsf(det);
 
-        if (fabsf(det) > 1e-6f)
-            return (PlaneBasis){ a, b, c, ax, ay, bx, by, det, true };
+        if (abs_det > best_abs_det) {
+            best_abs_det = abs_det;
+            best = (PlaneBasis){ a, b, c, ax, ay, bx, by, det, true };
+        }
     }
 
-    return (PlaneBasis){ 0 };
+    if (best_abs_det <= 1e-4f)
+        return (PlaneBasis){ 0 };
+    return best;
 }
 
 static void solve_attr_with_basis(const PlaneBasis *basis,

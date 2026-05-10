@@ -24,6 +24,7 @@
 #define SKY_DAY_LENGTH_SECONDS 180.0f
 #define SKY_DOME_DISTANCE 512.0f
 #define SKY_GRADIENT_BANDS 24
+#define SKY_STAR_COUNT 144
 #define OCCLUSION_TILE_SIZE 4
 #define OCCLUSION_TILES_X ((VOXEL_RENDER_WIDTH + OCCLUSION_TILE_SIZE - 1u) / \
                            OCCLUSION_TILE_SIZE)
@@ -2660,28 +2661,56 @@ static void emit_block_face(RenderContext *ctx, BlockID type,
 }
 
 typedef struct {
-    int unlock_stage;
-    float x0;
-    float y0;
-    float x1;
-    float y1;
-} BreakCrackSegment;
+    uint8_t unlock_stage;
+    uint8_t x;
+    uint8_t y;
+    uint8_t w;
+    uint8_t h;
+} BreakCrackPatch;
 
-static const BreakCrackSegment BREAK_CRACK_SEGMENTS[] = {
-    { 0,  7.5f,  7.5f,  7.5f,  4.8f },
-    { 1,  7.5f,  5.4f,  4.8f,  4.0f },
-    { 2,  7.3f,  6.0f, 10.5f,  4.2f },
-    { 3,  7.5f,  7.2f,  5.3f, 10.4f },
-    { 4,  8.0f,  7.5f, 11.6f,  9.7f },
-    { 5,  5.6f, 10.0f,  3.4f, 13.2f },
-    { 6, 10.8f,  4.5f, 13.5f,  2.2f },
-    { 6, 10.9f,  9.4f, 13.7f, 12.2f },
-    { 7,  4.9f,  4.2f,  2.2f,  2.0f },
-    { 7,  7.5f,  4.8f,  7.0f,  1.7f },
-    { 8, 13.2f, 12.0f, 15.0f, 14.5f },
-    { 8,  3.5f, 13.0f,  1.2f, 15.0f },
-    { 9,  2.5f,  2.4f,  0.4f,  0.9f },
-    { 9, 13.0f,  2.6f, 15.0f,  0.8f },
+/* 16x16 grid-space crack pieces. Hard rectangular runs keep the break overlay
+ * pixelated and shard-like instead of looking hand-drawn. */
+static const BreakCrackPatch BREAK_CRACK_PATCHES[] = {
+    { 0,  7,  7, 2, 2 },
+    { 1,  7,  5, 1, 2 },
+    { 1,  6,  7, 1, 1 },
+    { 1,  9,  8, 1, 1 },
+    { 2,  5,  6, 2, 1 },
+    { 2,  4,  5, 1, 1 },
+    { 2,  9,  6, 2, 1 },
+    { 2, 11,  5, 1, 1 },
+    { 3,  6,  9, 1, 2 },
+    { 3,  5, 11, 1, 1 },
+    { 3,  9,  9, 2, 1 },
+    { 3, 11, 10, 1, 1 },
+    { 4,  3,  4, 1, 2 },
+    { 4,  2,  3, 1, 1 },
+    { 4, 12,  4, 1, 2 },
+    { 4, 13,  3, 1, 1 },
+    { 5,  4, 12, 1, 2 },
+    { 5,  3, 14, 1, 1 },
+    { 5, 12, 10, 1, 2 },
+    { 5, 13, 12, 1, 1 },
+    { 6,  7,  3, 1, 2 },
+    { 6,  7,  1, 1, 2 },
+    { 6, 10,  2, 2, 1 },
+    { 6, 12,  1, 1, 1 },
+    { 7,  1,  2, 1, 1 },
+    { 7,  0,  1, 1, 1 },
+    { 7, 14,  2, 1, 1 },
+    { 7, 15,  1, 1, 1 },
+    { 7, 14, 13, 1, 2 },
+    { 8,  2, 14, 1, 2 },
+    { 8,  0, 15, 2, 1 },
+    { 8, 14, 14, 2, 1 },
+    { 8, 15, 15, 1, 1 },
+    { 9,  0,  0, 1, 1 },
+    { 9, 15,  0, 1, 1 },
+    { 9,  0,  8, 2, 1 },
+    { 9, 14,  8, 2, 1 },
+    { 9,  6,  6, 1, 1 },
+    { 9,  9,  7, 1, 1 },
+    { 9,  8,  9, 1, 1 },
 };
 
 static Vec3 vec3_add(Vec3 a, Vec3 b)
@@ -2710,47 +2739,31 @@ static Vec3 break_face_point_from_uv(const Vec3 corners[4], float u, float v)
     return p;
 }
 
-static void emit_break_crack_segment(RenderContext *ctx,
-                                     const Vec3 corners[4],
-                                     const BreakCrackSegment *segment,
-                                     float width,
-                                     uint8_t color,
-                                     uint8_t alpha)
+static void emit_break_crack_patch(RenderContext *ctx,
+                                   const Vec3 corners[4],
+                                   const BreakCrackPatch *patch,
+                                   uint8_t color,
+                                   uint8_t alpha)
 {
-    float dx = segment->x1 - segment->x0;
-    float dy = segment->y1 - segment->y0;
-    float len = sqrtf(dx * dx + dy * dy);
-    float px;
-    float py;
-    Vec3 strip_world[4];
-    CameraVertex strip_cam[4];
+    float x0 = (float)patch->x;
+    float y0 = (float)patch->y;
+    float x1 = x0 + (float)patch->w;
+    float y1 = y0 + (float)patch->h;
+    Vec3 patch_world[4];
+    CameraVertex patch_cam[4];
     CameraVertex clipped[6];
 
-    if (len <= 0.0001f)
-        return;
-
-    px = -dy / len * width;
-    py = dx / len * width;
-
-    strip_world[0] = break_face_point_from_uv(corners,
-                                              segment->x0 + px,
-                                              segment->y0 + py);
-    strip_world[1] = break_face_point_from_uv(corners,
-                                              segment->x1 + px,
-                                              segment->y1 + py);
-    strip_world[2] = break_face_point_from_uv(corners,
-                                              segment->x1 - px,
-                                              segment->y1 - py);
-    strip_world[3] = break_face_point_from_uv(corners,
-                                              segment->x0 - px,
-                                              segment->y0 - py);
+    patch_world[0] = break_face_point_from_uv(corners, x0, y1);
+    patch_world[1] = break_face_point_from_uv(corners, x1, y1);
+    patch_world[2] = break_face_point_from_uv(corners, x1, y0);
+    patch_world[3] = break_face_point_from_uv(corners, x0, y0);
 
     for (int i = 0; i < 4; i++)
-        world_to_camera(ctx, strip_world[i], &strip_cam[i]);
-    if (camera_quad_outside_view(ctx, strip_cam))
+        world_to_camera(ctx, patch_world[i], &patch_cam[i]);
+    if (camera_quad_outside_view(ctx, patch_cam))
         return;
 
-    int clipped_count = clip_face_to_near_plane(strip_cam, clipped);
+    int clipped_count = clip_face_to_near_plane(patch_cam, clipped);
     emit_clipped_face_color(ctx, clipped, clipped_count, color, alpha);
 }
 
@@ -2763,7 +2776,6 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
     int stage;
     uint8_t color;
     uint8_t alpha;
-    float width;
     Vec3 block_pos;
 
     if (!ctx)
@@ -2779,9 +2791,8 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
         stage = 0;
     if (stage > 9)
         stage = 9;
-    color = 14;
-    alpha = QUAD_ALPHA_OPAQUE;
-    width = 0.20f + progress * 0.18f;
+    color = 0;
+    alpha = QUAD_ALPHA_75;
     block_pos = (Vec3){ (float)block_x, (float)block_y, (float)block_z };
 
     for (int face = 0; face < NUM_FACES; face++) {
@@ -2799,12 +2810,12 @@ int renderer_draw_block_break_overlay(RenderContext *ctx,
         }
 
         for (size_t i = 0;
-             i < sizeof(BREAK_CRACK_SEGMENTS) / sizeof(BREAK_CRACK_SEGMENTS[0]);
+             i < sizeof(BREAK_CRACK_PATCHES) / sizeof(BREAK_CRACK_PATCHES[0]);
              i++) {
-            if (BREAK_CRACK_SEGMENTS[i].unlock_stage > stage)
+            if (BREAK_CRACK_PATCHES[i].unlock_stage > stage)
                 continue;
-            emit_break_crack_segment(ctx, corners, &BREAK_CRACK_SEGMENTS[i],
-                                     width, color, alpha);
+            emit_break_crack_patch(ctx, corners, &BREAK_CRACK_PATCHES[i],
+                                   color, alpha);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT)
                 return ctx->n_quads - before;
         }
@@ -3759,6 +3770,57 @@ static bool project_sky_direction(RenderContext *ctx, Vec3 dir, float *screen_x,
     return true;
 }
 
+static uint32_t sky_hash_u32(uint32_t value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+static float sky_hash01(uint32_t value)
+{
+    return (float)(sky_hash_u32(value) & 0x00ffffffu) *
+           (1.0f / 16777215.0f);
+}
+
+static bool draw_sky_sprite_rotated(RenderContext *ctx,
+                                    Vec3 dir,
+                                    float width_px,
+                                    float height_px,
+                                    float rotation,
+                                    uint8_t texture_id,
+                                    uint8_t extra_flags)
+{
+    float center_x;
+    float center_y;
+    float half_w = width_px * 0.5f;
+    float half_h = height_px * 0.5f;
+    float cr = cosf(rotation);
+    float sr = sinf(rotation);
+    float rx = cr * half_w;
+    float ry = sr * half_w;
+    float dx = -sr * half_h;
+    float dy = cr * half_h;
+
+    if (!project_sky_direction(ctx, dir, &center_x, &center_y))
+        return false;
+
+    return renderer_draw_custom_screen_quad(ctx,
+                                            center_x - rx - dx,
+                                            center_y - ry - dy,
+                                            center_x + rx - dx,
+                                            center_y + ry - dy,
+                                            center_x + rx + dx,
+                                            center_y + ry + dy,
+                                            center_x - rx + dx,
+                                            center_y - ry + dy,
+                                            texture_id,
+                                            extra_flags);
+}
+
 static bool draw_sky_sprite(RenderContext *ctx, Vec3 dir, float size_px, uint8_t texture_id)
 {
     float center_x;
@@ -3774,6 +3836,37 @@ static bool draw_sky_sprite(RenderContext *ctx, Vec3 dir, float size_px, uint8_t
                                      0.0f, 0.0f, 16.0f, 16.0f,
                                      texture_id,
                                      QUAD_FLAG_ALPHA_KEY);
+}
+
+static void draw_randomized_stars(RenderContext *ctx)
+{
+    for (uint32_t i = 0; i < SKY_STAR_COUNT; i++) {
+        float azimuth = sky_hash01(i * 13u + 0x51a7u) * (2.0f * PI_F);
+        float elevation_t = sky_hash01(i * 17u + 0x932bu);
+        float size_t = sky_hash01(i * 19u + 0xb31du);
+        float aspect_t = sky_hash01(i * 23u + 0xc0deu);
+        float alpha_t = sky_hash01(i * 29u + 0x57a1u);
+        float elevation = asinf(0.10f + 0.86f * elevation_t);
+        float size_px = 10.0f + 8.0f * size_t;
+        float width_px = size_px * (0.86f + 0.28f * aspect_t);
+        float height_px = size_px * (1.14f - 0.28f * aspect_t);
+        float rotation = sky_hash01(i * 31u + 0x6f3du) * (2.0f * PI_F);
+        uint8_t alpha = QUAD_ALPHA_OPAQUE;
+
+        if (alpha_t < 0.18f)
+            alpha = QUAD_ALPHA_50;
+        else if (alpha_t < 0.62f)
+            alpha = QUAD_ALPHA_75;
+
+        draw_sky_sprite_rotated(ctx,
+                                direction_from_azimuth_elevation(azimuth,
+                                                                 elevation),
+                                width_px,
+                                height_px,
+                                rotation,
+                                TEX_TILE_STARS,
+                                QUAD_FLAG_ALPHA_KEY | alpha);
+    }
 }
 
 static RGB24 sample_sky_gradient(const SkyPalette *palette, float t)
@@ -3873,14 +3966,6 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
         float wobble;
     } SkySpriteDef;
 
-    static const SkySpriteDef star_defs[] = {
-        { 0.20f,  0.95f, 34.0f, 0.0f, 0.0f },
-        { 1.30f,  0.72f, 40.0f, 0.0f, 0.0f },
-        { 2.45f,  0.84f, 36.0f, 0.0f, 0.0f },
-        { 3.60f,  0.66f, 44.0f, 0.0f, 0.0f },
-        { 4.55f,  0.90f, 34.0f, 0.0f, 0.0f },
-        { 5.60f,  0.76f, 38.0f, 0.0f, 0.0f },
-    };
     static const SkySpriteDef cloud_defs[] = {
         { 0.15f, 0.48f, 62.0f,  0.014f, 0.23f },
         { 1.65f, 0.41f, 54.0f, -0.010f, 0.19f },
@@ -3916,15 +4001,8 @@ int renderer_draw_sky(RenderContext *ctx, float time_seconds)
     sun_dir = sun_direction_for_time(time_seconds);
     moon_dir = (Vec3){ -sun_dir.x, -sun_dir.y, -sun_dir.z };
 
-    if (night > 0.2f) {
-        for (size_t i = 0; i < sizeof(star_defs) / sizeof(star_defs[0]); i++) {
-            draw_sky_sprite(ctx,
-                            direction_from_azimuth_elevation(star_defs[i].azimuth,
-                                                             star_defs[i].elevation),
-                            star_defs[i].size_px,
-                            TEX_TILE_STARS);
-        }
-    }
+    if (night > 0.2f)
+        draw_randomized_stars(ctx);
 
     if (sun_dir.y > 0.0f)
         draw_sky_sprite(ctx, sun_dir, 34.0f, TEX_TILE_SUN);

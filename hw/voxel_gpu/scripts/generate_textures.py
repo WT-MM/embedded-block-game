@@ -1363,24 +1363,9 @@ def moon(x: int, y: int) -> int:
 
 
 def stars(x: int, y: int) -> int:
-    # Dense-but-structured starfield: a few twinkly "cross" stars plus
-    # deterministic micro-clusters so the sky reads like stars, not noise.
-    twinkles = {(3, 3), (12, 4), (5, 10), (11, 12)}
-
-    if (x, y) in twinkles:
-        return PAL_STAR
-    for sx, sy in twinkles:
-        if abs(x - sx) + abs(y - sy) == 1:
-            return PAL_STAR if ((x + y + sx + sy) & 1) == 0 else PAL_TRANSPARENT
-
-    n0 = noise(x, y, 73)
-    n1 = noise(x + 5, y + 11, 157)
-
-    if n0 >= 250:
-        return PAL_STAR
-    if n1 >= 247 and ((x + y) & 1) == 0:
-        return PAL_STAR
-    if n0 >= 242 and n1 >= 238 and ((x ^ y) & 1) == 0:
+    # Single compact glint. The renderer instantiates this many times with
+    # varied size and rotation, so the tile should stay tiny and crisp.
+    if (x, y) in {(7, 8), (8, 7), (8, 8)}:
         return PAL_STAR
     return PAL_TRANSPARENT
 

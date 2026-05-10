@@ -100,6 +100,21 @@ typedef struct {
     uint8_t redstone_data;
 } RedstoneChange;
 
+typedef struct {
+    RedstoneCell *wires;
+    RedstoneCell *components;
+    RedstoneChange *changes;
+    size_t wire_count;
+    size_t wire_cap;
+    size_t component_count;
+    size_t component_cap;
+    size_t change_count;
+    size_t change_cap;
+    int *wire_table;
+    size_t wire_table_cap;
+    uint8_t *wire_power;
+} RedstoneSettleCache;
+
 static bool chunk_in_window(int chunk_x, int chunk_z,
                             int origin_chunk_x, int origin_chunk_z,
                             int diameter);
@@ -113,6 +128,7 @@ static bool redstone_block_change_needs_update_locked(const VoxelWorld *world,
                                                       int wz,
                                                       BlockID old_type,
                                                       BlockID new_type);
+static bool redstone_block_is_component(BlockID id);
 
 static uint64_t timespec_diff_u64_ns(const struct timespec *end,
                                      const struct timespec *start)
@@ -815,7 +831,7 @@ static bool rebuild_chunk_lookup(VoxelWorld *world)
 static void release_chunk(Chunk *chunk)
 {
     ChunkMesh *live;
-    ChunkMesh *retired;
+    ChunkMesh *retired_list;
 
     if (!chunk)
         return;
@@ -832,11 +848,14 @@ static void release_chunk(Chunk *chunk)
         free(live->faces);
         free(live);
     }
-    retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
-                                       memory_order_acq_rel);
-    if (retired) {
-        free(retired->faces);
-        free(retired);
+    retired_list = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
+                                            memory_order_acq_rel);
+    while (retired_list) {
+        ChunkMesh *next = retired_list->retired_next;
+
+        free(retired_list->faces);
+        free(retired_list);
+        retired_list = next;
     }
 
     memset(chunk, 0, sizeof(*chunk));
@@ -934,6 +953,51 @@ static bool chunk_has_light_emitters(const Chunk *chunk)
     return false;
 }
 
+static bool chunk_has_redstone_components(const Chunk *chunk)
+{
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return false;
+
+    return chunk->redstone_component_count > 0;
+}
+
+static int chunk_recount_redstone_components(Chunk *chunk)
+{
+    int count = 0;
+
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                if (redstone_block_is_component(chunk->blocks[y][z][x]))
+                    count++;
+            }
+        }
+    }
+
+    chunk->redstone_component_count = count;
+    return count;
+}
+
+static void chunk_note_redstone_component_change(Chunk *chunk,
+                                                 BlockID old_type,
+                                                 BlockID new_type)
+{
+    bool old_component = redstone_block_is_component(old_type);
+    bool new_component = redstone_block_is_component(new_type);
+
+    if (!chunk || old_component == new_component)
+        return;
+
+    if (new_component) {
+        chunk->redstone_component_count++;
+    } else if (chunk->redstone_component_count > 0) {
+        chunk->redstone_component_count--;
+    }
+}
+
 static bool world_recompute_light_emitters_locked(VoxelWorld *world)
 {
     if (!world)
@@ -950,6 +1014,25 @@ static bool world_recompute_light_emitters_locked(VoxelWorld *world)
     return false;
 }
 
+static bool world_recompute_redstone_components_locked(VoxelWorld *world)
+{
+    if (!world)
+        return false;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        if (chunk_has_redstone_components(&world->chunks[i])) {
+            world->has_redstone_components = true;
+            return true;
+        }
+    }
+
+    world->has_redstone_components = false;
+    if (world->redstone_pulse_count == 0 &&
+        world->redstone_repeater_state_count == 0)
+        world->redstone_dirty = false;
+    return false;
+}
+
 static void initialize_chunk_slot(Chunk *chunk, int chunk_x, int chunk_z,
                                   uint32_t stream_epoch)
 {
@@ -963,6 +1046,7 @@ static void initialize_chunk_slot(Chunk *chunk, int chunk_x, int chunk_z,
                    CHUNK_FLAG_ENV_DIRTY;
     chunk->generation = generation ? generation : 1u;
     chunk->last_used_epoch = stream_epoch;
+    chunk->redstone_component_count = 0;
     chunk->face_count = 0;
 }
 
@@ -981,6 +1065,7 @@ static void initialize_chunk_slot_pending(Chunk *chunk,
     chunk->flags = CHUNK_FLAG_LOADING;
     chunk->generation = generation ? generation : 1u;
     chunk->last_used_epoch = stream_epoch;
+    chunk->redstone_component_count = 0;
     chunk->face_count = 0;
 }
 
@@ -1182,18 +1267,20 @@ Chunk *world_get_chunk_mut_locked(VoxelWorld *world, int chunk_x, int chunk_z)
 
 void chunk_mesh_free_retired(Chunk *chunk)
 {
-    ChunkMesh *retired;
+    ChunkMesh *retired_list;
 
     if (!chunk)
         return;
 
-    retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
-                                       memory_order_acq_rel);
-    if (!retired)
-        return;
+    retired_list = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
+                                            memory_order_acq_rel);
+    while (retired_list) {
+        ChunkMesh *next = retired_list->retired_next;
 
-    free(retired->faces);
-    free(retired);
+        free(retired_list->faces);
+        free(retired_list);
+        retired_list = next;
+    }
 }
 
 static ChunkMesh *chunk_mesh_alloc(int face_count)
@@ -1249,25 +1336,27 @@ static void chunk_mesh_copy_partitioned(ChunkMesh *mesh,
 }
 
 /* Atomically publish a freshly-built ChunkMesh as the chunk's live_mesh.
- * Old live_mesh moves into retired_mesh; any prior retired_mesh is freed
- * here under the assumption that no reader still holds it (renderer reads
- * are bounded to a single frame's draw pass). */
+ * Old live meshes move onto a retired list and are freed only after the
+ * frame's render pass. A chunk can be republished multiple times while the
+ * renderer still holds an older pointer cached at draw start. */
 static void chunk_publish_mesh(Chunk *chunk, ChunkMesh *new_mesh)
 {
-    ChunkMesh *prev_retired;
     ChunkMesh *prev_live;
-
-    prev_retired = atomic_exchange_explicit(&chunk->retired_mesh, NULL,
-                                            memory_order_acq_rel);
-    if (prev_retired) {
-        free(prev_retired->faces);
-        free(prev_retired);
-    }
 
     prev_live = atomic_exchange_explicit(&chunk->live_mesh, new_mesh,
                                          memory_order_acq_rel);
-    atomic_store_explicit(&chunk->retired_mesh, prev_live,
-                          memory_order_release);
+    if (!prev_live)
+        return;
+
+    ChunkMesh *head = atomic_load_explicit(&chunk->retired_mesh,
+                                           memory_order_acquire);
+    do {
+        prev_live->retired_next = head;
+    } while (!atomic_compare_exchange_weak_explicit(&chunk->retired_mesh,
+                                                   &head,
+                                                   prev_live,
+                                                   memory_order_release,
+                                                   memory_order_acquire));
 }
 
 const Chunk *world_get_chunk(const VoxelWorld *world, int chunk_x, int chunk_z)
@@ -2908,6 +2997,7 @@ static void retain_chunks_in_window(VoxelWorld *world,
     int left = 0;
     int right;
     int old_count;
+    bool removed_redstone = false;
 
     if (!world || world->chunk_count <= 0)
         return;
@@ -2931,6 +3021,8 @@ static void retain_chunks_in_window(VoxelWorld *world,
 
         if (chunk_has_light_emitters(chunk))
             world->lighting_dirty = true;
+        if (chunk_has_redstone_components(chunk))
+            removed_redstone = true;
         release_chunk(chunk);
 
         while (left < right) {
@@ -2944,6 +3036,8 @@ static void retain_chunks_in_window(VoxelWorld *world,
                 break;
             if (chunk_has_light_emitters(tail))
                 world->lighting_dirty = true;
+            if (chunk_has_redstone_components(tail))
+                removed_redstone = true;
             release_chunk(tail);
             right--;
         }
@@ -2964,6 +3058,8 @@ static void retain_chunks_in_window(VoxelWorld *world,
         memset(&world->chunks[i], 0, sizeof(world->chunks[i]));
 
     world->chunk_count = left;
+    if (removed_redstone)
+        world_recompute_redstone_components_locked(world);
 }
 
 static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
@@ -3000,12 +3096,16 @@ static bool stream_generate_chunk(VoxelWorld *world, int chunk_x, int chunk_z)
     if (!load_chunk_snapshot(world, chunk))
         return false;
     rebuild_chunk_sky_lighting(chunk);
-    world->redstone_dirty = true;
+    chunk_recount_redstone_components(chunk);
 
     world->chunk_count++;
     if (!chunk_lookup_insert(world, world->chunk_count - 1))
         return false;
 
+    if (chunk_has_redstone_components(chunk))
+        world->has_redstone_components = true;
+    if (world->has_redstone_components)
+        world->redstone_dirty = true;
     if (!world_integrate_loaded_chunk_lighting_locked(world, chunk))
         world->lighting_dirty = true;
 
@@ -3135,11 +3235,15 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
             chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY |
                             CHUNK_FLAG_ENV_DIRTY;
+            chunk_recount_redstone_components(chunk);
             if (!world_integrate_loaded_chunk_lighting_locked(world, chunk))
                 world->lighting_dirty = true;
+            if (chunk_has_redstone_components(chunk))
+                world->has_redstone_components = true;
+            if (world->has_redstone_components)
+                world->redstone_dirty = true;
             mark_chunk_and_neighbors_dirty(world, chunk_x, chunk_z);
             world->meshes_dirty = true;
-            world->redstone_dirty = true;
             finalized = true;
         } else if (chunk->generation == generation &&
                    (chunk->flags & CHUNK_FLAG_GEN_QUEUED)) {
@@ -3271,6 +3375,7 @@ bool world_init_infinite_procedural(VoxelWorld *world,
     world->redstone_repeater_state_count = 0;
     memset(world->redstone_repeater_states, 0,
            sizeof(world->redstone_repeater_states));
+    world->has_redstone_components = false;
     world->redstone_dirty = false;
     world->active_pressure_plate_count = 0;
 
@@ -3504,6 +3609,14 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
         world->has_light_emitters = true;
     else if (old_emission > 0)
         world_recompute_light_emitters_locked(world);
+
+    bool old_redstone_component = redstone_block_is_component(old_type);
+    bool new_redstone_component = redstone_block_is_component(type);
+    chunk_note_redstone_component_change(chunk, old_type, type);
+    if (new_redstone_component)
+        world->has_redstone_components = true;
+    else if (old_redstone_component)
+        world_recompute_redstone_components_locked(world);
 
     success &= world_clear_unsupported_vertical_plant_above_locked(
         world, wx, wy, wz, type);
@@ -4488,19 +4601,30 @@ static uint8_t redstone_door_power_strength_locked(
     return lower_power > upper_power ? lower_power : upper_power;
 }
 
-static bool redstone_settle_pass_locked(VoxelWorld *world)
+static void redstone_settle_cache_free(RedstoneSettleCache *cache)
 {
-    RedstoneCell *wires = NULL;
-    RedstoneCell *components = NULL;
-    RedstoneChange *changes = NULL;
-    size_t wire_count = 0, wire_cap = 0;
-    size_t component_count = 0, component_cap = 0;
-    size_t change_count = 0, change_cap = 0;
-    int *wire_table = NULL;
-    size_t wire_table_cap = 0;
-    uint8_t *wire_power = NULL;
-    bool changed = false;
+    if (!cache)
+        return;
+
+    free(cache->wires);
+    free(cache->components);
+    free(cache->changes);
+    free(cache->wire_table);
+    free(cache->wire_power);
+    memset(cache, 0, sizeof(*cache));
+}
+
+static bool redstone_build_settle_cache_locked(VoxelWorld *world,
+                                               RedstoneSettleCache *cache)
+{
     bool ok = true;
+
+    if (!world || !cache)
+        return false;
+
+    cache->wire_count = 0;
+    cache->component_count = 0;
+    cache->change_count = 0;
 
     for (int ci = 0; ci < world->chunk_count && ok; ci++) {
         Chunk *chunk = &world->chunks[ci];
@@ -4508,6 +4632,8 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
         int oz;
 
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        if (chunk->redstone_component_count <= 0)
             continue;
         ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
         oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
@@ -4521,12 +4647,13 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                                           .wz = oz + z};
 
                     if (redstone_block_is_wire(id)) {
-                        ok = redstone_cell_push(&wires, &wire_count,
-                                                 &wire_cap, cell);
+                        ok = redstone_cell_push(&cache->wires,
+                                                 &cache->wire_count,
+                                                 &cache->wire_cap, cell);
                     } else if (redstone_block_has_state(id)) {
-                        ok = redstone_cell_push(&components,
-                                                 &component_count,
-                                                 &component_cap, cell);
+                        ok = redstone_cell_push(&cache->components,
+                                                 &cache->component_count,
+                                                 &cache->component_cap, cell);
                     }
                     if (!ok)
                         break;
@@ -4535,18 +4662,54 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
         }
     }
     if (!ok)
-        goto done;
+        return false;
+    if (cache->wire_count == 0 && cache->component_count == 0)
+        return true;
+
+    if (!redstone_build_wire_table(cache->wires, cache->wire_count,
+                                   &cache->wire_table,
+                                   &cache->wire_table_cap))
+        return false;
+
+    if (cache->wire_count > 0) {
+        cache->wire_power = calloc(cache->wire_count,
+                                   sizeof(*cache->wire_power));
+        if (!cache->wire_power)
+            return false;
+    }
+
+    return true;
+}
+
+static bool redstone_settle_pass_locked(VoxelWorld *world,
+                                        RedstoneSettleCache *cache)
+{
+    const RedstoneCell *wires;
+    const RedstoneCell *components;
+    const int *wire_table;
+    uint8_t *wire_power;
+    size_t wire_count;
+    size_t component_count;
+    size_t wire_table_cap;
+    bool changed = false;
+
+    if (!world || !cache)
+        return false;
+
+    wires = cache->wires;
+    components = cache->components;
+    wire_count = cache->wire_count;
+    component_count = cache->component_count;
+    wire_table = cache->wire_table;
+    wire_table_cap = cache->wire_table_cap;
+    wire_power = cache->wire_power;
+    cache->change_count = 0;
+
     if (wire_count == 0 && component_count == 0)
-        goto done;
+        return false;
 
-    if (!redstone_build_wire_table(wires, wire_count,
-                                   &wire_table, &wire_table_cap))
-        goto done;
-
-    if (wire_count > 0) {
-        wire_power = calloc(wire_count, sizeof(*wire_power));
-        if (!wire_power)
-            goto done;
+    if (wire_power && wire_count > 0) {
+        memset(wire_power, 0, wire_count * sizeof(*wire_power));
 
         for (int pass = 0; pass < 15; pass++) {
             bool propagated = false;
@@ -4611,7 +4774,9 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                                       BLOCK_REDSTONE_WIRE_UNCONNECTED);
 
         if (current != target &&
-            !redstone_change_push(&changes, &change_count, &change_cap,
+            !redstone_change_push(&cache->changes,
+                                  &cache->change_count,
+                                  &cache->change_cap,
                                   (RedstoneChange){.wx = wires[i].wx,
                                                    .wy = wires[i].wy,
                                                    .wz = wires[i].wz,
@@ -4699,7 +4864,9 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                 uint8_t powered_data = powered ? 1u : 0u;
 
                 if (!redstone_change_push(
-                        &changes, &change_count, &change_cap,
+                        &cache->changes,
+                        &cache->change_count,
+                        &cache->change_cap,
                         (RedstoneChange){.wx = cell.wx,
                                          .wy = cell.wy,
                                          .wz = cell.wz,
@@ -4708,7 +4875,9 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                                                                  false),
                                          .redstone_data = powered_data}) ||
                     !redstone_change_push(
-                        &changes, &change_count, &change_cap,
+                        &cache->changes,
+                        &cache->change_count,
+                        &cache->change_cap,
                         (RedstoneChange){.wx = cell.wx,
                                          .wy = cell.wy + 1,
                                          .wz = cell.wz,
@@ -4722,7 +4891,9 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
         }
 
         if (current != target &&
-            !redstone_change_push(&changes, &change_count, &change_cap,
+            !redstone_change_push(&cache->changes,
+                                  &cache->change_count,
+                                  &cache->change_cap,
                                   (RedstoneChange){.wx = cell.wx,
                                                    .wy = cell.wy,
                                                    .wz = cell.wz,
@@ -4730,45 +4901,58 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
             goto done;
     }
 
-    for (size_t i = 0; i < change_count; i++) {
+    for (size_t i = 0; i < cache->change_count; i++) {
+        const RedstoneChange *change = &cache->changes[i];
+
         if (world_set_block_locked(world,
-                                   changes[i].wx,
-                                   changes[i].wy,
-                                   changes[i].wz,
-                                   changes[i].type)) {
-            if (block_is_door(changes[i].type))
+                                   change->wx,
+                                   change->wy,
+                                   change->wz,
+                                   change->type)) {
+            if (block_is_door(change->type))
                 (void)world_set_redstone_data_locked(world,
-                                                     changes[i].wx,
-                                                     changes[i].wy,
-                                                     changes[i].wz,
-                                                     changes[i].redstone_data,
+                                                     change->wx,
+                                                     change->wy,
+                                                     change->wz,
+                                                     change->redstone_data,
                                                      false);
             changed = true;
         }
     }
 
 done:
-    free(wires);
-    free(components);
-    free(changes);
-    free(wire_table);
-    free(wire_power);
     return changed;
 }
 
 static bool world_update_redstone_locked(VoxelWorld *world, float dt)
 {
-    bool changed = redstone_tick_button_pulses_locked(world, dt);
+    RedstoneSettleCache cache = {0};
+    bool changed;
     bool needs_settle;
+
+    if (!world->has_redstone_components &&
+        world->redstone_pulse_count == 0 &&
+        world->redstone_repeater_state_count == 0) {
+        world->redstone_dirty = false;
+        return false;
+    }
+
+    changed = redstone_tick_button_pulses_locked(world, dt);
 
     changed |= redstone_tick_repeater_states_locked(world, dt);
     needs_settle = changed || world->redstone_dirty || dt <= 0.0f;
     if (!needs_settle)
         return false;
 
+    if (!redstone_build_settle_cache_locked(world, &cache)) {
+        redstone_settle_cache_free(&cache);
+        world->redstone_dirty = true;
+        return changed;
+    }
+
     world->redstone_dirty = false;
     for (int pass = 0; pass < REDSTONE_SETTLE_MAX_PASSES; pass++) {
-        bool pass_changed = redstone_settle_pass_locked(world);
+        bool pass_changed = redstone_settle_pass_locked(world, &cache);
 
         changed |= pass_changed;
         if (!pass_changed) {
@@ -4779,6 +4963,7 @@ static bool world_update_redstone_locked(VoxelWorld *world, float dt)
             world->redstone_dirty = true;
     }
 
+    redstone_settle_cache_free(&cache);
     return changed;
 }
 

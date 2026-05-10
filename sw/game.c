@@ -4172,6 +4172,8 @@ home_menu_start:
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
     double perf_environment_ns = 0.0;
+    double perf_redstone_ns = 0.0;
+    double perf_falling_ns = 0.0;
     double perf_physics_ns = 0.0;
     double perf_stream_ns = 0.0;
     double perf_stream_wait_ns = 0.0;
@@ -4223,11 +4225,20 @@ home_menu_start:
                 }
             }
         }
+        double redstone_ns = 0.0;
         while (redstone_tick_accumulator >= REDSTONE_TICK_INTERVAL) {
+            struct timespec redstone_start, redstone_end;
+            clock_gettime(CLOCK_MONOTONIC, &redstone_start);
             redstone_tick_accumulator -= REDSTONE_TICK_INTERVAL;
             world_update_redstone(&world, REDSTONE_TICK_INTERVAL);
+            clock_gettime(CLOCK_MONOTONIC, &redstone_end);
+            redstone_ns += (double)ns_diff(&redstone_end, &redstone_start);
         }
+        struct timespec falling_start, falling_end;
+        clock_gettime(CLOCK_MONOTONIC, &falling_start);
         world_update_falling_blocks(&world, frame_dt);
+        clock_gettime(CLOCK_MONOTONIC, &falling_end);
+        double falling_ns = (double)ns_diff(&falling_end, &falling_start);
 
         input_update(&inp);
 
@@ -5188,6 +5199,8 @@ home_menu_start:
         perf_sleep_ns += sleep_ns;
         perf_work_ns += work_ns;
         perf_environment_ns += environment_ns;
+        perf_redstone_ns += redstone_ns;
+        perf_falling_ns += falling_ns;
         perf_physics_ns += (double)ns_diff(&physics_end, &physics_start);
         perf_stream_ns += (double)ns_diff(&stream_end, &stream_start);
         perf_stream_wait_ns += (double)world.last_stream_lock_wait_ns;
@@ -5212,6 +5225,14 @@ home_menu_start:
             fps_text_len = n;
 
             if (debug_enabled) {
+                double named_update_ns =
+                    perf_environment_ns + perf_redstone_ns + perf_falling_ns +
+                    perf_physics_ns + perf_stream_ns + perf_lighting_ns +
+                    perf_gen_drain_ns + perf_mesh_drain_ns;
+                double other_update_ns = perf_update_ns - named_update_ns;
+                if (other_update_ns < 0.0)
+                    other_update_ns = 0.0;
+
                 if (status_log_enabled) {
                     printf("\n");
                     fflush(stdout);
@@ -5222,7 +5243,8 @@ home_menu_start:
                         "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                         "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
                         "quads=%5.1f sky=%4.1f phys=%4.1f drop=%4.1f "
-                        "env=%5.2f upd_phys=%5.2f stream=%5.2f "
+                        "env=%5.2f red=%5.2f fall=%5.2f "
+                        "other=%5.2f upd_phys=%5.2f stream=%5.2f "
                         "wait=%5.2f body=%5.2f light=%5.2f gen=%5.2f "
                         "mesh=%5.2f\n",
                         fps,
@@ -5239,6 +5261,9 @@ home_menu_start:
                         (double)perf_physics_steps / frame_div,
                         (double)perf_physics_dropped_steps / frame_div,
                         ns_to_ms(perf_environment_ns / frame_div),
+                        ns_to_ms(perf_redstone_ns / frame_div),
+                        ns_to_ms(perf_falling_ns / frame_div),
+                        ns_to_ms(other_update_ns / frame_div),
                         ns_to_ms(perf_physics_ns / frame_div),
                         ns_to_ms(perf_stream_ns / frame_div),
                         ns_to_ms(perf_stream_wait_ns / frame_div),
@@ -5261,6 +5286,8 @@ home_menu_start:
             perf_sleep_ns = 0.0;
             perf_work_ns = 0.0;
             perf_environment_ns = 0.0;
+            perf_redstone_ns = 0.0;
+            perf_falling_ns = 0.0;
             perf_physics_ns = 0.0;
             perf_stream_ns = 0.0;
             perf_stream_wait_ns = 0.0;

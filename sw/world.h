@@ -67,6 +67,7 @@ typedef struct {
  * can detect stale rebuilds (chunk edited again before its job ran). */
 typedef struct ChunkMesh {
     ChunkFace *faces;
+    struct ChunkMesh *retired_next;
     int face_count;
     /* faces are ordered [opaque cube][opaque non-cube][translucent]. */
     int opaque_cube_face_count;
@@ -107,6 +108,7 @@ typedef struct {
     uint32_t flags;
     uint32_t generation;
     uint32_t last_used_epoch;
+    int redstone_component_count;
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t block_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
@@ -124,10 +126,10 @@ typedef struct {
     int face_count;
     int face_capacity;
     /* live_mesh is the latest published immutable snapshot. Renderer reads
-     * lock-free via atomic_load. retired_mesh is the previous snapshot
-     * pending free - kept one publish cycle so any in-flight reader pointer
-     * is no longer in use by the time we free it (the renderer never
-     * holds a chunk-mesh pointer past one frame). */
+     * lock-free via atomic_load. retired_mesh is a lock-free list of replaced
+     * snapshots pending free after the current frame; one frame can publish
+     * multiple replacements for the same chunk while the renderer still holds
+     * an older live_mesh pointer. */
     _Atomic(ChunkMesh *) live_mesh;
     _Atomic(ChunkMesh *) retired_mesh;
 } Chunk;
@@ -201,6 +203,7 @@ typedef struct VoxelWorld {
     int redstone_pulse_count;
     RedstoneRepeaterState redstone_repeater_states[WORLD_MAX_REDSTONE_REPEATER_STATES];
     int redstone_repeater_state_count;
+    bool has_redstone_components;
     bool redstone_dirty;
     PressurePlateState active_pressure_plates[WORLD_MAX_ACTIVE_PRESSURE_PLATES];
     int active_pressure_plate_count;

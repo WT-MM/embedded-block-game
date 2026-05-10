@@ -2976,9 +2976,8 @@ typedef struct {
     const Chunk *chunk;
     /* Cached at the start of draw_world so the entire frame iterates a
      * stable mesh pointer even if a future worker thread publishes a new
-     * one mid-draw. Lifetime guarantee: with single-slot retired_mesh
-     * and at-most-one publish per chunk per frame, the pointer survives
-     * until the next frame's drain sweep. */
+     * one mid-draw. Lifetime guarantee: replaced meshes sit in the chunk's
+     * retired list until the post-render reap. */
     const ChunkMesh *mesh;
     float distance_sq;
 } ChunkDrawCandidate;
@@ -4115,8 +4114,8 @@ bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    const float half = 8.0f * HUD_SCALE;
-    const float thickness = 1.25f * HUD_SCALE;
+    const float half = 6.0f * HUD_SCALE;
+    const float thickness = 1.0f * HUD_SCALE;
     const uint8_t white = 5;
     bool ok = true;
 

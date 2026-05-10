@@ -92,6 +92,20 @@ static const ChunkFace *find_chunk_face(const Chunk *chunk,
     return NULL;
 }
 
+static bool retired_mesh_list_contains(const ChunkMesh *head,
+                                       const ChunkMesh *needle)
+{
+    int guard = 0;
+
+    for (const ChunkMesh *mesh = head; mesh && guard < 16;
+         mesh = mesh->retired_next, guard++) {
+        if (mesh == needle)
+            return true;
+    }
+
+    return false;
+}
+
 static bool test_set_wire(VoxelWorld *world, int wx, int wy, int wz)
 {
     return world_set_block(world, wx, wy, wz, BLOCK_REDSTONE_WIRE_UNCONNECTED);
@@ -817,6 +831,28 @@ int main(void)
         return check_failed("post-edit mesh rebuild failed");
 
     const Chunk *lighting_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkMesh *first_mesh =
+        atomic_load_explicit(&lighting_chunk->live_mesh, memory_order_acquire);
+    if (!first_mesh)
+        return check_failed("initial live mesh missing");
+    if (!world_set_block(&world, stone_x, lamp_y + 1, lamp_z, BLOCK_STONE) ||
+        !world_rebuild_dirty_meshes(&world))
+        return check_failed("first mesh lifetime rebuild failed");
+    const ChunkMesh *second_mesh =
+        atomic_load_explicit(&lighting_chunk->live_mesh, memory_order_acquire);
+    if (!second_mesh || second_mesh == first_mesh)
+        return check_failed("first mesh lifetime publish failed");
+    if (!world_set_block(&world, stone_x, lamp_y + 2, lamp_z, BLOCK_STONE) ||
+        !world_rebuild_dirty_meshes(&world))
+        return check_failed("second mesh lifetime rebuild failed");
+    const ChunkMesh *retired_meshes =
+        atomic_load_explicit(&lighting_chunk->retired_mesh,
+                             memory_order_acquire);
+    if (!retired_mesh_list_contains(retired_meshes, first_mesh) ||
+        !retired_mesh_list_contains(retired_meshes, second_mesh))
+        return check_failed("mesh retired list dropped an in-frame snapshot");
+    chunk_mesh_free_retired((Chunk *)lighting_chunk);
+
     const ChunkFace *lamp_top = find_chunk_face(lighting_chunk,
                                                 lamp_x, lamp_y, lamp_z,
                                                 FACE_TOP, BLOCK_LAMP);
@@ -2310,8 +2346,10 @@ int main(void)
                                         0.0f,
                                         async_world_dir))
         return check_failed("async world init failed");
+    if (async_world.has_redstone_components || async_world.redstone_dirty)
+        return check_failed("no-redstone async world scheduled redstone settle");
 
-    if (!world_set_block(&async_world, 0, 20, 0, BLOCK_LAMP))
+    if (!world_set_block(&async_world, 0, 20, 0, BLOCK_TORCH))
         return check_failed("async lighting fixture placement failed");
     async_world.lighting_dirty = false;
 
@@ -2356,6 +2394,8 @@ int main(void)
         return check_failed("finalize did not integrate async chunk");
     if (async_world.lighting_dirty)
         return check_failed("async finalize scheduled full lighting rebuild");
+    if (async_world.has_redstone_components || async_world.redstone_dirty)
+        return check_failed("async finalize scheduled no-redstone settle");
     const Chunk *finalized = world_get_chunk(&async_world, loading_x, loading_z);
     if (!finalized || !(finalized->flags & CHUNK_FLAG_LOADED) ||
         (finalized->flags & CHUNK_FLAG_LOADING))

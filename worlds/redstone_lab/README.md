@@ -10,10 +10,9 @@ Landmarks from spawn:
 - West plot: a comparator latch. The west button sets it, the north button
   resets it, and the lamp marks the latched output.
 - South plot: a real three-bit ripple counter wired into a constructed
-  seven-segment decoder matrix. The button just below the south-east digit
-  advances the count, the side buttons reset the bits, the three nearby lamps
-  expose Q0/Q1/Q2, and the large lamp digit shows the decoded value. To clear
-  the counter manually, reset Q0, then Q1, then Q2.
+  seven-segment decoder matrix. The button at the first flip-flop input
+  advances the count, the side buttons reset the bits, the nearby lamps expose
+  the counter state, and the large lamp digit shows the decoded value.
 - South-east display matrix: the Q/NQ literal buses, invalid-row torches,
   segment taps, repeaters, segment bars, and lamps are all normal redstone
   parts fed by the counter outputs.
@@ -28,5 +27,5 @@ Right-click a repeater in-game to cycle its saved delay from 1 to 4 redstone
 ticks.
 
 Regenerate the raw tracked world with
-`python3 worlds/redstone_lab/generate_redstone_lab.py` from the repository root,
-then load it once and reset the three counter bits to save a settled zero state.
+`python3 worlds/redstone_lab/generate_redstone_lab.py` from the repository root.
+The checked-in chunks are saved after the counter settles to zero.

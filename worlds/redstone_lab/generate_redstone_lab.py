@@ -248,48 +248,75 @@ SEGMENT_PATTERNS = [
 
 
 DISPLAY_SEGMENT_BUSES = [
-    54,  # A: top
+    60,  # A: top
     70,  # B: upper right
-    74,  # C: lower right
-    62,  # D: bottom
+    72,  # C: lower right
+    74,  # D: bottom
     48,  # E: lower left
-    44,  # F: upper left
-    58,  # G: middle
+    53,  # F: upper left
+    50,  # G: middle
 ]
 
 
 DISPLAY_SEGMENT_DRIVERS = [
-    [(x, 54) for x in range(53, 56)],
-    [(70, z) for z in range(57, 62)],
-    [(74, z) for z in range(65, 70)],
-    [(x, 71) for x in range(61, 64)],
-    [(48, z) for z in range(65, 70)],
-    [(44, z) for z in range(57, 62)],
-    [(x, 62) for x in range(57, 60)],
+    [(x, 53) for x in range(56, 65)],
+    [(67, z) for z in range(57, 60)],
+    [(67, z) for z in range(66, 69)],
+    [(x, 73) for x in range(56, 65)],
+    [(53, z) for z in range(66, 69)],
+    [(53, z) for z in range(57, 60)],
+    [(x, 62) for x in range(56, 65)],
 ]
 
 
 DISPLAY_SEGMENT_LAMPS = [
-    [(x, 55) for x in range(53, 56)],
-    [(71, z) for z in range(57, 62)],
-    [(75, z) for z in range(65, 70)],
-    [(x, 72) for x in range(61, 64)],
-    [(47, z) for z in range(65, 70)],
-    [(43, z) for z in range(57, 62)],
-    [(x, 63) for x in range(57, 60)],
+    [(x, 54) for x in range(56, 65)],
+    [(66, z) for z in range(57, 60)],
+    [(66, z) for z in range(66, 69)],
+    [(x, 72) for x in range(56, 65)],
+    [(54, z) for z in range(66, 69)],
+    [(54, z) for z in range(57, 60)],
+    [(x, 63) for x in range(56, 65)],
 ]
 
 
-def place_segment_display(world, wy, decoder_z, segment_bus):
+DISPLAY_SEGMENT_REPEATERS = [
+    [],
+    [],
+    [],
+    [(65, 73, "BLOCK_REPEATER_WEST_OFF")],
+    [],
+    [],
+    [],
+]
+
+
+DISPLAY_SEGMENT_BUS_REPEATERS = [
+    [31, 40, 49],
+    [31, 40, 49],
+    [31, 40, 49, 58],
+    [31, 40, 49, 58, 67],
+    [31, 40, 49, 58],
+    [31, 40, 49],
+    [31, 40, 49, 58],
+]
+
+
+def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
     display_lamps = []
 
     for segment, bus_x in enumerate(segment_bus):
         max_driver_z = max(z for _, z in DISPLAY_SEGMENT_DRIVERS[segment])
+
         wire_z(world, bus_x, wy, decoder_z, max_driver_z)
-        for rz in range(decoder_z + 2, max_driver_z + 1, 9):
-            world.set(bus_x, wy, rz, "BLOCK_REPEATER_SOUTH_OFF")
+        for rz in DISPLAY_SEGMENT_BUS_REPEATERS[segment]:
+            if decoder_z < rz < max_driver_z:
+                world.set(bus_x, wy, rz, "BLOCK_REPEATER_SOUTH_OFF")
+
         for dx, dz in DISPLAY_SEGMENT_DRIVERS[segment]:
-            world.set(dx, wy, dz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+            wire_x(world, bus_x, dx, wy, dz)
+        for rx, rz, repeater in DISPLAY_SEGMENT_REPEATERS[segment]:
+            world.set(rx, wy, rz, repeater)
         for lx, lz in DISPLAY_SEGMENT_LAMPS[segment]:
             world.set(lx, wy, lz, "BLOCK_LAMP_OFF")
             display_lamps.append((lx, wy, lz))
@@ -297,17 +324,9 @@ def place_segment_display(world, wy, decoder_z, segment_bus):
     return display_lamps
 
 
-def place_counter_display_button(world, wy, wz):
-    button_x = 59
-    button_z = 76
-
-    world.set(button_x, wy, button_z, "BLOCK_BUTTON")
-    repeater_line_x(world, button_x - 1, -52, wy, button_z,
-                    "BLOCK_REPEATER_WEST_OFF", interval=8)
-    repeater_line_z(world, -52, wy, button_z - 1, wz,
-                    "BLOCK_REPEATER_OFF", interval=8)
-    wire_x(world, -52, -48, wy, wz)
-    return (button_x, wy, button_z)
+def place_counter_display_button(world, wx, wy, wz):
+    world.set(wx, wy, wz, "BLOCK_BUTTON")
+    return (wx, wy, wz)
 
 
 def place_connected_counter_display(world,
@@ -317,7 +336,7 @@ def place_connected_counter_display(world,
                                     bit_stride=30,
                                     decoder_y=7,
                                     decoder_z=24):
-    q_bus = [wx + bit * bit_stride + 20 for bit in range(3)]
+    q_bus = [wx + bit * bit_stride + 24 for bit in range(3)]
     nq_bus = [x + 2 for x in q_bus]
     support_x = max(nq_bus) + 8
     row_start_x = min(q_bus) - 1
@@ -331,38 +350,42 @@ def place_connected_counter_display(world,
         cell_x = wx + bit * bit_stride
         place_t_flip_flop(world, cell_x, wy, wz, bit == 0)
         world.set(cell_x + 21, wy, wz - 1, "BLOCK_BUTTON")
-        if bit == 0:
-            world.set(cell_x, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        if bit > 0:
+            world.set(cell_x, wy, wz, "BLOCK_REPEATER_EAST_ON")
 
     wire_x(world, wx + 26, wx + bit_stride - 1, wy, wz)
     wire_x(world, wx + bit_stride + 26, wx + 2 * bit_stride - 1, wy, wz)
 
     for bit, qx in enumerate(q_bus):
-        wire_z(world, qx, wy, wz + 4, wz + 6)
-        world.set(qx - 1, wy, wz + 6, "BLOCK_LAMP_OFF")
-
-        wire_z(world, qx, wy + 4, wz + 4, bus_z1)
-        for rz in range(wz + 12, bus_z1, 9):
-            world.set(qx, wy + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
-
-        world.set(qx, wy, wz + 7, "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(qx, wy, wz + 8, "BLOCK_STONE")
-        world.set(qx, wy + 1, wz + 8, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-        world.set(qx, wy + 1, wz + 9, "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(qx, wy + 1, wz + 10, "BLOCK_STONE")
-        world.set(qx, wy + 2, wz + 10, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-        world.set(qx, wy + 2, wz + 11, "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(qx, wy + 2, wz + 12, "BLOCK_STONE")
-        world.set(qx, wy + 3, wz + 12, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-        world.set(qx, wy + 3, wz + 13, "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(qx, wy + 3, wz + 14, "BLOCK_STONE")
-
         nqx = nq_bus[bit]
-        world.set(qx + 1, wy + 4, decoder_z - 2, "BLOCK_STONE")
-        world.set(nqx, wy + 4, decoder_z - 2, "BLOCK_REDSTONE_TORCH_ON")
+        source_z = decoder_z - 2
+
+        world.set(nqx, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(nqx, wy, wz + 1, "BLOCK_REPEATER_SOUTH_OFF")
+        wire_z(world, nqx, wy, wz + 2, wz + 6)
+        world.set(nqx - 1, wy, wz + 6, "BLOCK_LAMP_OFF")
+
+        world.set(nqx, wy, wz + 7, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(nqx, wy, wz + 8, "BLOCK_STONE")
+        world.set(nqx, wy + 1, wz + 8, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(nqx, wy + 1, wz + 9, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(nqx, wy + 1, wz + 10, "BLOCK_STONE")
+        world.set(nqx, wy + 2, wz + 10, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(nqx, wy + 2, wz + 11, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(nqx, wy + 2, wz + 12, "BLOCK_STONE")
+        world.set(nqx, wy + 3, wz + 12, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(nqx, wy + 3, wz + 13, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(nqx, wy + 3, wz + 14, "BLOCK_STONE")
+        world.set(nqx, wy + 4, source_z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
         wire_z(world, nqx, wy + 4, bus_z0, bus_z1)
         for rz in range(bus_z0 + 3, bus_z1, 9):
             world.set(nqx, wy + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
+
+        world.set(qx + 1, wy + 4, source_z, "BLOCK_STONE")
+        world.set(qx, wy + 4, source_z, "BLOCK_REDSTONE_TORCH_ON")
+        wire_z(world, qx, wy + 4, bus_z0, bus_z1)
+        for rz in range(bus_z0 + 3, bus_z1, 9):
+            world.set(qx, wy + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
 
     for value in range(8):
         row_z = decoder_z + value * 3
@@ -388,8 +411,8 @@ def place_connected_counter_display(world,
             world.set(bus_x, decoder_y + 1, row_z, "BLOCK_STONE")
 
     display_lamps = place_segment_display(world, decoder_y - 2,
-                                          decoder_z, segment_bus)
-    button = place_counter_display_button(world, wy, wz)
+                                          decoder_z, bus_z1, segment_bus)
+    button = place_counter_display_button(world, wx, wy, wz)
 
     for value, pattern in enumerate(SEGMENT_PATTERNS):
         row_z = decoder_z + value * 3
@@ -401,7 +424,7 @@ def place_connected_counter_display(world,
         "button": button,
         "resets": [(wx + bit * bit_stride + 21, wy, wz - 1)
                    for bit in range(3)],
-        "bit_lamps": [(qx - 1, wy, wz + 6) for qx in q_bus],
+        "bit_lamps": [(nqx - 1, wy, wz + 6) for nqx in nq_bus],
         "display_lamps": display_lamps,
     }
 
@@ -441,7 +464,7 @@ def place_comparator_demo(world):
 def place_latch_demo(world):
     y = 5
     wx = -42
-    wz = -8
+    wz = -18
     feedback = [
         (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2),
         (-1, 2), (-2, 2), (-2, 1), (-2, 0), (-1, 0),

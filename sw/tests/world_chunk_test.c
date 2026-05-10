@@ -1744,6 +1744,82 @@ int main(void)
                         BLOCK_REDSTONE_TORCH_ON);
     if (!side_torch_face || side_torch_face->height != FACE_LEFT)
         return check_failed("side torch mesh did not record side support");
+
+    const int floor_torch_x = 13;
+    const int floor_torch_y = 27;
+    const int floor_torch_z = 10;
+    if (!world_set_block(&world, floor_torch_x, floor_torch_y - 1,
+                         floor_torch_z, BLOCK_STONE) ||
+        !world_set_block(&world, floor_torch_x - 1, floor_torch_y,
+                         floor_torch_z, BLOCK_STONE) ||
+        !world_set_block(&world, floor_torch_x, floor_torch_y,
+                         floor_torch_z, BLOCK_REDSTONE_TORCH_ON) ||
+        !world_set_torch_support(&world, floor_torch_x, floor_torch_y,
+                                 floor_torch_z,
+                                 CHUNK_TORCH_SUPPORT_FLOOR))
+        return check_failed("floor torch fixture build failed");
+    world_update_redstone(&world, 0.0f);
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("floor torch mesh rebuild failed");
+    const ChunkFace *floor_torch_face =
+        find_chunk_face(side_torch_chunk,
+                        floor_torch_x,
+                        floor_torch_y,
+                        floor_torch_z,
+                        (BlockFace)CHUNK_FACE_CROSS_A,
+                        BLOCK_REDSTONE_TORCH_ON);
+    if (!floor_torch_face ||
+        floor_torch_face->height != CHUNK_TORCH_SUPPORT_FLOOR)
+        return check_failed("floor torch mesh borrowed side support");
+    if (!world_set_block(&world, floor_torch_x - 2, floor_torch_y,
+                         floor_torch_z, BLOCK_REDSTONE_BLOCK))
+        return check_failed("floor torch side power fixture failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, floor_torch_x, floor_torch_y,
+                        floor_torch_z) != BLOCK_REDSTONE_TORCH_ON)
+        return check_failed("floor torch redstone borrowed side support");
+    if (!world_set_block(&world, floor_torch_x - 2, floor_torch_y,
+                         floor_torch_z, BLOCK_AIR))
+        return check_failed("floor torch side power cleanup failed");
+    if (!world_set_block(&world, floor_torch_x, floor_torch_y - 2,
+                         floor_torch_z, BLOCK_REDSTONE_BLOCK))
+        return check_failed("floor torch bottom power fixture failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, floor_torch_x, floor_torch_y,
+                        floor_torch_z) != BLOCK_REDSTONE_TORCH_OFF)
+        return check_failed("floor torch did not use saved floor support");
+    if (!world_set_block(&world, floor_torch_x, floor_torch_y - 2,
+                         floor_torch_z, BLOCK_AIR) ||
+        !world_set_torch_support(&world, floor_torch_x, floor_torch_y,
+                                 floor_torch_z, FACE_LEFT))
+        return check_failed("floor torch side support switch failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("switched torch mesh rebuild failed");
+    floor_torch_face = find_chunk_face(side_torch_chunk,
+                                       floor_torch_x,
+                                       floor_torch_y,
+                                       floor_torch_z,
+                                       (BlockFace)CHUNK_FACE_CROSS_A,
+                                       BLOCK_REDSTONE_TORCH_ON);
+    if (!floor_torch_face || floor_torch_face->height != FACE_LEFT)
+        return check_failed("torch mesh did not record saved side support");
+    if (!world_set_block(&world, floor_torch_x, floor_torch_y - 2,
+                         floor_torch_z, BLOCK_REDSTONE_BLOCK))
+        return check_failed("side-supported torch bottom power fixture failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, floor_torch_x, floor_torch_y,
+                        floor_torch_z) != BLOCK_REDSTONE_TORCH_ON)
+        return check_failed("side-supported torch borrowed floor support");
+    if (!world_set_block(&world, floor_torch_x, floor_torch_y - 1,
+                         floor_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, floor_torch_x, floor_torch_y - 2,
+                         floor_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, floor_torch_x - 1, floor_torch_y,
+                         floor_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, floor_torch_x, floor_torch_y,
+                         floor_torch_z, BLOCK_AIR))
+        return check_failed("floor torch cleanup failed");
+
     if (!world_set_block(&world, side_torch_x - 1, side_torch_y,
                          side_torch_z, BLOCK_REDSTONE_BLOCK))
         return check_failed("side torch input failed");

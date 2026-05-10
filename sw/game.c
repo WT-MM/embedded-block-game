@@ -1175,6 +1175,13 @@ static bool place_block_is_pressure_plate(BlockID type)
     return block_is_pressure_plate(type);
 }
 
+static bool place_block_is_torch(BlockID type)
+{
+    return type == BLOCK_TORCH ||
+           type == BLOCK_REDSTONE_TORCH_OFF ||
+           type == BLOCK_REDSTONE_TORCH_ON;
+}
+
 static BlockDoorFacing door_facing_from_camera(const Camera *cam);
 
 static BlockID normalize_placed_block(BlockID type, const Camera *cam)
@@ -1225,15 +1232,68 @@ static bool placement_has_floor_support(const VoxelWorld *world,
     return support != BLOCK_AIR && !block_is_passable(support);
 }
 
+static bool placement_block_can_support_torch(BlockID support)
+{
+    return support != BLOCK_AIR &&
+           block_render_model(support) == BLOCK_RENDER_CUBE &&
+           !block_is_passable(support);
+}
+
+static bool torch_support_face_for_target(const VoxelWorld *world,
+                                          const BlockTarget *target,
+                                          uint8_t *support_face_out)
+{
+    uint8_t support_face;
+
+    if (!world || !target || !target->hit || !target->place_valid)
+        return false;
+
+    if (target->hit_x == target->place_x &&
+        target->hit_z == target->place_z &&
+        target->hit_y == target->place_y - 1) {
+        support_face = CHUNK_TORCH_SUPPORT_FLOOR;
+    } else if (target->hit_y == target->place_y &&
+               target->hit_z == target->place_z &&
+               target->hit_x == target->place_x - 1) {
+        support_face = FACE_LEFT;
+    } else if (target->hit_y == target->place_y &&
+               target->hit_z == target->place_z &&
+               target->hit_x == target->place_x + 1) {
+        support_face = FACE_RIGHT;
+    } else if (target->hit_y == target->place_y &&
+               target->hit_x == target->place_x &&
+               target->hit_z == target->place_z - 1) {
+        support_face = FACE_FRONT;
+    } else if (target->hit_y == target->place_y &&
+               target->hit_x == target->place_x &&
+               target->hit_z == target->place_z + 1) {
+        support_face = FACE_BACK;
+    } else {
+        return false;
+    }
+
+    if (!placement_block_can_support_torch(
+            world_get_block(world, target->hit_x, target->hit_y,
+                            target->hit_z)))
+        return false;
+
+    if (support_face_out)
+        *support_face_out = support_face;
+    return true;
+}
+
 static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam,
                                             const Player *player, BlockID type)
 {
     BlockTarget target = {0};
     BlockID place_type;
+    bool is_torch;
+    uint8_t torch_support_face = 0;
 
     if (type <= BLOCK_AIR || type >= NUM_BLOCK_TYPES)
         return PLACE_FAIL_BAD_TYPE;
     place_type = normalize_placed_block(type, cam);
+    is_torch = place_block_is_torch(place_type);
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return PLACE_FAIL_NO_TRACE;
     if (!target.place_valid)
@@ -1246,7 +1306,10 @@ static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam
                                        target.place_z);
     if (!placement_block_can_be_replaced(at_place))
         return PLACE_FAIL_TARGET_OCCUPIED;
-    if (placement_requires_floor_support(place_type) &&
+    if (is_torch) {
+        if (!torch_support_face_for_target(world, &target, &torch_support_face))
+            return PLACE_FAIL_NO_SUPPORT;
+    } else if (placement_requires_floor_support(place_type) &&
         !placement_has_floor_support(world,
                                      target.place_x,
                                      target.place_y,
@@ -1263,6 +1326,19 @@ static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam
                          target.place_x, target.place_y, target.place_z,
                          place_type))
         return PLACE_FAIL_WORLD_REJECTED;
+    if (is_torch &&
+        !world_set_torch_support(world,
+                                 target.place_x,
+                                 target.place_y,
+                                 target.place_z,
+                                 torch_support_face)) {
+        (void)world_set_block(world,
+                              target.place_x,
+                              target.place_y,
+                              target.place_z,
+                              BLOCK_AIR);
+        return PLACE_FAIL_WORLD_REJECTED;
+    }
 
     world_mark_chunk_mesh_edit_priority(world, target.place_x, target.place_z);
     return PLACE_OK;

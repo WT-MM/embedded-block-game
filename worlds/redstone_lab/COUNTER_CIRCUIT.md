@@ -14,8 +14,126 @@ The count input drives `Q0`. The `NQ0` output directly clocks `Q1`, and `NQ1`
 directly clocks `Q2`, matching the tested ripple-counter fixture in
 `sw/tests/world_chunk_test.c`.
 
-Reset is asynchronous per flip-flop. In this lab layout, clear from low bit to
-high bit (`Q0`, then `Q1`, then `Q2`) before stepping the counter.
+Reset is asynchronous per flip-flop. The compact torch-cell version should use
+one `CLR` rail that powers each reset support block directly and inhibits
+count/carry pulse gates while reset is held.
+
+Compact redesign prep
+---------------------
+
+The active lab still uses the tested comparator-latch fixture. The next layout
+target is a short bus feeding local torch cells, not row-wide wires.
+
+Button input should first enter a two-by-two rising-edge detector core:
+
+```
+[keepout ] [side repeater]
+[rear tap] [comparator   ] -> pulse out
+```
+
+The clock bus owns the two adjacent feed cells: one direct rear tap into the
+comparator, and one delayed feed into the side repeater. The rear tap must be
+weaker than the delayed side input so the comparator emits only the initial
+edge. The output pad is immediately to the comparator's front and is not part
+of the two-by-two core.
+
+Each counter bit should become a local torch-gate toggle cell with reset, and
+the carry edge should be routed into the next bit with adjacent cells or
+vertical torch transfer instead of long dust runs.
+
+Proposed compact primitives
+---------------------------
+
+Symbols:
+
+```
+w  redstone dust          r> repeater facing east
+c> comparator facing east #  solid support/powered block
+t> torch mounted on west block, output to the east
+<t torch mounted on east block, output to the west
+P  pulse/input rail       Q  latch output
+N  inverted latch output  CLR reset/inhibit rail
+```
+
+Side torch inverter, core two cells:
+
+```
+in -> w [#] [t>] w -> out
+```
+
+The torch must remember the support face for `#`. In generated chunks, prefer
+writing the torch support metadata rather than relying on fallback support
+inference.
+
+Two-by-two rising-edge detector core:
+
+```
+          delayed feed
+              |
+        [ . ] [r v]
+input ->[ w ] [c>] -> pulse
+```
+
+The direct rear tap should be one dust step weaker than the repeater output.
+That makes the comparator emit the first edge and turn off once the delayed
+side input arrives.
+
+Cross-coupled torch SR latch, three-by-three core:
+
+```
+z0: [#R] [t>] [Q ]
+z1: [N ] [ .] [Q ]
+z2: [N ] [<t] [#S]
+```
+
+Power `#S` to set `Q=1`. Power `#R` to reset `Q=0`. The torch beside `#R`
+drives the `Q` rail, and the torch beside `#S` drives the `N` rail.
+
+Conditional pulse gate:
+
+```
+z0: P -> [#P] [tN] [w ]
+z1:           .    [#G] [tG] -> out
+z2:                blocker
+```
+
+`tN` is `not P`. `tG` outputs `P AND NOT blocker`. Keep the blocker rail on
+the far side of `#G` so `tN` cannot backfeed it. A `CLR` wire can feed `#G` as
+a second blocker so reset pulses do not become count pulses.
+
+Toggle bit cell direction:
+
+```
+single SR latch + set/reset steering gates: not robust enough
+master SR latch + slave SR latch: target compact bit primitive
+```
+
+The single-latch T sketch races in this engine: a one-update set pulse is too
+short for the cross-coupled torch latch to settle, but holding it longer lets
+the opposite steering gate see the changed state and fire. The next compact
+counter should therefore use a master/slave torch bit:
+
+```
+master enable = not clock
+master D      = not slave.Q
+slave enable  = clock
+slave D       = master.Q
+
+Q  = slave.Q
+N  = slave.N
+CLR powers both reset supports and inhibits all steering gates
+```
+
+Ripple rule for an incrementing three-bit counter remains:
+
+```
+button level -> bit0 clock
+bit0 N       -> bit1 clock
+bit1 N       -> bit2 clock
+```
+
+The carry uses `N` because `N` rises when `Q` falls, so higher bits toggle on
+the overflow edge of the lower bit.
 
 Seven-segment decoder
 ---------------------

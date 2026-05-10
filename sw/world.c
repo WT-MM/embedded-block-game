@@ -31,9 +31,9 @@
 #define WORLD_GEN_FLAG_DESERT_LAVA_POOLS 0x00000001u
 /* v2: appended water_level[H][Z][X] after the block grid for Minecraft-style
  * variable water height.
- * v3: appended redstone_data[H][Z][X] for per-cell redstone metadata such as
- * repeater delay and remembered door power. v2 loads still work and default
- * redstone_data to zero. */
+ * v3: appended redstone_data[H][Z][X] for per-cell metadata such as repeater
+ * delay, remembered door power, and torch support. v2 loads still work and
+ * default redstone_data to zero. */
 #define WORLD_CHUNK_VERSION 3u
 #define WORLD_CHUNK_MIN_SUPPORTED_VERSION 2u
 #define REDSTONE_BUTTON_PULSE_SECONDS 1.5f
@@ -129,6 +129,19 @@ static bool redstone_block_change_needs_update_locked(const VoxelWorld *world,
                                                       BlockID old_type,
                                                       BlockID new_type);
 static bool redstone_block_is_component(BlockID id);
+
+static bool block_is_torch_like(BlockID id)
+{
+    return id == BLOCK_TORCH ||
+           id == BLOCK_REDSTONE_TORCH_OFF ||
+           id == BLOCK_REDSTONE_TORCH_ON;
+}
+
+static bool torch_support_face_is_valid(uint8_t support_face)
+{
+    return support_face == CHUNK_TORCH_SUPPORT_FLOOR ||
+           (support_face >= FACE_LEFT && support_face <= FACE_BACK);
+}
 
 static uint64_t timespec_diff_u64_ns(const struct timespec *end,
                                      const struct timespec *start)
@@ -683,6 +696,10 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                 } else if (block_is_door((BlockID)id)) {
                     chunk->redstone_data[y][z][x] =
                         chunk->redstone_data[y][z][x] ? 1u : 0u;
+                } else if (block_is_torch_like((BlockID)id)) {
+                    if (!torch_support_face_is_valid(
+                            chunk->redstone_data[y][z][x]))
+                        chunk->redstone_data[y][z][x] = 0;
                 } else {
                     chunk->redstone_data[y][z][x] = 0;
                 }
@@ -1575,6 +1592,31 @@ static uint8_t read_water_level_cached(const Chunk *nb[3][3], int ccx, int ccz,
     return c->water_level[wy][lz][lx];
 }
 
+static uint8_t read_redstone_data_cached(const Chunk *nb[3][3], int ccx,
+                                         int ccz, int wx, int wy, int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int cx = floor_div(wx, WORLD_CHUNK_SIZE);
+    int cz = floor_div(wz, WORLD_CHUNK_SIZE);
+    int ix = cx - ccx + 1;
+    int iz = cz - ccz + 1;
+
+    if (ix < 0 || ix > 2 || iz < 0 || iz > 2)
+        return 0;
+
+    const Chunk *c = nb[ix][iz];
+
+    if (!c || !(c->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+
+    return c->redstone_data[wy][lz][lx];
+}
+
 static uint8_t fluid_flow_height_from_level(uint8_t level)
 {
     if (level > 7)
@@ -1645,6 +1687,32 @@ static bool mesh_block_can_support_torch(BlockID id)
            !block_is_passable(id);
 }
 
+static bool torch_support_face_has_block_cached(const Chunk *nb[3][3],
+                                                int ccx,
+                                                int ccz,
+                                                int wx,
+                                                int wy,
+                                                int wz,
+                                                uint8_t support_face)
+{
+    BlockID support;
+
+    if (support_face == CHUNK_TORCH_SUPPORT_FLOOR) {
+        if (wy <= 0)
+            return false;
+        support = read_block_cached(nb, ccx, ccz, wx, wy - 1, wz);
+    } else if (support_face >= FACE_LEFT && support_face <= FACE_BACK) {
+        support = read_block_cached(nb, ccx, ccz,
+                                    wx + FACE_NX[support_face],
+                                    wy,
+                                    wz + FACE_NZ[support_face]);
+    } else {
+        return false;
+    }
+
+    return mesh_block_can_support_torch(support);
+}
+
 static uint8_t torch_support_face_cached(const Chunk *nb[3][3],
                                          int ccx,
                                          int ccz,
@@ -1652,6 +1720,13 @@ static uint8_t torch_support_face_cached(const Chunk *nb[3][3],
                                          int wy,
                                          int wz)
 {
+    uint8_t saved = read_redstone_data_cached(nb, ccx, ccz, wx, wy, wz);
+
+    if (torch_support_face_is_valid(saved) &&
+        torch_support_face_has_block_cached(nb, ccx, ccz,
+                                            wx, wy, wz, saved))
+        return saved;
+
     for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
         BlockID support = read_block_cached(nb, ccx, ccz,
                                             wx + FACE_NX[face],
@@ -3567,6 +3642,10 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
     } else if (block_is_door(type)) {
         if (!block_is_door(old_type))
             chunk->redstone_data[wy][lz][lx] = 0;
+    } else if (block_is_torch_like(type)) {
+        if (!block_is_torch_like(old_type) ||
+            !torch_support_face_is_valid(chunk->redstone_data[wy][lz][lx]))
+            chunk->redstone_data[wy][lz][lx] = 0;
     } else {
         chunk->redstone_data[wy][lz][lx] = 0;
     }
@@ -3703,8 +3782,26 @@ static bool redstone_torch_support_locked(const VoxelWorld *world,
     if (!world)
         return false;
 
-    /* Torches do not have saved facing yet. Infer side support first so
-     * grounded not-gates can use a side-mounted torch even when floor exists. */
+    uint8_t saved = world_get_redstone_data_locked(world, wx, wy, wz);
+    if (saved >= FACE_LEFT && saved <= FACE_BACK) {
+        int sx = wx + FACE_NX[saved];
+        int sz = wz + FACE_NZ[saved];
+
+        if (redstone_block_can_hold_power(world_get_block(world, sx, wy, sz))) {
+            support = (RedstoneCell){ .wx = sx, .wy = wy, .wz = sz };
+            if (support_out)
+                *support_out = support;
+            return true;
+        }
+    } else if (saved == CHUNK_TORCH_SUPPORT_FLOOR && wy > 0 &&
+               redstone_block_can_hold_power(
+                   world_get_block(world, wx, wy - 1, wz))) {
+        support = (RedstoneCell){ .wx = wx, .wy = wy - 1, .wz = wz };
+        if (support_out)
+            *support_out = support;
+        return true;
+    }
+
     for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
         int sx = wx + FACE_NX[face];
         int sz = wz + FACE_NZ[face];
@@ -4524,35 +4621,6 @@ static uint8_t redstone_directional_side_strength_locked(
     return left > right ? left : right;
 }
 
-static uint8_t redstone_torch_support_top_strength_locked(
-    const VoxelWorld *world,
-    int wx,
-    int wy,
-    int wz,
-    const RedstoneCell *wires,
-    const uint8_t *wire_power,
-    const int *wire_table,
-    size_t wire_table_cap)
-{
-    uint8_t strength = 0;
-
-    for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
-        int nx = wx + FACE_NX[face];
-        int nz = wz + FACE_NZ[face];
-        uint8_t source_strength =
-            redstone_power_from_cell_locked(world,
-                                            nx, wy, nz,
-                                            wx, wy - 1, wz,
-                                            wires, wire_power,
-                                            wire_table, wire_table_cap);
-
-        if (source_strength > strength)
-            strength = source_strength;
-    }
-
-    return strength;
-}
-
 static bool redstone_torch_receives_power_locked(
     const VoxelWorld *world,
     int wx,
@@ -4581,12 +4649,6 @@ static bool redstone_torch_receives_power_locked(
                                                 wire_table, wire_table_cap,
                                                 wx, wy, wz) > 0)
         return true;
-    if (support.wx == wx && support.wy == wy - 1 && support.wz == wz)
-        return redstone_torch_support_top_strength_locked(world,
-                                                          wx, wy, wz,
-                                                          wires, wire_power,
-                                                          wire_table,
-                                                          wire_table_cap) > 0;
     return false;
 }
 
@@ -5062,6 +5124,25 @@ bool world_toggle_lever(VoxelWorld *world, int wx, int wy, int wz,
     if (toggled && powered_out)
         *powered_out = powered;
     return toggled;
+}
+
+bool world_set_torch_support(VoxelWorld *world, int wx, int wy, int wz,
+                             uint8_t support_face)
+{
+    bool ok = false;
+
+    if (!world || !torch_support_face_is_valid(support_face))
+        return false;
+
+    world_lock(world);
+    if (block_is_torch_like(world_get_block(world, wx, wy, wz))) {
+        ok = world_set_redstone_data_locked(world, wx, wy, wz,
+                                            support_face, true);
+        if (ok)
+            (void)world_update_redstone_locked(world, 0.0f);
+    }
+    world_unlock(world);
+    return ok;
 }
 
 static bool pressure_plate_overlaps_aabb(int wx,

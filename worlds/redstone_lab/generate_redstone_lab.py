@@ -18,6 +18,12 @@ BLOCK_COUNT = CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE
 WORLD_SEED = 0x4840C0DE
 STONE_TRIES_PER_CHUNK = 12
 
+FACE_LEFT = 2
+FACE_RIGHT = 3
+FACE_FRONT = 4
+FACE_BACK = 5
+TORCH_SUPPORT_FLOOR = 8
+
 
 def load_block_ids():
     text = BLOCK_TYPES.read_text()
@@ -66,6 +72,14 @@ def is_repeater(block):
     }
 
 
+def is_torch(block):
+    return block in {
+        B["BLOCK_TORCH"],
+        B["BLOCK_REDSTONE_TORCH_OFF"],
+        B["BLOCK_REDSTONE_TORCH_ON"],
+    }
+
+
 class LabWorld:
     def __init__(self):
         self.blocks = {}
@@ -87,7 +101,7 @@ class LabWorld:
                 self.blocks[(cx, cz)] = block_data
                 self.redstone[(cx, cz)] = redstone_data
 
-    def set(self, wx, wy, wz, name, delay=1):
+    def set(self, wx, wy, wz, name, delay=1, torch_support=None):
         if wy < 0 or wy >= CHUNK_HEIGHT:
             raise ValueError(f"y out of range: {wy}")
         cx = floor_div(wx, CHUNK_SIZE)
@@ -99,7 +113,15 @@ class LabWorld:
         idx = block_index(lx, wy, lz)
         block = B[name]
         self.blocks[(cx, cz)][idx] = block
-        self.redstone[(cx, cz)][idx] = delay if is_repeater(block) else 0
+        if is_repeater(block):
+            self.redstone[(cx, cz)][idx] = delay
+        elif is_torch(block):
+            self.redstone[(cx, cz)][idx] = (
+                TORCH_SUPPORT_FLOOR if torch_support is None
+                else torch_support
+            )
+        else:
+            self.redstone[(cx, cz)][idx] = 0
 
     def get(self, wx, wy, wz):
         cx = floor_div(wx, CHUNK_SIZE)
@@ -188,6 +210,32 @@ def repeater_line_z(world, x, y, z0, z1, repeater_name, interval=10):
         distance += 1
 
 
+def place_rising_edge_detector(world, wx, wy, wz):
+    """Place the 2x2 core for a compact comparator rising-edge detector.
+
+    Footprint, viewed from above:
+
+        [keepout ] [side repeater]
+        [rear tap] [comparator   ] -> pulse out
+
+    The clock bus owns the adjacent cells feeding `rear_input` and the side
+    repeater's rear `delay_input`. Keep the rear tap at a weaker dust strength
+    than the delayed repeater output, so the comparator turns off once the side
+    input arrives.
+    """
+    world.set(wx, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(wx + 1, wy, wz, "BLOCK_COMPARATOR_EAST_OFF")
+    world.set(wx + 1, wy, wz - 1, "BLOCK_REPEATER_SOUTH_OFF")
+
+    return {
+        "rear_input": (wx, wy, wz),
+        "delay_input": (wx + 1, wy, wz - 2),
+        "side_repeater": (wx + 1, wy, wz - 1),
+        "output": (wx + 2, wy, wz),
+        "footprint": (wx, wz - 1, wx + 1, wz),
+    }
+
+
 def place_wide_comparator_latch(world, wx, wy, wz):
     feedback = [
         (1, 0), (2, 0), (3, 0), (3, 1), (3, 2), (3, 3),
@@ -228,7 +276,8 @@ def place_t_flip_flop(world, wx, wy, wz, button_input):
     world.set(wx + 20, wy, wz - 1, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
     world.set(wx + 24, wy, wz, "BLOCK_STONE")
-    world.set(wx + 25, wy, wz, "BLOCK_REDSTONE_TORCH_ON")
+    world.set(wx + 25, wy, wz, "BLOCK_REDSTONE_TORCH_ON",
+              torch_support=FACE_LEFT)
     wire_z(world, wx + 25, wy, wz - 1, wz - 3)
     wire_x(world, wx + 22, wx + 24, wy, wz - 3)
     world.set(wx + 21, wy, wz - 3, "BLOCK_REPEATER_WEST_OFF")
@@ -305,7 +354,8 @@ def place_counter_output_buses(world, cell_x, y, row_z, q_bus, nq_bus,
         world.set(nq_bus, y + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
 
     world.set(q_bus + 1, y + 4, decoder_input_z, "BLOCK_STONE")
-    world.set(q_bus, y + 4, decoder_input_z, "BLOCK_REDSTONE_TORCH_ON")
+    world.set(q_bus, y + 4, decoder_input_z, "BLOCK_REDSTONE_TORCH_ON",
+              torch_support=FACE_RIGHT)
     world.set(q_bus, y + 4, decoder_input_z + 1,
               "BLOCK_REDSTONE_WIRE_UNCONNECTED")
     world.set(q_bus, y + 4, decoder_input_z + 2,
@@ -373,7 +423,8 @@ def place_connected_counter_display(world,
 
         world.set(support_x, decoder_y, row_z, "BLOCK_STONE")
         world.set(support_x - 1, decoder_y, row_z,
-                  "BLOCK_REDSTONE_TORCH_ON")
+                  "BLOCK_REDSTONE_TORCH_ON",
+                  torch_support=FACE_RIGHT)
         wire_x(world, support_x - 2, segment_bus_min - 1,
                decoder_y, row_z)
         for rx in (support_x - 7, support_x - 13):
@@ -409,7 +460,8 @@ def place_redstone_clock(world):
     y = 5
     z = -24
     world.set(2, y, z, "BLOCK_STONE")
-    world.set(3, y, z, "BLOCK_REDSTONE_TORCH_ON")
+    world.set(3, y, z, "BLOCK_REDSTONE_TORCH_ON",
+              torch_support=FACE_LEFT)
     wire_x(world, 4, 7, y, z)
     world.set(8, y, z, "BLOCK_REPEATER_EAST_OFF", delay=2)
     wire_x(world, 9, 11, y, z)

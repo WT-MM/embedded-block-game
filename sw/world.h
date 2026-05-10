@@ -116,8 +116,8 @@ typedef struct {
      * encoding). Meaningful only for fluid cells (water/lava source or flow).
      * For any other block id this byte is ignored and should be left 0. */
     uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
-    /* Extra per-cell redstone metadata. Currently repeaters store delay ticks
-     * 1..4; non-redstone cells keep this at 0. */
+    /* Extra per-cell metadata. Repeaters store delay ticks 1..4; doors store
+     * remembered redstone power; torches store floor/side support. */
     uint8_t redstone_data[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     /* Scratch buffer used by rebuild_chunk_faces to assemble a ChunkMesh
      * snapshot, which is then published via live_mesh. Renderer must NOT
@@ -266,6 +266,8 @@ bool world_update_redstone(VoxelWorld *world, float dt);
 bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
 bool world_toggle_lever(VoxelWorld *world, int wx, int wy, int wz,
                         bool *powered_out);
+bool world_set_torch_support(VoxelWorld *world, int wx, int wy, int wz,
+                             uint8_t support_face);
 bool world_update_pressure_plates(VoxelWorld *world,
                                   float min_x,
                                   float max_x,

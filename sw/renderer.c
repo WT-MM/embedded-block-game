@@ -755,6 +755,7 @@ static Vec3 merged_face_center(Vec3 block_pos, BlockFace face,
     float h = height_eighths_to_world(height_eighths);
     float u = (float)(u_size > 0 ? u_size : 1);
     float v = (float)(v_size > 0 ? v_size : 1);
+    float vertical_extent = (v - 1.0f) + h;
 
     switch (face) {
     case FACE_TOP:
@@ -767,19 +768,19 @@ static Vec3 merged_face_center(Vec3 block_pos, BlockFace face,
                        block_pos.z + 0.5f * v };
     case FACE_LEFT:
         return (Vec3){ block_pos.x,
-                       block_pos.y + 0.5f * h,
+                       block_pos.y + 0.5f * vertical_extent,
                        block_pos.z + 0.5f * u };
     case FACE_RIGHT:
         return (Vec3){ block_pos.x + 1.0f,
-                       block_pos.y + 0.5f * h,
+                       block_pos.y + 0.5f * vertical_extent,
                        block_pos.z + 0.5f * u };
     case FACE_FRONT:
         return (Vec3){ block_pos.x + 0.5f * u,
-                       block_pos.y + 0.5f * h,
+                       block_pos.y + 0.5f * vertical_extent,
                        block_pos.z };
     case FACE_BACK:
         return (Vec3){ block_pos.x + 0.5f * u,
-                       block_pos.y + 0.5f * h,
+                       block_pos.y + 0.5f * vertical_extent,
                        block_pos.z + 1.0f };
     default:
         return block_pos;
@@ -1873,6 +1874,12 @@ static uint8_t choose_face_texture_lod(const RenderContext *ctx,
 {
     (void)ctx;
     static int texture_lod_enabled = -1;
+    static int water_texture_lod = -2;
+
+    if (water_texture_lod == -2)
+        water_texture_lod = env_int_or_default("VOXEL_WATER_TEXTURE_LOD", 2, -1, 2);
+    if (base_tile == TEX_TILE_WATER && water_texture_lod >= 0)
+        return texture_lod_tile_id(base_tile, water_texture_lod);
 
     if (texture_lod_enabled < 0)
         texture_lod_enabled = env_flag("VOXEL_TEXTURE_LOD", true) ? 1 : 0;
@@ -2600,8 +2607,8 @@ static void torch_axis_for_support(Vec3 block_pos,
                                    Vec3 *base_out,
                                    Vec3 *tip_out)
 {
-    const float wall_base = 0.18f;
-    const float wall_tip = 0.48f;
+    const float wall_base = 0.08f;
+    const float wall_tip = 0.42f;
     Vec3 base = { block_pos.x + 0.5f,
                   block_pos.y,
                   block_pos.z + 0.5f };
@@ -2645,7 +2652,7 @@ static void torch_face_vertices(Vec3 block_pos, uint8_t face,
 {
     const bool side_support =
         support_face >= FACE_LEFT && support_face <= FACE_BACK;
-    const float half = side_support ? 0.18f : 0.24f;
+    const float half = side_support ? 0.12f : 0.24f;
     Vec3 base;
     Vec3 tip;
     float ax;

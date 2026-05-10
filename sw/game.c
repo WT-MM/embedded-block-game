@@ -95,6 +95,7 @@ typedef struct {
     int hit_x;
     int hit_y;
     int hit_z;
+    BlockFace hit_face;
     int place_x;
     int place_y;
     int place_z;
@@ -635,10 +636,12 @@ static bool ray_intersects_block_bounds(Vec3 origin,
                                         int wy,
                                         int wz,
                                         BlockTraceBounds bounds,
-                                        float max_distance)
+                                        float max_distance,
+                                        BlockFace *face_out)
 {
     float t_min = 0.0f;
     float t_max = max_distance;
+    BlockFace hit_face = FACE_TOP;
     float box_min[3] = {
         (float)wx + bounds.min_x,
         (float)wy + bounds.min_y,
@@ -669,15 +672,62 @@ static bool ray_intersects_block_bounds(Vec3 origin,
             a = b;
             b = tmp;
         }
-        if (a > t_min)
+        if (a > t_min) {
             t_min = a;
+            if (axis == 0)
+                hit_face = inv > 0.0f ? FACE_LEFT : FACE_RIGHT;
+            else if (axis == 1)
+                hit_face = inv > 0.0f ? FACE_BOTTOM : FACE_TOP;
+            else
+                hit_face = inv > 0.0f ? FACE_FRONT : FACE_BACK;
+        }
         if (b < t_max)
             t_max = b;
         if (t_min > t_max)
             return false;
     }
 
+    if (face_out)
+        *face_out = hit_face;
     return t_max >= 0.0f && t_min <= max_distance;
+}
+
+static bool block_face_place_delta(BlockFace face, int *dx, int *dy, int *dz)
+{
+    int out_dx = 0;
+    int out_dy = 0;
+    int out_dz = 0;
+
+    switch (face) {
+    case FACE_TOP:
+        out_dy = 1;
+        break;
+    case FACE_BOTTOM:
+        out_dy = -1;
+        break;
+    case FACE_LEFT:
+        out_dx = -1;
+        break;
+    case FACE_RIGHT:
+        out_dx = 1;
+        break;
+    case FACE_FRONT:
+        out_dz = -1;
+        break;
+    case FACE_BACK:
+        out_dz = 1;
+        break;
+    default:
+        return false;
+    }
+
+    if (dx)
+        *dx = out_dx;
+    if (dy)
+        *dy = out_dy;
+    if (dz)
+        *dz = out_dz;
+    return true;
 }
 
 static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
@@ -741,11 +791,7 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
                                float max_distance, BlockTarget *out)
 {
     Vec3 dir = camera_forward(cam);
-    bool have_last_air = false;
     bool have_prev_cell = false;
-    int last_air_x = 0;
-    int last_air_y = 0;
-    int last_air_z = 0;
     int prev_x = 0;
     int prev_y = 0;
     int prev_z = 0;
@@ -777,34 +823,43 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
 
         block = world_get_block(world, block_x, block_y, block_z);
         /* Treat liquids as see-through for targeting, but let passable
-         * placeables like flowers still be hit and broken. The last
-         * trace-passable cell becomes the placement position. */
+         * placeables like flowers still be hit and broken. Placement uses the
+         * actual AABB face hit, so side/top clicks stay distinct even near
+         * block edges. */
         if (!game_block_is_trace_passable(block)) {
-            BlockTraceBounds bounds;
+            BlockTraceBounds bounds = {
+                .min_x = 0.0f, .max_x = 1.0f,
+                .min_y = 0.0f, .max_y = 1.0f,
+                .min_z = 0.0f, .max_z = 1.0f,
+            };
+            BlockFace hit_face = FACE_TOP;
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
 
-            if (block_trace_bounds(block, &bounds) &&
-                !ray_intersects_block_bounds(cam->position, dir,
+            (void)block_trace_bounds(block, &bounds);
+            if (!ray_intersects_block_bounds(cam->position, dir,
                                              block_x, block_y, block_z,
-                                             bounds, max_distance))
+                                             bounds, max_distance,
+                                             &hit_face))
                 continue;
             if (!out)
                 return true;
+            if (!block_face_place_delta(hit_face, &dx, &dy, &dz))
+                continue;
 
             out->hit = true;
-            out->place_valid = have_last_air;
+            out->place_valid =
+                block_y + dy >= 0 && block_y + dy < WORLD_CHUNK_HEIGHT;
             out->hit_x = block_x;
             out->hit_y = block_y;
             out->hit_z = block_z;
-            out->place_x = last_air_x;
-            out->place_y = last_air_y;
-            out->place_z = last_air_z;
+            out->hit_face = hit_face;
+            out->place_x = block_x + dx;
+            out->place_y = block_y + dy;
+            out->place_z = block_z + dz;
             return true;
         }
-
-        have_last_air = true;
-        last_air_x = block_x;
-        last_air_y = block_y;
-        last_air_z = block_z;
     }
 
     return false;
@@ -1248,27 +1303,23 @@ static bool torch_support_face_for_target(const VoxelWorld *world,
     if (!world || !target || !target->hit || !target->place_valid)
         return false;
 
-    if (target->hit_x == target->place_x &&
-        target->hit_z == target->place_z &&
-        target->hit_y == target->place_y - 1) {
+    switch (target->hit_face) {
+    case FACE_TOP:
         support_face = CHUNK_TORCH_SUPPORT_FLOOR;
-    } else if (target->hit_y == target->place_y &&
-               target->hit_z == target->place_z &&
-               target->hit_x == target->place_x - 1) {
+        break;
+    case FACE_RIGHT:
         support_face = FACE_LEFT;
-    } else if (target->hit_y == target->place_y &&
-               target->hit_z == target->place_z &&
-               target->hit_x == target->place_x + 1) {
+        break;
+    case FACE_LEFT:
         support_face = FACE_RIGHT;
-    } else if (target->hit_y == target->place_y &&
-               target->hit_x == target->place_x &&
-               target->hit_z == target->place_z - 1) {
+        break;
+    case FACE_BACK:
         support_face = FACE_FRONT;
-    } else if (target->hit_y == target->place_y &&
-               target->hit_x == target->place_x &&
-               target->hit_z == target->place_z + 1) {
+        break;
+    case FACE_FRONT:
         support_face = FACE_BACK;
-    } else {
+        break;
+    default:
         return false;
     }
 

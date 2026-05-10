@@ -45,6 +45,15 @@ static inline bool env_flag(const char *name, bool default_value)
     return value ? env_value_is_true(value) : default_value;
 }
 
+static inline bool env_flag_fallback(const char *primary,
+                                     const char *fallback,
+                                     bool default_value)
+{
+    const char *value = env_get_nonempty_fallback(primary, fallback);
+
+    return value ? env_value_is_true(value) : default_value;
+}
+
 static inline bool env_parse_long_value(const char *value, long *out)
 {
     char *end = NULL;

@@ -10,13 +10,12 @@ Landmarks from spawn:
 - West plot: a comparator latch. The west button sets it, the north button
   resets it, and the lamp marks the latched output.
 - South plot: a real three-bit ripple counter wired into a constructed
-  seven-segment decoder matrix. The gold count button and diamond-marked
-  reset button sit between the counter and display so the digit remains
-  visible while keeping the live circuit inside the nearby chunks. The nearby
-  lamps expose the counter state, and the large lamp digit shows the decoded
-  value.
+  seven-segment decoder matrix. The count button sits just west of the segment
+  lamps, so the decoded digit remains visible while pressing it. The three
+  reset buttons are beside the flip-flop cells; pressing them from low bit to
+  high bit clears the counter.
 - South-east display matrix: the Q/NQ literal buses, invalid-row torches,
-  segment taps, repeaters, segment bars, and lamps are all normal redstone
+  segment taps, repeaters, and segment lamps are all normal redstone
   parts fed by the counter outputs.
 
 The old crafting-table display hook has been removed. Buttons now only inject
@@ -32,4 +31,5 @@ ticks.
 
 Regenerate the raw tracked world with
 `python3 worlds/redstone_lab/generate_redstone_lab.py` from the repository root.
-The checked-in chunks are saved after the counter settles to zero.
+The checked-in chunks are raw circuit chunks. Use the reset buttons to clear
+the counter before stepping it.

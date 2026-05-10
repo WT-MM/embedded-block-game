@@ -421,6 +421,10 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_SUGAR_CANE: "reeds.tga",
 }
 
+REQUIRED_SOURCE_TEXTURE_TILES = {
+    TEX_TILE_BRICKS,
+}
+
 CACTUS_SOURCE_TILES = {
     TEX_TILE_CACTUS_SIDE,
     TEX_TILE_CACTUS_TOP,
@@ -718,11 +722,19 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
     try:
         from PIL import Image, ImageDraw
     except ImportError:
+        if tile in REQUIRED_SOURCE_TEXTURE_TILES:
+            raise RuntimeError(
+                f"Pillow is required to load source texture {name!r}"
+            )
         return None
 
     root = Path(__file__).resolve().parents[1]
     source_path = root / "assets" / "minecraft_source" / name
     if not source_path.exists():
+        if tile in REQUIRED_SOURCE_TEXTURE_TILES:
+            raise FileNotFoundError(
+                f"required source texture missing: {source_path}"
+            )
         return None
 
     with Image.open(source_path) as image:
@@ -1407,8 +1419,6 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return gravel(x, y)
     if tile == TEX_TILE_COBBLESTONE:
         return cobblestone(x, y)
-    if tile == TEX_TILE_BRICKS:
-        return bricks(x, y)
     if tile == TEX_TILE_OBSIDIAN:
         return obsidian(x, y)
     if tile == TEX_TILE_SANDSTONE:

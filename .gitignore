@@ -80,6 +80,8 @@ worlds/*
 !worlds/README.md
 !worlds/redstone_lab/
 !worlds/redstone_lab/**
+!worlds/redstone_lab_2/
+!words/redstone_lab_2/**
 
 # --- Filesystem mount stub from old workflow ---
 usr/

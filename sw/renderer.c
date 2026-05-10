@@ -1610,6 +1610,13 @@ static uint8_t choose_face_texture_lod(const RenderContext *ctx,
                                        const CameraVertex face_cam[4])
 {
     (void)ctx;
+    static int texture_lod_enabled = -1;
+
+    if (texture_lod_enabled < 0)
+        texture_lod_enabled = env_flag("VOXEL_TEXTURE_LOD", true) ? 1 : 0;
+    if (!texture_lod_enabled)
+        return base_tile;
+
     float nearest_z = face_cam[0].z;
     int lod = 0;
 
@@ -1702,15 +1709,17 @@ static void merged_face_vertices(Vec3 block_pos, BlockFace face,
 /*
  * Runtime toggle for merged quad emission with QUAD_TEX_REPEAT_UV. Default ON:
  * far chunks were greedily meshed specifically to keep the descriptor stream
- * small enough for steady input/frame pacing. Set BLOCK_GAME_MERGE_FAR_QUADS=0
- * to fall back to unit-quad expansion for visual A/B testing.
+ * small enough for steady input/frame pacing. Set VOXEL_MERGE_FAR_QUADS=0 to
+ * fall back to unit-quad expansion for visual A/B testing.
  */
 static bool merged_emit_repeat_uv_enabled(void)
 {
     static int cached = -1;
 
     if (cached < 0)
-        cached = env_flag("BLOCK_GAME_MERGE_FAR_QUADS", true) ? 1 : 0;
+        cached = env_flag_fallback("VOXEL_MERGE_FAR_QUADS",
+                                   "BLOCK_GAME_MERGE_FAR_QUADS",
+                                   true) ? 1 : 0;
     return cached != 0;
 }
 
@@ -3383,6 +3392,15 @@ static bool cube_face_back_facing(BlockFace face,
     }
 }
 
+static bool fast_cube_backface_cull_enabled(void)
+{
+    static int cached = -1;
+
+    if (cached < 0)
+        cached = env_flag("VOXEL_FAST_BACKFACE_CULL", false) ? 1 : 0;
+    return cached != 0;
+}
+
 int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                         float time_seconds)
 {
@@ -3438,13 +3456,15 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
      * to be Z-rejected and we'd blend glass against sky instead of against
      * the stone behind it.
      *
-     * Early back-face cull: face normals are axis-aligned (exactly one
+     * Optional early back-face cull: face normals are axis-aligned (exactly one
      * component ±1, rest zero). The full dot-product in is_face_visible
      * reduces to a single comparison per face direction:
      *   sign > 0 axis: skip if (block_pos[axis] + 1.0) - cam[axis] >= 0
      *   sign < 0 axis: skip if   block_pos[axis]        - cam[axis] <= 0
      * Doing this before choose_chunk_face_light_flags saves the light
-     * lookup + function call for all back-facing faces (~50% of faces). */
+     * lookup + function call for all back-facing faces (~50% of faces), but
+     * keep the older per-face cull as the default while visual artifacts are
+     * being isolated. */
     const Vec3 cam_pos = ctx->current_camera.position;
     ctx->occlusion_pass = ctx->occlusion_enabled ?
                           OCCLUSION_PASS_OPAQUE_WORLD :
@@ -3468,7 +3488,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
             float wy = (float)wyi;
             float wz = (float)wzi;
 
-            if (cube_face_back_facing((BlockFace)face->face,
+            if (fast_cube_backface_cull_enabled() &&
+                cube_face_back_facing((BlockFace)face->face,
                                       wx, wy, wz, cam_pos))
                 continue;
 
@@ -4114,8 +4135,8 @@ bool renderer_draw_crosshair(RenderContext *ctx)
 {
     const float cx = SCREEN_WIDTH * 0.5f;
     const float cy = SCREEN_HEIGHT * 0.5f;
-    const float half = 6.0f * HUD_SCALE;
-    const float thickness = 1.0f * HUD_SCALE;
+    const float half = 4.5f * HUD_SCALE;
+    const float thickness = 0.75f * HUD_SCALE;
     const uint8_t white = 5;
     bool ok = true;
 

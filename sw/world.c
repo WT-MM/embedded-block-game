@@ -217,7 +217,9 @@ static bool greedy_meshing_enabled(void)
     static int cached = -1;
 
     if (cached < 0)
-        cached = env_flag("BLOCK_GAME_GREEDY_MESH", true) ? 1 : 0;
+        cached = env_flag_fallback("VOXEL_GREEDY_MESH",
+                                   "BLOCK_GAME_GREEDY_MESH",
+                                   true) ? 1 : 0;
     return cached != 0;
 }
 
@@ -2477,8 +2479,8 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                      * Keep nearby chunks as unit quads where T-junctions and
                      * UV shimmer are visible, but merge far opaque faces by
                      * default to keep the FPGA descriptor stream small. Set
-                     * BLOCK_GAME_GREEDY_MESH=0 to disable the far-chunk merge
-                     * while investigating mesh artifacts.
+                     * VOXEL_GREEDY_MESH=0 to disable the far-chunk merge while
+                     * investigating mesh artifacts.
                      */
                     if (!is_near && greedy_meshing_enabled()) {
                         while (u + merge_w < width &&

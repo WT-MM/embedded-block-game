@@ -1,8 +1,8 @@
 Counter Circuit
 ===============
 
-Target behavior: a visible, real redstone, three-bit modulo-8 counter with
-asynchronous reset and a constructed seven-segment decoder.
+Target behavior: a visible, real redstone, three-bit modulo-8 ripple counter
+with reset controls and a constructed seven-segment decoder.
 
 Counter netlist
 ---------------
@@ -10,20 +10,12 @@ Counter netlist
 State bits are `Q0`, `Q1`, and `Q2`, where `Q0` is the least significant bit.
 The count button must create one clean edge pulse.
 
-Equivalent next-state equations:
+The count input drives `Q0`. The `NQ0` output directly clocks `Q1`, and `NQ1`
+directly clocks `Q2`, matching the tested ripple-counter fixture in
+`sw/tests/world_chunk_test.c`.
 
-- `D0 = not Q0`
-- `D1 = Q1 xor Q0`
-- `D2 = Q2 xor (Q0 and Q1)`
-
-Equivalent T flip-flop inputs:
-
-- `T0 = 1`
-- `T1 = Q0`
-- `T2 = Q0 and Q1`
-
-Reset forces all state bits low and must not pass through the count ripple
-path, or later reset pulses can re-toggle an earlier-cleared bit.
+Reset is asynchronous per flip-flop. In this lab layout, clear from low bit to
+high bit (`Q0`, then `Q1`, then `Q2`) before stepping the counter.
 
 Seven-segment decoder
 ---------------------
@@ -48,13 +40,11 @@ Layout constraints
 
 - Treat the layout like a two-layer board: named buses first, then gates,
   then display fanout.
-- Keep the operator controls at the electrical center of the counter/display,
-  not at one edge.
+- Keep the count control next to the visible display.
 - The complete live counter/display path should fit inside the chunks loaded
   around that operator position at low render distance.
 - Do not run a segment bus through another segment's driver row or lamp row.
-- Horizontal display bars are inset between the side columns; top and bottom
-  do not share the side-column lamp blocks.
+- Segment lamps are driven directly by the constructed decoder outputs.
 - Prefer short named nets over long row-wide wires. If a net must run farther
   than a few blocks, it should be an intentional bus with repeaters and no
   adjacent foreign net.

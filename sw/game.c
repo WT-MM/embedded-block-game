@@ -415,6 +415,35 @@ static int read_max_physics_steps_per_frame(void)
                                      MAX_PHYSICS_STEPS_PER_FRAME);
 }
 
+static bool read_greedy_mesh_enabled(void)
+{
+    return env_flag_fallback("VOXEL_GREEDY_MESH",
+                             "BLOCK_GAME_GREEDY_MESH",
+                             true);
+}
+
+static bool read_merged_far_quads_enabled(void)
+{
+    return env_flag_fallback("VOXEL_MERGE_FAR_QUADS",
+                             "BLOCK_GAME_MERGE_FAR_QUADS",
+                             true);
+}
+
+static bool read_texture_lod_enabled(void)
+{
+    return env_flag("VOXEL_TEXTURE_LOD", true);
+}
+
+static bool read_hw_partial_band_flush_enabled(void)
+{
+    return env_flag("VOXEL_HW_PARTIAL_BAND_FLUSH", true);
+}
+
+static bool read_fast_backface_cull_enabled(void)
+{
+    return env_flag("VOXEL_FAST_BACKFACE_CULL", false);
+}
+
 static float read_camera_fov_degrees(void)
 {
     return env_float_or_default("VOXEL_FOV_DEG",
@@ -3985,6 +4014,11 @@ int main(void)
     int render_distance_chunks = read_render_distance_chunks();
     int stream_chunks_per_frame = read_stream_chunks_per_frame();
     int max_physics_steps_per_frame = read_max_physics_steps_per_frame();
+    bool greedy_mesh_enabled = read_greedy_mesh_enabled();
+    bool merged_far_quads_enabled = read_merged_far_quads_enabled();
+    bool texture_lod_enabled = read_texture_lod_enabled();
+    bool hw_partial_band_flush_enabled = read_hw_partial_band_flush_enabled();
+    bool fast_backface_cull_enabled = read_fast_backface_cull_enabled();
     static SelectedWorld selected_world;
     int selected_hotbar_slot = 0;
     int selected_hotbar_page = 0;
@@ -4104,6 +4138,13 @@ home_menu_start:
         printf("Streaming: chunks_per_frame=%d near_mesh_radius=%d\n",
                world_stream_chunks_per_frame(&world),
                world_near_chunk_radius(&world));
+        printf("Mesh opts: greedy=%s merged_far_quads=%s (set VOXEL_GREEDY_MESH=0 VOXEL_MERGE_FAR_QUADS=0 to disable)\n",
+               greedy_mesh_enabled ? "on" : "off",
+               merged_far_quads_enabled ? "on" : "off");
+        printf("Visual opts: texture_lod=%s partial_band_flush=%s fast_backface=%s (set VOXEL_TEXTURE_LOD=0 VOXEL_HW_PARTIAL_BAND_FLUSH=0 to disable; VOXEL_FAST_BACKFACE_CULL=1 to test)\n",
+               texture_lod_enabled ? "on" : "off",
+               hw_partial_band_flush_enabled ? "on" : "off",
+               fast_backface_cull_enabled ? "on" : "off");
         printf("Physics: max_steps_per_frame=%d (0=unlimited, env VOXEL_MAX_PHYSICS_STEPS_PER_FRAME)\n",
                max_physics_steps_per_frame);
         printf("Mesh worker: %s\n", mesh_worker_running ? "on" : "off");

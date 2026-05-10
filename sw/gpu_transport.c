@@ -121,6 +121,7 @@ static void init_band_primers(void)
 static int g_diag_bbox;
 static int g_diag_cache;
 static int g_hw_band_reuse;
+static int g_hw_partial_band_flush;
 static unsigned g_diag_frame_count;
 static int g_diag_log_flip_next;
 
@@ -1024,7 +1025,8 @@ static int submit_hw_prebinned(GPUTransport *transport,
             primer_only ? NULL : bins[band].flat_buf;
         size_t submit_bytes =
             primer_only ? 0 : bins[band].flat_used;
-        if (!primer_only && bins[band].has_scene_rows && band_cache &&
+        if (g_hw_partial_band_flush &&
+            !primer_only && bins[band].has_scene_rows && band_cache &&
             (!transport->hw_sky_gradient_clear_enabled ||
              band_cache->sky_epoch == transport->hw_sky_epoch)) {
             flush_y_min = bins[band].scene_y_min;
@@ -1782,6 +1784,14 @@ GPUTransport *gpu_transport_open(void)
         if (g_hw_band_reuse && debug_enabled)
             fprintf(stderr,
                     "renderer: VOXEL_HW_BAND_REUSE enabled (full-band skip path; set =0 to disable)\n");
+    }
+
+    {
+        g_hw_partial_band_flush =
+            env_flag("VOXEL_HW_PARTIAL_BAND_FLUSH", true) ? 1 : 0;
+        if (g_hw_partial_band_flush && debug_enabled)
+            fprintf(stderr,
+                    "renderer: VOXEL_HW_PARTIAL_BAND_FLUSH enabled (row-window flush path; set =0 to disable)\n");
     }
 
     if (env_flag("VOXEL_PIPELINE_FRAMES",

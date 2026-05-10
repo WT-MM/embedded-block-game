@@ -254,84 +254,19 @@ SEGMENT_PATTERNS = [
     SEG_A | SEG_B | SEG_C,
 ]
 
-DECODER_ROW_SPACING = 2
-
-
-DISPLAY_SEGMENT_BUSES = [
-    58,  # A: top
-    66,  # B: upper right
-    68,  # C: lower right
-    70,  # D: bottom
-    52,  # E: lower left
-    54,  # F: upper left
-    50,  # G: middle
-]
-
-
-DISPLAY_SEGMENT_DRIVERS = [
-    [(x, 63) for x in range(57, 64)],
-    [(65, z) for z in range(66, 69)],
-    [(65, z) for z in range(72, 75)],
-    [(x, 75) for x in range(57, 64)],
-    [(55, z) for z in range(72, 75)],
-    [(55, z) for z in range(66, 69)],
-    [(x, 70) for x in range(57, 64)],
-]
-
-
-DISPLAY_SEGMENT_LAMPS = [
-    [(x, 64) for x in range(57, 64)],
-    [(64, z) for z in range(66, 69)],
-    [(64, z) for z in range(72, 75)],
-    [(x, 76) for x in range(57, 64)],
-    [(56, z) for z in range(72, 75)],
-    [(56, z) for z in range(66, 69)],
-    [(x, 71) for x in range(57, 64)],
-]
-
-
-DISPLAY_SEGMENT_REPEATERS = [
-    [],
-    [],
-    [],
-    [(66, 75, "BLOCK_REPEATER_WEST_OFF"),
-     (61, 75, "BLOCK_REPEATER_WEST_OFF")],
-    [],
-    [],
-    [],
-]
-
-
-DISPLAY_SEGMENT_BUS_REPEATERS = [
-    [],
-    [],
-    [],
-    [],
-    [],
-    [],
-    [],
-]
+DECODER_ROW_SPACING = 3
 
 
 def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
+    lamp_z = decoder_z - 6
     display_lamps = []
 
     for segment, bus_x in enumerate(segment_bus):
-        max_driver_z = max(z for _, z in DISPLAY_SEGMENT_DRIVERS[segment])
-        bus_end_z = max(max_driver_z, bus_z1)
-
-        wire_z(world, bus_x, wy, decoder_z, bus_end_z)
-        for rz in DISPLAY_SEGMENT_BUS_REPEATERS[segment]:
-            if decoder_z < rz < bus_end_z:
-                world.set(bus_x, wy, rz, "BLOCK_REPEATER_SOUTH_OFF")
-
-        for dx, dz in DISPLAY_SEGMENT_DRIVERS[segment]:
-            wire_x(world, bus_x, dx, wy, dz)
-        for rx, rz, repeater in DISPLAY_SEGMENT_REPEATERS[segment]:
-            world.set(rx, wy, rz, repeater)
-        for lx, lz in DISPLAY_SEGMENT_LAMPS[segment]:
-            world.set(lx, wy, lz, "BLOCK_LAMP_OFF")
-            display_lamps.append((lx, wy, lz))
+        wire_z(world, bus_x, wy, lamp_z + 1, bus_z1)
+        for rz in range(bus_z1 - 2, lamp_z, -9):
+            world.set(bus_x, wy, rz, "BLOCK_REPEATER_OFF")
+        world.set(bus_x, wy, lamp_z, "BLOCK_LAMP_OFF")
+        display_lamps.append((bus_x, wy, lamp_z))
 
     return display_lamps
 
@@ -339,11 +274,11 @@ def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
 def place_counter_output_buses(world, cell_x, y, row_z, q_bus, nq_bus,
                                decoder_z, bus_z1):
     source_z = row_z + 14
+    decoder_input_z = decoder_z - 4
 
     world.set(nq_bus, y, row_z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
     world.set(nq_bus, y, row_z + 1, "BLOCK_REPEATER_SOUTH_OFF")
     wire_z(world, nq_bus, y, row_z + 2, row_z + 6)
-    world.set(nq_bus - 1, y, row_z + 6, "BLOCK_LAMP_OFF")
 
     world.set(nq_bus, y, row_z + 7, "BLOCK_REPEATER_SOUTH_OFF")
     world.set(nq_bus, y, row_z + 8, "BLOCK_STONE")
@@ -357,39 +292,44 @@ def place_counter_output_buses(world, cell_x, y, row_z, q_bus, nq_bus,
     world.set(nq_bus, y + 3, row_z + 13, "BLOCK_REPEATER_SOUTH_OFF")
     world.set(nq_bus, y + 3, row_z + 14, "BLOCK_STONE")
     world.set(nq_bus, y + 4, source_z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-    wire_z(world, nq_bus, y + 4, source_z + 1, bus_z1)
-    for rz in range(source_z + 7, bus_z1, 8):
+    wire_z(world, nq_bus, y + 4, source_z + 1, decoder_input_z)
+    for rz in range(source_z + 7, decoder_input_z, 8):
         world.set(nq_bus, y + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
 
-    world.set(q_bus + 1, y + 4, source_z, "BLOCK_STONE")
-    world.set(q_bus, y + 4, source_z, "BLOCK_REDSTONE_TORCH_ON")
-    wire_z(world, q_bus, y + 4, source_z + 1, bus_z1)
-    for rz in range(source_z + 7, bus_z1, 8):
+    world.set(nq_bus, y + 4, decoder_input_z + 1,
+              "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(nq_bus, y + 4, decoder_input_z + 2,
+              "BLOCK_REPEATER_SOUTH_OFF")
+    wire_z(world, nq_bus, y + 4, decoder_input_z + 3, bus_z1)
+    for rz in range(decoder_z + 2, bus_z1, 9):
+        world.set(nq_bus, y + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
+
+    world.set(q_bus + 1, y + 4, decoder_input_z, "BLOCK_STONE")
+    world.set(q_bus, y + 4, decoder_input_z, "BLOCK_REDSTONE_TORCH_ON")
+    world.set(q_bus, y + 4, decoder_input_z + 1,
+              "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(q_bus, y + 4, decoder_input_z + 2,
+              "BLOCK_REPEATER_SOUTH_OFF")
+    wire_z(world, q_bus, y + 4, decoder_input_z + 3, bus_z1)
+    for rz in range(decoder_z + 2, bus_z1, 9):
         world.set(q_bus, y + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
 
 
-def route_counter_carry(world, y, source_x, source_z,
-                        input_x, input_z):
-    branch_x = source_x + 2
-    mid_z = source_z + (input_z - source_z) // 2
-
-    wire_x(world, source_x, branch_x, y, source_z)
-    repeater_line_z(world, branch_x, y, source_z + 1, mid_z,
-                    "BLOCK_REPEATER_SOUTH_OFF", interval=6)
-    repeater_line_x(world, branch_x, input_x - 1, y, mid_z,
-                    "BLOCK_REPEATER_WEST_OFF", interval=6)
-    repeater_line_z(world, input_x - 1, y, mid_z + 1, input_z,
-                    "BLOCK_REPEATER_SOUTH_OFF", interval=6)
-
-
 def place_counter_controls(world, y, first_input_x, first_input_z,
-                           reset_targets):
-    count_x = first_input_x - 1
-    world.set(count_x, y - 1, first_input_z, "BLOCK_GOLD_BLOCK")
-    world.set(count_x, y, first_input_z, "BLOCK_BUTTON")
+                           reset_targets, display_lamps):
+    count_button_x = min(x for x, _, _ in display_lamps) - 5
+    count_button_z = display_lamps[0][2]
+    count_input_x = first_input_x - 1
+
+    world.set(count_button_x, y, count_button_z, "BLOCK_BUTTON")
+    repeater_line_z(world, count_input_x, y, count_button_z,
+                    first_input_z, "BLOCK_REPEATER_OFF", interval=8)
+
+    for reset_x, reset_z in reset_targets:
+        world.set(reset_x, y, reset_z, "BLOCK_BUTTON")
 
     return {
-        "button": (count_x, y, first_input_z),
+        "button": (count_button_x, y, count_button_z),
         "reset": reset_targets[-1],
     }
 
@@ -397,27 +337,24 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
 def place_connected_counter_display(world,
                                     wy=5,
                                     decoder_y=7,
-                                    decoder_z=60):
-    cell_xs = [4, 12, 20]
-    row_zs = [8, 26, 44]
+                                    decoder_z=36):
+    cell_xs = [-28, 2, 32]
+    row_zs = [16, 16, 16]
     q_bus = [cell_x + 24 for cell_x in cell_xs]
     nq_bus = [cell_x + 26 for cell_x in cell_xs]
-    support_x = max(nq_bus) + 2
-    row_start_x = min(q_bus) - 1
-    row_end_x = support_x - 1
+    support_x = min(q_bus) - 3
+    row_start_x = support_x + 1
+    row_end_x = max(nq_bus) + 1
     bus_z1 = decoder_z + 7 * DECODER_ROW_SPACING + 1
-    segment_bus = DISPLAY_SEGMENT_BUSES
+    segment_bus = [support_x - 4 - segment * 2 for segment in range(7)]
+    segment_bus_min = min(segment_bus)
     segment_bus_max = max(segment_bus)
 
-    for cell_x, row_z in zip(cell_xs, row_zs):
+    for bit, (cell_x, row_z) in enumerate(zip(cell_xs, row_zs)):
         place_t_flip_flop(world, cell_x, wy, row_z, False)
-    world.set(cell_xs[0], wy, row_zs[0],
-              "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
-    route_counter_carry(world, wy, nq_bus[0], row_zs[0],
-                        cell_xs[1], row_zs[1])
-    route_counter_carry(world, wy, nq_bus[1], row_zs[1],
-                        cell_xs[2], row_zs[2])
+    wire_x(world, nq_bus[0], cell_xs[1] - 1, wy, row_zs[0])
+    wire_x(world, nq_bus[1], cell_xs[2] - 1, wy, row_zs[1])
 
     for cell_x, row_z, qx, nqx in zip(cell_xs, row_zs, q_bus, nq_bus):
         place_counter_output_buses(world, cell_x, wy, row_z,
@@ -427,20 +364,17 @@ def place_connected_counter_display(world,
         row_z = decoder_z + value * DECODER_ROW_SPACING
         wire_x(world, row_start_x, row_end_x, decoder_y, row_z)
         literal_x = set(q_bus + nq_bus)
-        for rx in range(row_start_x + 5, row_end_x, 8):
+        for rx in range(row_end_x - 5, row_start_x, -8):
             if rx not in literal_x:
-                world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_EAST_OFF")
+                world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_WEST_OFF")
 
         world.set(support_x, decoder_y, row_z, "BLOCK_STONE")
-        world.set(support_x + 1, decoder_y, row_z,
+        world.set(support_x - 1, decoder_y, row_z,
                   "BLOCK_REDSTONE_TORCH_ON")
-        wire_x(world, support_x + 2, segment_bus_max + 1,
+        wire_x(world, support_x - 2, segment_bus_min - 1,
                decoder_y, row_z)
-        for rx in (support_x + 5, support_x + 11,
-                   support_x + 19, support_x + 27):
-            if rx < segment_bus_max:
-                world.set(rx, decoder_y, row_z,
-                          "BLOCK_REPEATER_EAST_OFF")
+        for rx in (support_x - 7, support_x - 13):
+            world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_WEST_OFF")
 
         for bit in range(3):
             bus_x = nq_bus[bit] if value & (1 << bit) else q_bus[bit]
@@ -451,10 +385,10 @@ def place_connected_counter_display(world,
     reset_targets = [(cell_x + 21, row_z - 1)
                      for cell_x, row_z in zip(cell_xs, row_zs)]
     controls = place_counter_controls(world, wy, cell_xs[0], row_zs[0],
-                                      reset_targets)
+                                      reset_targets, display_lamps)
 
     for value in range(8):
-        pattern = SEGMENT_PATTERNS[(value - 6) & 7]
+        pattern = SEGMENT_PATTERNS[value]
         row_z = decoder_z + value * DECODER_ROW_SPACING
         for segment, bus_x in enumerate(segment_bus):
             if pattern & (1 << segment):
@@ -463,8 +397,7 @@ def place_connected_counter_display(world,
     return {
         "button": controls["button"],
         "reset": controls["reset"],
-        "bit_lamps": [(nqx - 1, wy, row_z + 6)
-                      for nqx, row_z in zip(nq_bus, row_zs)],
+        "bit_lamps": [],
         "display_lamps": display_lamps,
     }
 

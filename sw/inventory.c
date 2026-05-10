@@ -1092,6 +1092,8 @@ ItemID survival_drop_for_block(BlockID block)
         return ITEM_DIAMOND;
     case BLOCK_LEAVES:
         return ITEM_NONE;
+    case BLOCK_BUTTON_PRESSED:
+        return (ItemID)BLOCK_BUTTON;
     case BLOCK_RED_MUSHROOM:
         return ITEM_RED_MUSHROOM;
     case BLOCK_BROWN_MUSHROOM:

@@ -14,6 +14,7 @@
 #define CHUNK_FACE_CROSS_A ((uint8_t)NUM_FACES)
 #define CHUNK_FACE_CROSS_B ((uint8_t)(NUM_FACES + 1))
 #define CHUNK_FACE_FLAT ((uint8_t)(NUM_FACES + 2))
+#define CHUNK_TORCH_SUPPORT_FLOOR 8u
 #define WORLD_MAX_FALLING_BLOCKS 256
 #define WORLD_MAX_REDSTONE_PULSES 128
 #define WORLD_MAX_REDSTONE_REPEATER_STATES 1024
@@ -36,10 +37,10 @@ typedef struct {
     uint8_t v_size;
     uint8_t sky_light;
     uint8_t block_light;
-    /* Vertical extent of the block in 1/8 units (1..8). 8 = full block.
-     * Flowing fluids use values < 8: the top Y of TOP and side faces is
-     * lowered to y + height/8. All other blocks always set this to 8 so the
-     * renderer's full-cube path is unchanged. */
+    /* Visual state for non-cube meshes, or vertical extent in 1/8 units for
+     * fluids (1..8). Flat repeaters store delay ticks here; torch cross faces
+     * store CHUNK_TORCH_SUPPORT_FLOOR or a side BlockFace support direction.
+     * Full cube faces and unsupported states use 8. */
     uint8_t height;
 } ChunkFace;
 
@@ -228,6 +229,8 @@ bool world_water_tick(VoxelWorld *world);
  * settled in bounded passes during each update. */
 bool world_update_redstone(VoxelWorld *world, float dt);
 bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
+bool world_toggle_lever(VoxelWorld *world, int wx, int wy, int wz,
+                        bool *powered_out);
 bool world_cycle_repeater_delay(VoxelWorld *world, int wx, int wy, int wz,
                                 uint8_t *delay_ticks_out);
 uint8_t world_repeater_delay_ticks(const VoxelWorld *world, int wx, int wy, int wz);

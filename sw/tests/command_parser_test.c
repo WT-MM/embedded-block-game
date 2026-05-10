@@ -253,6 +253,10 @@ int main(void)
         return 1;
     if (expect_setblock("/setblock 1 2 3 button", BLOCK_BUTTON))
         return 1;
+    if (expect_setblock("/setblock 1 2 3 lever", BLOCK_LEVER_OFF))
+        return 1;
+    if (expect_setblock("/setblock 1 2 3 lever_on", BLOCK_LEVER_ON))
+        return 1;
     if (expect_fill("/blocks set ~-1 ~ ~1 ~1 ~2 ~3 diamond-block",
                     BLOCK_DIAMOND_BLOCK, true))
         return 1;

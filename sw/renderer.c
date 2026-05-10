@@ -1903,10 +1903,20 @@ static void emit_model_quad_lit_rotated(RenderContext *ctx,
                                         uint8_t light_flags,
                                         int uv_rotation);
 
-static void flat_face_vertices(Vec3 block_pos, Vec3 out[4])
+static void flat_face_vertices(Vec3 block_pos,
+                               BlockID type,
+                               Vec3 out[4])
 {
-    const float inset = 0.05f;
-    const float y = block_pos.y + 0.025f;
+    float inset = 0.05f;
+    float y = block_pos.y + 0.025f;
+
+    if (type == BLOCK_BUTTON) {
+        inset = 0.24f;
+        y = block_pos.y + 0.085f;
+    } else if (type == BLOCK_BUTTON_PRESSED) {
+        inset = 0.29f;
+        y = block_pos.y + 0.025f;
+    }
 
     out[0] = (Vec3){ block_pos.x + inset,        y,
                      block_pos.z + inset };
@@ -1939,10 +1949,12 @@ static bool render_block_is_redstone_component(BlockID id)
            id == BLOCK_REDSTONE_TORCH_ON ||
            block_is_repeater(id) ||
            block_is_comparator(id) ||
+           block_is_lever(id) ||
            id == BLOCK_LAMP_OFF ||
            id == BLOCK_LAMP ||
            id == BLOCK_REDSTONE_BLOCK ||
-           id == BLOCK_BUTTON;
+           id == BLOCK_BUTTON ||
+           id == BLOCK_BUTTON_PRESSED;
 }
 
 static bool render_redstone_wire_connects_to(BlockID id)
@@ -2274,7 +2286,7 @@ static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
         return;
     }
 
-    flat_face_vertices(block_pos, face_world);
+    flat_face_vertices(block_pos, type, face_world);
     texture_tile = block_face_texture_id(type, FACE_TOP);
     if (render_block_is_redstone_wire(type)) {
         uint8_t mask = render_redstone_wire_mask(world, wx, wy, wz);
@@ -2287,27 +2299,80 @@ static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
                                 uv_rotation);
 }
 
-static void torch_face_vertices(Vec3 block_pos, uint8_t face,
-                                Vec3 out[4])
+static void torch_axis_for_support(Vec3 block_pos,
+                                   uint8_t support_face,
+                                   Vec3 *base_out,
+                                   Vec3 *tip_out)
 {
-    const float half = 0.24f;
-    const float top = 0.86f;
-    float cx = block_pos.x + 0.5f;
-    float y = block_pos.y;
-    float cz = block_pos.z + 0.5f;
+    const float wall_base = 0.18f;
+    const float wall_tip = 0.48f;
+    Vec3 base = { block_pos.x + 0.5f,
+                  block_pos.y,
+                  block_pos.z + 0.5f };
+    Vec3 tip = { block_pos.x + 0.5f,
+                 block_pos.y + 0.86f,
+                 block_pos.z + 0.5f };
+
+    switch (support_face) {
+    case FACE_LEFT:
+        base.x = block_pos.x + wall_base;
+        base.y = block_pos.y + 0.22f;
+        tip.x = block_pos.x + wall_tip;
+        break;
+    case FACE_RIGHT:
+        base.x = block_pos.x + 1.0f - wall_base;
+        base.y = block_pos.y + 0.22f;
+        tip.x = block_pos.x + 1.0f - wall_tip;
+        break;
+    case FACE_FRONT:
+        base.z = block_pos.z + wall_base;
+        base.y = block_pos.y + 0.22f;
+        tip.z = block_pos.z + wall_tip;
+        break;
+    case FACE_BACK:
+        base.z = block_pos.z + 1.0f - wall_base;
+        base.y = block_pos.y + 0.22f;
+        tip.z = block_pos.z + 1.0f - wall_tip;
+        break;
+    default:
+        break;
+    }
+
+    if (base_out)
+        *base_out = base;
+    if (tip_out)
+        *tip_out = tip;
+}
+
+static void torch_face_vertices(Vec3 block_pos, uint8_t face,
+                                uint8_t support_face, Vec3 out[4])
+{
+    const bool side_support =
+        support_face >= FACE_LEFT && support_face <= FACE_BACK;
+    const float half = side_support ? 0.18f : 0.24f;
+    Vec3 base;
+    Vec3 tip;
+    float ax;
+    float az;
+
+    torch_axis_for_support(block_pos, support_face, &base, &tip);
 
     if (face == CHUNK_FACE_CROSS_B) {
-        out[0] = (Vec3){ cx + half, y,       cz - half };
-        out[1] = (Vec3){ cx - half, y,       cz + half };
-        out[2] = (Vec3){ cx - half, y + top, cz + half };
-        out[3] = (Vec3){ cx + half, y + top, cz - half };
+        ax = half;
+        az = -half;
+        out[0] = (Vec3){ base.x + ax, base.y, base.z + az };
+        out[1] = (Vec3){ base.x - ax, base.y, base.z - az };
+        out[2] = (Vec3){ tip.x - ax,  tip.y,  tip.z - az };
+        out[3] = (Vec3){ tip.x + ax,  tip.y,  tip.z + az };
         return;
     }
 
-    out[0] = (Vec3){ cx - half, y,       cz - half };
-    out[1] = (Vec3){ cx + half, y,       cz + half };
-    out[2] = (Vec3){ cx + half, y + top, cz + half };
-    out[3] = (Vec3){ cx - half, y + top, cz - half };
+    ax = half;
+    az = half;
+    out[0] = (Vec3){ base.x - ax, base.y, base.z - az };
+    out[1] = (Vec3){ base.x + ax, base.y, base.z + az };
+    out[2] = (Vec3){ tip.x + ax,  tip.y,  tip.z + az };
+    out[3] = (Vec3){ tip.x - ax,  tip.y,  tip.z - az };
 }
 
 static void door_slab_planes(BlockID type,
@@ -2532,6 +2597,7 @@ static void emit_model_quad_lit_rotated(RenderContext *ctx,
 
 static void emit_torch_block_face_lit(RenderContext *ctx, BlockID type,
                                       Vec3 block_pos, uint8_t face,
+                                      uint8_t support_face,
                                       uint8_t light_flags)
 {
     Vec3 face_world[4];
@@ -2539,7 +2605,7 @@ static void emit_torch_block_face_lit(RenderContext *ctx, BlockID type,
     if (type == BLOCK_AIR)
         return;
 
-    torch_face_vertices(block_pos, face, face_world);
+    torch_face_vertices(block_pos, face, support_face, face_world);
     emit_model_quad_lit(ctx, face_world,
                         block_face_texture_id(type, FACE_FRONT),
                         light_flags);
@@ -3373,7 +3439,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                               face->face, light_flags);
                 else if (model == BLOCK_RENDER_TORCH)
                     emit_torch_block_face_lit(ctx, id, block_pos,
-                                              face->face, light_flags);
+                                              face->face, face->height,
+                                              light_flags);
                 else if (model == BLOCK_RENDER_DOOR)
                     emit_door_block_face_lit(ctx, id, block_pos,
                                              face->face, light_flags);

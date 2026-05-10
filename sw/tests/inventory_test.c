@@ -166,6 +166,8 @@ static void test_furnace_torch_and_coal(void)
     assert(!survival_inventory_remove_item(&inv, ITEM_COAL, 2));
     assert(survival_drop_for_block(BLOCK_COAL_ORE) == ITEM_COAL);
     assert(survival_drop_for_block(BLOCK_DIAMOND_ORE) == ITEM_DIAMOND);
+    assert(survival_drop_for_block(BLOCK_BUTTON_PRESSED) ==
+           (ItemID)BLOCK_BUTTON);
     assert(item_is_furnace_fuel(ITEM_COAL));
     assert(item_is_furnace_fuel((ItemID)BLOCK_WOOD));
     assert(item_is_furnace_fuel((ItemID)BLOCK_PLANKS));
@@ -223,6 +225,8 @@ static void test_item_textures(void)
            TEX_TILE_COMPARATOR_ON);
     assert(item_texture_id((ItemID)BLOCK_LAMP_OFF) == TEX_TILE_LAMP_OFF);
     assert(item_texture_id((ItemID)BLOCK_BUTTON) == TEX_TILE_BUTTON);
+    assert(item_texture_id((ItemID)BLOCK_LEVER_OFF) == TEX_TILE_LEVER_OFF);
+    assert(item_texture_id((ItemID)BLOCK_LEVER_ON) == TEX_TILE_LEVER_ON);
     assert(item_texture_id(ITEM_DIAMOND_PICKAXE) ==
            TEX_TILE_DIAMOND_PICKAXE);
     assert(item_texture_id(ITEM_LAVA_BUCKET) == TEX_TILE_LAVA_BUCKET);

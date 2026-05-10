@@ -1149,6 +1149,30 @@ def button(x: int, y: int) -> int:
     return PAL_STONE_LIGHT if ((x + y) & 3) == 0 else PAL_STONE
 
 
+def lever(x: int, y: int, powered: bool) -> int:
+    if 3 <= x <= 12 and 5 <= y <= 10:
+        if x in (3, 12) or y in (5, 10):
+            return PAL_STONE_DARK
+        if x in (4, 11) or y in (6, 9):
+            return PAL_STONE
+        return PAL_STONE_LIGHT if ((x + y) & 3) == 0 else PAL_STONE
+
+    if powered:
+        handle = 5 <= x <= 10 and 2 <= y <= 4
+        knob = 4 <= x <= 11 and 1 <= y <= 2
+    else:
+        handle = 5 <= x <= 10 and 11 <= y <= 13
+        knob = 4 <= x <= 11 and 13 <= y <= 14
+
+    if knob:
+        return PAL_WOOD
+    if handle:
+        if x in (5, 10):
+            return PAL_WOOD_DARK
+        return PAL_WOOD if powered else PAL_DIRT_LIGHT
+    return PAL_TRANSPARENT
+
+
 def lava(x: int, y: int) -> int:
     n = noise(x, y, 557)
     vein_a = (x + y + (noise(y, x, 563) >> 6)) & 7
@@ -1442,6 +1466,10 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return lamp_off(x, y)
     if tile == TEX_TILE_BUTTON:
         return button(x, y)
+    if tile == TEX_TILE_LEVER_OFF:
+        return lever(x, y, False)
+    if tile == TEX_TILE_LEVER_ON:
+        return lever(x, y, True)
     if tile == TEX_TILE_LAVA:
         return lava(x, y)
     if tile == TEX_TILE_COAL_ORE:

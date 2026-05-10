@@ -241,6 +241,224 @@ static bool test_t_flip_flop_q(const VoxelWorld *world,
            BLOCK_COMPARATOR_EAST_ON;
 }
 
+static int test_ripple_counter_value(const VoxelWorld *world,
+                                     int wx,
+                                     int wy,
+                                     int wz,
+                                     int bit_stride,
+                                     int bit_count)
+{
+    int value = 0;
+
+    for (int bit = 0; bit < bit_count; bit++) {
+        if (test_t_flip_flop_q(world,
+                               wx + bit * bit_stride,
+                               wy,
+                               wz))
+            value |= 1 << bit;
+    }
+
+    return value;
+}
+
+enum {
+    TEST_SEG_A = 1u << 0,
+    TEST_SEG_B = 1u << 1,
+    TEST_SEG_C = 1u << 2,
+    TEST_SEG_D = 1u << 3,
+    TEST_SEG_E = 1u << 4,
+    TEST_SEG_F = 1u << 5,
+    TEST_SEG_G = 1u << 6,
+};
+
+static uint8_t test_seven_segment_pattern(int value)
+{
+    static const uint8_t patterns[8] = {
+        TEST_SEG_A | TEST_SEG_B | TEST_SEG_C | TEST_SEG_D |
+            TEST_SEG_E | TEST_SEG_F,
+        TEST_SEG_B | TEST_SEG_C,
+        TEST_SEG_A | TEST_SEG_B | TEST_SEG_D | TEST_SEG_E | TEST_SEG_G,
+        TEST_SEG_A | TEST_SEG_B | TEST_SEG_C | TEST_SEG_D | TEST_SEG_G,
+        TEST_SEG_B | TEST_SEG_C | TEST_SEG_F | TEST_SEG_G,
+        TEST_SEG_A | TEST_SEG_C | TEST_SEG_D | TEST_SEG_F | TEST_SEG_G,
+        TEST_SEG_A | TEST_SEG_C | TEST_SEG_D | TEST_SEG_E |
+            TEST_SEG_F | TEST_SEG_G,
+        TEST_SEG_A | TEST_SEG_B | TEST_SEG_C,
+    };
+
+    return patterns[value & 7];
+}
+
+static int test_decoder_q_bus_x(int wx, int bit)
+{
+    return wx + bit * 5;
+}
+
+static int test_decoder_nq_bus_x(int wx, int bit)
+{
+    return wx + bit * 5 + 2;
+}
+
+static int test_decoder_row_z(int wz, int value)
+{
+    return wz + value * 3;
+}
+
+static int test_decoder_support_x(int wx)
+{
+    return wx + 15;
+}
+
+static int test_decoder_segment_bus_x(int wx, int segment)
+{
+    return test_decoder_support_x(wx) + 4 + segment * 2;
+}
+
+static int test_decoder_segment_lamp_z(int wz)
+{
+    return test_decoder_row_z(wz, 7) + 4;
+}
+
+static bool test_place_seven_segment_decoder(VoxelWorld *world,
+                                             int wx,
+                                             int wy,
+                                             int wz)
+{
+    const int support_x = test_decoder_support_x(wx);
+    const int row_start_x = wx - 1;
+    const int row_end_x = support_x - 1;
+    const int source_z = wz - 2;
+    const int bus_z0 = wz - 1;
+    const int bus_z1 = test_decoder_row_z(wz, 7) + 1;
+    const int segment_bus_z1 = test_decoder_segment_lamp_z(wz) - 1;
+
+    for (int bit = 0; bit < 3; bit++) {
+        int qx = test_decoder_q_bus_x(wx, bit);
+        int nqx = test_decoder_nq_bus_x(wx, bit);
+
+        if (!test_wire_line_z(world, qx, wy + 2, bus_z0, bus_z1) ||
+            !test_wire_line_z(world, nqx, wy + 2, bus_z0, bus_z1))
+            return false;
+        for (int rz = bus_z0 + 3; rz < bus_z1; rz += 9) {
+            if (!world_set_block(world, qx, wy + 2, rz,
+                                 BLOCK_REPEATER_SOUTH_OFF) ||
+                !world_set_block(world, nqx, wy + 2, rz,
+                                 BLOCK_REPEATER_SOUTH_OFF))
+                return false;
+        }
+        if (!world_set_block(world, qx, wy + 2, source_z, BLOCK_AIR) ||
+            !world_set_block(world, nqx, wy + 2, source_z, BLOCK_AIR))
+            return false;
+    }
+
+    for (int value = 0; value < 8; value++) {
+        int row_z = test_decoder_row_z(wz, value);
+
+        if (!test_wire_line_x(world, row_start_x, row_end_x, wy, row_z) ||
+            !world_set_block(world, wx + 4, wy, row_z,
+                             BLOCK_REPEATER_EAST_OFF) ||
+            !world_set_block(world, wx + 9, wy, row_z,
+                             BLOCK_REPEATER_EAST_OFF) ||
+            !world_set_block(world, support_x, wy, row_z, BLOCK_STONE) ||
+            !world_set_block(world, support_x + 1, wy, row_z,
+                             BLOCK_REDSTONE_TORCH_ON) ||
+            !test_wire_line_x(world, support_x + 2,
+                              test_decoder_segment_bus_x(wx, 6) + 1,
+                              wy, row_z) ||
+            !world_set_block(world, support_x + 5, wy, row_z,
+                             BLOCK_REPEATER_EAST_OFF) ||
+            !world_set_block(world, support_x + 11, wy, row_z,
+                             BLOCK_REPEATER_EAST_OFF))
+            return false;
+
+        for (int bit = 0; bit < 3; bit++) {
+            bool expected_bit = (value & (1 << bit)) != 0;
+            int bus_x = expected_bit ? test_decoder_nq_bus_x(wx, bit) :
+                                       test_decoder_q_bus_x(wx, bit);
+
+            if (!world_set_block(world, bus_x, wy + 1, row_z, BLOCK_STONE))
+                return false;
+        }
+    }
+
+    for (int segment = 0; segment < 7; segment++) {
+        int bus_x = test_decoder_segment_bus_x(wx, segment);
+
+        if (!test_wire_line_z(world, bus_x, wy - 2, wz, segment_bus_z1) ||
+            !world_set_block(world, bus_x, wy - 2,
+                             test_decoder_segment_lamp_z(wz),
+                             BLOCK_LAMP_OFF))
+            return false;
+        for (int rz = wz + 2; rz < segment_bus_z1; rz += 9) {
+            if (!world_set_block(world, bus_x, wy - 2, rz,
+                                 BLOCK_REPEATER_SOUTH_OFF))
+                return false;
+        }
+    }
+
+    for (int value = 0; value < 8; value++) {
+        int row_z = test_decoder_row_z(wz, value);
+        uint8_t pattern = test_seven_segment_pattern(value);
+
+        for (int segment = 0; segment < 7; segment++) {
+            if (!(pattern & (1u << segment)))
+                continue;
+
+            int bus_x = test_decoder_segment_bus_x(wx, segment);
+            if (!world_set_block(world, bus_x, wy - 1,
+                                 row_z, BLOCK_STONE))
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static bool test_drive_seven_segment_decoder(VoxelWorld *world,
+                                             int wx,
+                                             int wy,
+                                             int wz,
+                                             int value)
+{
+    const int source_z = wz - 2;
+
+    for (int bit = 0; bit < 3; bit++) {
+        bool powered = (value & (1 << bit)) != 0;
+        int qx = test_decoder_q_bus_x(wx, bit);
+        int nqx = test_decoder_nq_bus_x(wx, bit);
+
+        if (!world_set_block(world, qx, wy + 2, source_z,
+                             powered ? BLOCK_REDSTONE_BLOCK : BLOCK_AIR) ||
+            !world_set_block(world, nqx, wy + 2, source_z,
+                             powered ? BLOCK_AIR : BLOCK_REDSTONE_BLOCK))
+            return false;
+    }
+
+    test_tick_redstone(world, 20);
+    return true;
+}
+
+static bool test_seven_segment_decoder_matches(const VoxelWorld *world,
+                                               int wx,
+                                               int wy,
+                                               int wz,
+                                               int value)
+{
+    uint8_t pattern = test_seven_segment_pattern(value);
+    int lamp_z = test_decoder_segment_lamp_z(wz);
+
+    for (int segment = 0; segment < 7; segment++) {
+        int bus_x = test_decoder_segment_bus_x(wx, segment);
+        BlockID lamp = world_get_block(world, bus_x, wy - 2, lamp_z);
+        bool expected = (pattern & (1u << segment)) != 0;
+
+        if ((lamp == BLOCK_LAMP) != expected)
+            return false;
+    }
+
+    return true;
+}
+
 typedef struct {
     int grass_surfaces;
     int sand_surfaces;
@@ -623,7 +841,14 @@ int main(void)
         block_emission_level(BLOCK_COMPARATOR_ON) != 5 ||
         block_face_texture_id(BLOCK_LAMP_OFF, FACE_FRONT) != TEX_TILE_LAMP_OFF ||
         block_emission_level(BLOCK_LAMP_OFF) != 0 ||
-        block_render_model(BLOCK_BUTTON) != BLOCK_RENDER_FLAT)
+        block_render_model(BLOCK_BUTTON) != BLOCK_RENDER_FLAT ||
+        block_render_model(BLOCK_BUTTON_PRESSED) != BLOCK_RENDER_FLAT ||
+        block_render_model(BLOCK_LEVER_OFF) != BLOCK_RENDER_FLAT ||
+        block_face_texture_id(BLOCK_LEVER_OFF, FACE_FRONT) != TEX_TILE_LEVER_OFF ||
+        block_face_texture_id(BLOCK_LEVER_ON, FACE_FRONT) != TEX_TILE_LEVER_ON ||
+        block_emission_level(BLOCK_LEVER_ON) != 5 ||
+        block_lever_powered(BLOCK_LEVER_OFF) ||
+        !block_lever_powered(BLOCK_LEVER_ON))
         return check_failed("redstone metadata missing");
     if (!block_is_repeater(BLOCK_REPEATER_ON) ||
         !block_is_comparator(BLOCK_COMPARATOR_ON) ||
@@ -712,16 +937,69 @@ int main(void)
         return check_failed("redstone wire did not return to off line");
     if (!world_press_button(&world, wire_neighbor_x, wire_y, wire_z))
         return check_failed("redstone button press failed");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_BUTTON_PRESSED)
+        return check_failed("redstone button did not become pressed");
     if (world_get_block(&world, wire_x, wire_y, wire_z) !=
         BLOCK_REDSTONE_WIRE_ON)
         return check_failed("redstone button did not power wire");
     world_update_redstone(&world, 2.0f);
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_BUTTON)
+        return check_failed("redstone button did not release");
     if (world_get_block(&world, wire_x, wire_y, wire_z) !=
         BLOCK_REDSTONE_WIRE_OFF)
         return check_failed("redstone button pulse did not expire");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_LEVER_OFF))
+        return check_failed("redstone lever placement failed");
+    bool lever_powered = false;
+    if (!world_toggle_lever(&world, wire_neighbor_x, wire_y, wire_z,
+                            &lever_powered) ||
+        !lever_powered)
+        return check_failed("redstone lever did not toggle on");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_LEVER_ON)
+        return check_failed("redstone lever on block missing");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_ON)
+        return check_failed("redstone lever did not power wire");
+    if (!world_toggle_lever(&world, wire_neighbor_x, wire_y, wire_z,
+                            &lever_powered) ||
+        lever_powered)
+        return check_failed("redstone lever did not toggle off");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_LEVER_OFF)
+        return check_failed("redstone lever off block missing");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("redstone lever did not unpower wire");
     if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z, BLOCK_AIR) ||
         !world_set_block(&world, wire_x, wire_y, wire_z, BLOCK_AIR))
         return check_failed("redstone cleanup failed");
+
+    const int decoder_x = -42;
+    const int decoder_y = 28;
+    const int decoder_z = 34;
+    if (!test_place_seven_segment_decoder(&world,
+                                          decoder_x,
+                                          decoder_y,
+                                          decoder_z))
+        return check_failed("seven segment decoder fixture build failed");
+    for (int value = 0; value < 8; value++) {
+        if (!test_drive_seven_segment_decoder(&world,
+                                              decoder_x,
+                                              decoder_y,
+                                              decoder_z,
+                                              value))
+            return check_failed("seven segment decoder drive failed");
+        if (!test_seven_segment_decoder_matches(&world,
+                                                decoder_x,
+                                                decoder_y,
+                                                decoder_z,
+                                                value))
+            return check_failed("seven segment decoder output mismatch");
+    }
 
     const int button_hook_x = 5;
     const int button_hook_y = 12;
@@ -792,8 +1070,17 @@ int main(void)
             BLOCK_COMPARATOR_EAST_OFF ||
         world_get_block(&world, edge_x, edge_y, edge_z - 1) !=
             BLOCK_REPEATER_SOUTH_ON ||
-        world_get_block(&world, edge_x + 1, edge_y, edge_z) != BLOCK_LAMP_OFF)
+        world_get_block(&world, edge_x + 1, edge_y, edge_z) != BLOCK_LAMP_OFF) {
+        fprintf(stderr,
+                "edge states comparator=%d repeater=%d lamp=%d rear=%d side=%d delaywire=%d\n",
+                (int)world_get_block(&world, edge_x, edge_y, edge_z),
+                (int)world_get_block(&world, edge_x, edge_y, edge_z - 1),
+                (int)world_get_block(&world, edge_x + 1, edge_y, edge_z),
+                (int)world_get_block(&world, edge_x - 1, edge_y, edge_z),
+                (int)world_get_block(&world, edge_x - 2, edge_y, edge_z - 2),
+                (int)world_get_block(&world, edge_x, edge_y, edge_z - 2));
         return check_failed("edge detector pulse was not limited by delay");
+    }
     for (int tick = 0; tick < 20; tick++) {
         world_update_redstone(&world, 0.1f);
         if (world_get_block(&world, edge_x + 1, edge_y, edge_z) !=
@@ -841,7 +1128,7 @@ int main(void)
             return check_failed("t flip flop complement torch disagreed");
     }
 
-    const int counter_x = -16;
+    const int counter_x = -42;
     const int counter_y = 26;
     const int counter_z = -30;
     const int counter_bit_stride = 30;
@@ -855,9 +1142,19 @@ int main(void)
                                 counter_y,
                                 counter_z,
                                 false) ||
+        !test_place_t_flip_flop(&world,
+                                counter_x + 2 * counter_bit_stride,
+                                counter_y,
+                                counter_z,
+                                false) ||
         !test_wire_line_x(&world,
                           counter_x + 26,
                           counter_x + counter_bit_stride - 1,
+                          counter_y,
+                          counter_z) ||
+        !test_wire_line_x(&world,
+                          counter_x + counter_bit_stride + 26,
+                          counter_x + 2 * counter_bit_stride - 1,
                           counter_y,
                           counter_z))
         return check_failed("button counter fixture build failed");
@@ -869,30 +1166,31 @@ int main(void)
         !test_reset_t_flip_flop(&world,
                                 counter_x + counter_bit_stride,
                                 counter_y,
+                                counter_z) ||
+        !test_reset_t_flip_flop(&world,
+                                counter_x + 2 * counter_bit_stride,
+                                counter_y,
                                 counter_z))
         return check_failed("button counter reset failed");
-    if (test_t_flip_flop_q(&world, counter_x, counter_y, counter_z) ||
-        test_t_flip_flop_q(&world,
-                           counter_x + counter_bit_stride,
-                           counter_y,
-                           counter_z))
-        return check_failed("button counter reset did not clear both bits");
-    for (int press = 1; press <= 8; press++) {
-        int expected = press & 3;
-        bool q0 = (expected & 1) != 0;
-        bool q1 = (expected & 2) != 0;
+    if (test_ripple_counter_value(&world,
+                                  counter_x,
+                                  counter_y,
+                                  counter_z,
+                                  counter_bit_stride,
+                                  3) != 0)
+        return check_failed("button counter reset did not clear all bits");
+    for (int press = 1; press <= 16; press++) {
+        int expected = press & 7;
 
         if (!world_press_button(&world, counter_x, counter_y, counter_z))
             return check_failed("button counter press failed");
         test_tick_redstone(&world, 30);
-        if (test_t_flip_flop_q(&world,
-                               counter_x,
-                               counter_y,
-                               counter_z) != q0 ||
-            test_t_flip_flop_q(&world,
-                               counter_x + counter_bit_stride,
-                               counter_y,
-                               counter_z) != q1)
+        if (test_ripple_counter_value(&world,
+                                      counter_x,
+                                      counter_y,
+                                      counter_z,
+                                      counter_bit_stride,
+                                      3) != expected)
             return check_failed("button counter did not ripple count");
     }
     if (!test_reset_t_flip_flop(&world,
@@ -901,6 +1199,10 @@ int main(void)
                                 counter_z) ||
         !test_reset_t_flip_flop(&world,
                                 counter_x + counter_bit_stride,
+                                counter_y,
+                                counter_z) ||
+        !test_reset_t_flip_flop(&world,
+                                counter_x + 2 * counter_bit_stride,
                                 counter_y,
                                 counter_z))
         return check_failed("button counter final reset failed");
@@ -1135,6 +1437,18 @@ int main(void)
         world_get_block(&world, side_torch_x + 2, side_torch_y,
                         side_torch_z) != BLOCK_LAMP)
         return check_failed("side torch did not power adjacent load");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("side torch mesh rebuild failed");
+    const Chunk *side_torch_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *side_torch_face =
+        find_chunk_face(side_torch_chunk,
+                        side_torch_x + 1,
+                        side_torch_y,
+                        side_torch_z,
+                        (BlockFace)CHUNK_FACE_CROSS_A,
+                        BLOCK_REDSTONE_TORCH_ON);
+    if (!side_torch_face || side_torch_face->height != FACE_LEFT)
+        return check_failed("side torch mesh did not record side support");
     if (!world_set_block(&world, side_torch_x - 1, side_torch_y,
                          side_torch_z, BLOCK_REDSTONE_BLOCK))
         return check_failed("side torch input failed");

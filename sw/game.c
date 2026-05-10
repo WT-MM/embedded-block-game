@@ -48,7 +48,7 @@
 #define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
 #define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define HOTBAR_SLOT_COUNT 9
-#define HOTBAR_PAGE_COUNT 6
+#define HOTBAR_PAGE_COUNT 7
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
@@ -240,6 +240,17 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
         BLOCK_COMPARATOR_WEST_OFF,
         BLOCK_COMPARATOR_WEST_ON,
         BLOCK_LAMP,
+    },
+    {
+        BLOCK_LEVER_OFF,
+        BLOCK_LEVER_ON,
+        BLOCK_BUTTON,
+        BLOCK_REDSTONE_BLOCK,
+        BLOCK_REDSTONE_WIRE_UNCONNECTED,
+        BLOCK_REDSTONE_TORCH_ON,
+        BLOCK_REPEATER_OFF,
+        BLOCK_COMPARATOR_OFF,
+        BLOCK_LAMP_OFF,
     },
 };
 
@@ -845,12 +856,19 @@ static bool place_block_is_redstone_wire(BlockID type)
            type == BLOCK_REDSTONE_WIRE_ON;
 }
 
+static bool place_block_is_button(BlockID type)
+{
+    return type == BLOCK_BUTTON || type == BLOCK_BUTTON_PRESSED;
+}
+
 static BlockDoorFacing door_facing_from_camera(const Camera *cam);
 
 static BlockID normalize_placed_block(BlockID type, const Camera *cam)
 {
     if (place_block_is_redstone_wire(type))
         return BLOCK_REDSTONE_WIRE_UNCONNECTED;
+    if (place_block_is_button(type))
+        return BLOCK_BUTTON;
     if (block_is_repeater(type))
         return block_repeater_make(door_facing_from_camera(cam),
                                    block_redstone_directional_powered(type));
@@ -1251,10 +1269,11 @@ static bool try_press_targeted_button(VoxelWorld *world,
         return false;
     if (!target.hit)
         return false;
-    if (world_get_block(world,
-                        target.hit_x,
-                        target.hit_y,
-                        target.hit_z) != BLOCK_BUTTON)
+    BlockID target_block = world_get_block(world,
+                                           target.hit_x,
+                                           target.hit_y,
+                                           target.hit_z);
+    if (target_block != BLOCK_BUTTON && target_block != BLOCK_BUTTON_PRESSED)
         return false;
     if (!world_press_button(world,
                             target.hit_x,
@@ -1265,6 +1284,37 @@ static bool try_press_targeted_button(VoxelWorld *world,
     world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
     if (chat)
         chat_log(chat, "button pressed");
+    return true;
+}
+
+static bool try_toggle_targeted_lever(VoxelWorld *world,
+                                      const Camera *cam,
+                                      Chat *chat)
+{
+    BlockTarget target = {0};
+    bool powered = false;
+
+    if (!world || !cam)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.hit)
+        return false;
+    if (!block_is_lever(world_get_block(world,
+                                        target.hit_x,
+                                        target.hit_y,
+                                        target.hit_z)))
+        return false;
+    if (!world_toggle_lever(world,
+                            target.hit_x,
+                            target.hit_y,
+                            target.hit_z,
+                            &powered))
+        return false;
+
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    if (chat)
+        chat_log(chat, "lever %s", powered ? "on" : "off");
     return true;
 }
 
@@ -4638,6 +4688,9 @@ home_menu_start:
 
                     if (try_press_targeted_button(&world, &cam, &chat)) {
                         pr = PLACE_OK;
+                    } else if (try_toggle_targeted_lever(&world, &cam,
+                                                         &chat)) {
+                        pr = PLACE_OK;
                     } else if (try_toggle_targeted_door(&world, &cam,
                                                         &player, &chat)) {
                         pr = PLACE_OK;
@@ -4658,6 +4711,11 @@ home_menu_start:
                                                         selected_hotbar_slot);
 
                     if (try_press_targeted_button(&world, &cam, &chat)) {
+                        break_timer = 0.0f;
+                        break_duration = 0.0f;
+                        break_target_valid = false;
+                    } else if (try_toggle_targeted_lever(&world, &cam,
+                                                         &chat)) {
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;

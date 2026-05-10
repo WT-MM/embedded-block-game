@@ -386,6 +386,18 @@ void init_block_types(void)
     init_redstone_flat_descriptor(BLOCK_COMPARATOR_WEST_ON,
                                   "Comparator West On",
                                   TEX_TILE_COMPARATOR_ON, true);
+
+    init_redstone_flat_descriptor(BLOCK_LEVER_OFF, "Lever Off",
+                                  TEX_TILE_LEVER_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_LEVER_ON, "Lever On",
+                                  TEX_TILE_LEVER_ON, true);
+
+    BlockRegistry[BLOCK_BUTTON_PRESSED].id = BLOCK_BUTTON_PRESSED;
+    BlockRegistry[BLOCK_BUTTON_PRESSED].name = "Button Pressed";
+    set_all_faces(&BlockRegistry[BLOCK_BUTTON_PRESSED], TEX_TILE_BUTTON);
+    BlockRegistry[BLOCK_BUTTON_PRESSED].hardness_seconds = 0.2f;
+    BlockRegistry[BLOCK_BUTTON_PRESSED].render_model = BLOCK_RENDER_FLAT;
+
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -608,6 +620,12 @@ bool block_is_comparator(BlockID id)
            id == BLOCK_COMPARATOR_WEST_ON;
 }
 
+bool block_is_lever(BlockID id)
+{
+    return id == BLOCK_LEVER_OFF ||
+           id == BLOCK_LEVER_ON;
+}
+
 bool block_is_redstone_directional(BlockID id)
 {
     return block_is_repeater(id) || block_is_comparator(id);
@@ -623,6 +641,11 @@ bool block_redstone_directional_powered(BlockID id)
            id == BLOCK_COMPARATOR_EAST_ON ||
            id == BLOCK_COMPARATOR_SOUTH_ON ||
            id == BLOCK_COMPARATOR_WEST_ON;
+}
+
+bool block_lever_powered(BlockID id)
+{
+    return id == BLOCK_LEVER_ON;
 }
 
 BlockDoorFacing block_redstone_facing(BlockID id)
@@ -708,4 +731,9 @@ BlockID block_comparator_make(BlockDoorFacing facing, bool powered)
     default:
         return BLOCK_COMPARATOR_OFF;
     }
+}
+
+BlockID block_lever_make(bool powered)
+{
+    return powered ? BLOCK_LEVER_ON : BLOCK_LEVER_OFF;
 }

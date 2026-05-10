@@ -253,6 +253,12 @@ int main(void)
         return 1;
     if (expect_setblock("/setblock 1 2 3 button", BLOCK_BUTTON))
         return 1;
+    if (expect_setblock("/setblock 1 2 3 pressure_plate",
+                        BLOCK_WOOD_PRESSURE_PLATE))
+        return 1;
+    if (expect_setblock("/setblock 1 2 3 stone_pressure_plate",
+                        BLOCK_STONE_PRESSURE_PLATE))
+        return 1;
     if (expect_setblock("/setblock 1 2 3 lever", BLOCK_LEVER_OFF))
         return 1;
     if (expect_setblock("/setblock 1 2 3 lever_on", BLOCK_LEVER_ON))

@@ -32,7 +32,8 @@
 /* v2: appended water_level[H][Z][X] after the block grid for Minecraft-style
  * variable water height.
  * v3: appended redstone_data[H][Z][X] for per-cell redstone metadata such as
- * repeater delay. v2 loads still work and default redstone_data to zero. */
+ * repeater delay and remembered door power. v2 loads still work and default
+ * redstone_data to zero. */
 #define WORLD_CHUNK_VERSION 3u
 #define WORLD_CHUNK_MIN_SUPPORTED_VERSION 2u
 #define REDSTONE_BUTTON_PULSE_SECONDS 1.5f
@@ -96,6 +97,7 @@ typedef struct {
     int wy;
     int wz;
     BlockID type;
+    uint8_t redstone_data;
 } RedstoneChange;
 
 static bool chunk_in_window(int chunk_x, int chunk_z,
@@ -518,6 +520,8 @@ static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
 
                 if (id == BLOCK_BUTTON_PRESSED)
                     id = BLOCK_BUTTON;
+                else if (block_pressure_plate_powered(id))
+                    id = block_pressure_plate_unpressed(id);
                 blocks[out++] = (uint8_t)id;
             }
         }
@@ -625,6 +629,8 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                 }
                 if (id == BLOCK_BUTTON_PRESSED)
                     id = BLOCK_BUTTON;
+                else if (block_pressure_plate_powered(id))
+                    id = block_pressure_plate_unpressed(id);
                 chunk->blocks[y][z][x] = (BlockID)id;
                 /* Sanitize water_level: only meaningful for fluid blocks. */
                 if (block_is_fluid_source((BlockID)id))
@@ -644,6 +650,9 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                              REDSTONE_REPEATER_MAX_DELAY_TICKS)
                         chunk->redstone_data[y][z][x] =
                             REDSTONE_REPEATER_MAX_DELAY_TICKS;
+                } else if (block_is_door((BlockID)id)) {
+                    chunk->redstone_data[y][z][x] =
+                        chunk->redstone_data[y][z][x] ? 1u : 0u;
                 } else {
                     chunk->redstone_data[y][z][x] = 0;
                 }
@@ -3217,6 +3226,9 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
                 REDSTONE_REPEATER_MAX_DELAY_TICKS)
             chunk->redstone_data[wy][lz][lx] =
                 REDSTONE_REPEATER_MIN_DELAY_TICKS;
+    } else if (block_is_door(type)) {
+        if (!block_is_door(old_type))
+            chunk->redstone_data[wy][lz][lx] = 0;
     } else {
         chunk->redstone_data[wy][lz][lx] = 0;
     }
@@ -3291,6 +3303,8 @@ static bool redstone_block_has_state(BlockID id)
            block_is_repeater(id) ||
            block_is_comparator(id) ||
            block_is_lever(id) ||
+           block_is_pressure_plate(id) ||
+           block_is_door(id) ||
            id == BLOCK_LAMP_OFF ||
            id == BLOCK_LAMP;
 }
@@ -3577,6 +3591,9 @@ static uint8_t redstone_source_strength_to_locked(const VoxelWorld *world,
         return 15;
 
     if (id == BLOCK_LEVER_ON)
+        return 15;
+
+    if (block_pressure_plate_powered(id))
         return 15;
 
     if (id == BLOCK_REDSTONE_TORCH_ON) {
@@ -4216,6 +4233,30 @@ static bool redstone_torch_receives_power_locked(
     return false;
 }
 
+static uint8_t redstone_door_power_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int lower_y,
+    int wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    uint8_t lower_power =
+        redstone_position_power_strength_locked(world, wx, lower_y, wz,
+                                                wires, wire_power,
+                                                wire_table, wire_table_cap,
+                                                INT_MIN, INT_MIN, INT_MIN);
+    uint8_t upper_power =
+        redstone_position_power_strength_locked(world, wx, lower_y + 1, wz,
+                                                wires, wire_power,
+                                                wire_table, wire_table_cap,
+                                                INT_MIN, INT_MIN, INT_MIN);
+
+    return lower_power > upper_power ? lower_power : upper_power;
+}
+
 static bool redstone_settle_pass_locked(VoxelWorld *world)
 {
     RedstoneCell *wires = NULL;
@@ -4399,6 +4440,54 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                 wires, wire_power, wire_table, wire_table_cap,
                 INT_MIN, INT_MIN, INT_MIN);
             target = power > 0 ? BLOCK_LAMP : BLOCK_LAMP_OFF;
+        } else if (block_is_door(current) && !block_is_door_upper(current)) {
+            BlockDoorFacing facing = block_door_facing(current);
+            bool current_open = block_is_door_open(current);
+            BlockID upper = world_get_block(world, cell.wx, cell.wy + 1,
+                                            cell.wz);
+            bool upper_matches =
+                block_is_door(upper) &&
+                block_is_door_open(upper) == current_open;
+            bool powered;
+            bool target_open;
+            bool update_door;
+            bool previous_powered =
+                world_get_redstone_data_locked(world,
+                                               cell.wx, cell.wy, cell.wz) != 0u;
+
+            power = redstone_door_power_strength_locked(
+                world, cell.wx, cell.wy, cell.wz,
+                wires, wire_power, wire_table, wire_table_cap);
+            powered = power > 0;
+            target_open = powered ? true :
+                          (previous_powered ? false : current_open);
+            update_door = powered != previous_powered ||
+                          current_open != target_open ||
+                          !upper_matches;
+            if (update_door) {
+                uint8_t powered_data = powered ? 1u : 0u;
+
+                if (!redstone_change_push(
+                        &changes, &change_count, &change_cap,
+                        (RedstoneChange){.wx = cell.wx,
+                                         .wy = cell.wy,
+                                         .wz = cell.wz,
+                                         .type = block_door_make(facing,
+                                                                 target_open,
+                                                                 false),
+                                         .redstone_data = powered_data}) ||
+                    !redstone_change_push(
+                        &changes, &change_count, &change_cap,
+                        (RedstoneChange){.wx = cell.wx,
+                                         .wy = cell.wy + 1,
+                                         .wz = cell.wz,
+                                         .type = block_door_make(facing,
+                                                                 target_open,
+                                                                 true),
+                                         .redstone_data = powered_data}))
+                    goto done;
+            }
+            continue;
         }
 
         if (current != target &&
@@ -4416,6 +4505,13 @@ static bool redstone_settle_pass_locked(VoxelWorld *world)
                                    changes[i].wy,
                                    changes[i].wz,
                                    changes[i].type)) {
+            if (block_is_door(changes[i].type))
+                (void)world_set_redstone_data_locked(world,
+                                                     changes[i].wx,
+                                                     changes[i].wy,
+                                                     changes[i].wz,
+                                                     changes[i].redstone_data,
+                                                     false);
             changed = true;
         }
     }
@@ -4527,6 +4623,142 @@ bool world_toggle_lever(VoxelWorld *world, int wx, int wy, int wz,
     if (toggled && powered_out)
         *powered_out = powered;
     return toggled;
+}
+
+static bool pressure_plate_overlaps_aabb(int wx,
+                                         int wy,
+                                         int wz,
+                                         float min_x,
+                                         float max_x,
+                                         float min_y,
+                                         float max_y,
+                                         float min_z,
+                                         float max_z)
+{
+    const float inset = 0.08f;
+    const float height = 0.20f;
+    float plate_min_x = (float)wx + inset;
+    float plate_max_x = (float)wx + 1.0f - inset;
+    float plate_min_y = (float)wy;
+    float plate_max_y = (float)wy + height;
+    float plate_min_z = (float)wz + inset;
+    float plate_max_z = (float)wz + 1.0f - inset;
+
+    return max_x > plate_min_x && min_x < plate_max_x &&
+           max_y > plate_min_y && min_y < plate_max_y &&
+           max_z > plate_min_z && min_z < plate_max_z;
+}
+
+static uint8_t pressure_plate_trigger_mask_for_block(BlockID id)
+{
+    if (block_is_wood_pressure_plate(id))
+        return WORLD_PRESSURE_TRIGGER_WOOD;
+    if (block_is_stone_pressure_plate(id))
+        return WORLD_PRESSURE_TRIGGER_STONE;
+    return 0;
+}
+
+static bool pressure_plate_overlaps_triggers(
+    int wx,
+    int wy,
+    int wz,
+    const WorldPressurePlateTrigger *triggers,
+    size_t trigger_count,
+    uint8_t required_mask)
+{
+    for (size_t i = 0; i < trigger_count; i++) {
+        const WorldPressurePlateTrigger *trigger = &triggers[i];
+
+        if (!(trigger->mask & required_mask))
+            continue;
+        if (pressure_plate_overlaps_aabb(wx, wy, wz,
+                                         trigger->min_x,
+                                         trigger->max_x,
+                                         trigger->min_y,
+                                         trigger->max_y,
+                                         trigger->min_z,
+                                         trigger->max_z))
+            return true;
+    }
+
+    return false;
+}
+
+bool world_update_pressure_plates_for_triggers(
+    VoxelWorld *world,
+    const WorldPressurePlateTrigger *triggers,
+    size_t trigger_count)
+{
+    bool changed = false;
+
+    if (!world)
+        return false;
+    if (!triggers)
+        trigger_count = 0;
+
+    world_lock(world);
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        Chunk *chunk = &world->chunks[ci];
+        int ox;
+        int oz;
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    BlockID current = chunk->blocks[y][z][x];
+                    uint8_t trigger_mask;
+                    bool pressed;
+                    BlockID target;
+
+                    if (!block_is_pressure_plate(current))
+                        continue;
+
+                    trigger_mask =
+                        pressure_plate_trigger_mask_for_block(current);
+                    pressed = pressure_plate_overlaps_triggers(
+                        ox + x, y, oz + z,
+                        triggers, trigger_count, trigger_mask);
+                    target = block_pressure_plate_make(current, pressed);
+                    if (current == target)
+                        continue;
+                    if (world_set_block_locked(world, ox + x, y, oz + z,
+                                               target))
+                        changed = true;
+                }
+            }
+        }
+    }
+    if (changed)
+        (void)world_update_redstone_locked(world, 0.0f);
+    world_unlock(world);
+
+    return changed;
+}
+
+bool world_update_pressure_plates(VoxelWorld *world,
+                                  float min_x,
+                                  float max_x,
+                                  float min_y,
+                                  float max_y,
+                                  float min_z,
+                                  float max_z)
+{
+    WorldPressurePlateTrigger trigger = {
+        .min_x = min_x,
+        .max_x = max_x,
+        .min_y = min_y,
+        .max_y = max_y,
+        .min_z = min_z,
+        .max_z = max_z,
+        .mask = WORLD_PRESSURE_TRIGGER_WOOD | WORLD_PRESSURE_TRIGGER_STONE,
+    };
+
+    return world_update_pressure_plates_for_triggers(world, &trigger, 1);
 }
 
 bool world_cycle_repeater_delay(VoxelWorld *world,

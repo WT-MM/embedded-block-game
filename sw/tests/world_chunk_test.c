@@ -468,6 +468,7 @@ typedef struct {
     int flowers;
     int mushrooms;
     int cacti;
+    int sugar_cane;
     int lava_blocks;
     int ore_blocks;
     int lowest_surface_y;
@@ -482,7 +483,8 @@ static bool block_is_worldgen_decoration(BlockID id)
            id == BLOCK_YELLOW_FLOWER ||
            id == BLOCK_RED_MUSHROOM ||
            id == BLOCK_BROWN_MUSHROOM ||
-           id == BLOCK_CACTUS;
+           id == BLOCK_CACTUS ||
+           id == BLOCK_SUGAR_CANE;
 }
 
 static bool block_is_ore(BlockID id)
@@ -524,6 +526,8 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
                         sample.mushrooms++;
                     if (id == BLOCK_CACTUS)
                         sample.cacti++;
+                    if (id == BLOCK_SUGAR_CANE)
+                        sample.sugar_cane++;
                     if (id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW)
                         sample.lava_blocks++;
                     if (block_is_ore(id))
@@ -560,6 +564,60 @@ static WorldgenSample sample_worldgen(const VoxelWorld *world)
     }
 
     return sample;
+}
+
+static bool loaded_world_sugar_cane_is_shoreline(const VoxelWorld *world)
+{
+    bool found_base = false;
+    static const int dirs[][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+    };
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    int wx;
+                    int wz;
+                    bool touches_water = false;
+
+                    if (chunk->blocks[y][z][x] != BLOCK_SUGAR_CANE)
+                        continue;
+                    if (y > 0 &&
+                        chunk->blocks[y - 1][z][x] == BLOCK_SUGAR_CANE)
+                        continue;
+                    if (y <= 0 || chunk->blocks[y - 1][z][x] != BLOCK_SAND)
+                        return false;
+
+                    wx = chunk->chunk_x * WORLD_CHUNK_SIZE + x;
+                    wz = chunk->chunk_z * WORLD_CHUNK_SIZE + z;
+                    for (size_t dir = 0; dir < sizeof(dirs) / sizeof(dirs[0]);
+                         dir++) {
+                        BlockID neighbor = world_get_block(world,
+                                                           wx + dirs[dir][0],
+                                                           y - 1,
+                                                           wz + dirs[dir][1]);
+
+                        if (neighbor == BLOCK_WATER ||
+                            neighbor == BLOCK_WATER_FLOW) {
+                            touches_water = true;
+                            break;
+                        }
+                    }
+                    if (!touches_water)
+                        return false;
+                    found_base = true;
+                }
+            }
+        }
+    }
+
+    return found_base;
 }
 
 static bool loaded_world_has_uncontained_lava(const VoxelWorld *world)
@@ -674,6 +732,9 @@ int main(void)
         return check_failed("biome worldgen terrain was too flat");
     if (initial_sample.ore_blocks <= 0)
         return check_failed("ore worldgen did not place any ore blocks");
+    if (initial_sample.sugar_cane <= 0 ||
+        !loaded_world_sugar_cane_is_shoreline(&world))
+        return check_failed("sugar cane did not generate on sand next to water");
     bool found_desert_biome = false;
     bool found_ocean_biome = false;
     for (int z = -128; z <= 128 && (!found_desert_biome ||
@@ -843,12 +904,30 @@ int main(void)
         block_emission_level(BLOCK_LAMP_OFF) != 0 ||
         block_render_model(BLOCK_BUTTON) != BLOCK_RENDER_FLAT ||
         block_render_model(BLOCK_BUTTON_PRESSED) != BLOCK_RENDER_FLAT ||
+        block_render_model(BLOCK_WOOD_PRESSURE_PLATE) != BLOCK_RENDER_FLAT ||
+        block_render_model(BLOCK_WOOD_PRESSURE_PLATE_PRESSED) !=
+            BLOCK_RENDER_FLAT ||
+        block_face_texture_id(BLOCK_WOOD_PRESSURE_PLATE, FACE_FRONT) !=
+            TEX_TILE_WOOD_PLANK ||
+        block_render_model(BLOCK_STONE_PRESSURE_PLATE) != BLOCK_RENDER_FLAT ||
+        block_render_model(BLOCK_STONE_PRESSURE_PLATE_PRESSED) !=
+            BLOCK_RENDER_FLAT ||
+        block_face_texture_id(BLOCK_STONE_PRESSURE_PLATE, FACE_FRONT) !=
+            TEX_TILE_STONE ||
         block_render_model(BLOCK_LEVER_OFF) != BLOCK_RENDER_FLAT ||
         block_face_texture_id(BLOCK_LEVER_OFF, FACE_FRONT) != TEX_TILE_LEVER_OFF ||
         block_face_texture_id(BLOCK_LEVER_ON, FACE_FRONT) != TEX_TILE_LEVER_ON ||
         block_emission_level(BLOCK_LEVER_ON) != 5 ||
         block_lever_powered(BLOCK_LEVER_OFF) ||
-        !block_lever_powered(BLOCK_LEVER_ON))
+        !block_lever_powered(BLOCK_LEVER_ON) ||
+        !block_is_pressure_plate(BLOCK_WOOD_PRESSURE_PLATE) ||
+        !block_is_wood_pressure_plate(BLOCK_WOOD_PRESSURE_PLATE_PRESSED) ||
+        !block_is_stone_pressure_plate(BLOCK_STONE_PRESSURE_PLATE) ||
+        block_pressure_plate_powered(BLOCK_WOOD_PRESSURE_PLATE) ||
+        !block_pressure_plate_powered(BLOCK_WOOD_PRESSURE_PLATE_PRESSED) ||
+        !block_pressure_plate_powered(BLOCK_STONE_PRESSURE_PLATE_PRESSED) ||
+        block_pressure_plate_unpressed(BLOCK_STONE_PRESSURE_PLATE_PRESSED) !=
+            BLOCK_STONE_PRESSURE_PLATE)
         return check_failed("redstone metadata missing");
     if (!block_is_repeater(BLOCK_REPEATER_ON) ||
         !block_is_comparator(BLOCK_COMPARATOR_ON) ||
@@ -879,6 +958,9 @@ int main(void)
         block_render_model(BLOCK_RED_MUSHROOM) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_RED_MUSHROOM) ||
         !block_is_passable(BLOCK_RED_MUSHROOM) ||
+        block_render_model(BLOCK_SUGAR_CANE) != BLOCK_RENDER_CROSS ||
+        !block_is_alpha_keyed(BLOCK_SUGAR_CANE) ||
+        !block_is_passable(BLOCK_SUGAR_CANE) ||
         block_render_model(BLOCK_CACTUS) != BLOCK_RENDER_CUBE ||
         block_is_alpha_keyed(BLOCK_CACTUS) ||
         block_is_passable(BLOCK_CACTUS))
@@ -974,9 +1056,132 @@ int main(void)
     if (world_get_block(&world, wire_x, wire_y, wire_z) !=
         BLOCK_REDSTONE_WIRE_OFF)
         return check_failed("redstone lever did not unpower wire");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_WOOD_PRESSURE_PLATE))
+        return check_failed("wood pressure plate placement failed");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("wood pressure plate powered wire while unpressed");
+    WorldPressurePlateTrigger item_trigger = {
+        .min_x = (float)wire_neighbor_x + 0.25f,
+        .max_x = (float)wire_neighbor_x + 0.75f,
+        .min_y = (float)wire_y,
+        .max_y = (float)wire_y + 0.4f,
+        .min_z = (float)wire_z + 0.25f,
+        .max_z = (float)wire_z + 0.75f,
+        .mask = WORLD_PRESSURE_TRIGGER_WOOD,
+    };
+    if (!world_update_pressure_plates_for_triggers(&world, &item_trigger, 1))
+        return check_failed("wood pressure plate did not depress under item");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_WOOD_PRESSURE_PLATE_PRESSED)
+        return check_failed("wood pressure plate pressed block missing");
+    if (world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_ON)
+        return check_failed("wood pressure plate did not power wire");
+    if (!world_update_pressure_plates_for_triggers(&world, NULL, 0))
+        return check_failed("wood pressure plate did not release");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_WOOD_PRESSURE_PLATE ||
+        world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("wood pressure plate release did not unpower wire");
+    if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z,
+                         BLOCK_STONE_PRESSURE_PLATE))
+        return check_failed("stone pressure plate placement failed");
+    (void)world_update_pressure_plates_for_triggers(&world, &item_trigger, 1);
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_STONE_PRESSURE_PLATE ||
+        world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("stone pressure plate depressed under item");
+    if (!world_update_pressure_plates(&world,
+                                      (float)wire_neighbor_x + 0.25f,
+                                      (float)wire_neighbor_x + 0.75f,
+                                      (float)wire_y,
+                                      (float)wire_y + 1.8f,
+                                      (float)wire_z + 0.25f,
+                                      (float)wire_z + 0.75f))
+        return check_failed("stone pressure plate did not depress under player");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_STONE_PRESSURE_PLATE_PRESSED ||
+        world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_ON)
+        return check_failed("stone pressure plate did not power wire");
+    if (!world_update_pressure_plates_for_triggers(&world, NULL, 0))
+        return check_failed("stone pressure plate did not release");
+    if (world_get_block(&world, wire_neighbor_x, wire_y, wire_z) !=
+        BLOCK_STONE_PRESSURE_PLATE ||
+        world_get_block(&world, wire_x, wire_y, wire_z) !=
+        BLOCK_REDSTONE_WIRE_OFF)
+        return check_failed("stone pressure plate release did not unpower wire");
     if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z, BLOCK_AIR) ||
         !world_set_block(&world, wire_x, wire_y, wire_z, BLOCK_AIR))
         return check_failed("redstone cleanup failed");
+
+    const int door_power_x = 12;
+    const int door_power_y = 24;
+    const int door_power_z = 6;
+    const int plate_power_x = door_power_x - 1;
+    if (!world_set_block(&world, door_power_x, door_power_y, door_power_z,
+                         BLOCK_DOOR) ||
+        !world_set_block(&world, door_power_x, door_power_y + 1, door_power_z,
+                         BLOCK_DOOR_NORTH_UPPER) ||
+        !world_set_block(&world, plate_power_x, door_power_y, door_power_z,
+                         BLOCK_WOOD_PRESSURE_PLATE))
+        return check_failed("pressure-plate door fixture build failed");
+    if (!world_update_pressure_plates(&world,
+                                      (float)plate_power_x + 0.25f,
+                                      (float)plate_power_x + 0.75f,
+                                      (float)door_power_y,
+                                      (float)door_power_y + 1.8f,
+                                      (float)door_power_z + 0.25f,
+                                      (float)door_power_z + 0.75f))
+        return check_failed("pressure plate did not press for door");
+    if (!block_is_door_open(world_get_block(&world,
+                                            door_power_x,
+                                            door_power_y,
+                                            door_power_z)) ||
+        !block_is_door_open(world_get_block(&world,
+                                            door_power_x,
+                                            door_power_y + 1,
+                                            door_power_z)))
+        return check_failed("pressure plate did not open door");
+    if (!world_set_block(&world, door_power_x, door_power_y, door_power_z,
+                         BLOCK_DOOR) ||
+        !world_set_block(&world, door_power_x, door_power_y + 1, door_power_z,
+                         BLOCK_DOOR_NORTH_UPPER))
+        return check_failed("powered door manual close fixture failed");
+    if (!block_is_door_open(world_get_block(&world,
+                                            door_power_x,
+                                            door_power_y,
+                                            door_power_z)) ||
+        !block_is_door_open(world_get_block(&world,
+                                            door_power_x,
+                                            door_power_y + 1,
+                                            door_power_z)))
+        return check_failed("powered redstone door stayed closed");
+    if (!world_update_pressure_plates(&world,
+                                      1000.0f, 1001.0f,
+                                      0.0f, 1.0f,
+                                      1000.0f, 1001.0f))
+        return check_failed("pressure plate did not release for door");
+    if (block_is_door_open(world_get_block(&world,
+                                           door_power_x,
+                                           door_power_y,
+                                           door_power_z)) ||
+        block_is_door_open(world_get_block(&world,
+                                           door_power_x,
+                                           door_power_y + 1,
+                                           door_power_z)))
+        return check_failed("redstone door did not close after plate release");
+    if (!world_set_block(&world, plate_power_x, door_power_y, door_power_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, door_power_x, door_power_y, door_power_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, door_power_x, door_power_y + 1, door_power_z,
+                         BLOCK_AIR))
+        return check_failed("pressure-plate door cleanup failed");
 
     const int decoder_x = -42;
     const int decoder_y = 28;

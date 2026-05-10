@@ -398,6 +398,45 @@ void init_block_types(void)
     BlockRegistry[BLOCK_BUTTON_PRESSED].hardness_seconds = 0.2f;
     BlockRegistry[BLOCK_BUTTON_PRESSED].render_model = BLOCK_RENDER_FLAT;
 
+    BlockRegistry[BLOCK_SUGAR_CANE].id = BLOCK_SUGAR_CANE;
+    BlockRegistry[BLOCK_SUGAR_CANE].name = "Sugar Cane";
+    set_all_faces(&BlockRegistry[BLOCK_SUGAR_CANE], TEX_TILE_SUGAR_CANE);
+    BlockRegistry[BLOCK_SUGAR_CANE].hardness_seconds = 0.1f;
+    BlockRegistry[BLOCK_SUGAR_CANE].render_model = BLOCK_RENDER_CROSS;
+
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE].id = BLOCK_WOOD_PRESSURE_PLATE;
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE].name = "Wood Pressure Plate";
+    set_all_faces(&BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE],
+                  TEX_TILE_WOOD_PLANK);
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE].hardness_seconds = 0.25f;
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE].render_model = BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE_PRESSED].id =
+        BLOCK_WOOD_PRESSURE_PLATE_PRESSED;
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE_PRESSED].name =
+        "Wood Pressure Plate Pressed";
+    set_all_faces(&BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE_PRESSED],
+                  TEX_TILE_WOOD_PLANK);
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE_PRESSED].hardness_seconds = 0.25f;
+    BlockRegistry[BLOCK_WOOD_PRESSURE_PLATE_PRESSED].render_model =
+        BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE].id = BLOCK_STONE_PRESSURE_PLATE;
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE].name = "Stone Pressure Plate";
+    set_all_faces(&BlockRegistry[BLOCK_STONE_PRESSURE_PLATE], TEX_TILE_STONE);
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE].hardness_seconds = 0.25f;
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE].render_model = BLOCK_RENDER_FLAT;
+
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED].id =
+        BLOCK_STONE_PRESSURE_PLATE_PRESSED;
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED].name =
+        "Stone Pressure Plate Pressed";
+    set_all_faces(&BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED],
+                  TEX_TILE_STONE);
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED].hardness_seconds = 0.25f;
+    BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED].render_model =
+        BLOCK_RENDER_FLAT;
+
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -626,6 +665,24 @@ bool block_is_lever(BlockID id)
            id == BLOCK_LEVER_ON;
 }
 
+bool block_is_pressure_plate(BlockID id)
+{
+    return block_is_wood_pressure_plate(id) ||
+           block_is_stone_pressure_plate(id);
+}
+
+bool block_is_wood_pressure_plate(BlockID id)
+{
+    return id == BLOCK_WOOD_PRESSURE_PLATE ||
+           id == BLOCK_WOOD_PRESSURE_PLATE_PRESSED;
+}
+
+bool block_is_stone_pressure_plate(BlockID id)
+{
+    return id == BLOCK_STONE_PRESSURE_PLATE ||
+           id == BLOCK_STONE_PRESSURE_PLATE_PRESSED;
+}
+
 bool block_is_redstone_directional(BlockID id)
 {
     return block_is_repeater(id) || block_is_comparator(id);
@@ -646,6 +703,19 @@ bool block_redstone_directional_powered(BlockID id)
 bool block_lever_powered(BlockID id)
 {
     return id == BLOCK_LEVER_ON;
+}
+
+bool block_pressure_plate_powered(BlockID id)
+{
+    return id == BLOCK_WOOD_PRESSURE_PLATE_PRESSED ||
+           id == BLOCK_STONE_PRESSURE_PLATE_PRESSED;
+}
+
+BlockID block_pressure_plate_unpressed(BlockID id)
+{
+    if (block_is_stone_pressure_plate(id))
+        return BLOCK_STONE_PRESSURE_PLATE;
+    return BLOCK_WOOD_PRESSURE_PLATE;
 }
 
 BlockDoorFacing block_redstone_facing(BlockID id)
@@ -736,4 +806,13 @@ BlockID block_comparator_make(BlockDoorFacing facing, bool powered)
 BlockID block_lever_make(bool powered)
 {
     return powered ? BLOCK_LEVER_ON : BLOCK_LEVER_OFF;
+}
+
+BlockID block_pressure_plate_make(BlockID id, bool powered)
+{
+    if (block_is_stone_pressure_plate(id))
+        return powered ? BLOCK_STONE_PRESSURE_PLATE_PRESSED :
+                         BLOCK_STONE_PRESSURE_PLATE;
+    return powered ? BLOCK_WOOD_PRESSURE_PLATE_PRESSED :
+                     BLOCK_WOOD_PRESSURE_PLATE;
 }

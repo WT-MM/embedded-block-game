@@ -282,11 +282,29 @@ static const CraftRecipe CRAFT_RECIPES[] = {
         .output_count = 1,
     },
     {
-        .shapeless = true,
+        .shapeless = false,
         .width = 2,
         .height = 1,
         .inputs = { (ItemID)BLOCK_PLANKS, (ItemID)BLOCK_PLANKS,
                     ITEM_NONE, ITEM_NONE },
+        .output = (ItemID)BLOCK_WOOD_PRESSURE_PLATE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 2,
+        .height = 1,
+        .inputs = { (ItemID)BLOCK_STONE, (ItemID)BLOCK_STONE,
+                    ITEM_NONE, ITEM_NONE },
+        .output = (ItemID)BLOCK_STONE_PRESSURE_PLATE,
+        .output_count = 1,
+    },
+    {
+        .shapeless = false,
+        .width = 3,
+        .height = 2,
+        .inputs = { (ItemID)BLOCK_PLANKS, ITEM_NONE, (ItemID)BLOCK_PLANKS,
+                    ITEM_NONE, (ItemID)BLOCK_PLANKS, ITEM_NONE },
         .output = ITEM_BOWL,
         .output_count = 4,
     },
@@ -1094,6 +1112,10 @@ ItemID survival_drop_for_block(BlockID block)
         return ITEM_NONE;
     case BLOCK_BUTTON_PRESSED:
         return (ItemID)BLOCK_BUTTON;
+    case BLOCK_WOOD_PRESSURE_PLATE_PRESSED:
+        return (ItemID)BLOCK_WOOD_PRESSURE_PLATE;
+    case BLOCK_STONE_PRESSURE_PLATE_PRESSED:
+        return (ItemID)BLOCK_STONE_PRESSURE_PLATE;
     case BLOCK_RED_MUSHROOM:
         return ITEM_RED_MUSHROOM;
     case BLOCK_BROWN_MUSHROOM:

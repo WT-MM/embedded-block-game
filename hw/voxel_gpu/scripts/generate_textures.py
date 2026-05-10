@@ -418,6 +418,7 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_BUCKET: "bucket.png",
     TEX_TILE_WATER_BUCKET: "water_bucket.png",
     TEX_TILE_LAVA_BUCKET: "lava_bucket.png",
+    TEX_TILE_SUGAR_CANE: "reeds.tga",
 }
 
 CACTUS_SOURCE_TILES = {
@@ -521,6 +522,7 @@ SOURCE_TILE_ALLOWED_PALETTE: dict[int, tuple[int, ...]] = {
     TEX_TILE_BUCKET: (PAL_TRANSPARENT, PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_WHITE),
     TEX_TILE_WATER_BUCKET: (PAL_TRANSPARENT, PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_WATER_DEEP, PAL_WATER_MID, PAL_WATER_HIGHLIGHT, PAL_WHITE),
     TEX_TILE_LAVA_BUCKET: (PAL_TRANSPARENT, PAL_UI_DARK, PAL_STONE_DARK, PAL_STONE, PAL_STONE_LIGHT, PAL_LAVA_DARK, PAL_LAVA_ORANGE, PAL_LAVA_HOT, PAL_SUN_GLOW, PAL_SUN_CORE, PAL_WHITE),
+    TEX_TILE_SUGAR_CANE: (PAL_TRANSPARENT, PAL_GRASS_DARK, PAL_GRASS_SIDE, PAL_GRASS_LIGHT, PAL_SAND_LIGHT, PAL_WHITE),
 }
 
 HUD_SOURCE_TILES = {
@@ -655,6 +657,16 @@ def _quantize_to_palette(tile: int, rgba: tuple[int, int, int, int], x: int, y: 
         if r >= 40:
             return PAL_WATER_HIGHLIGHT
         return PAL_WATER_MID
+
+    if tile == TEX_TILE_SUGAR_CANE:
+        # Bedrock's reeds texture has yellow-green stalk highlights. Keep the
+        # alpha cutout and bias opaque pixels toward plant greens before using
+        # the shared nearest-palette path.
+        green_bias = max(0, g - max(r, b))
+        if green_bias > 18 and g >= 95:
+            if g >= 170 or r >= 150:
+                return PAL_GRASS_LIGHT
+            return PAL_GRASS_SIDE
 
     if tile == TEX_TILE_DRUMSTICK_EMPTY:
         return PAL_OBSIDIAN
@@ -1494,6 +1506,8 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return flower(x, y, PAL_RED, PAL_WHITE)
     if tile == TEX_TILE_BROWN_MUSHROOM:
         return flower(x, y, PAL_WOOD, PAL_DIRT_LIGHT)
+    if tile == TEX_TILE_SUGAR_CANE:
+        return flower(x, y, PAL_GRASS_SIDE, PAL_GRASS_LIGHT)
     if tile == TEX_TILE_APPLE:
         return flower(x, y, PAL_RED, PAL_WHITE)
     if tile == TEX_TILE_BOWL:

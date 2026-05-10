@@ -327,6 +327,44 @@ static bool worldgen_wants_cactus(int wx, int wz, uint32_t base_seed,
     return (roll & 0xffu) < 5u;
 }
 
+static bool worldgen_has_adjacent_water_for_plant(int wx, int ground_y, int wz,
+                                                  uint32_t base_seed)
+{
+    static const int dirs[][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+    };
+
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        WorldgenColumn near_column =
+            worldgen_column_at(wx + dirs[i][0], wz + dirs[i][1], base_seed);
+
+        if (!near_column.underwater)
+            continue;
+        if (ground_y > near_column.surface_y &&
+            ground_y <= WORLDGEN_SEA_LEVEL)
+            return true;
+    }
+
+    return false;
+}
+
+static bool worldgen_wants_sugar_cane(int wx, int wz, uint32_t base_seed,
+                                      const WorldgenColumn *column)
+{
+    uint32_t roll;
+
+    if (!column || column->underwater ||
+        column->surface_y < WORLDGEN_SEA_LEVEL ||
+        column->surface_y + 4 >= WORLD_CHUNK_HEIGHT)
+        return false;
+    if (!worldgen_has_adjacent_water_for_plant(wx, column->surface_y,
+                                               wz, base_seed))
+        return false;
+
+    roll = hash_world_coord(wx, wz, base_seed, 0x5ca11u);
+    return (roll & 0xffu) < 32u;
+}
+
 static bool worldgen_lava_pool_center_candidate(int wx, int wz,
                                                 uint32_t base_seed)
 {
@@ -441,6 +479,16 @@ static void worldgen_place_cactus(Chunk *chunk, int local_x, int base_y,
     for (int i = 0; i < height; i++)
         worldgen_set_block_local(chunk, local_x, base_y + i, local_z,
                                  BLOCK_CACTUS, false);
+}
+
+static void worldgen_place_sugar_cane(Chunk *chunk, int local_x, int base_y,
+                                      int local_z, uint32_t roll)
+{
+    int height = 2 + (int)(roll % 3u);
+
+    for (int i = 0; i < height; i++)
+        worldgen_set_block_local(chunk, local_x, base_y + i, local_z,
+                                 BLOCK_SUGAR_CANE, false);
 }
 
 static void worldgen_place_desert_lava_pool(Chunk *chunk,
@@ -677,6 +725,27 @@ void world_generate_chunk_terrain(Chunk *chunk,
 
             uint32_t roll = hash_world_coord(wx, wz, base_seed, 0xd00du);
             worldgen_place_tree(chunk, lx, trunk_top_y, lz, roll);
+        }
+    }
+
+    for (int lz = 0; lz < WORLD_CHUNK_SIZE; lz++) {
+        for (int lx = 0; lx < WORLD_CHUNK_SIZE; lx++) {
+            int wx = origin_x + lx;
+            int wz = origin_z + lz;
+            WorldgenColumn column = worldgen_column_at(wx, wz, base_seed);
+            int sugar_cane_y = column.surface_y + 1;
+            uint32_t roll;
+
+            if (sugar_cane_y + 3 >= WORLD_CHUNK_HEIGHT)
+                continue;
+            if (chunk->blocks[column.surface_y][lz][lx] != BLOCK_SAND ||
+                chunk->blocks[sugar_cane_y][lz][lx] != BLOCK_AIR)
+                continue;
+            if (!worldgen_wants_sugar_cane(wx, wz, base_seed, &column))
+                continue;
+
+            roll = hash_world_coord(wx, wz, base_seed, 0x5ca11u);
+            worldgen_place_sugar_cane(chunk, lx, sugar_cane_y, lz, roll);
         }
     }
 

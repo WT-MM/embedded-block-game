@@ -93,6 +93,11 @@ typedef enum {
     BLOCK_LEVER_OFF,
     BLOCK_LEVER_ON,
     BLOCK_BUTTON_PRESSED,
+    BLOCK_SUGAR_CANE,
+    BLOCK_WOOD_PRESSURE_PLATE,
+    BLOCK_WOOD_PRESSURE_PLATE_PRESSED,
+    BLOCK_STONE_PRESSURE_PLATE,
+    BLOCK_STONE_PRESSURE_PLATE_PRESSED,
     NUM_BLOCK_TYPES
 } BlockID;
 
@@ -163,12 +168,18 @@ BlockID block_door_toggle(BlockID id);
 bool block_is_repeater(BlockID id);
 bool block_is_comparator(BlockID id);
 bool block_is_lever(BlockID id);
+bool block_is_pressure_plate(BlockID id);
+bool block_is_wood_pressure_plate(BlockID id);
+bool block_is_stone_pressure_plate(BlockID id);
 bool block_is_redstone_directional(BlockID id);
 bool block_redstone_directional_powered(BlockID id);
 bool block_lever_powered(BlockID id);
+bool block_pressure_plate_powered(BlockID id);
+BlockID block_pressure_plate_unpressed(BlockID id);
 BlockDoorFacing block_redstone_facing(BlockID id);
 BlockID block_repeater_make(BlockDoorFacing facing, bool powered);
 BlockID block_comparator_make(BlockDoorFacing facing, bool powered);
 BlockID block_lever_make(bool powered);
+BlockID block_pressure_plate_make(BlockID id, bool powered);
 
 #endif

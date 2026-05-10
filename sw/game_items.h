@@ -10,6 +10,7 @@
 #include "world.h"
 
 #define ITEM_ENTITY_MAX 128
+#define ITEM_ENTITY_SIZE_WORLD 0.42f
 
 typedef struct {
     bool active;

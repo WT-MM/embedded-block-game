@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "block_types.h"
@@ -26,6 +27,21 @@ typedef enum {
     WORLD_BIOME_HILLS,
     WORLD_BIOME_MOUNTAINS,
 } WorldBiome;
+
+typedef enum {
+    WORLD_PRESSURE_TRIGGER_WOOD = 1u << 0,
+    WORLD_PRESSURE_TRIGGER_STONE = 1u << 1,
+} WorldPressureTriggerMask;
+
+typedef struct {
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float min_z;
+    float max_z;
+    uint8_t mask;
+} WorldPressurePlateTrigger;
 
 typedef struct {
     uint8_t x;
@@ -231,6 +247,17 @@ bool world_update_redstone(VoxelWorld *world, float dt);
 bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
 bool world_toggle_lever(VoxelWorld *world, int wx, int wy, int wz,
                         bool *powered_out);
+bool world_update_pressure_plates(VoxelWorld *world,
+                                  float min_x,
+                                  float max_x,
+                                  float min_y,
+                                  float max_y,
+                                  float min_z,
+                                  float max_z);
+bool world_update_pressure_plates_for_triggers(
+    VoxelWorld *world,
+    const WorldPressurePlateTrigger *triggers,
+    size_t trigger_count);
 bool world_cycle_repeater_delay(VoxelWorld *world, int wx, int wy, int wz,
                                 uint8_t *delay_ticks_out);
 uint8_t world_repeater_delay_ticks(const VoxelWorld *world, int wx, int wy, int wz);

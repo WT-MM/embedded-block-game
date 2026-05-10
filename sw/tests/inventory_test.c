@@ -45,6 +45,34 @@ static void test_planks_to_sticks_recipe(void)
     assert(inv.craft_output.count == 4);
 }
 
+static void test_pressure_plate_and_bowl_recipes(void)
+{
+    SurvivalInventory inv;
+
+    survival_inventory_init(&inv);
+    inv.craft[0] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
+    inv.craft[1] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == (ItemID)BLOCK_WOOD_PRESSURE_PLATE);
+    assert(inv.craft_output.count == 1);
+
+    survival_inventory_init(&inv);
+    inv.craft[0] = (ItemStack){ (ItemID)BLOCK_STONE, 1 };
+    inv.craft[1] = (ItemStack){ (ItemID)BLOCK_STONE, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == (ItemID)BLOCK_STONE_PRESSURE_PLATE);
+    assert(inv.craft_output.count == 1);
+
+    survival_inventory_init(&inv);
+    survival_inventory_set_craft_grid_dim(&inv, SURVIVAL_CRAFT_GRID_TABLE);
+    inv.craft[0] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
+    inv.craft[2] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
+    inv.craft[4] = (ItemStack){ (ItemID)BLOCK_PLANKS, 1 };
+    survival_inventory_refresh_craft_output(&inv);
+    assert(inv.craft_output.item == ITEM_BOWL);
+    assert(inv.craft_output.count == 4);
+}
+
 static void test_crafting_table_and_door_recipes(void)
 {
     SurvivalInventory inv;
@@ -168,6 +196,10 @@ static void test_furnace_torch_and_coal(void)
     assert(survival_drop_for_block(BLOCK_DIAMOND_ORE) == ITEM_DIAMOND);
     assert(survival_drop_for_block(BLOCK_BUTTON_PRESSED) ==
            (ItemID)BLOCK_BUTTON);
+    assert(survival_drop_for_block(BLOCK_WOOD_PRESSURE_PLATE_PRESSED) ==
+           (ItemID)BLOCK_WOOD_PRESSURE_PLATE);
+    assert(survival_drop_for_block(BLOCK_STONE_PRESSURE_PLATE_PRESSED) ==
+           (ItemID)BLOCK_STONE_PRESSURE_PLATE);
     assert(item_is_furnace_fuel(ITEM_COAL));
     assert(item_is_furnace_fuel((ItemID)BLOCK_WOOD));
     assert(item_is_furnace_fuel((ItemID)BLOCK_PLANKS));
@@ -256,6 +288,7 @@ int main(void)
     test_pickup_stacks_into_inventory();
     test_wood_to_planks_recipe();
     test_planks_to_sticks_recipe();
+    test_pressure_plate_and_bowl_recipes();
     test_crafting_table_and_door_recipes();
     test_table_only_block_recipes();
     test_legacy_door_recipe_removed();

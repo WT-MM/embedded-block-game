@@ -1916,6 +1916,13 @@ static void flat_face_vertices(Vec3 block_pos,
     } else if (type == BLOCK_BUTTON_PRESSED) {
         inset = 0.29f;
         y = block_pos.y + 0.025f;
+    } else if (block_is_pressure_plate(type) &&
+               !block_pressure_plate_powered(type)) {
+        inset = 0.08f;
+        y = block_pos.y + 0.055f;
+    } else if (block_pressure_plate_powered(type)) {
+        inset = 0.08f;
+        y = block_pos.y + 0.015f;
     }
 
     out[0] = (Vec3){ block_pos.x + inset,        y,
@@ -1950,6 +1957,7 @@ static bool render_block_is_redstone_component(BlockID id)
            block_is_repeater(id) ||
            block_is_comparator(id) ||
            block_is_lever(id) ||
+           block_is_pressure_plate(id) ||
            id == BLOCK_LAMP_OFF ||
            id == BLOCK_LAMP ||
            id == BLOCK_REDSTONE_BLOCK ||

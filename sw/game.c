@@ -216,7 +216,7 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
         BLOCK_CACTUS,
         BLOCK_RED_MUSHROOM,
         BLOCK_BROWN_MUSHROOM,
-        BLOCK_RED_FLOWER,
+        BLOCK_SUGAR_CANE,
         BLOCK_YELLOW_FLOWER,
     },
     {
@@ -243,8 +243,8 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
     },
     {
         BLOCK_LEVER_OFF,
-        BLOCK_LEVER_ON,
-        BLOCK_BUTTON,
+        BLOCK_WOOD_PRESSURE_PLATE,
+        BLOCK_STONE_PRESSURE_PLATE,
         BLOCK_REDSTONE_BLOCK,
         BLOCK_REDSTONE_WIRE_UNCONNECTED,
         BLOCK_REDSTONE_TORCH_ON,
@@ -760,6 +760,49 @@ static bool player_touches_cactus(const VoxelWorld *world, const Player *player)
     return false;
 }
 
+static void update_pressure_plate_depressions(VoxelWorld *world,
+                                              const Player *player,
+                                              const ItemEntityPool *drops)
+{
+    WorldPressurePlateTrigger triggers[ITEM_ENTITY_MAX + 1];
+    size_t count = 0;
+
+    if (!world || !player)
+        return;
+
+    triggers[count++] = (WorldPressurePlateTrigger){
+        .min_x = player->x - PLAYER_WIDTH * 0.5f,
+        .max_x = player->x + PLAYER_WIDTH * 0.5f,
+        .min_y = player->y,
+        .max_y = player->y + PLAYER_HEIGHT,
+        .min_z = player->z - PLAYER_DEPTH * 0.5f,
+        .max_z = player->z + PLAYER_DEPTH * 0.5f,
+        .mask = WORLD_PRESSURE_TRIGGER_WOOD | WORLD_PRESSURE_TRIGGER_STONE,
+    };
+
+    if (drops) {
+        const float radius = ITEM_ENTITY_SIZE_WORLD * 0.5f;
+
+        for (int i = 0; i < ITEM_ENTITY_MAX; i++) {
+            const ItemEntity *item = &drops->items[i];
+
+            if (!item->active || item_stack_is_empty(&item->stack))
+                continue;
+            triggers[count++] = (WorldPressurePlateTrigger){
+                .min_x = item->position.x - radius,
+                .max_x = item->position.x + radius,
+                .min_y = item->position.y - radius,
+                .max_y = item->position.y + radius,
+                .min_z = item->position.z - radius,
+                .max_z = item->position.z + radius,
+                .mask = WORLD_PRESSURE_TRIGGER_WOOD,
+            };
+        }
+    }
+
+    (void)world_update_pressure_plates_for_triggers(world, triggers, count);
+}
+
 static bool break_block_target(VoxelWorld *world, const BlockTarget *target,
                                BlockID *broken_block_out)
 {
@@ -861,6 +904,11 @@ static bool place_block_is_button(BlockID type)
     return type == BLOCK_BUTTON || type == BLOCK_BUTTON_PRESSED;
 }
 
+static bool place_block_is_pressure_plate(BlockID type)
+{
+    return block_is_pressure_plate(type);
+}
+
 static BlockDoorFacing door_facing_from_camera(const Camera *cam);
 
 static BlockID normalize_placed_block(BlockID type, const Camera *cam)
@@ -869,6 +917,8 @@ static BlockID normalize_placed_block(BlockID type, const Camera *cam)
         return BLOCK_REDSTONE_WIRE_UNCONNECTED;
     if (place_block_is_button(type))
         return BLOCK_BUTTON;
+    if (place_block_is_pressure_plate(type))
+        return block_pressure_plate_unpressed(type);
     if (block_is_repeater(type))
         return block_repeater_make(door_facing_from_camera(cam),
                                    block_redstone_directional_powered(type));
@@ -4444,6 +4494,8 @@ home_menu_start:
         if (player.mode == PLAYER_MODE_SURVIVAL)
             item_entities_update(&item_drops, &world, &survival_inventory,
                                  &player, frame_dt);
+        if (!paused)
+            update_pressure_plate_depressions(&world, &player, &item_drops);
         if (!paused && player.mode == PLAYER_MODE_SURVIVAL)
             furnace_states_update(furnace_states, &world, frame_dt);
 

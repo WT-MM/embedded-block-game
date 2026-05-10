@@ -2,6 +2,8 @@
 import pathlib
 import re
 import struct
+import subprocess
+import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -17,6 +19,9 @@ BLOCK_COUNT = CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE
 
 WORLD_SEED = 0x4840C0DE
 STONE_TRIES_PER_CHUNK = 12
+SETTLE_RENDER_DISTANCE = 5
+SETTLE_CENTER_X = 14.0
+SETTLE_CENTER_Z = 30.0
 
 FACE_LEFT = 2
 FACE_RIGHT = 3
@@ -247,7 +252,18 @@ def place_wide_comparator_latch(world, wx, wy, wz):
         world.set(wx + dx, wy, wz + dz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
 
+TFF_LATCH_DX = 10
+TFF_Q_BUS_DX = TFF_LATCH_DX + 4
+TFF_NQ_BUS_DX = TFF_LATCH_DX + 6
+TFF_RESET_BUTTON_DX = TFF_LATCH_DX + 1
+COUNTER_CELL_STRIDE = TFF_NQ_BUS_DX + 1
+
+
 def place_t_flip_flop(world, wx, wy, wz, button_input):
+    pulse_x = wx + TFF_LATCH_DX - 3
+    latch_x = wx + TFF_LATCH_DX
+    nq_torch_x = wx + TFF_NQ_BUS_DX - 1
+
     world.set(wx, wy, wz,
               "BLOCK_BUTTON" if button_input else "BLOCK_REPEATER_EAST_OFF")
     world.set(wx + 1, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
@@ -259,28 +275,34 @@ def place_t_flip_flop(world, wx, wy, wz, button_input):
     world.set(wx + 2, wy, wz - 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
     world.set(wx + 3, wy, wz - 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
-    wire_x(world, wx + 4, wx + 10, wy, wz)
-    world.set(wx + 11, wy, wz, "BLOCK_REPEATER_EAST_OFF")
-    wire_x(world, wx + 12, wx + 16, wy, wz)
-    wire_z(world, wx + 16, wy, wz - 1, wz - 4)
-    wire_x(world, wx + 17, wx + 20, wy, wz - 4)
+    world.set(wx + 4, wy, wz, "BLOCK_REPEATER_EAST_OFF")
+    world.set(wx + 5, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    for dx, dz in (
+        (6, 0), (6, -1), (6, -2), (5, -2), (5, -3),
+        (5, -4), (5, -5), (6, -5), (7, -5), (7, -4),
+    ):
+        world.set(wx + dx, wy, wz + dz,
+                  "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    wire_x(world, pulse_x, latch_x, wy, wz - 4)
 
-    world.set(wx + 17, wy, wz, "BLOCK_COMPARATOR_EAST_OFF")
-    world.set(wx + 20, wy, wz - 3, "BLOCK_COMPARATOR_SOUTH_OFF")
-    place_wide_comparator_latch(world, wx + 20, wy, wz)
+    world.set(pulse_x, wy, wz, "BLOCK_COMPARATOR_EAST_OFF")
+    world.set(latch_x, wy, wz - 3, "BLOCK_COMPARATOR_SOUTH_OFF")
+    place_wide_comparator_latch(world, latch_x, wy, wz)
 
-    world.set(wx + 17, wy, wz + 1, "BLOCK_REPEATER_OFF")
-    world.set(wx + 17, wy, wz + 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-    world.set(wx + 18, wy, wz + 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-    world.set(wx + 20, wy, wz - 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-    world.set(wx + 20, wy, wz - 1, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(pulse_x, wy, wz + 1, "BLOCK_REPEATER_OFF")
+    world.set(pulse_x, wy, wz + 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(pulse_x + 1, wy, wz + 2,
+              "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(latch_x, wy, wz - 2, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(latch_x, wy, wz - 1, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
-    world.set(wx + 24, wy, wz, "BLOCK_STONE")
-    world.set(wx + 25, wy, wz, "BLOCK_REDSTONE_TORCH_ON",
+    world.set(nq_torch_x - 1, wy, wz, "BLOCK_STONE")
+    world.set(nq_torch_x, wy, wz, "BLOCK_REDSTONE_TORCH_ON",
               torch_support=FACE_LEFT)
-    wire_z(world, wx + 25, wy, wz - 1, wz - 3)
-    wire_x(world, wx + 22, wx + 24, wy, wz - 3)
-    world.set(wx + 21, wy, wz - 3, "BLOCK_REPEATER_WEST_OFF")
+    wire_z(world, nq_torch_x, wy, wz - 1, wz - 3)
+    wire_x(world, latch_x + 2, nq_torch_x - 1, wy, wz - 3)
+    world.set(wx + TFF_RESET_BUTTON_DX, wy, wz - 3,
+              "BLOCK_REPEATER_WEST_OFF")
 
 
 SEG_A = 1 << 0
@@ -453,7 +475,7 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     repeater_line_z(world, count_input_x, y, count_bus_z - 1,
                     first_input_z, "BLOCK_REPEATER_OFF", interval=8)
 
-    for reset_x, reset_z in reset_targets:
+    for reset_x, _, reset_z in reset_targets:
         world.set(reset_x, y, reset_z, "BLOCK_BUTTON")
 
     return {
@@ -466,17 +488,15 @@ def place_connected_counter_display(world,
                                     wy=5,
                                     decoder_y=7,
                                     decoder_z=36):
-    cell_xs = [-8, 19, 46]
+    cell_xs = [-8 + bit * COUNTER_CELL_STRIDE for bit in range(3)]
     row_zs = [16, 16, 16]
-    q_bus = [cell_x + 24 for cell_x in cell_xs]
-    nq_bus = [cell_x + 26 for cell_x in cell_xs]
+    q_bus = [cell_x + TFF_Q_BUS_DX for cell_x in cell_xs]
+    nq_bus = [cell_x + TFF_NQ_BUS_DX for cell_x in cell_xs]
     support_x = min(q_bus) - 3
     row_start_x = support_x + 1
     row_end_x = max(nq_bus) + 1
     bus_z1 = decoder_z + 7 * DECODER_ROW_SPACING + 1
-    segment_bus = [support_x - 63, support_x - 65, support_x - 57,
-                   support_x - 53, support_x - 55, support_x - 61,
-                   support_x - 59]
+    segment_bus = [-50, -52, -44, -40, -42, -48, -46]
     segment_bus_min = min(segment_bus)
 
     for bit, (cell_x, row_z) in enumerate(zip(cell_xs, row_zs)):
@@ -519,7 +539,7 @@ def place_connected_counter_display(world,
 
     display_lamps = place_segment_display(world, decoder_y - 2,
                                           decoder_z, bus_z1, segment_bus)
-    reset_targets = [(cell_x + 21, row_z - 1)
+    reset_targets = [(cell_x + TFF_RESET_BUTTON_DX, wy, row_z - 1)
                      for cell_x, row_z in zip(cell_xs, row_zs)]
     controls = place_counter_controls(world, wy, cell_xs[0], row_zs[0],
                                       reset_targets, display_lamps)
@@ -534,9 +554,53 @@ def place_connected_counter_display(world,
     return {
         "button": controls["button"],
         "reset": controls["reset"],
+        "reset_targets": reset_targets,
         "bit_lamps": [],
         "display_lamps": display_lamps,
     }
+
+
+def settle_generated_redstone(reset_targets):
+    """Save the lab after the game engine has reset and settled the counter.
+
+    The ripple counter intentionally carries from each bit's NQ output. NQ is
+    high in the zero state, so a raw chunk file with every redstone component
+    off will create false rising edges while the world settles. Use the actual
+    engine once at generation time so the tracked sample starts from the same
+    stable zero state that the reset buttons produce in game.
+    """
+    with tempfile.TemporaryDirectory(prefix="redstone_lab_settle_") as tmp:
+        tmp_path = pathlib.Path(tmp)
+        helper_bin = tmp_path / "settle_redstone_lab"
+        helper_c = WORLD_ROOT / "settle_redstone_lab.c"
+        cc = "cc"
+        compile_cmd = [
+            cc,
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-pthread",
+            f"-DSETTLE_WORLD_SEED=0x{WORLD_SEED:08x}u",
+            f"-DSETTLE_STONE_TRIES={STONE_TRIES_PER_CHUNK}",
+            f"-DSETTLE_RENDER_DISTANCE={SETTLE_RENDER_DISTANCE}",
+            f"-DSETTLE_CENTER_X={SETTLE_CENTER_X}f",
+            f"-DSETTLE_CENTER_Z={SETTLE_CENTER_Z}f",
+            "-Isw",
+            "-o",
+            str(helper_bin),
+            str(helper_c),
+            "sw/block_types.c",
+            "sw/world.c",
+            "sw/world_gen.c",
+            "-lm",
+        ]
+        run_cmd = [str(helper_bin), str(WORLD_ROOT)]
+
+        for wx, wy, wz in reset_targets:
+            run_cmd.extend((str(wx), str(wy), str(wz)))
+
+        subprocess.run(compile_cmd, cwd=ROOT, check=True)
+        subprocess.run(run_cmd, cwd=ROOT, check=True)
 
 
 def place_redstone_clock(world):
@@ -603,8 +667,9 @@ def main():
     place_comparator_demo(world)
     place_redstone_clock(world)
     place_latch_demo(world)
-    place_connected_counter_display(world)
+    counter = place_connected_counter_display(world)
     world.write()
+    settle_generated_redstone(counter["reset_targets"])
 
 
 if __name__ == "__main__":

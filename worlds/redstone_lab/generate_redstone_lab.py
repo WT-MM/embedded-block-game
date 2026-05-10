@@ -83,7 +83,7 @@ class LabWorld:
                             elif y == 3:
                                 block_data[idx] = B["BLOCK_DIRT"]
                             elif y == 4:
-                                block_data[idx] = B["BLOCK_GRASS"]
+                                block_data[idx] = B["BLOCK_PLANKS"]
                 self.blocks[(cx, cz)] = block_data
                 self.redstone[(cx, cz)] = redstone_data
 
@@ -225,7 +225,23 @@ SEGMENT_PATTERNS = [
 ]
 
 
-def place_three_bit_counter(world, wx=-48, wy=5, wz=8, bit_stride=30):
+def place_connected_counter_display(world,
+                                    wx=-48,
+                                    wy=5,
+                                    wz=8,
+                                    bit_stride=30,
+                                    decoder_y=7,
+                                    decoder_z=24):
+    q_bus = [wx + bit * bit_stride + 20 for bit in range(3)]
+    nq_bus = [x + 2 for x in q_bus]
+    support_x = max(nq_bus) + 8
+    row_start_x = min(q_bus) - 1
+    row_end_x = support_x - 1
+    bus_z0 = decoder_z - 1
+    bus_z1 = decoder_z + 7 * 3 + 1
+    segment_bus = [support_x + 4 + segment * 2 for segment in range(7)]
+    lamp_z = decoder_z + 7 * 3 + 4
+
     for bit in range(3):
         cell_x = wx + bit * bit_stride
         place_t_flip_flop(world, cell_x, wy, wz, bit == 0)
@@ -234,79 +250,78 @@ def place_three_bit_counter(world, wx=-48, wy=5, wz=8, bit_stride=30):
     wire_x(world, wx + 26, wx + bit_stride - 1, wy, wz)
     wire_x(world, wx + bit_stride + 26, wx + 2 * bit_stride - 1, wy, wz)
 
-    for bit in range(3):
-        cell_x = wx + bit * bit_stride
-        wire_z(world, cell_x + 20, wy, wz + 4, wz + 6)
-        world.set(cell_x + 20, wy, wz + 7, "BLOCK_LAMP_OFF")
+    for bit, qx in enumerate(q_bus):
+        wire_z(world, qx, wy, wz + 4, wz + 6)
+        world.set(qx - 1, wy, wz + 6, "BLOCK_LAMP_OFF")
+
+        wire_z(world, qx, wy + 4, wz + 4, bus_z1)
+        for rz in range(wz + 12, bus_z1, 9):
+            world.set(qx, wy + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
+
+        world.set(qx, wy, wz + 7, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(qx, wy, wz + 8, "BLOCK_STONE")
+        world.set(qx, wy + 1, wz + 8, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(qx, wy + 1, wz + 9, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(qx, wy + 1, wz + 10, "BLOCK_STONE")
+        world.set(qx, wy + 2, wz + 10, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(qx, wy + 2, wz + 11, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(qx, wy + 2, wz + 12, "BLOCK_STONE")
+        world.set(qx, wy + 3, wz + 12, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        world.set(qx, wy + 3, wz + 13, "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(qx, wy + 3, wz + 14, "BLOCK_STONE")
+
+        nqx = nq_bus[bit]
+        world.set(qx + 1, wy + 4, decoder_z - 2, "BLOCK_STONE")
+        world.set(nqx, wy + 4, decoder_z - 2, "BLOCK_REDSTONE_TORCH_ON")
+        wire_z(world, nqx, wy + 4, bus_z0, bus_z1)
+        for rz in range(bus_z0 + 3, bus_z1, 9):
+            world.set(nqx, wy + 4, rz, "BLOCK_REPEATER_SOUTH_OFF")
+
+    for value in range(8):
+        row_z = decoder_z + value * 3
+        wire_x(world, row_start_x, row_end_x, decoder_y, row_z)
+        literal_x = set(q_bus + nq_bus)
+        for rx in range(row_start_x + 5, row_end_x, 8):
+            if rx not in literal_x:
+                world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_EAST_OFF")
+
+        world.set(support_x, decoder_y, row_z, "BLOCK_STONE")
+        world.set(support_x + 1, decoder_y, row_z,
+                  "BLOCK_REDSTONE_TORCH_ON")
+        wire_x(world, support_x + 2, segment_bus[-1] + 1,
+               decoder_y, row_z)
+        world.set(support_x + 5, decoder_y, row_z,
+                  "BLOCK_REPEATER_EAST_OFF")
+        world.set(support_x + 11, decoder_y, row_z,
+                  "BLOCK_REPEATER_EAST_OFF")
+
+        for bit in range(3):
+            bus_x = nq_bus[bit] if value & (1 << bit) else q_bus[bit]
+            world.set(bus_x, decoder_y + 1, row_z, "BLOCK_STONE")
+
+    for segment, bus_x in enumerate(segment_bus):
+        wire_z(world, bus_x, decoder_y - 2, decoder_z, lamp_z - 1)
+        for rz in range(decoder_z + 2, lamp_z, 9):
+            world.set(bus_x, decoder_y - 2, rz,
+                      "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(bus_x, decoder_y - 2, lamp_z, "BLOCK_LAMP_OFF")
+
+    for value, pattern in enumerate(SEGMENT_PATTERNS):
+        row_z = decoder_z + value * 3
+        for segment, bus_x in enumerate(segment_bus):
+            if pattern & (1 << segment):
+                world.set(bus_x, decoder_y - 1, row_z, "BLOCK_STONE")
 
     return {
         "button": (wx, wy, wz),
         "resets": [(wx + bit * bit_stride + 21, wy, wz - 1)
                    for bit in range(3)],
+        "bit_lamps": [(qx - 1, wy, wz + 6) for qx in q_bus],
+        "display_lamps": [(x, decoder_y - 2, lamp_z) for x in segment_bus],
     }
 
 
-def place_decoder_demo(world, wx=18, wy=7, wz=16):
-    q_bus = [wx + bit * 5 for bit in range(3)]
-    nq_bus = [wx + bit * 5 + 2 for bit in range(3)]
-    support_x = wx + 15
-    row_start_x = wx - 1
-    row_end_x = support_x - 1
-    source_z = wz - 2
-    bus_z0 = wz - 1
-    bus_z1 = wz + 7 * 3 + 1
-    segment_bus = [support_x + 4 + segment * 2 for segment in range(7)]
-    lamp_z = wz + 7 * 3 + 4
-
-    for bit in range(3):
-        wire_z(world, q_bus[bit], wy + 2, bus_z0, bus_z1)
-        wire_z(world, nq_bus[bit], wy + 2, bus_z0, bus_z1)
-        for rz in (bus_z0 + 3, bus_z0 + 12, bus_z0 + 21):
-            if rz < bus_z1:
-                world.set(q_bus[bit], wy + 2, rz,
-                          "BLOCK_REPEATER_SOUTH_OFF")
-                world.set(nq_bus[bit], wy + 2, rz,
-                          "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(q_bus[bit], wy + 2, source_z, "BLOCK_AIR")
-        world.set(nq_bus[bit], wy + 2, source_z, "BLOCK_REDSTONE_BLOCK")
-
-    for value in range(8):
-        row_z = wz + value * 3
-        wire_x(world, row_start_x, row_end_x, wy, row_z)
-        for rx in (wx + 4, wx + 9):
-            if rx not in q_bus and rx not in nq_bus:
-                world.set(rx, wy, row_z, "BLOCK_REPEATER_EAST_OFF")
-        world.set(support_x, wy, row_z, "BLOCK_STONE")
-        world.set(support_x + 1, wy, row_z, "BLOCK_REDSTONE_TORCH_ON")
-        wire_x(world, support_x + 2, segment_bus[-1] + 1, wy, row_z)
-        world.set(support_x + 5, wy, row_z, "BLOCK_REPEATER_EAST_OFF")
-        world.set(support_x + 11, wy, row_z, "BLOCK_REPEATER_EAST_OFF")
-
-        for bit in range(3):
-            bus_x = nq_bus[bit] if value & (1 << bit) else q_bus[bit]
-            world.set(bus_x, wy + 1, row_z, "BLOCK_STONE")
-
-    for segment, bus_x in enumerate(segment_bus):
-        wire_z(world, bus_x, wy - 2, wz, lamp_z - 1)
-        for rz in (wz + 2, wz + 11, wz + 20):
-            world.set(bus_x, wy - 2, rz, "BLOCK_REPEATER_SOUTH_OFF")
-        world.set(bus_x, wy - 2, lamp_z, "BLOCK_LAMP_OFF")
-
-    for value, pattern in enumerate(SEGMENT_PATTERNS):
-        row_z = wz + value * 3
-        for segment, bus_x in enumerate(segment_bus):
-            if pattern & (1 << segment):
-                world.set(bus_x, wy - 1, row_z, "BLOCK_STONE")
-
-    return {
-        "sources": [(q_bus[bit], wy + 2, source_z,
-                     nq_bus[bit], wy + 2, source_z)
-                    for bit in range(3)],
-        "lamps": [(x, wy - 2, lamp_z) for x in segment_bus],
-    }
-
-
-def place_clock_and_button_demo(world):
+def place_redstone_clock(world):
     y = 5
     z = -24
     world.set(2, y, z, "BLOCK_STONE")
@@ -318,13 +333,6 @@ def place_clock_and_button_demo(world):
     wire_z(world, 12, y, z + 1, z + 4)
     wire_x(world, 4, 11, y, z + 4)
     wire_z(world, 4, y, z + 3, z + 1)
-
-    world.set(26, y, z, "BLOCK_BUTTON")
-    wire_x(world, 27, 31, y, z)
-    world.set(32, y, z, "BLOCK_REPEATER_EAST_OFF", delay=1)
-    world.set(34, y, z, "BLOCK_REPEATER_EAST_OFF", delay=4)
-    wire_x(world, 35, 38, y, z)
-    world.set(39, y, z, "BLOCK_LAMP_OFF")
 
 
 def place_comparator_demo(world):
@@ -345,23 +353,29 @@ def place_comparator_demo(world):
     wire_z(world, -36, y, z + 5, z + 5)
 
 
-def place_standalone_tff(world):
+def place_latch_demo(world):
     y = 5
-    wx = -44
-    wz = 28
-    place_t_flip_flop(world, wx, y, wz, True)
-    world.set(wx + 21, y, wz - 1, "BLOCK_BUTTON")
-    wire_x(world, wx + 21, wx + 24, y, wz + 4)
-    world.set(wx + 25, y, wz + 4, "BLOCK_LAMP_OFF")
+    wx = -42
+    wz = -8
+    feedback = [
+        (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2),
+        (-1, 2), (-2, 2), (-2, 1), (-2, 0), (-1, 0),
+    ]
+
+    world.set(wx - 3, y, wz, "BLOCK_BUTTON")
+    world.set(wx, y, wz - 1, "BLOCK_BUTTON")
+    world.set(wx, y, wz, "BLOCK_COMPARATOR_EAST_OFF")
+    for dx, dz in feedback:
+        world.set(wx + dx, y, wz + dz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+    world.set(wx + 3, y, wz, "BLOCK_LAMP_OFF")
 
 
 def main():
     world = LabWorld()
     place_comparator_demo(world)
-    place_clock_and_button_demo(world)
-    place_standalone_tff(world)
-    place_three_bit_counter(world)
-    place_decoder_demo(world)
+    place_redstone_clock(world)
+    place_latch_demo(world)
+    place_connected_counter_display(world)
     world.write()
 
 

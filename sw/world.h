@@ -19,6 +19,7 @@
 #define WORLD_MAX_FALLING_BLOCKS 256
 #define WORLD_MAX_REDSTONE_PULSES 128
 #define WORLD_MAX_REDSTONE_REPEATER_STATES 1024
+#define WORLD_MAX_ACTIVE_PRESSURE_PLATES 1024
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
@@ -149,6 +150,12 @@ typedef struct {
     float seconds_left;
 } RedstoneRepeaterState;
 
+typedef struct {
+    int wx;
+    int wy;
+    int wz;
+} PressurePlateState;
+
 typedef struct VoxelWorld {
     Chunk *chunks;
     int chunk_count;
@@ -188,6 +195,9 @@ typedef struct VoxelWorld {
     int redstone_pulse_count;
     RedstoneRepeaterState redstone_repeater_states[WORLD_MAX_REDSTONE_REPEATER_STATES];
     int redstone_repeater_state_count;
+    bool redstone_dirty;
+    PressurePlateState active_pressure_plates[WORLD_MAX_ACTIVE_PRESSURE_PLATES];
+    int active_pressure_plate_count;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting
@@ -343,6 +353,7 @@ typedef struct ChunkGenResult {
      * only ever emits sources, so this stays zero in practice - but a
      * future loaded snapshot could populate it. */
     uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    uint8_t redstone_data[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     bool has_light_emitters;
 } ChunkGenResult;
 

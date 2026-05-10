@@ -158,6 +158,14 @@ def wire_z(world, x, y, z0, z1):
         world.set(x, y, z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
 
 
+def fill_floor(world, x0, x1, z0, z1, material):
+    xmin, xmax = sorted((x0, x1))
+    zmin, zmax = sorted((z0, z1))
+    for x in range(xmin, xmax + 1):
+        for z in range(zmin, zmax + 1):
+            world.set(x, 4, z, material)
+
+
 def repeater_line_x(world, x0, x1, y, z, repeater_name, interval=10):
     step = 1 if x0 <= x1 else -1
     distance = 0
@@ -259,24 +267,24 @@ DISPLAY_SEGMENT_BUSES = [
 
 
 DISPLAY_SEGMENT_DRIVERS = [
-    [(x, 53) for x in range(56, 65)],
-    [(67, z) for z in range(57, 60)],
-    [(67, z) for z in range(66, 69)],
-    [(x, 73) for x in range(56, 65)],
-    [(53, z) for z in range(66, 69)],
-    [(53, z) for z in range(57, 60)],
-    [(x, 62) for x in range(56, 65)],
+    [(x, 48) for x in range(56, 65)],
+    [(67, z) for z in range(52, 55)],
+    [(67, z) for z in range(62, 65)],
+    [(x, 67) for x in range(56, 65)],
+    [(53, z) for z in range(62, 65)],
+    [(53, z) for z in range(52, 55)],
+    [(x, 58) for x in range(56, 65)],
 ]
 
 
 DISPLAY_SEGMENT_LAMPS = [
-    [(x, 54) for x in range(56, 65)],
-    [(66, z) for z in range(57, 60)],
-    [(66, z) for z in range(66, 69)],
-    [(x, 72) for x in range(56, 65)],
-    [(54, z) for z in range(66, 69)],
-    [(54, z) for z in range(57, 60)],
-    [(x, 63) for x in range(56, 65)],
+    [(x, 49) for x in range(56, 65)],
+    [(66, z) for z in range(52, 55)],
+    [(66, z) for z in range(62, 65)],
+    [(x, 68) for x in range(56, 65)],
+    [(54, z) for z in range(62, 65)],
+    [(54, z) for z in range(52, 55)],
+    [(x, 59) for x in range(56, 65)],
 ]
 
 
@@ -284,10 +292,11 @@ DISPLAY_SEGMENT_REPEATERS = [
     [],
     [],
     [],
-    [(65, 73, "BLOCK_REPEATER_WEST_OFF")],
+    [(70, 67, "BLOCK_REPEATER_WEST_OFF"),
+     (62, 67, "BLOCK_REPEATER_WEST_OFF")],
     [],
     [],
-    [],
+    [(55, 58, "BLOCK_REPEATER_EAST_OFF")],
 ]
 
 
@@ -324,16 +333,18 @@ def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
     return display_lamps
 
 
-def place_counter_display_button(world, wx, wy, wz):
-    world.set(wx, wy, wz, "BLOCK_BUTTON")
-    return (wx, wy, wz)
+def place_counter_controls(counter_x, y, counter_z):
+    return {
+        "button": (counter_x, y + 1, counter_z),
+        "reset": (counter_x + 21, y, counter_z - 1),
+    }
 
 
 def place_connected_counter_display(world,
-                                    wx=-48,
+                                    wx=-44,
                                     wy=5,
                                     wz=8,
-                                    bit_stride=30,
+                                    bit_stride=28,
                                     decoder_y=7,
                                     decoder_z=24):
     q_bus = [wx + bit * bit_stride + 24 for bit in range(3)]
@@ -349,7 +360,12 @@ def place_connected_counter_display(world,
     for bit in range(3):
         cell_x = wx + bit * bit_stride
         place_t_flip_flop(world, cell_x, wy, wz, bit == 0)
+        if bit == 0:
+            world.set(cell_x, wy, wz, "BLOCK_GOLD_BLOCK")
+            world.set(cell_x, wy + 1, wz, "BLOCK_BUTTON")
         world.set(cell_x + 21, wy, wz - 1, "BLOCK_BUTTON")
+        if bit == 0:
+            world.set(cell_x + 21, wy - 1, wz - 1, "BLOCK_DIAMOND_BLOCK")
         if bit > 0:
             world.set(cell_x, wy, wz, "BLOCK_REPEATER_EAST_ON")
 
@@ -412,7 +428,7 @@ def place_connected_counter_display(world,
 
     display_lamps = place_segment_display(world, decoder_y - 2,
                                           decoder_z, bus_z1, segment_bus)
-    button = place_counter_display_button(world, wx, wy, wz)
+    controls = place_counter_controls(wx, wy, wz)
 
     for value, pattern in enumerate(SEGMENT_PATTERNS):
         row_z = decoder_z + value * 3
@@ -421,9 +437,8 @@ def place_connected_counter_display(world,
                 world.set(bus_x, decoder_y - 1, row_z, "BLOCK_STONE")
 
     return {
-        "button": button,
-        "resets": [(wx + bit * bit_stride + 21, wy, wz - 1)
-                   for bit in range(3)],
+        "button": controls["button"],
+        "reset": controls["reset"],
         "bit_lamps": [(nqx - 1, wy, wz + 6) for nqx in nq_bus],
         "display_lamps": display_lamps,
     }
@@ -478,8 +493,17 @@ def place_latch_demo(world):
     world.set(wx + 3, y, wz, "BLOCK_LAMP_OFF")
 
 
+def place_section_floors(world):
+    fill_floor(world, -46, -28, -39, -28, "BLOCK_STONE")
+    fill_floor(world, -3, 16, -28, -18, "BLOCK_WOOD")
+    fill_floor(world, -48, -34, -23, -13, "BLOCK_COBBLESTONE")
+    fill_floor(world, -48, 39, 3, 20, "BLOCK_PLANKS")
+    fill_floor(world, -24, 76, 21, 78, "BLOCK_SANDSTONE")
+
+
 def main():
     world = LabWorld()
+    place_section_floors(world)
     place_comparator_demo(world)
     place_redstone_clock(world)
     place_latch_demo(world)

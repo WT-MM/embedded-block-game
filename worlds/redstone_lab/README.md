@@ -10,9 +10,10 @@ Landmarks from spawn:
 - West plot: a comparator latch. The west button sets it, the north button
   resets it, and the lamp marks the latched output.
 - South plot: a real three-bit ripple counter wired into a constructed
-  seven-segment decoder matrix. The button at the first flip-flop input
-  advances the count, the side buttons reset the bits, the nearby lamps expose
-  the counter state, and the large lamp digit shows the decoded value.
+  seven-segment decoder matrix. The raised button on the gold block at the
+  first flip-flop input advances the count. The diamond-marked side button
+  clears the generated startup offset, the nearby lamps expose the counter
+  state, and the large lamp digit shows the decoded value.
 - South-east display matrix: the Q/NQ literal buses, invalid-row torches,
   segment taps, repeaters, segment bars, and lamps are all normal redstone
   parts fed by the counter outputs.
@@ -21,7 +22,9 @@ The old crafting-table display hook has been removed. Buttons now only inject
 normal redstone power; any state change in this world must come from the visible
 dust, repeaters, comparators, torches, and powered blocks.
 
-The ultraflat floor is planks, with the redstone placed directly on top.
+The ultraflat floor uses different materials to separate demos: stone for the
+comparator area, logs for the clock, cobblestone for the latch, planks for the
+flip-flops, and sandstone for the decoder/display area.
 
 Right-click a repeater in-game to cycle its saved delay from 1 to 4 redstone
 ticks.

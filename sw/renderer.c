@@ -167,6 +167,7 @@ typedef struct {
     const Chunk *chunk;
     const ChunkFace *face;
     float view_z;
+    uint32_t stable_order;
 } TranslucentFaceRef;
 
 typedef enum {
@@ -736,6 +737,72 @@ static bool is_face_visible(Vec3 block_pos, Vec3 normal, Vec3 cam_pos)
         (block_pos.z + 0.5f + normal.z * 0.5f) - cam_pos.z,
     };
     return (v.x*normal.x + v.y*normal.y + v.z*normal.z) < 0.0f;
+}
+
+static float height_eighths_to_world(uint8_t height_eighths)
+{
+    if (height_eighths < 1)
+        height_eighths = 8;
+    if (height_eighths > 8)
+        height_eighths = 8;
+    return (float)height_eighths * (1.0f / 8.0f);
+}
+
+static Vec3 merged_face_center(Vec3 block_pos, BlockFace face,
+                               int u_size, int v_size,
+                               uint8_t height_eighths)
+{
+    float h = height_eighths_to_world(height_eighths);
+    float u = (float)(u_size > 0 ? u_size : 1);
+    float v = (float)(v_size > 0 ? v_size : 1);
+
+    switch (face) {
+    case FACE_TOP:
+        return (Vec3){ block_pos.x + 0.5f * u,
+                       block_pos.y + h,
+                       block_pos.z + 0.5f * v };
+    case FACE_BOTTOM:
+        return (Vec3){ block_pos.x + 0.5f * u,
+                       block_pos.y,
+                       block_pos.z + 0.5f * v };
+    case FACE_LEFT:
+        return (Vec3){ block_pos.x,
+                       block_pos.y + 0.5f * h,
+                       block_pos.z + 0.5f * u };
+    case FACE_RIGHT:
+        return (Vec3){ block_pos.x + 1.0f,
+                       block_pos.y + 0.5f * h,
+                       block_pos.z + 0.5f * u };
+    case FACE_FRONT:
+        return (Vec3){ block_pos.x + 0.5f * u,
+                       block_pos.y + 0.5f * h,
+                       block_pos.z };
+    case FACE_BACK:
+        return (Vec3){ block_pos.x + 0.5f * u,
+                       block_pos.y + 0.5f * h,
+                       block_pos.z + 1.0f };
+    default:
+        return block_pos;
+    }
+}
+
+static bool merged_face_visible(Vec3 block_pos, BlockFace face,
+                                int u_size, int v_size,
+                                uint8_t height_eighths, Vec3 cam_pos)
+{
+    if (face < 0 || face >= NUM_FACES)
+        return true;
+
+    Vec3 center = merged_face_center(block_pos, face, u_size, v_size,
+                                     height_eighths);
+    Vec3 normal = face_normals[face];
+    Vec3 v = {
+        center.x - cam_pos.x,
+        center.y - cam_pos.y,
+        center.z - cam_pos.z,
+    };
+
+    return (v.x * normal.x + v.y * normal.y + v.z * normal.z) < 0.0f;
 }
 
 static CameraVertex lerp_camera_vertex(const CameraVertex *a,
@@ -2001,8 +2068,8 @@ static void emit_merged_block_face_lit(RenderContext *ctx, BlockID type,
         return;
     }
 
-    if (!is_face_visible(block_pos, face_normals[face],
-                         ctx->current_camera.position))
+    if (!merged_face_visible(block_pos, face, u_size, v_size,
+                             height_eighths, ctx->current_camera.position))
         return;
 
     merged_face_vertices(block_pos, face, u_size, v_size, height_eighths, face_world);
@@ -3111,14 +3178,34 @@ static bool ensure_translucent_scratch(RenderContext *ctx, int needed)
     return true;
 }
 
+static uint32_t translucent_face_stable_order(const Chunk *chunk,
+                                              const ChunkFace *face)
+{
+    uint32_t h = 2166136261u;
+
+#define MIX_U32(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX_U32(chunk->chunk_x);
+    MIX_U32(chunk->chunk_z);
+    MIX_U32(face->x);
+    MIX_U32(face->y);
+    MIX_U32(face->z);
+    MIX_U32(face->face);
+#undef MIX_U32
+
+    return h;
+}
+
 static int compare_translucent_back_to_front(const void *a, const void *b)
 {
     const TranslucentFaceRef *ra = a;
     const TranslucentFaceRef *rb = b;
+    float dz = ra->view_z - rb->view_z;
 
     /* Larger view_z (farther) comes first. */
-    if (ra->view_z > rb->view_z) return -1;
-    if (ra->view_z < rb->view_z) return 1;
+    if (dz > 1e-4f) return -1;
+    if (dz < -1e-4f) return 1;
+    if (ra->stable_order < rb->stable_order) return -1;
+    if (ra->stable_order > rb->stable_order) return 1;
     return 0;
 }
 
@@ -3754,27 +3841,29 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
             float wx = chunk_ox + (float)face->x;
             float wy = (float)face->y;
             float wz = chunk_oz + (float)face->z;
-            switch ((BlockFace)face->face) {
-            case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
-            case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
-            case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
-            case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
-            case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
-            case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
-            default: break;
-            }
+            Vec3 block_pos = { wx, wy, wz };
+            int u_size = face->u_size ? face->u_size : 1;
+            int v_size = face->v_size ? face->v_size : 1;
+            uint8_t height = face->height ? face->height : 8;
+            BlockFace face_dir = (BlockFace)face->face;
+
+            if (!merged_face_visible(block_pos, face_dir, u_size, v_size,
+                                     height, cam_pos))
+                continue;
 
             if (!ensure_translucent_scratch(ctx, w + 1))
                 continue;
 
-            Vec3 block_center = { wx + 0.5f, wy + 0.5f, wz + 0.5f };
+            Vec3 face_center = merged_face_center(block_pos, face_dir, u_size,
+                                                  v_size, height);
             CameraVertex cv;
-            world_to_camera(ctx, block_center, &cv);
+            world_to_camera(ctx, face_center, &cv);
 
             ctx->translucent_scratch[w++] = (TranslucentFaceRef){
                 .chunk = chunk,
                 .face = face,
                 .view_z = cv.z,
+                .stable_order = translucent_face_stable_order(chunk, face),
             };
         }
     }

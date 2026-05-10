@@ -307,15 +307,26 @@ DECODER_ROW_SPACING = 3
 
 
 def place_segment_display(world, wy, decoder_z, bus_z1, segment_bus):
-    lamp_z = decoder_z - 6
     display_lamps = []
+    display = {
+        0: {"route_z": decoder_z - 13, "lamp": (-29, decoder_z - 13)}, # A
+        1: {"route_z": decoder_z - 10, "lamp": (-17, decoder_z - 10)}, # B
+        2: {"route_z": decoder_z - 4, "lamp": (-14, decoder_z - 4)},   # C
+        3: {"route_z": decoder_z - 1, "lamp": (-23, decoder_z - 1)},   # D
+        4: {"route_z": decoder_z - 4, "lamp": (-38, decoder_z - 4)},   # E
+        5: {"route_z": decoder_z - 10, "lamp": (-43, decoder_z - 10)}, # F
+        6: {"route_z": decoder_z - 7, "lamp": (-26, decoder_z - 7)},   # G
+    }
 
     for segment, bus_x in enumerate(segment_bus):
-        wire_z(world, bus_x, wy, lamp_z + 1, bus_z1)
-        for rz in range(bus_z1 - 2, lamp_z, -9):
+        spec = display[segment]
+
+        wire_z(world, bus_x, wy, spec["route_z"], bus_z1)
+        for rz in range(bus_z1 - 2, spec["route_z"], -9):
             world.set(bus_x, wy, rz, "BLOCK_REPEATER_OFF")
-        world.set(bus_x, wy, lamp_z, "BLOCK_LAMP_OFF")
-        display_lamps.append((bus_x, wy, lamp_z))
+        x, z = spec["lamp"]
+        world.set(x, wy, z, "BLOCK_LAMP_OFF")
+        display_lamps.append((x, wy, z))
 
     return display_lamps
 
@@ -367,8 +378,8 @@ def place_counter_output_buses(world, cell_x, y, row_z, q_bus, nq_bus,
 
 def place_counter_controls(world, y, first_input_x, first_input_z,
                            reset_targets, display_lamps):
-    count_button_x = max(x for x, _, _ in display_lamps) + 5
-    count_button_z = display_lamps[0][2]
+    count_button_x = max(x for x, _, _ in display_lamps) + 4
+    count_button_z = min(z for _, _, z in display_lamps) - 3
     count_bus_z = count_button_z - 1
     count_input_x = first_input_x - 1
 
@@ -399,7 +410,9 @@ def place_connected_counter_display(world,
     row_start_x = support_x + 1
     row_end_x = max(nq_bus) + 1
     bus_z1 = decoder_z + 7 * DECODER_ROW_SPACING + 1
-    segment_bus = [support_x - 4 - segment * 2 for segment in range(7)]
+    segment_bus = [support_x - 43, support_x - 31, support_x - 28,
+                   support_x - 37, support_x - 52, support_x - 55,
+                   support_x - 40]
     segment_bus_min = min(segment_bus)
     segment_bus_max = max(segment_bus)
 
@@ -427,8 +440,15 @@ def place_connected_counter_display(world,
                   torch_support=FACE_RIGHT)
         wire_x(world, support_x - 2, segment_bus_min - 1,
                decoder_y, row_z)
-        for rx in (support_x - 7, support_x - 13):
-            world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_WEST_OFF")
+        rx = support_x - 7
+        while rx > segment_bus_min:
+            while rx > segment_bus_min and (
+                rx in literal_x or rx in segment_bus
+            ):
+                rx -= 1
+            if rx > segment_bus_min:
+                world.set(rx, decoder_y, row_z, "BLOCK_REPEATER_WEST_OFF")
+            rx -= 6
 
         for bit in range(3):
             bus_x = nq_bus[bit] if value & (1 << bit) else q_bus[bit]

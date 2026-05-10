@@ -91,6 +91,156 @@ static const ChunkFace *find_chunk_face(const Chunk *chunk,
     return NULL;
 }
 
+static bool test_set_wire(VoxelWorld *world, int wx, int wy, int wz)
+{
+    return world_set_block(world, wx, wy, wz, BLOCK_REDSTONE_WIRE_UNCONNECTED);
+}
+
+static bool test_wire_line_x(VoxelWorld *world,
+                             int x0,
+                             int x1,
+                             int wy,
+                             int wz)
+{
+    int step = x0 <= x1 ? 1 : -1;
+
+    for (int wx = x0;; wx += step) {
+        if (!test_set_wire(world, wx, wy, wz))
+            return false;
+        if (wx == x1)
+            break;
+    }
+
+    return true;
+}
+
+static bool test_wire_line_z(VoxelWorld *world,
+                             int wx,
+                             int wy,
+                             int z0,
+                             int z1)
+{
+    int step = z0 <= z1 ? 1 : -1;
+
+    for (int wz = z0;; wz += step) {
+        if (!test_set_wire(world, wx, wy, wz))
+            return false;
+        if (wz == z1)
+            break;
+    }
+
+    return true;
+}
+
+static void test_tick_redstone(VoxelWorld *world, int ticks)
+{
+    for (int tick = 0; tick < ticks; tick++)
+        world_update_redstone(world, 0.1f);
+}
+
+static bool test_place_wide_comparator_latch(VoxelWorld *world,
+                                             int wx,
+                                             int wy,
+                                             int wz)
+{
+    static const int feedback[][2] = {
+        { 1, 0 }, { 2, 0 }, { 3, 0 }, { 3, 1 }, { 3, 2 }, { 3, 3 },
+        { 2, 3 }, { 1, 3 }, { 0, 3 }, { -1, 3 }, { -2, 3 },
+        { -2, 2 }, { -2, 1 }, { -2, 0 }, { -1, 0 },
+    };
+
+    if (!world_set_block(world, wx, wy, wz, BLOCK_COMPARATOR_EAST_OFF))
+        return false;
+    for (size_t i = 0; i < sizeof(feedback) / sizeof(feedback[0]); i++) {
+        if (!test_set_wire(world,
+                           wx + feedback[i][0],
+                           wy,
+                           wz + feedback[i][1]))
+            return false;
+    }
+
+    return true;
+}
+
+static bool test_place_t_flip_flop(VoxelWorld *world,
+                                   int wx,
+                                   int wy,
+                                   int wz,
+                                   bool button_input)
+{
+    if (!world_set_block(world, wx, wy, wz,
+                         button_input ? BLOCK_BUTTON :
+                                        BLOCK_REPEATER_EAST_OFF) ||
+        !test_set_wire(world, wx + 1, wy, wz) ||
+        !test_set_wire(world, wx + 2, wy, wz) ||
+        !world_set_block(world, wx + 3, wy, wz,
+                         BLOCK_COMPARATOR_EAST_OFF) ||
+        !world_set_block(world, wx + 3, wy, wz - 1,
+                         BLOCK_REPEATER_SOUTH_OFF) ||
+        !test_set_wire(world, wx + 1, wy, wz - 1) ||
+        !test_set_wire(world, wx + 1, wy, wz - 2) ||
+        !test_set_wire(world, wx + 2, wy, wz - 2) ||
+        !test_set_wire(world, wx + 3, wy, wz - 2))
+        return false;
+
+    if (!test_wire_line_x(world, wx + 4, wx + 10, wy, wz) ||
+        !world_set_block(world, wx + 11, wy, wz,
+                         BLOCK_REPEATER_EAST_OFF) ||
+        !test_wire_line_x(world, wx + 12, wx + 16, wy, wz) ||
+        !test_wire_line_z(world, wx + 16, wy, wz - 1, wz - 4) ||
+        !test_wire_line_x(world, wx + 17, wx + 20, wy, wz - 4))
+        return false;
+
+    if (!world_set_block(world, wx + 17, wy, wz,
+                         BLOCK_COMPARATOR_EAST_OFF) ||
+        !world_set_block(world, wx + 20, wy, wz - 3,
+                         BLOCK_COMPARATOR_SOUTH_OFF) ||
+        !test_place_wide_comparator_latch(world, wx + 20, wy, wz))
+        return false;
+
+    if (!world_set_block(world, wx + 17, wy, wz + 1,
+                         BLOCK_REPEATER_OFF) ||
+        !test_set_wire(world, wx + 17, wy, wz + 2) ||
+        !test_set_wire(world, wx + 18, wy, wz + 2) ||
+        !test_set_wire(world, wx + 20, wy, wz - 2) ||
+        !test_set_wire(world, wx + 20, wy, wz - 1))
+        return false;
+
+    if (!world_set_block(world, wx + 24, wy, wz, BLOCK_STONE) ||
+        !world_set_block(world, wx + 25, wy, wz,
+                         BLOCK_REDSTONE_TORCH_ON) ||
+        !test_wire_line_z(world, wx + 25, wy, wz - 1, wz - 3) ||
+        !test_wire_line_x(world, wx + 22, wx + 24, wy, wz - 3) ||
+        !world_set_block(world, wx + 21, wy, wz - 3,
+                         BLOCK_REPEATER_WEST_OFF))
+        return false;
+
+    return true;
+}
+
+static bool test_reset_t_flip_flop(VoxelWorld *world,
+                                   int wx,
+                                   int wy,
+                                   int wz)
+{
+    if (world_get_block(world, wx + 21, wy, wz - 1) != BLOCK_BUTTON &&
+        !world_set_block(world, wx + 21, wy, wz - 1, BLOCK_BUTTON))
+        return false;
+    if (!world_press_button(world, wx + 21, wy, wz - 1))
+        return false;
+    test_tick_redstone(world, 20);
+    return true;
+}
+
+static bool test_t_flip_flop_q(const VoxelWorld *world,
+                               int wx,
+                               int wy,
+                               int wz)
+{
+    return world_get_block(world, wx + 20, wy, wz) ==
+           BLOCK_COMPARATOR_EAST_ON;
+}
+
 typedef struct {
     int grass_surfaces;
     int sand_surfaces;
@@ -666,6 +816,94 @@ int main(void)
                              BLOCK_AIR))
             return check_failed("edge detector delay path cleanup failed");
     }
+
+    const int tff_x = -42;
+    const int tff_y = 26;
+    const int tff_z = -18;
+    if (!test_place_t_flip_flop(&world, tff_x, tff_y, tff_z, true))
+        return check_failed("t flip flop fixture build failed");
+    test_tick_redstone(&world, 20);
+    if (test_t_flip_flop_q(&world, tff_x, tff_y, tff_z) ||
+        world_get_block(&world, tff_x + 25, tff_y, tff_z) !=
+            BLOCK_REDSTONE_TORCH_ON)
+        return check_failed("t flip flop did not initialize to reset state");
+    for (int press = 1; press <= 4; press++) {
+        bool expected_q = (press & 1) != 0;
+
+        if (!world_press_button(&world, tff_x, tff_y, tff_z))
+            return check_failed("t flip flop button press failed");
+        test_tick_redstone(&world, 30);
+        if (test_t_flip_flop_q(&world, tff_x, tff_y, tff_z) !=
+            expected_q)
+            return check_failed("t flip flop did not toggle on input edge");
+        if ((world_get_block(&world, tff_x + 25, tff_y, tff_z) ==
+             BLOCK_REDSTONE_TORCH_ON) == expected_q)
+            return check_failed("t flip flop complement torch disagreed");
+    }
+
+    const int counter_x = -16;
+    const int counter_y = 26;
+    const int counter_z = -30;
+    const int counter_bit_stride = 30;
+    if (!test_place_t_flip_flop(&world,
+                                counter_x,
+                                counter_y,
+                                counter_z,
+                                true) ||
+        !test_place_t_flip_flop(&world,
+                                counter_x + counter_bit_stride,
+                                counter_y,
+                                counter_z,
+                                false) ||
+        !test_wire_line_x(&world,
+                          counter_x + 26,
+                          counter_x + counter_bit_stride - 1,
+                          counter_y,
+                          counter_z))
+        return check_failed("button counter fixture build failed");
+    test_tick_redstone(&world, 30);
+    if (!test_reset_t_flip_flop(&world,
+                                counter_x,
+                                counter_y,
+                                counter_z) ||
+        !test_reset_t_flip_flop(&world,
+                                counter_x + counter_bit_stride,
+                                counter_y,
+                                counter_z))
+        return check_failed("button counter reset failed");
+    if (test_t_flip_flop_q(&world, counter_x, counter_y, counter_z) ||
+        test_t_flip_flop_q(&world,
+                           counter_x + counter_bit_stride,
+                           counter_y,
+                           counter_z))
+        return check_failed("button counter reset did not clear both bits");
+    for (int press = 1; press <= 8; press++) {
+        int expected = press & 3;
+        bool q0 = (expected & 1) != 0;
+        bool q1 = (expected & 2) != 0;
+
+        if (!world_press_button(&world, counter_x, counter_y, counter_z))
+            return check_failed("button counter press failed");
+        test_tick_redstone(&world, 30);
+        if (test_t_flip_flop_q(&world,
+                               counter_x,
+                               counter_y,
+                               counter_z) != q0 ||
+            test_t_flip_flop_q(&world,
+                               counter_x + counter_bit_stride,
+                               counter_y,
+                               counter_z) != q1)
+            return check_failed("button counter did not ripple count");
+    }
+    if (!test_reset_t_flip_flop(&world,
+                                counter_x,
+                                counter_y,
+                                counter_z) ||
+        !test_reset_t_flip_flop(&world,
+                                counter_x + counter_bit_stride,
+                                counter_y,
+                                counter_z))
+        return check_failed("button counter final reset failed");
 
     const int repeater_x = 11;
     const int repeater_y = 26;

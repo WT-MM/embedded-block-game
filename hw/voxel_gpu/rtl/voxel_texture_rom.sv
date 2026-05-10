@@ -89,6 +89,7 @@ module voxel_texture_rom #(
     );
     defparam
         altsyncram_rom_a.address_aclr_a = "NONE",
+        altsyncram_rom_a.address_reg_a = "CLOCK0",
         altsyncram_rom_a.clock_enable_input_a = "BYPASS",
         altsyncram_rom_a.clock_enable_output_a = "BYPASS",
         altsyncram_rom_a.init_file = INIT_FILE,
@@ -134,6 +135,7 @@ module voxel_texture_rom #(
     );
     defparam
         altsyncram_rom_b.address_aclr_a = "NONE",
+        altsyncram_rom_b.address_reg_a = "CLOCK0",
         altsyncram_rom_b.clock_enable_input_a = "BYPASS",
         altsyncram_rom_b.clock_enable_output_a = "BYPASS",
         altsyncram_rom_b.init_file = INIT_FILE,

@@ -30,9 +30,15 @@
 #define WORLD_META_MIN_VERSION 1u
 #define WORLD_GEN_FLAG_DESERT_LAVA_POOLS 0x00000001u
 /* v2: appended water_level[H][Z][X] after the block grid for Minecraft-style
- * variable water height. v1 saves are rejected on load and re-generated. */
-#define WORLD_CHUNK_VERSION 2u
+ * variable water height.
+ * v3: appended redstone_data[H][Z][X] for per-cell redstone metadata such as
+ * repeater delay. v2 loads still work and default redstone_data to zero. */
+#define WORLD_CHUNK_VERSION 3u
+#define WORLD_CHUNK_MIN_SUPPORTED_VERSION 2u
 #define REDSTONE_BUTTON_PULSE_SECONDS 1.5f
+#define REDSTONE_REPEATER_TICK_SECONDS 0.1f
+#define REDSTONE_REPEATER_MIN_DELAY_TICKS 1u
+#define REDSTONE_REPEATER_MAX_DELAY_TICKS 4u
 
 /*
  * Save format v1:
@@ -95,6 +101,9 @@ static bool chunk_in_window(int chunk_x, int chunk_z,
                             int origin_chunk_x, int origin_chunk_z,
                             int diameter);
 static bool world_has_dirty_meshes_locked(const VoxelWorld *world);
+static void mark_chunk_and_adjacent_dirty_for_block(VoxelWorld *world,
+                                                    int wx,
+                                                    int wz);
 
 static uint64_t timespec_diff_u64_ns(const struct timespec *end,
                                      const struct timespec *start)
@@ -515,7 +524,8 @@ static bool save_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     }
     if (fwrite(&header, sizeof(header), 1, file) != 1 ||
         fwrite(blocks, block_count, 1, file) != 1 ||
-        fwrite(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1) {
+        fwrite(chunk->water_level, sizeof(chunk->water_level), 1, file) != 1 ||
+        fwrite(chunk->redstone_data, sizeof(chunk->redstone_data), 1, file) != 1) {
         fclose(file);
         unlink(temp_path);
         free(blocks);
@@ -562,7 +572,8 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
     }
 
     if (memcmp(header.magic, "VCHK", 4) != 0 ||
-        header.version != WORLD_CHUNK_VERSION ||
+        header.version < WORLD_CHUNK_MIN_SUPPORTED_VERSION ||
+        header.version > WORLD_CHUNK_VERSION ||
         header.chunk_x != chunk->chunk_x ||
         header.chunk_z != chunk->chunk_z ||
         header.chunk_size != WORLD_CHUNK_SIZE ||
@@ -583,6 +594,16 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
         fclose(file);
         free(blocks);
         return false;
+    }
+    if (header.version >= 3u) {
+        if (fread(chunk->redstone_data, sizeof(chunk->redstone_data), 1,
+                  file) != 1) {
+            fclose(file);
+            free(blocks);
+            return false;
+        }
+    } else {
+        memset(chunk->redstone_data, 0, sizeof(chunk->redstone_data));
     }
     fclose(file);
 
@@ -606,6 +627,18 @@ static bool load_chunk_snapshot(const VoxelWorld *world, Chunk *chunk)
                     chunk->water_level[y][z][x] = 1;
                 else if (chunk->water_level[y][z][x] > 7)
                     chunk->water_level[y][z][x] = 7;
+                if (block_is_repeater((BlockID)id)) {
+                    if (chunk->redstone_data[y][z][x] <
+                        REDSTONE_REPEATER_MIN_DELAY_TICKS)
+                        chunk->redstone_data[y][z][x] =
+                            REDSTONE_REPEATER_MIN_DELAY_TICKS;
+                    else if (chunk->redstone_data[y][z][x] >
+                             REDSTONE_REPEATER_MAX_DELAY_TICKS)
+                        chunk->redstone_data[y][z][x] =
+                            REDSTONE_REPEATER_MAX_DELAY_TICKS;
+                } else {
+                    chunk->redstone_data[y][z][x] = 0;
+                }
             }
         }
     }
@@ -822,6 +855,7 @@ static void clear_chunk_blocks(Chunk *chunk)
 {
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
     memset(chunk->water_level, 0, sizeof(chunk->water_level));
+    memset(chunk->redstone_data, 0, sizeof(chunk->redstone_data));
 }
 
 static void clear_chunk_lighting(Chunk *chunk)
@@ -1177,6 +1211,75 @@ BlockID world_get_block(const VoxelWorld *world, int wx, int wy, int wz)
         return BLOCK_AIR;
 
     return chunk->blocks[wy][lz][lx];
+}
+
+static uint8_t world_get_redstone_data_locked(const VoxelWorld *world,
+                                              int wx,
+                                              int wy,
+                                              int wz)
+{
+    if (wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return 0;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+    const Chunk *chunk = world_get_chunk(world, chunk_x, chunk_z);
+
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return 0;
+
+    return chunk->redstone_data[wy][lz][lx];
+}
+
+static bool world_set_redstone_data_locked(VoxelWorld *world,
+                                           int wx,
+                                           int wy,
+                                           int wz,
+                                           uint8_t value,
+                                           bool mark_mesh_dirty)
+{
+    if (!world || wy < 0 || wy >= WORLD_CHUNK_HEIGHT)
+        return false;
+
+    int chunk_x = floor_div(wx, WORLD_CHUNK_SIZE);
+    int chunk_z = floor_div(wz, WORLD_CHUNK_SIZE);
+    int lx = positive_mod(wx, WORLD_CHUNK_SIZE);
+    int lz = positive_mod(wz, WORLD_CHUNK_SIZE);
+    Chunk *chunk = world_get_chunk_mut(world, chunk_x, chunk_z);
+
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return false;
+    if (chunk->redstone_data[wy][lz][lx] == value)
+        return true;
+
+    chunk->redstone_data[wy][lz][lx] = value;
+    chunk->flags |= CHUNK_FLAG_MODIFIED;
+    if (mark_mesh_dirty) {
+        chunk->generation++;
+        mark_chunk_and_adjacent_dirty_for_block(world, wx, wz);
+        world->meshes_rebuilt_last_stream = 0;
+        world->meshes_dirty = true;
+    }
+    return true;
+}
+
+uint8_t world_repeater_delay_ticks(const VoxelWorld *world,
+                                   int wx,
+                                   int wy,
+                                   int wz)
+{
+    uint8_t delay;
+
+    if (!world || !block_is_repeater(world_get_block(world, wx, wy, wz)))
+        return 0;
+    delay = world_get_redstone_data_locked(world, wx, wy, wz);
+    if (delay < REDSTONE_REPEATER_MIN_DELAY_TICKS)
+        return REDSTONE_REPEATER_MIN_DELAY_TICKS;
+    if (delay > REDSTONE_REPEATER_MAX_DELAY_TICKS)
+        return REDSTONE_REPEATER_MAX_DELAY_TICKS;
+    return delay;
 }
 
 static uint8_t world_get_block_light(const VoxelWorld *world, int wx, int wy, int wz)
@@ -2128,9 +2231,13 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                     block_light = block_emission_level(id);
 
                 if (block_render_model(id) == BLOCK_RENDER_FLAT) {
+                    uint8_t flat_state = block_is_repeater(id) ?
+                                         chunk->redstone_data[y][z][x] : 0;
+
                     ok = append_chunk_face_checked(chunk, &out, x, y, z,
                                                    CHUNK_FACE_FLAT, id, 1, 1,
-                                                   sky_light, block_light, 8);
+                                                   sky_light, block_light,
+                                                   flat_state);
                 } else {
                     ok = append_chunk_face_checked(chunk, &out, x, y, z,
                                                    CHUNK_FACE_CROSS_A, id,
@@ -2923,6 +3030,9 @@ bool world_init_infinite_procedural(VoxelWorld *world,
     free_chunk_storage(world);
     world->redstone_pulse_count = 0;
     memset(world->redstone_pulses, 0, sizeof(world->redstone_pulses));
+    world->redstone_repeater_state_count = 0;
+    memset(world->redstone_repeater_states, 0,
+           sizeof(world->redstone_repeater_states));
 
     world->procedural_seed = seed;
     world->stone_tries_per_chunk = stone_tries_per_chunk;
@@ -3052,6 +3162,18 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz, Bl
     else
         chunk->water_level[wy][lz][lx] = 0;
 
+    if (block_is_repeater(type)) {
+        if (!block_is_repeater(old_type) ||
+            chunk->redstone_data[wy][lz][lx] <
+                REDSTONE_REPEATER_MIN_DELAY_TICKS ||
+            chunk->redstone_data[wy][lz][lx] >
+                REDSTONE_REPEATER_MAX_DELAY_TICKS)
+            chunk->redstone_data[wy][lz][lx] =
+                REDSTONE_REPEATER_MIN_DELAY_TICKS;
+    } else {
+        chunk->redstone_data[wy][lz][lx] = 0;
+    }
+
     mark_chunk_and_adjacent_dirty_for_block(world, wx, wz);
     update_column_sky_light(world, wx, wz);
 
@@ -3119,8 +3241,8 @@ static bool redstone_block_has_state(BlockID id)
 {
     return id == BLOCK_REDSTONE_TORCH_OFF ||
            id == BLOCK_REDSTONE_TORCH_ON ||
-           id == BLOCK_REPEATER_OFF ||
-           id == BLOCK_REPEATER_ON ||
+           block_is_repeater(id) ||
+           block_is_comparator(id) ||
            id == BLOCK_LAMP_OFF ||
            id == BLOCK_LAMP;
 }
@@ -3140,6 +3262,43 @@ static bool redstone_block_connects_to_wire(BlockID id)
     return id != BLOCK_AIR &&
            block_render_model(id) == BLOCK_RENDER_CUBE &&
            !block_is_passable(id);
+}
+
+static bool redstone_block_can_hold_power(BlockID id)
+{
+    return id != BLOCK_AIR &&
+           id != BLOCK_REDSTONE_BLOCK &&
+           block_render_model(id) == BLOCK_RENDER_CUBE &&
+           !block_is_passable(id);
+}
+
+static void redstone_facing_delta(BlockDoorFacing facing, int *dx, int *dz)
+{
+    int out_dx = 0;
+    int out_dz = -1;
+
+    switch (facing) {
+    case BLOCK_DOOR_FACING_EAST:
+        out_dx = 1;
+        out_dz = 0;
+        break;
+    case BLOCK_DOOR_FACING_SOUTH:
+        out_dx = 0;
+        out_dz = 1;
+        break;
+    case BLOCK_DOOR_FACING_WEST:
+        out_dx = -1;
+        out_dz = 0;
+        break;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        break;
+    }
+
+    if (dx)
+        *dx = out_dx;
+    if (dz)
+        *dz = out_dz;
 }
 
 static bool redstone_cell_push(RedstoneCell **cells,
@@ -3281,18 +3440,41 @@ static bool redstone_button_pulse_active_locked(const VoxelWorld *world,
     return false;
 }
 
-static bool redstone_source_emits_locked(const VoxelWorld *world,
-                                         BlockID id,
-                                         int wx,
-                                         int wy,
-                                         int wz)
+static uint8_t redstone_source_strength_to_locked(const VoxelWorld *world,
+                                                  BlockID id,
+                                                  int wx,
+                                                  int wy,
+                                                  int wz,
+                                                  int target_wx,
+                                                  int target_wy,
+                                                  int target_wz)
 {
-    if (id == BLOCK_REDSTONE_BLOCK ||
-        id == BLOCK_REDSTONE_TORCH_ON ||
-        id == BLOCK_REPEATER_ON)
-        return true;
-    return id == BLOCK_BUTTON &&
-           redstone_button_pulse_active_locked(world, wx, wy, wz);
+    if (id == BLOCK_REDSTONE_BLOCK)
+        return 15;
+
+    if (id == BLOCK_REDSTONE_TORCH_ON) {
+        if (target_wx == wx && target_wy == wy - 1 && target_wz == wz)
+            return 0;
+        return 15;
+    }
+
+    if (block_is_redstone_directional(id)) {
+        int dx;
+        int dz;
+
+        if (!block_redstone_directional_powered(id))
+            return 0;
+        redstone_facing_delta(block_redstone_facing(id), &dx, &dz);
+        return target_wy == wy &&
+               target_wx == wx + dx &&
+               target_wz == wz + dz ? 15 : 0;
+    }
+
+    if (id == BLOCK_BUTTON &&
+        redstone_button_pulse_active_locked(world, wx, wy, wz))
+        return 15;
+
+    return 0;
 }
 
 static bool redstone_start_button_pulse_locked(VoxelWorld *world,
@@ -3365,6 +3547,138 @@ static bool redstone_tick_button_pulses_locked(VoxelWorld *world, float dt)
     return changed;
 }
 
+static uint8_t redstone_repeater_delay_ticks_locked(const VoxelWorld *world,
+                                                    int wx,
+                                                    int wy,
+                                                    int wz)
+{
+    uint8_t delay = world_get_redstone_data_locked(world, wx, wy, wz);
+
+    if (delay < REDSTONE_REPEATER_MIN_DELAY_TICKS)
+        return REDSTONE_REPEATER_MIN_DELAY_TICKS;
+    if (delay > REDSTONE_REPEATER_MAX_DELAY_TICKS)
+        return REDSTONE_REPEATER_MAX_DELAY_TICKS;
+    return delay;
+}
+
+static int redstone_repeater_state_find_locked(const VoxelWorld *world,
+                                               int wx,
+                                               int wy,
+                                               int wz)
+{
+    for (int i = 0; i < world->redstone_repeater_state_count; i++) {
+        const RedstoneRepeaterState *state =
+            &world->redstone_repeater_states[i];
+
+        if (state->wx == wx && state->wy == wy && state->wz == wz)
+            return i;
+    }
+    return -1;
+}
+
+static void redstone_remove_repeater_state_locked(VoxelWorld *world, int index)
+{
+    if (index < 0 || index >= world->redstone_repeater_state_count)
+        return;
+
+    world->redstone_repeater_state_count--;
+    if (index < world->redstone_repeater_state_count)
+        world->redstone_repeater_states[index] =
+            world->redstone_repeater_states[world->redstone_repeater_state_count];
+}
+
+static void redstone_cancel_repeater_state_locked(VoxelWorld *world,
+                                                  int wx,
+                                                  int wy,
+                                                  int wz)
+{
+    int index = redstone_repeater_state_find_locked(world, wx, wy, wz);
+
+    if (index >= 0)
+        redstone_remove_repeater_state_locked(world, index);
+}
+
+static void redstone_schedule_repeater_state_locked(VoxelWorld *world,
+                                                    int wx,
+                                                    int wy,
+                                                    int wz,
+                                                    bool target_powered)
+{
+    uint8_t delay_ticks =
+        redstone_repeater_delay_ticks_locked(world, wx, wy, wz);
+    RedstoneRepeaterState next = {
+        .wx = wx,
+        .wy = wy,
+        .wz = wz,
+        .target_powered = target_powered ? 1u : 0u,
+        .seconds_left = (float)delay_ticks * REDSTONE_REPEATER_TICK_SECONDS,
+    };
+    int index = redstone_repeater_state_find_locked(world, wx, wy, wz);
+
+    if (index >= 0) {
+        RedstoneRepeaterState *state = &world->redstone_repeater_states[index];
+
+        if (state->target_powered == next.target_powered)
+            return;
+        *state = next;
+        return;
+    }
+
+    if (world->redstone_repeater_state_count <
+        WORLD_MAX_REDSTONE_REPEATER_STATES) {
+        world->redstone_repeater_states[world->redstone_repeater_state_count++] =
+            next;
+        return;
+    }
+
+    index = 0;
+    for (int i = 1; i < WORLD_MAX_REDSTONE_REPEATER_STATES; i++) {
+        if (world->redstone_repeater_states[i].seconds_left <
+            world->redstone_repeater_states[index].seconds_left)
+            index = i;
+    }
+    world->redstone_repeater_states[index] = next;
+}
+
+static bool redstone_tick_repeater_states_locked(VoxelWorld *world, float dt)
+{
+    bool changed = false;
+
+    for (int i = 0; i < world->redstone_repeater_state_count;) {
+        RedstoneRepeaterState *state = &world->redstone_repeater_states[i];
+        BlockID current = world_get_block(world, state->wx, state->wy, state->wz);
+        bool current_powered;
+        BlockDoorFacing facing;
+
+        if (!block_is_repeater(current)) {
+            redstone_remove_repeater_state_locked(world, i);
+            continue;
+        }
+
+        current_powered = block_redstone_directional_powered(current);
+        if (current_powered == (state->target_powered != 0u)) {
+            redstone_remove_repeater_state_locked(world, i);
+            continue;
+        }
+
+        if (dt > 0.0f)
+            state->seconds_left -= dt;
+        if (state->seconds_left > 0.0f) {
+            i++;
+            continue;
+        }
+
+        facing = block_redstone_facing(current);
+        if (world_set_block_locked(world, state->wx, state->wy, state->wz,
+                                   block_repeater_make(
+                                       facing, state->target_powered != 0u)))
+            changed = true;
+        redstone_remove_repeater_state_locked(world, i);
+    }
+
+    return changed;
+}
+
 static bool redstone_any_adjacent_component_locked(const VoxelWorld *world,
                                                   int wx,
                                                   int wy,
@@ -3415,58 +3729,292 @@ static bool redstone_wire_has_connection_locked(const VoxelWorld *world,
     return false;
 }
 
-static bool redstone_wire_has_direct_source_locked(const VoxelWorld *world,
-                                                   int wx,
-                                                   int wy,
-                                                   int wz)
+static uint8_t redstone_power_from_cell_locked(
+    const VoxelWorld *world,
+    int source_wx,
+    int source_wy,
+    int source_wz,
+    int target_wx,
+    int target_wy,
+    int target_wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap);
+
+static uint8_t redstone_wire_direct_source_strength_locked(const VoxelWorld *world,
+                                                           int wx,
+                                                           int wy,
+                                                           int wz,
+                                                           const RedstoneCell *wires,
+                                                           const int *wire_table,
+                                                           size_t wire_table_cap)
 {
+    uint8_t strength = 0;
+
     for (int face = 0; face < NUM_FACES; face++) {
         int nx = wx + FACE_NX[face];
         int ny = wy + FACE_NY[face];
         int nz = wz + FACE_NZ[face];
-        BlockID neighbor = world_get_block(world, nx, ny, nz);
+        uint8_t source_strength =
+            redstone_power_from_cell_locked(world, nx, ny, nz,
+                                            wx, wy, wz,
+                                            wires, NULL,
+                                            wire_table, wire_table_cap);
 
-        if (redstone_source_emits_locked(world, neighbor, nx, ny, nz))
-            return true;
+        if (source_strength > strength)
+            strength = source_strength;
     }
-    return false;
+    return strength;
 }
 
-static bool redstone_position_receives_power_locked(
+static uint8_t redstone_direct_power_from_cell_locked(
+    const VoxelWorld *world,
+    int source_wx,
+    int source_wy,
+    int source_wz,
+    int target_wx,
+    int target_wy,
+    int target_wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    BlockID source = world_get_block(world, source_wx, source_wy, source_wz);
+    uint8_t strength =
+        redstone_source_strength_to_locked(world, source,
+                                           source_wx, source_wy, source_wz,
+                                           target_wx, target_wy, target_wz);
+
+    if (strength > 0)
+        return strength;
+    if (redstone_block_is_wire(source)) {
+        int wire_index = redstone_wire_lookup(wires, wire_table,
+                                              wire_table_cap,
+                                              source_wx,
+                                              source_wy,
+                                              source_wz);
+        if (wire_index >= 0 && wire_power)
+            return wire_power[wire_index];
+    }
+    return 0;
+}
+
+static uint8_t redstone_position_direct_power_strength_locked(
     const VoxelWorld *world,
     int wx,
     int wy,
     int wz,
     const RedstoneCell *wires,
-    const bool *wire_powered,
+    const uint8_t *wire_power,
     const int *wire_table,
     size_t wire_table_cap,
     int ignore_wx,
     int ignore_wy,
     int ignore_wz)
 {
+    uint8_t strength = 0;
+
     for (int face = 0; face < NUM_FACES; face++) {
         int nx = wx + FACE_NX[face];
         int ny = wy + FACE_NY[face];
         int nz = wz + FACE_NZ[face];
-        BlockID neighbor;
+        uint8_t source_strength;
 
         if (nx == ignore_wx && ny == ignore_wy && nz == ignore_wz)
             continue;
 
-        neighbor = world_get_block(world, nx, ny, nz);
-        if (redstone_source_emits_locked(world, neighbor, nx, ny, nz))
-            return true;
-        if (redstone_block_is_wire(neighbor)) {
-            int wire_index = redstone_wire_lookup(wires, wire_table,
-                                                  wire_table_cap,
-                                                  nx, ny, nz);
-            if (wire_index >= 0 && wire_powered[wire_index])
-                return true;
-        }
+        source_strength = redstone_direct_power_from_cell_locked(world,
+                                                                 nx, ny, nz,
+                                                                 wx, wy, wz,
+                                                                 wires,
+                                                                 wire_power,
+                                                                 wire_table,
+                                                                 wire_table_cap);
+        if (source_strength > strength)
+            strength = source_strength;
+        if (strength >= 15)
+            return strength;
     }
 
-    return false;
+    return strength;
+}
+
+static uint8_t redstone_powered_block_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap,
+    int ignore_wx,
+    int ignore_wy,
+    int ignore_wz)
+{
+    if (!redstone_block_can_hold_power(world_get_block(world, wx, wy, wz)))
+        return 0;
+
+    return redstone_position_direct_power_strength_locked(world,
+                                                          wx, wy, wz,
+                                                          wires, wire_power,
+                                                          wire_table,
+                                                          wire_table_cap,
+                                                          ignore_wx,
+                                                          ignore_wy,
+                                                          ignore_wz);
+}
+
+static uint8_t redstone_power_from_cell_locked(
+    const VoxelWorld *world,
+    int source_wx,
+    int source_wy,
+    int source_wz,
+    int target_wx,
+    int target_wy,
+    int target_wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    uint8_t strength =
+        redstone_direct_power_from_cell_locked(world,
+                                               source_wx, source_wy, source_wz,
+                                               target_wx, target_wy, target_wz,
+                                               wires, wire_power,
+                                               wire_table, wire_table_cap);
+
+    if (strength > 0)
+        return strength;
+    return redstone_powered_block_strength_locked(world,
+                                                  source_wx, source_wy, source_wz,
+                                                  wires, wire_power,
+                                                  wire_table, wire_table_cap,
+                                                  target_wx, target_wy,
+                                                  target_wz);
+}
+
+static uint8_t redstone_position_power_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap,
+    int ignore_wx,
+    int ignore_wy,
+    int ignore_wz)
+{
+    uint8_t strength = 0;
+
+    for (int face = 0; face < NUM_FACES; face++) {
+        int nx = wx + FACE_NX[face];
+        int ny = wy + FACE_NY[face];
+        int nz = wz + FACE_NZ[face];
+        uint8_t source_strength;
+
+        if (nx == ignore_wx && ny == ignore_wy && nz == ignore_wz)
+            continue;
+
+        source_strength = redstone_power_from_cell_locked(world,
+                                                          nx, ny, nz,
+                                                          wx, wy, wz,
+                                                          wires, wire_power,
+                                                          wire_table,
+                                                          wire_table_cap);
+        if (source_strength > strength)
+            strength = source_strength;
+        if (strength >= 15)
+            return strength;
+    }
+
+    return strength;
+}
+
+static uint8_t redstone_directional_back_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    BlockDoorFacing facing,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    int dx;
+    int dz;
+
+    redstone_facing_delta(facing, &dx, &dz);
+    return redstone_power_from_cell_locked(world,
+                                           wx - dx, wy, wz - dz,
+                                           wx, wy, wz,
+                                           wires, wire_power,
+                                           wire_table, wire_table_cap);
+}
+
+static uint8_t redstone_directional_side_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    BlockDoorFacing facing,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    int dx;
+    int dz;
+    uint8_t left;
+    uint8_t right;
+
+    redstone_facing_delta(facing, &dx, &dz);
+    left = redstone_power_from_cell_locked(world,
+                                           wx + dz, wy, wz - dx,
+                                           wx, wy, wz,
+                                           wires, wire_power,
+                                           wire_table, wire_table_cap);
+    right = redstone_power_from_cell_locked(world,
+                                            wx - dz, wy, wz + dx,
+                                            wx, wy, wz,
+                                            wires, wire_power,
+                                            wire_table, wire_table_cap);
+    return left > right ? left : right;
+}
+
+static uint8_t redstone_torch_support_top_strength_locked(
+    const VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    const RedstoneCell *wires,
+    const uint8_t *wire_power,
+    const int *wire_table,
+    size_t wire_table_cap)
+{
+    uint8_t strength = 0;
+
+    for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
+        int nx = wx + FACE_NX[face];
+        int nz = wz + FACE_NZ[face];
+        uint8_t source_strength =
+            redstone_power_from_cell_locked(world,
+                                            nx, wy, nz,
+                                            wx, wy - 1, wz,
+                                            wires, wire_power,
+                                            wire_table, wire_table_cap);
+
+        if (source_strength > strength)
+            strength = source_strength;
+    }
+
+    return strength;
 }
 
 static bool redstone_torch_receives_power_locked(
@@ -3475,7 +4023,7 @@ static bool redstone_torch_receives_power_locked(
     int wy,
     int wz,
     const RedstoneCell *wires,
-    const bool *wire_powered,
+    const uint8_t *wire_power,
     const int *wire_table,
     size_t wire_table_cap)
 {
@@ -3483,13 +4031,21 @@ static bool redstone_torch_receives_power_locked(
         return false;
 
     BlockID support = world_get_block(world, wx, wy - 1, wz);
-    if (redstone_source_emits_locked(world, support, wx, wy - 1, wz))
+    if (redstone_source_strength_to_locked(world, support,
+                                           wx, wy - 1, wz,
+                                           wx, wy, wz) > 0)
         return true;
-    return redstone_position_receives_power_locked(world,
-                                                   wx, wy - 1, wz,
-                                                   wires, wire_powered,
-                                                   wire_table, wire_table_cap,
-                                                   wx, wy, wz);
+    if (redstone_position_power_strength_locked(world,
+                                                wx, wy - 1, wz,
+                                                wires, wire_power,
+                                                wire_table, wire_table_cap,
+                                                wx, wy, wz) > 0)
+        return true;
+    return redstone_torch_support_top_strength_locked(world,
+                                                      wx, wy, wz,
+                                                      wires, wire_power,
+                                                      wire_table,
+                                                      wire_table_cap) > 0;
 }
 
 static bool world_update_redstone_locked(VoxelWorld *world, float dt)
@@ -3502,11 +4058,11 @@ static bool world_update_redstone_locked(VoxelWorld *world, float dt)
     size_t change_count = 0, change_cap = 0;
     int *wire_table = NULL;
     size_t wire_table_cap = 0;
-    bool *wire_powered = NULL;
-    size_t *wire_queue = NULL;
-    size_t queue_head = 0, queue_tail = 0;
+    uint8_t *wire_power = NULL;
     bool changed = redstone_tick_button_pulses_locked(world, dt);
     bool ok = true;
+
+    changed |= redstone_tick_repeater_states_locked(world, dt);
 
     for (int ci = 0; ci < world->chunk_count && ok; ci++) {
         Chunk *chunk = &world->chunks[ci];
@@ -3550,37 +4106,49 @@ static bool world_update_redstone_locked(VoxelWorld *world, float dt)
         goto done;
 
     if (wire_count > 0) {
-        wire_powered = calloc(wire_count, sizeof(*wire_powered));
-        wire_queue = malloc(wire_count * sizeof(*wire_queue));
-        if (!wire_powered || !wire_queue)
+        wire_power = calloc(wire_count, sizeof(*wire_power));
+        if (!wire_power)
             goto done;
 
         for (size_t i = 0; i < wire_count; i++) {
-            if (redstone_wire_has_direct_source_locked(world,
-                                                       wires[i].wx,
-                                                       wires[i].wy,
-                                                       wires[i].wz)) {
-                wire_powered[i] = true;
-                wire_queue[queue_tail++] = i;
-            }
+            wire_power[i] =
+                redstone_wire_direct_source_strength_locked(world,
+                                                            wires[i].wx,
+                                                            wires[i].wy,
+                                                            wires[i].wz,
+                                                            wires,
+                                                            wire_table,
+                                                            wire_table_cap);
         }
 
-        while (queue_head < queue_tail) {
-            size_t current = wire_queue[queue_head++];
+        for (int pass = 0; pass < 15; pass++) {
+            bool propagated = false;
 
-            for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
-                int nx = wires[current].wx + FACE_NX[face];
-                int ny = wires[current].wy;
-                int nz = wires[current].wz + FACE_NZ[face];
-                int next = redstone_wire_lookup(wires, wire_table,
-                                                wire_table_cap,
-                                                nx, ny, nz);
+            for (size_t current = 0; current < wire_count; current++) {
+                if (wire_power[current] <= 1)
+                    continue;
 
-                if (next >= 0 && !wire_powered[next]) {
-                    wire_powered[next] = true;
-                    wire_queue[queue_tail++] = (size_t)next;
+                for (int face = FACE_LEFT; face <= FACE_BACK; face++) {
+                    int nx = wires[current].wx + FACE_NX[face];
+                    int ny = wires[current].wy;
+                    int nz = wires[current].wz + FACE_NZ[face];
+                    int next = redstone_wire_lookup(wires, wire_table,
+                                                    wire_table_cap,
+                                                    nx, ny, nz);
+                    uint8_t next_power;
+
+                    if (next < 0)
+                        continue;
+                    next_power = (uint8_t)(wire_power[current] - 1u);
+                    if (next_power > wire_power[next]) {
+                        wire_power[next] = next_power;
+                        propagated = true;
+                    }
                 }
             }
+
+            if (!propagated)
+                break;
         }
     }
 
@@ -3593,7 +4161,7 @@ static bool world_update_redstone_locked(VoxelWorld *world, float dt)
                                                              wires[i].wx,
                                                              wires[i].wy,
                                                              wires[i].wz);
-        BlockID target = wire_powered && wire_powered[i] ?
+        BlockID target = wire_power && wire_power[i] > 0 ?
                          BLOCK_REDSTONE_WIRE_ON :
                          (connected ? BLOCK_REDSTONE_WIRE_OFF :
                                       BLOCK_REDSTONE_WIRE_UNCONNECTED);
@@ -3611,34 +4179,54 @@ static bool world_update_redstone_locked(VoxelWorld *world, float dt)
         RedstoneCell cell = components[i];
         BlockID current = world_get_block(world, cell.wx, cell.wy, cell.wz);
         BlockID target = current;
-        bool powered;
+        uint8_t power;
 
         if (current == BLOCK_REDSTONE_TORCH_OFF ||
             current == BLOCK_REDSTONE_TORCH_ON) {
-            powered = redstone_torch_receives_power_locked(world,
-                                                           cell.wx,
-                                                           cell.wy,
-                                                           cell.wz,
-                                                           wires,
-                                                           wire_powered,
-                                                           wire_table,
-                                                           wire_table_cap);
-            target = powered ? BLOCK_REDSTONE_TORCH_OFF :
-                               BLOCK_REDSTONE_TORCH_ON;
-        } else if (current == BLOCK_REPEATER_OFF ||
-                   current == BLOCK_REPEATER_ON) {
-            powered = redstone_position_receives_power_locked(
-                world, cell.wx, cell.wy, cell.wz,
-                wires, wire_powered, wire_table, wire_table_cap,
-                INT_MIN, INT_MIN, INT_MIN);
-            target = powered ? BLOCK_REPEATER_ON : BLOCK_REPEATER_OFF;
+            power = redstone_torch_receives_power_locked(world,
+                                                         cell.wx,
+                                                         cell.wy,
+                                                         cell.wz,
+                                                         wires,
+                                                         wire_power,
+                                                         wire_table,
+                                                         wire_table_cap) ? 15 : 0;
+            target = power > 0 ? BLOCK_REDSTONE_TORCH_OFF :
+                                 BLOCK_REDSTONE_TORCH_ON;
+        } else if (block_is_repeater(current)) {
+            BlockDoorFacing facing = block_redstone_facing(current);
+            bool current_powered = block_redstone_directional_powered(current);
+            bool target_powered;
+
+            power = redstone_directional_back_strength_locked(
+                world, cell.wx, cell.wy, cell.wz, facing,
+                wires, wire_power, wire_table, wire_table_cap);
+            target_powered = power > 0;
+            if (current_powered == target_powered)
+                redstone_cancel_repeater_state_locked(world,
+                                                      cell.wx, cell.wy,
+                                                      cell.wz);
+            else
+                redstone_schedule_repeater_state_locked(world,
+                                                        cell.wx, cell.wy,
+                                                        cell.wz,
+                                                        target_powered);
+        } else if (block_is_comparator(current)) {
+            BlockDoorFacing facing = block_redstone_facing(current);
+            uint8_t rear = redstone_directional_back_strength_locked(
+                world, cell.wx, cell.wy, cell.wz, facing,
+                wires, wire_power, wire_table, wire_table_cap);
+            uint8_t side = redstone_directional_side_strength_locked(
+                world, cell.wx, cell.wy, cell.wz, facing,
+                wires, wire_power, wire_table, wire_table_cap);
+            target = block_comparator_make(facing, rear > 0 && rear >= side);
         } else if (current == BLOCK_LAMP_OFF ||
                    current == BLOCK_LAMP) {
-            powered = redstone_position_receives_power_locked(
+            power = redstone_position_power_strength_locked(
                 world, cell.wx, cell.wy, cell.wz,
-                wires, wire_powered, wire_table, wire_table_cap,
+                wires, wire_power, wire_table, wire_table_cap,
                 INT_MIN, INT_MIN, INT_MIN);
-            target = powered ? BLOCK_LAMP : BLOCK_LAMP_OFF;
+            target = power > 0 ? BLOCK_LAMP : BLOCK_LAMP_OFF;
         }
 
         if (current != target &&
@@ -3665,9 +4253,166 @@ done:
     free(components);
     free(changes);
     free(wire_table);
-    free(wire_powered);
-    free(wire_queue);
+    free(wire_power);
     return changed;
+}
+
+typedef struct {
+    int dx;
+    int dy;
+} RedstoneDisplayCell;
+
+static const RedstoneDisplayCell REDSTONE_DISPLAY_SEGMENTS[7][4] = {
+    { { 2, 8 }, { 3, 8 }, { 4, 8 }, { 5, 8 } },
+    { { 6, 5 }, { 6, 6 }, { 6, 7 }, { 6, 8 } },
+    { { 6, 0 }, { 6, 1 }, { 6, 2 }, { 6, 3 } },
+    { { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 } },
+    { { 1, 0 }, { 1, 1 }, { 1, 2 }, { 1, 3 } },
+    { { 1, 5 }, { 1, 6 }, { 1, 7 }, { 1, 8 } },
+    { { 2, 4 }, { 3, 4 }, { 4, 4 }, { 5, 4 } },
+};
+
+static const uint8_t REDSTONE_DISPLAY_DIGITS[10] = {
+    0x3f, 0x06, 0x5b, 0x4f, 0x66,
+    0x6d, 0x7d, 0x07, 0x7f, 0x6f,
+};
+
+static bool redstone_counter_find_display_anchor_locked(const VoxelWorld *world,
+                                                        int wx,
+                                                        int wy,
+                                                        int wz,
+                                                        RedstoneCell *out)
+{
+    int best_dist_sq = INT_MAX;
+    RedstoneCell best = {0};
+
+    for (int ci = 0; ci < world->chunk_count; ci++) {
+        const Chunk *chunk = &world->chunks[ci];
+        int ox;
+        int oz;
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
+        oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
+
+        for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
+            for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
+                for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+                    int dx;
+                    int dy;
+                    int dz;
+                    int dist_sq;
+
+                    if (chunk->blocks[y][z][x] != BLOCK_CRAFTING_TABLE)
+                        continue;
+                    dx = ox + x - wx;
+                    dy = y - wy;
+                    dz = oz + z - wz;
+                    dist_sq = dx * dx + dy * dy + dz * dz;
+                    if (dist_sq >= best_dist_sq || dist_sq > 96 * 96)
+                        continue;
+
+                    best_dist_sq = dist_sq;
+                    best = (RedstoneCell){.wx = ox + x,
+                                          .wy = y,
+                                          .wz = oz + z};
+                }
+            }
+        }
+    }
+
+    if (best_dist_sq == INT_MAX)
+        return false;
+    if (out)
+        *out = best;
+    return true;
+}
+
+static bool redstone_counter_segment_powered_locked(const VoxelWorld *world,
+                                                    RedstoneCell anchor,
+                                                    int segment)
+{
+    int powered_cells = 0;
+
+    for (int i = 0; i < 4; i++) {
+        int px = anchor.wx + REDSTONE_DISPLAY_SEGMENTS[segment][i].dx;
+        int py = anchor.wy + REDSTONE_DISPLAY_SEGMENTS[segment][i].dy;
+        int pz = anchor.wz + 1;
+
+        if (world_get_block(world, px, py, pz) == BLOCK_REDSTONE_BLOCK)
+            powered_cells++;
+    }
+
+    return powered_cells >= 2;
+}
+
+static int redstone_counter_current_digit_locked(const VoxelWorld *world,
+                                                 RedstoneCell anchor)
+{
+    uint8_t mask = 0;
+
+    for (int segment = 0; segment < 7; segment++) {
+        if (redstone_counter_segment_powered_locked(world, anchor, segment))
+            mask |= (uint8_t)(1u << segment);
+    }
+
+    for (int digit = 0; digit < 10; digit++) {
+        if (REDSTONE_DISPLAY_DIGITS[digit] == mask)
+            return digit;
+    }
+    return 0;
+}
+
+static void redstone_counter_set_digit_locked(VoxelWorld *world,
+                                              RedstoneCell anchor,
+                                              int digit)
+{
+    uint8_t mask = REDSTONE_DISPLAY_DIGITS[digit % 10];
+
+    for (int segment = 0; segment < 7; segment++) {
+        bool on = (mask & (uint8_t)(1u << segment)) != 0;
+
+        for (int i = 0; i < 4; i++) {
+            int lx = anchor.wx + REDSTONE_DISPLAY_SEGMENTS[segment][i].dx;
+            int ly = anchor.wy + REDSTONE_DISPLAY_SEGMENTS[segment][i].dy;
+            int lz = anchor.wz;
+            int px = lx;
+            int py = ly;
+            int pz = anchor.wz + 1;
+
+            (void)world_set_block_locked(world, px, py, pz,
+                                         on ? BLOCK_REDSTONE_BLOCK :
+                                              BLOCK_AIR);
+            (void)world_set_block_locked(world, lx, ly, lz,
+                                         on ? BLOCK_LAMP :
+                                              BLOCK_LAMP_OFF);
+        }
+    }
+}
+
+static bool redstone_try_counter_button_locked(VoxelWorld *world,
+                                               int wx,
+                                               int wy,
+                                               int wz)
+{
+    BlockID base;
+    RedstoneCell anchor;
+    int digit;
+
+    if (wy <= 0)
+        return false;
+    base = world_get_block(world, wx, wy - 1, wz);
+    if (base != BLOCK_DIAMOND_BLOCK && base != BLOCK_GOLD_BLOCK)
+        return false;
+    if (!redstone_counter_find_display_anchor_locked(world, wx, wy, wz,
+                                                     &anchor))
+        return false;
+
+    digit = base == BLOCK_GOLD_BLOCK ?
+            0 : (redstone_counter_current_digit_locked(world, anchor) + 1) % 10;
+    redstone_counter_set_digit_locked(world, anchor, digit);
+    return true;
 }
 
 bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type)
@@ -3717,10 +4462,46 @@ bool world_press_button(VoxelWorld *world, int wx, int wy, int wz)
     if (world_get_block(world, wx, wy, wz) == BLOCK_BUTTON) {
         pressed = redstone_start_button_pulse_locked(world, wx, wy, wz);
         if (pressed)
+            (void)redstone_try_counter_button_locked(world, wx, wy, wz);
+        if (pressed)
             (void)world_update_redstone_locked(world, 0.0f);
     }
     world_unlock(world);
     return pressed;
+}
+
+bool world_cycle_repeater_delay(VoxelWorld *world,
+                                int wx,
+                                int wy,
+                                int wz,
+                                uint8_t *delay_ticks_out)
+{
+    bool ok = false;
+    uint8_t next_delay = 0;
+
+    if (!world)
+        return false;
+
+    world_lock(world);
+    if (block_is_repeater(world_get_block(world, wx, wy, wz))) {
+        uint8_t current_delay =
+            redstone_repeater_delay_ticks_locked(world, wx, wy, wz);
+
+        next_delay = (uint8_t)(current_delay + 1u);
+        if (next_delay > REDSTONE_REPEATER_MAX_DELAY_TICKS)
+            next_delay = REDSTONE_REPEATER_MIN_DELAY_TICKS;
+        ok = world_set_redstone_data_locked(world, wx, wy, wz, next_delay,
+                                            true);
+        if (ok) {
+            redstone_cancel_repeater_state_locked(world, wx, wy, wz);
+            (void)world_update_redstone_locked(world, 0.0f);
+        }
+    }
+    world_unlock(world);
+
+    if (ok && delay_ticks_out)
+        *delay_ticks_out = next_delay;
+    return ok;
 }
 
 int world_total_faces(const VoxelWorld *world)

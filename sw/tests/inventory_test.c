@@ -219,6 +219,8 @@ static void test_item_textures(void)
     assert(item_texture_id((ItemID)BLOCK_REDSTONE_TORCH_OFF) ==
            TEX_TILE_REDSTONE_TORCH_OFF);
     assert(item_texture_id((ItemID)BLOCK_REPEATER_ON) == TEX_TILE_REPEATER_ON);
+    assert(item_texture_id((ItemID)BLOCK_COMPARATOR_ON) ==
+           TEX_TILE_COMPARATOR_ON);
     assert(item_texture_id((ItemID)BLOCK_LAMP_OFF) == TEX_TILE_LAMP_OFF);
     assert(item_texture_id((ItemID)BLOCK_BUTTON) == TEX_TILE_BUTTON);
     assert(item_texture_id(ITEM_DIAMOND_PICKAXE) ==

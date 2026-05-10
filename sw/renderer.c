@@ -1935,8 +1935,8 @@ static bool render_block_is_redstone_component(BlockID id)
     return render_block_is_redstone_wire(id) ||
            id == BLOCK_REDSTONE_TORCH_OFF ||
            id == BLOCK_REDSTONE_TORCH_ON ||
-           id == BLOCK_REPEATER_OFF ||
-           id == BLOCK_REPEATER_ON ||
+           block_is_repeater(id) ||
+           block_is_comparator(id) ||
            id == BLOCK_LAMP_OFF ||
            id == BLOCK_LAMP ||
            id == BLOCK_REDSTONE_BLOCK ||
@@ -2038,12 +2038,220 @@ static uint8_t redstone_wire_texture_for_mask(BlockID type,
                      TEX_TILE_REDSTONE_WIRE_CROSS_OFF;
 }
 
+static int redstone_directional_uv_rotation(BlockID type)
+{
+    switch (block_redstone_facing(type)) {
+    case BLOCK_DOOR_FACING_EAST:
+        return 1;
+    case BLOCK_DOOR_FACING_SOUTH:
+        return 2;
+    case BLOCK_DOOR_FACING_WEST:
+        return 3;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        return 0;
+    }
+}
+
+static Vec3 redstone_device_local_point(Vec3 block_pos,
+                                        BlockDoorFacing facing,
+                                        float side,
+                                        float forward,
+                                        float y)
+{
+    int fdx;
+    int fdz;
+    float rdx;
+    float rdz;
+
+    switch (facing) {
+    case BLOCK_DOOR_FACING_EAST:
+        fdx = 1;
+        fdz = 0;
+        break;
+    case BLOCK_DOOR_FACING_SOUTH:
+        fdx = 0;
+        fdz = 1;
+        break;
+    case BLOCK_DOOR_FACING_WEST:
+        fdx = -1;
+        fdz = 0;
+        break;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        fdx = 0;
+        fdz = -1;
+        break;
+    }
+
+    rdx = (float)-fdz;
+    rdz = (float)fdx;
+    return (Vec3){
+        block_pos.x + 0.5f + rdx * side + (float)fdx * forward,
+        block_pos.y + y,
+        block_pos.z + 0.5f + rdz * side + (float)fdz * forward,
+    };
+}
+
+static void redstone_device_plate_top_vertices(Vec3 block_pos, Vec3 out[4])
+{
+    const float inset = 0.09f;
+    const float y = 0.080f;
+
+    out[0] = (Vec3){ block_pos.x + inset,        block_pos.y + y,
+                     block_pos.z + inset };
+    out[1] = (Vec3){ block_pos.x + 1.0f - inset, block_pos.y + y,
+                     block_pos.z + inset };
+    out[2] = (Vec3){ block_pos.x + 1.0f - inset, block_pos.y + y,
+                     block_pos.z + 1.0f - inset };
+    out[3] = (Vec3){ block_pos.x + inset,        block_pos.y + y,
+                     block_pos.z + 1.0f - inset };
+}
+
+static void emit_redstone_device_plate_side(RenderContext *ctx,
+                                            Vec3 block_pos,
+                                            BlockDoorFacing facing,
+                                            int side_index,
+                                            uint8_t light_flags)
+{
+    const float half_w = 0.41f;
+    const float half_l = 0.41f;
+    const float bottom = 0.018f;
+    const float top = 0.080f;
+    Vec3 face_world[4];
+
+    switch (side_index) {
+    case 0:
+        face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w, -half_l, bottom);
+        face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                     half_w, -half_l, bottom);
+        face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                     half_w, -half_l, top);
+        face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w, -half_l, top);
+        break;
+    case 1:
+        face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                     half_w, -half_l, bottom);
+        face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                     half_w,  half_l, bottom);
+        face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                     half_w,  half_l, top);
+        face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                     half_w, -half_l, top);
+        break;
+    case 2:
+        face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                     half_w,  half_l, bottom);
+        face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w,  half_l, bottom);
+        face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w,  half_l, top);
+        face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                     half_w,  half_l, top);
+        break;
+    default:
+        face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w,  half_l, bottom);
+        face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w, -half_l, bottom);
+        face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w, -half_l, top);
+        face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                    -half_w,  half_l, top);
+        break;
+    }
+
+    emit_model_quad_lit(ctx, face_world, TEX_TILE_STONE, light_flags);
+}
+
+static void emit_redstone_device_post(RenderContext *ctx,
+                                      Vec3 block_pos,
+                                      BlockDoorFacing facing,
+                                      float side,
+                                      float forward,
+                                      uint8_t texture_tile,
+                                      uint8_t light_flags)
+{
+    const float half = 0.055f;
+    const float bottom = 0.080f;
+    const float top = 0.430f;
+    Vec3 face_world[4];
+
+    face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                side - half, forward, bottom);
+    face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                side + half, forward, bottom);
+    face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                side + half, forward, top);
+    face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                side - half, forward, top);
+    emit_model_quad_lit(ctx, face_world, texture_tile, light_flags);
+
+    face_world[0] = redstone_device_local_point(block_pos, facing,
+                                                side, forward - half, bottom);
+    face_world[1] = redstone_device_local_point(block_pos, facing,
+                                                side, forward + half, bottom);
+    face_world[2] = redstone_device_local_point(block_pos, facing,
+                                                side, forward + half, top);
+    face_world[3] = redstone_device_local_point(block_pos, facing,
+                                                side, forward - half, top);
+    emit_model_quad_lit(ctx, face_world, texture_tile, light_flags);
+}
+
+static void emit_redstone_device_block_lit(RenderContext *ctx,
+                                           BlockID type,
+                                           Vec3 block_pos,
+                                           uint8_t visual_state,
+                                           uint8_t light_flags)
+{
+    Vec3 face_world[4];
+    BlockDoorFacing facing = block_redstone_facing(type);
+    uint8_t top_tile = block_face_texture_id(type, FACE_TOP);
+    uint8_t post_tile = block_redstone_directional_powered(type) ?
+                        TEX_TILE_REDSTONE_TORCH_ON :
+                        TEX_TILE_REDSTONE_TORCH_OFF;
+    int uv_rotation = redstone_directional_uv_rotation(type);
+
+    redstone_device_plate_top_vertices(block_pos, face_world);
+    emit_model_quad_lit_rotated(ctx, face_world, top_tile, light_flags,
+                                uv_rotation);
+    for (int side = 0; side < 4; side++)
+        emit_redstone_device_plate_side(ctx, block_pos, facing, side,
+                                        light_flags);
+
+    if (block_is_comparator(type)) {
+        emit_redstone_device_post(ctx, block_pos, facing,
+                                  -0.18f, -0.16f, post_tile, light_flags);
+        emit_redstone_device_post(ctx, block_pos, facing,
+                                   0.18f, -0.16f, post_tile, light_flags);
+        emit_redstone_device_post(ctx, block_pos, facing,
+                                   0.0f, 0.20f, post_tile, light_flags);
+    } else {
+        uint8_t delay_ticks = visual_state;
+        float moving_post_forward;
+
+        if (delay_ticks < 1)
+            delay_ticks = 1;
+        if (delay_ticks > 4)
+            delay_ticks = 4;
+        moving_post_forward = -0.12f + (float)(delay_ticks - 1u) * 0.10f;
+        emit_redstone_device_post(ctx, block_pos, facing,
+                                  0.0f, -0.24f, post_tile, light_flags);
+        emit_redstone_device_post(ctx, block_pos, facing,
+                                  0.0f, moving_post_forward,
+                                  post_tile, light_flags);
+    }
+}
+
 static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
                                      const VoxelWorld *world,
                                      Vec3 block_pos,
                                      int wx,
                                      int wy,
                                      int wz,
+                                     uint8_t visual_state,
                                      uint8_t light_flags)
 {
     Vec3 face_world[4];
@@ -2052,6 +2260,12 @@ static void emit_flat_block_face_lit(RenderContext *ctx, BlockID type,
 
     if (type == BLOCK_AIR)
         return;
+
+    if (block_is_redstone_directional(type)) {
+        emit_redstone_device_block_lit(ctx, type, block_pos, visual_state,
+                                       light_flags);
+        return;
+    }
 
     flat_face_vertices(block_pos, face_world);
     texture_tile = block_face_texture_id(type, FACE_TOP);
@@ -3158,7 +3372,8 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                              face->face, light_flags);
                 else
                     emit_flat_block_face_lit(ctx, id, world, block_pos,
-                                             wxi, wyi, wzi, light_flags);
+                                             wxi, wyi, wzi, face->height,
+                                             light_flags);
                 if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                     ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                     return ctx->n_quads - before;

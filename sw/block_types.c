@@ -20,6 +20,22 @@ static void init_door_descriptor(BlockID id, bool upper)
     BlockRegistry[id].render_model = BLOCK_RENDER_DOOR;
 }
 
+static void init_redstone_flat_descriptor(BlockID id,
+                                          const char *name,
+                                          uint8_t texture,
+                                          bool powered)
+{
+    BlockRegistry[id].id = id;
+    BlockRegistry[id].name = name;
+    set_all_faces(&BlockRegistry[id], texture);
+    BlockRegistry[id].hardness_seconds = 0.2f;
+    BlockRegistry[id].render_model = BLOCK_RENDER_FLAT;
+    if (powered) {
+        BlockRegistry[id].emission_level = 5;
+        BlockRegistry[id].self_lit = true;
+    }
+}
+
 typedef struct {
     uint8_t base;
     uint8_t mip1;
@@ -312,19 +328,10 @@ void init_block_types(void)
     BlockRegistry[BLOCK_REDSTONE_TORCH_ON].self_lit = true;
     BlockRegistry[BLOCK_REDSTONE_TORCH_ON].render_model = BLOCK_RENDER_TORCH;
 
-    BlockRegistry[BLOCK_REPEATER_OFF].id = BLOCK_REPEATER_OFF;
-    BlockRegistry[BLOCK_REPEATER_OFF].name = "Repeater Off";
-    set_all_faces(&BlockRegistry[BLOCK_REPEATER_OFF], TEX_TILE_REPEATER_OFF);
-    BlockRegistry[BLOCK_REPEATER_OFF].hardness_seconds = 0.2f;
-    BlockRegistry[BLOCK_REPEATER_OFF].render_model = BLOCK_RENDER_FLAT;
-
-    BlockRegistry[BLOCK_REPEATER_ON].id = BLOCK_REPEATER_ON;
-    BlockRegistry[BLOCK_REPEATER_ON].name = "Repeater On";
-    set_all_faces(&BlockRegistry[BLOCK_REPEATER_ON], TEX_TILE_REPEATER_ON);
-    BlockRegistry[BLOCK_REPEATER_ON].emission_level = 5;
-    BlockRegistry[BLOCK_REPEATER_ON].hardness_seconds = 0.2f;
-    BlockRegistry[BLOCK_REPEATER_ON].self_lit = true;
-    BlockRegistry[BLOCK_REPEATER_ON].render_model = BLOCK_RENDER_FLAT;
+    init_redstone_flat_descriptor(BLOCK_REPEATER_OFF, "Repeater Off",
+                                  TEX_TILE_REPEATER_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_ON, "Repeater On",
+                                  TEX_TILE_REPEATER_ON, true);
 
     BlockRegistry[BLOCK_LAMP_OFF].id = BLOCK_LAMP_OFF;
     BlockRegistry[BLOCK_LAMP_OFF].name = "Lamp Off";
@@ -336,6 +343,49 @@ void init_block_types(void)
     set_all_faces(&BlockRegistry[BLOCK_BUTTON], TEX_TILE_BUTTON);
     BlockRegistry[BLOCK_BUTTON].hardness_seconds = 0.2f;
     BlockRegistry[BLOCK_BUTTON].render_model = BLOCK_RENDER_FLAT;
+
+    init_redstone_flat_descriptor(BLOCK_REPEATER_EAST_OFF,
+                                  "Repeater East Off",
+                                  TEX_TILE_REPEATER_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_SOUTH_OFF,
+                                  "Repeater South Off",
+                                  TEX_TILE_REPEATER_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_WEST_OFF,
+                                  "Repeater West Off",
+                                  TEX_TILE_REPEATER_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_EAST_ON,
+                                  "Repeater East On",
+                                  TEX_TILE_REPEATER_ON, true);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_SOUTH_ON,
+                                  "Repeater South On",
+                                  TEX_TILE_REPEATER_ON, true);
+    init_redstone_flat_descriptor(BLOCK_REPEATER_WEST_ON,
+                                  "Repeater West On",
+                                  TEX_TILE_REPEATER_ON, true);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_OFF,
+                                  "Comparator Off",
+                                  TEX_TILE_COMPARATOR_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_EAST_OFF,
+                                  "Comparator East Off",
+                                  TEX_TILE_COMPARATOR_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_SOUTH_OFF,
+                                  "Comparator South Off",
+                                  TEX_TILE_COMPARATOR_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_WEST_OFF,
+                                  "Comparator West Off",
+                                  TEX_TILE_COMPARATOR_OFF, false);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_ON,
+                                  "Comparator On",
+                                  TEX_TILE_COMPARATOR_ON, true);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_EAST_ON,
+                                  "Comparator East On",
+                                  TEX_TILE_COMPARATOR_ON, true);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_SOUTH_ON,
+                                  "Comparator South On",
+                                  TEX_TILE_COMPARATOR_ON, true);
+    init_redstone_flat_descriptor(BLOCK_COMPARATOR_WEST_ON,
+                                  "Comparator West On",
+                                  TEX_TILE_COMPARATOR_ON, true);
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -532,4 +582,130 @@ BlockID block_door_toggle(BlockID id)
     return block_door_make(block_door_facing(id),
                            !block_is_door_open(id),
                            block_is_door_upper(id));
+}
+
+bool block_is_repeater(BlockID id)
+{
+    return id == BLOCK_REPEATER_OFF ||
+           id == BLOCK_REPEATER_ON ||
+           id == BLOCK_REPEATER_EAST_OFF ||
+           id == BLOCK_REPEATER_SOUTH_OFF ||
+           id == BLOCK_REPEATER_WEST_OFF ||
+           id == BLOCK_REPEATER_EAST_ON ||
+           id == BLOCK_REPEATER_SOUTH_ON ||
+           id == BLOCK_REPEATER_WEST_ON;
+}
+
+bool block_is_comparator(BlockID id)
+{
+    return id == BLOCK_COMPARATOR_OFF ||
+           id == BLOCK_COMPARATOR_EAST_OFF ||
+           id == BLOCK_COMPARATOR_SOUTH_OFF ||
+           id == BLOCK_COMPARATOR_WEST_OFF ||
+           id == BLOCK_COMPARATOR_ON ||
+           id == BLOCK_COMPARATOR_EAST_ON ||
+           id == BLOCK_COMPARATOR_SOUTH_ON ||
+           id == BLOCK_COMPARATOR_WEST_ON;
+}
+
+bool block_is_redstone_directional(BlockID id)
+{
+    return block_is_repeater(id) || block_is_comparator(id);
+}
+
+bool block_redstone_directional_powered(BlockID id)
+{
+    return id == BLOCK_REPEATER_ON ||
+           id == BLOCK_REPEATER_EAST_ON ||
+           id == BLOCK_REPEATER_SOUTH_ON ||
+           id == BLOCK_REPEATER_WEST_ON ||
+           id == BLOCK_COMPARATOR_ON ||
+           id == BLOCK_COMPARATOR_EAST_ON ||
+           id == BLOCK_COMPARATOR_SOUTH_ON ||
+           id == BLOCK_COMPARATOR_WEST_ON;
+}
+
+BlockDoorFacing block_redstone_facing(BlockID id)
+{
+    switch (id) {
+    case BLOCK_REPEATER_EAST_OFF:
+    case BLOCK_REPEATER_EAST_ON:
+    case BLOCK_COMPARATOR_EAST_OFF:
+    case BLOCK_COMPARATOR_EAST_ON:
+        return BLOCK_DOOR_FACING_EAST;
+    case BLOCK_REPEATER_SOUTH_OFF:
+    case BLOCK_REPEATER_SOUTH_ON:
+    case BLOCK_COMPARATOR_SOUTH_OFF:
+    case BLOCK_COMPARATOR_SOUTH_ON:
+        return BLOCK_DOOR_FACING_SOUTH;
+    case BLOCK_REPEATER_WEST_OFF:
+    case BLOCK_REPEATER_WEST_ON:
+    case BLOCK_COMPARATOR_WEST_OFF:
+    case BLOCK_COMPARATOR_WEST_ON:
+        return BLOCK_DOOR_FACING_WEST;
+    case BLOCK_REPEATER_OFF:
+    case BLOCK_REPEATER_ON:
+    case BLOCK_COMPARATOR_OFF:
+    case BLOCK_COMPARATOR_ON:
+    default:
+        return BLOCK_DOOR_FACING_NORTH;
+    }
+}
+
+BlockID block_repeater_make(BlockDoorFacing facing, bool powered)
+{
+    if (powered) {
+        switch (facing) {
+        case BLOCK_DOOR_FACING_EAST:
+            return BLOCK_REPEATER_EAST_ON;
+        case BLOCK_DOOR_FACING_SOUTH:
+            return BLOCK_REPEATER_SOUTH_ON;
+        case BLOCK_DOOR_FACING_WEST:
+            return BLOCK_REPEATER_WEST_ON;
+        case BLOCK_DOOR_FACING_NORTH:
+        default:
+            return BLOCK_REPEATER_ON;
+        }
+    }
+
+    switch (facing) {
+    case BLOCK_DOOR_FACING_EAST:
+        return BLOCK_REPEATER_EAST_OFF;
+    case BLOCK_DOOR_FACING_SOUTH:
+        return BLOCK_REPEATER_SOUTH_OFF;
+    case BLOCK_DOOR_FACING_WEST:
+        return BLOCK_REPEATER_WEST_OFF;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        return BLOCK_REPEATER_OFF;
+    }
+}
+
+BlockID block_comparator_make(BlockDoorFacing facing, bool powered)
+{
+    if (powered) {
+        switch (facing) {
+        case BLOCK_DOOR_FACING_EAST:
+            return BLOCK_COMPARATOR_EAST_ON;
+        case BLOCK_DOOR_FACING_SOUTH:
+            return BLOCK_COMPARATOR_SOUTH_ON;
+        case BLOCK_DOOR_FACING_WEST:
+            return BLOCK_COMPARATOR_WEST_ON;
+        case BLOCK_DOOR_FACING_NORTH:
+        default:
+            return BLOCK_COMPARATOR_ON;
+        }
+    }
+
+    switch (facing) {
+    case BLOCK_DOOR_FACING_EAST:
+        return BLOCK_COMPARATOR_EAST_OFF;
+    case BLOCK_DOOR_FACING_SOUTH:
+        return BLOCK_COMPARATOR_SOUTH_OFF;
+    case BLOCK_DOOR_FACING_WEST:
+        return BLOCK_COMPARATOR_WEST_OFF;
+    case BLOCK_DOOR_FACING_NORTH:
+    default:
+        return BLOCK_COMPARATOR_OFF;
+    }
 }

@@ -16,6 +16,7 @@
 #define CHUNK_FACE_FLAT ((uint8_t)(NUM_FACES + 2))
 #define WORLD_MAX_FALLING_BLOCKS 256
 #define WORLD_MAX_REDSTONE_PULSES 128
+#define WORLD_MAX_REDSTONE_REPEATER_STATES 1024
 
 typedef enum {
     WORLD_BIOME_PLAINS = 0,
@@ -89,6 +90,9 @@ typedef struct {
      * encoding). Meaningful only for fluid cells (water/lava source or flow).
      * For any other block id this byte is ignored and should be left 0. */
     uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
+    /* Extra per-cell redstone metadata. Currently repeaters store delay ticks
+     * 1..4; non-redstone cells keep this at 0. */
+    uint8_t redstone_data[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     /* Scratch buffer used by rebuild_chunk_faces to assemble a ChunkMesh
      * snapshot, which is then published via live_mesh. Renderer must NOT
      * read these directly - they are mutated mid-rebuild. */
@@ -119,6 +123,14 @@ typedef struct {
     int wz;
     float seconds_left;
 } RedstonePulse;
+
+typedef struct {
+    int wx;
+    int wy;
+    int wz;
+    uint8_t target_powered;
+    float seconds_left;
+} RedstoneRepeaterState;
 
 typedef struct VoxelWorld {
     Chunk *chunks;
@@ -157,6 +169,8 @@ typedef struct VoxelWorld {
     int falling_block_count;
     RedstonePulse redstone_pulses[WORLD_MAX_REDSTONE_PULSES];
     int redstone_pulse_count;
+    RedstoneRepeaterState redstone_repeater_states[WORLD_MAX_REDSTONE_REPEATER_STATES];
+    int redstone_repeater_state_count;
     /* Held by the mesh worker thread while it reads chunk blocks/lighting
      * during rebuild_chunk_faces, and by the main thread while it mutates
      * the chunk array (world_set_block, world_stream_around, lighting
@@ -203,15 +217,19 @@ bool world_set_block(VoxelWorld *world, int wx, int wy, int wz, BlockID type);
 WorldBiome world_biome_at(const VoxelWorld *world, int wx, int wz);
 const char *world_biome_name(WorldBiome biome);
 
-/* Minecraft-style environment simulation tick. Call every ~250 ms (5 game
- * ticks). Water/lava sources spread to adjacent air downward then laterally
- * up to 7 blocks. Flow blocks evaporate when they lose upstream support from
- * fluid above, a source, or a lower-level flow. Unsupported gravity blocks
- * (sand/gravel) leave the integer grid and become smooth falling entities.
- * Returns true if any block changed. */
+/* Minecraft-style environment simulation tick. Water/lava sources spread to
+ * adjacent air downward then laterally up to 7 blocks. Flow blocks evaporate
+ * when they lose upstream support from fluid above, a source, or a lower-level
+ * flow. Unsupported gravity blocks (sand/gravel) leave the integer grid and
+ * become smooth falling entities. Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
+/* Advance redstone by dt seconds. Repeaters use 0.1-second redstone ticks and
+ * a configurable 1..4 tick delay. */
 bool world_update_redstone(VoxelWorld *world, float dt);
 bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
+bool world_cycle_repeater_delay(VoxelWorld *world, int wx, int wy, int wz,
+                                uint8_t *delay_ticks_out);
+uint8_t world_repeater_delay_ticks(const VoxelWorld *world, int wx, int wy, int wz);
 bool world_update_falling_blocks(VoxelWorld *world, float dt);
 int world_falling_block_count(const VoxelWorld *world);
 

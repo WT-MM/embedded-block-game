@@ -78,6 +78,8 @@ virtual_hw/*.egg-info/
 # --- Local world saves ---
 worlds/*
 !worlds/README.md
+!worlds/redstone_lab/
+!worlds/redstone_lab/**
 
 # --- Filesystem mount stub from old workflow ---
 usr/

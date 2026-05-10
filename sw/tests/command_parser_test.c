@@ -248,6 +248,9 @@ int main(void)
         return 1;
     if (expect_setblock("/setblock 1 2 3 repeater-off", BLOCK_REPEATER_OFF))
         return 1;
+    if (expect_setblock("/setblock 1 2 3 comparator-east-on",
+                        BLOCK_COMPARATOR_EAST_ON))
+        return 1;
     if (expect_setblock("/setblock 1 2 3 button", BLOCK_BUTTON))
         return 1;
     if (expect_fill("/blocks set ~-1 ~ ~1 ~1 ~2 ~3 diamond-block",

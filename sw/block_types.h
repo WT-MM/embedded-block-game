@@ -76,6 +76,20 @@ typedef enum {
     BLOCK_REPEATER_ON,
     BLOCK_LAMP_OFF,
     BLOCK_BUTTON,
+    BLOCK_REPEATER_EAST_OFF,
+    BLOCK_REPEATER_SOUTH_OFF,
+    BLOCK_REPEATER_WEST_OFF,
+    BLOCK_REPEATER_EAST_ON,
+    BLOCK_REPEATER_SOUTH_ON,
+    BLOCK_REPEATER_WEST_ON,
+    BLOCK_COMPARATOR_OFF,
+    BLOCK_COMPARATOR_EAST_OFF,
+    BLOCK_COMPARATOR_SOUTH_OFF,
+    BLOCK_COMPARATOR_WEST_OFF,
+    BLOCK_COMPARATOR_ON,
+    BLOCK_COMPARATOR_EAST_ON,
+    BLOCK_COMPARATOR_SOUTH_ON,
+    BLOCK_COMPARATOR_WEST_ON,
     NUM_BLOCK_TYPES
 } BlockID;
 
@@ -143,5 +157,12 @@ bool block_is_door_open(BlockID id);
 BlockDoorFacing block_door_facing(BlockID id);
 BlockID block_door_make(BlockDoorFacing facing, bool open, bool upper);
 BlockID block_door_toggle(BlockID id);
+bool block_is_repeater(BlockID id);
+bool block_is_comparator(BlockID id);
+bool block_is_redstone_directional(BlockID id);
+bool block_redstone_directional_powered(BlockID id);
+BlockDoorFacing block_redstone_facing(BlockID id);
+BlockID block_repeater_make(BlockDoorFacing facing, bool powered);
+BlockID block_comparator_make(BlockDoorFacing facing, bool powered);
 
 #endif

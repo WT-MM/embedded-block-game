@@ -48,7 +48,7 @@
 #define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
 #define DEFERRED_LIGHTING_MAX_SPEED_SQ 0.25f
 #define HOTBAR_SLOT_COUNT 9
-#define HOTBAR_PAGE_COUNT 5
+#define HOTBAR_PAGE_COUNT 6
 #define BLOCK_REACH_DISTANCE 6.0f
 #define BLOCK_TRACE_STEP 0.05f
 #define HAND_SWING_SECONDS 0.26f
@@ -229,6 +229,17 @@ static const BlockID HOTBAR_BLOCKS[HOTBAR_PAGE_COUNT][HOTBAR_SLOT_COUNT] = {
         BLOCK_REPEATER_ON,
         BLOCK_LAMP_OFF,
         BLOCK_BUTTON,
+    },
+    {
+        BLOCK_COMPARATOR_OFF,
+        BLOCK_COMPARATOR_ON,
+        BLOCK_COMPARATOR_EAST_OFF,
+        BLOCK_COMPARATOR_EAST_ON,
+        BLOCK_COMPARATOR_SOUTH_OFF,
+        BLOCK_COMPARATOR_SOUTH_ON,
+        BLOCK_COMPARATOR_WEST_OFF,
+        BLOCK_COMPARATOR_WEST_ON,
+        BLOCK_LAMP,
     },
 };
 
@@ -834,10 +845,18 @@ static bool place_block_is_redstone_wire(BlockID type)
            type == BLOCK_REDSTONE_WIRE_ON;
 }
 
-static BlockID normalize_placed_block(BlockID type)
+static BlockDoorFacing door_facing_from_camera(const Camera *cam);
+
+static BlockID normalize_placed_block(BlockID type, const Camera *cam)
 {
     if (place_block_is_redstone_wire(type))
         return BLOCK_REDSTONE_WIRE_UNCONNECTED;
+    if (block_is_repeater(type))
+        return block_repeater_make(door_facing_from_camera(cam),
+                                   block_redstone_directional_powered(type));
+    if (block_is_comparator(type))
+        return block_comparator_make(door_facing_from_camera(cam),
+                                     block_redstone_directional_powered(type));
     return type;
 }
 
@@ -880,7 +899,7 @@ static PlaceResult try_place_targeted_block(VoxelWorld *world, const Camera *cam
 
     if (type <= BLOCK_AIR || type >= NUM_BLOCK_TYPES)
         return PLACE_FAIL_BAD_TYPE;
-    place_type = normalize_placed_block(type);
+    place_type = normalize_placed_block(type, cam);
     if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
         return PLACE_FAIL_NO_TRACE;
     if (!target.place_valid)
@@ -1246,6 +1265,38 @@ static bool try_press_targeted_button(VoxelWorld *world,
     world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
     if (chat)
         chat_log(chat, "button pressed");
+    return true;
+}
+
+static bool try_cycle_targeted_repeater(VoxelWorld *world,
+                                        const Camera *cam,
+                                        Chat *chat)
+{
+    BlockTarget target = {0};
+    uint8_t delay_ticks = 0;
+
+    if (!world || !cam)
+        return false;
+    if (!trace_target_block(world, cam, BLOCK_REACH_DISTANCE, &target))
+        return false;
+    if (!target.hit)
+        return false;
+    if (!block_is_repeater(world_get_block(world,
+                                           target.hit_x,
+                                           target.hit_y,
+                                           target.hit_z)))
+        return false;
+    if (!world_cycle_repeater_delay(world,
+                                    target.hit_x,
+                                    target.hit_y,
+                                    target.hit_z,
+                                    &delay_ticks))
+        return false;
+
+    world_mark_chunk_mesh_edit_priority(world, target.hit_x, target.hit_z);
+    if (chat)
+        chat_log(chat, "repeater delay: %u tick%s",
+                 (unsigned)delay_ticks, delay_ticks == 1 ? "" : "s");
     return true;
 }
 
@@ -3851,6 +3902,7 @@ home_menu_start:
     float world_time = 0.0f;
     float physics_accumulator = 0.0f;
     float environment_tick_accumulator = 0.0f;
+    float redstone_tick_accumulator = 0.0f;
     float break_timer = 0.0f;
     float break_duration = 0.0f;
     float hand_swing_timer = HAND_SWING_SECONDS;
@@ -3870,6 +3922,7 @@ home_menu_start:
     BlockTarget break_target = {0};
     bool break_target_valid = false;
 #define ENVIRONMENT_TICK_INTERVAL 0.75f  /* One fluid/gravity step every 750 ms. */
+#define REDSTONE_TICK_INTERVAL 0.1f      /* One Minecraft-style redstone tick. */
 #define RESET_PLAYER_AFTER_DEATH(message) do { \
         respawn_player(&player, &cam); \
         player_health_units = PLAYER_MAX_HEALTH_UNITS; \
@@ -3929,13 +3982,13 @@ home_menu_start:
         world_time += frame_dt;
         physics_accumulator += frame_dt;
         environment_tick_accumulator += frame_dt;
+        redstone_tick_accumulator += frame_dt;
 
         /* Minecraft-style environment simulation: intentionally slower than
          * placement so fluids and falling blocks move visibly. */
         if (environment_tick_accumulator >= ENVIRONMENT_TICK_INTERVAL) {
             environment_tick_accumulator -= ENVIRONMENT_TICK_INTERVAL;
             world_water_tick(&world);
-            world_update_redstone(&world, ENVIRONMENT_TICK_INTERVAL);
             if (debug_enabled) {
                 WaterTickStats ws = world_water_tick_stats();
                 if (ws.sources_seen || ws.flows_seen || ws.spread_placed ||
@@ -3946,6 +3999,10 @@ home_menu_start:
                              ws.falling_moved);
                 }
             }
+        }
+        while (redstone_tick_accumulator >= REDSTONE_TICK_INTERVAL) {
+            redstone_tick_accumulator -= REDSTONE_TICK_INTERVAL;
+            world_update_redstone(&world, REDSTONE_TICK_INTERVAL);
         }
         world_update_falling_blocks(&world, frame_dt);
 
@@ -4604,6 +4661,11 @@ home_menu_start:
                         break_timer = 0.0f;
                         break_duration = 0.0f;
                         break_target_valid = false;
+                    } else if (try_cycle_targeted_repeater(&world, &cam,
+                                                           &chat)) {
+                        break_timer = 0.0f;
+                        break_duration = 0.0f;
+                        break_target_valid = false;
                     } else if (try_toggle_targeted_door(&world, &cam,
                                                         &player, &chat)) {
                         break_timer = 0.0f;
@@ -4943,6 +5005,7 @@ home_menu_start:
     }
 
 #undef RESET_PLAYER_AFTER_DEATH
+#undef REDSTONE_TICK_INTERVAL
 #undef ENVIRONMENT_TICK_INTERVAL
 
     if (status_log_enabled)

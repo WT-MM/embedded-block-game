@@ -467,10 +467,25 @@ int main(void)
         block_emission_level(BLOCK_REDSTONE_TORCH_OFF) != 0 ||
         block_render_model(BLOCK_REPEATER_ON) != BLOCK_RENDER_FLAT ||
         block_emission_level(BLOCK_REPEATER_ON) != 5 ||
+        block_render_model(BLOCK_COMPARATOR_ON) != BLOCK_RENDER_FLAT ||
+        block_face_texture_id(BLOCK_COMPARATOR_OFF, FACE_FRONT) !=
+            TEX_TILE_COMPARATOR_OFF ||
+        block_emission_level(BLOCK_COMPARATOR_ON) != 5 ||
         block_face_texture_id(BLOCK_LAMP_OFF, FACE_FRONT) != TEX_TILE_LAMP_OFF ||
         block_emission_level(BLOCK_LAMP_OFF) != 0 ||
         block_render_model(BLOCK_BUTTON) != BLOCK_RENDER_FLAT)
         return check_failed("redstone metadata missing");
+    if (!block_is_repeater(BLOCK_REPEATER_ON) ||
+        !block_is_comparator(BLOCK_COMPARATOR_ON) ||
+        block_repeater_make(BLOCK_DOOR_FACING_EAST, true) !=
+            BLOCK_REPEATER_EAST_ON ||
+        block_comparator_make(BLOCK_DOOR_FACING_SOUTH, false) !=
+            BLOCK_COMPARATOR_SOUTH_OFF ||
+        block_redstone_facing(BLOCK_REPEATER_WEST_OFF) !=
+            BLOCK_DOOR_FACING_WEST ||
+        !block_redstone_directional_powered(BLOCK_COMPARATOR_EAST_ON) ||
+        block_redstone_directional_powered(BLOCK_COMPARATOR_EAST_OFF))
+        return check_failed("redstone directional metadata missing");
     if (!block_is_door(BLOCK_DOOR) ||
         !block_is_door(block_door_make(BLOCK_DOOR_FACING_EAST, true, true)) ||
         block_render_model(BLOCK_DOOR) != BLOCK_RENDER_DOOR ||
@@ -557,6 +572,156 @@ int main(void)
     if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z, BLOCK_AIR) ||
         !world_set_block(&world, wire_x, wire_y, wire_z, BLOCK_AIR))
         return check_failed("redstone cleanup failed");
+    const int repeater_x = 11;
+    const int repeater_y = 26;
+    const int repeater_z = 3;
+    if (!world_set_block(&world, repeater_x - 1, repeater_y, repeater_z,
+                         BLOCK_REDSTONE_BLOCK) ||
+        !world_set_block(&world, repeater_x, repeater_y, repeater_z,
+                         BLOCK_REPEATER_EAST_OFF) ||
+        !world_set_block(&world, repeater_x + 1, repeater_y, repeater_z,
+                         BLOCK_LAMP_OFF))
+        return check_failed("repeater fixture build failed");
+    if (world_repeater_delay_ticks(&world, repeater_x, repeater_y,
+                                   repeater_z) != 1)
+        return check_failed("repeater default delay missing");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, repeater_x, repeater_y, repeater_z) !=
+            BLOCK_REPEATER_EAST_OFF ||
+        world_get_block(&world, repeater_x + 1, repeater_y, repeater_z) !=
+            BLOCK_LAMP_OFF)
+        return check_failed("repeater ignored its delay");
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, repeater_x, repeater_y, repeater_z) !=
+            BLOCK_REPEATER_EAST_ON ||
+        world_get_block(&world, repeater_x + 1, repeater_y, repeater_z) !=
+            BLOCK_LAMP)
+        return check_failed("repeater did not power only its front side");
+    uint8_t repeater_delay = 0;
+    if (!world_cycle_repeater_delay(&world, repeater_x, repeater_y,
+                                    repeater_z, &repeater_delay) ||
+        repeater_delay != 2 ||
+        world_repeater_delay_ticks(&world, repeater_x, repeater_y,
+                                   repeater_z) != 2)
+        return check_failed("repeater delay cycle failed");
+    if (!world_rebuild_dirty_meshes(&world))
+        return check_failed("post-repeater-delay mesh rebuild failed");
+    const Chunk *repeater_chunk = world_get_chunk(&world, 0, 0);
+    const ChunkFace *repeater_flat = find_chunk_face(
+        repeater_chunk,
+        repeater_x, repeater_y, repeater_z,
+        (BlockFace)CHUNK_FACE_FLAT, BLOCK_REPEATER_EAST_ON);
+    if (!repeater_flat || repeater_flat->height != 2)
+        return check_failed("repeater delay mesh state missing");
+    if (!world_set_block(&world, repeater_x - 1, repeater_y, repeater_z,
+                         BLOCK_AIR))
+        return check_failed("repeater source removal failed");
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, repeater_x, repeater_y, repeater_z) !=
+            BLOCK_REPEATER_EAST_ON ||
+        world_get_block(&world, repeater_x + 1, repeater_y, repeater_z) !=
+            BLOCK_LAMP)
+        return check_failed("configured repeater released too early");
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, repeater_x, repeater_y, repeater_z) !=
+            BLOCK_REPEATER_EAST_OFF ||
+        world_get_block(&world, repeater_x + 1, repeater_y, repeater_z) !=
+            BLOCK_LAMP_OFF)
+        return check_failed("configured repeater did not release");
+    if (!world_set_block(&world, repeater_x, repeater_y, repeater_z - 1,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("repeater side-source fixture failed");
+    world_update_redstone(&world, 0.0f);
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, repeater_x, repeater_y, repeater_z) !=
+            BLOCK_REPEATER_EAST_OFF ||
+        world_get_block(&world, repeater_x + 1, repeater_y, repeater_z) !=
+            BLOCK_LAMP_OFF)
+        return check_failed("repeater accepted a side/front power source");
+    if (!world_set_block(&world, repeater_x, repeater_y, repeater_z - 1,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, repeater_x, repeater_y, repeater_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, repeater_x + 1, repeater_y, repeater_z,
+                         BLOCK_AIR))
+        return check_failed("repeater cleanup failed");
+
+    const int not_x = 11;
+    const int not_y = 26;
+    const int not_z = 4;
+    if (!world_set_block(&world, not_x - 1, not_y, not_z,
+                         BLOCK_REDSTONE_BLOCK) ||
+        !world_set_block(&world, not_x, not_y, not_z,
+                         BLOCK_REPEATER_EAST_OFF) ||
+        !world_set_block(&world, not_x + 1, not_y, not_z,
+                         BLOCK_STONE) ||
+        !world_set_block(&world, not_x + 2, not_y, not_z,
+                         BLOCK_LAMP_OFF) ||
+        !world_set_block(&world, not_x + 1, not_y + 1, not_z,
+                         BLOCK_REDSTONE_TORCH_ON))
+        return check_failed("not-gate fixture build failed");
+    world_update_redstone(&world, 0.0f);
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, not_x, not_y, not_z) !=
+            BLOCK_REPEATER_EAST_ON ||
+        world_get_block(&world, not_x + 2, not_y, not_z) !=
+            BLOCK_LAMP ||
+        world_get_block(&world, not_x + 1, not_y + 1, not_z) !=
+            BLOCK_REDSTONE_TORCH_OFF)
+        return check_failed("powered block did not drive lamp and invert torch");
+    if (!world_set_block(&world, not_x - 1, not_y, not_z, BLOCK_AIR))
+        return check_failed("not-gate source removal failed");
+    world_update_redstone(&world, 0.0f);
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, not_x, not_y, not_z) !=
+            BLOCK_REPEATER_EAST_OFF ||
+        world_get_block(&world, not_x + 2, not_y, not_z) !=
+            BLOCK_LAMP_OFF ||
+        world_get_block(&world, not_x + 1, not_y + 1, not_z) !=
+            BLOCK_REDSTONE_TORCH_ON)
+        return check_failed("powered block not-gate did not release");
+    if (!world_set_block(&world, not_x, not_y, not_z, BLOCK_AIR) ||
+        !world_set_block(&world, not_x + 1, not_y, not_z, BLOCK_AIR) ||
+        !world_set_block(&world, not_x + 2, not_y, not_z, BLOCK_AIR) ||
+        !world_set_block(&world, not_x + 1, not_y + 1, not_z, BLOCK_AIR))
+        return check_failed("not-gate cleanup failed");
+
+    const int comparator_x = 11;
+    const int comparator_y = 26;
+    const int comparator_z = 6;
+    if (!world_set_block(&world, comparator_x - 1, comparator_y, comparator_z,
+                         BLOCK_REDSTONE_BLOCK) ||
+        !world_set_block(&world, comparator_x, comparator_y, comparator_z,
+                         BLOCK_COMPARATOR_EAST_OFF) ||
+        !world_set_block(&world, comparator_x + 1, comparator_y, comparator_z,
+                         BLOCK_LAMP_OFF))
+        return check_failed("comparator fixture build failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, comparator_x, comparator_y, comparator_z) !=
+            BLOCK_COMPARATOR_EAST_ON ||
+        world_get_block(&world, comparator_x + 1, comparator_y, comparator_z) !=
+            BLOCK_LAMP)
+        return check_failed("comparator did not accept rear input");
+    if (!world_set_block(&world, comparator_x - 1, comparator_y, comparator_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, comparator_x, comparator_y, comparator_z - 1,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("comparator side-only fixture failed");
+    world_update_redstone(&world, 0.0f);
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, comparator_x, comparator_y, comparator_z) !=
+            BLOCK_COMPARATOR_EAST_OFF ||
+        world_get_block(&world, comparator_x + 1, comparator_y, comparator_z) !=
+            BLOCK_LAMP_OFF)
+        return check_failed("comparator powered from a side input");
+    if (!world_set_block(&world, comparator_x, comparator_y, comparator_z - 1,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, comparator_x, comparator_y, comparator_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, comparator_x + 1, comparator_y, comparator_z,
+                         BLOCK_AIR))
+        return check_failed("comparator cleanup failed");
+
     const int flower_x = 9;
     const int flower_y = 26;
     const int flower_z = 2;
@@ -746,6 +911,28 @@ int main(void)
         return check_failed("boundary block edit failed");
     if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("boundary block edit did not persist in loaded chunk");
+    const int saved_repeater_x = WORLD_CHUNK_SIZE + 2;
+    const int saved_repeater_y = 2;
+    const int saved_repeater_z = 2;
+    uint8_t saved_repeater_delay = 0;
+    if (!world_set_block(&world,
+                         saved_repeater_x,
+                         saved_repeater_y,
+                         saved_repeater_z,
+                         BLOCK_REPEATER_EAST_OFF) ||
+        !world_cycle_repeater_delay(&world,
+                                    saved_repeater_x,
+                                    saved_repeater_y,
+                                    saved_repeater_z,
+                                    &saved_repeater_delay) ||
+        saved_repeater_delay != 2 ||
+        !world_cycle_repeater_delay(&world,
+                                    saved_repeater_x,
+                                    saved_repeater_y,
+                                    saved_repeater_z,
+                                    &saved_repeater_delay) ||
+        saved_repeater_delay != 3)
+        return check_failed("saved repeater delay setup failed");
     world.meshes_rebuilt_last_stream = 0;
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-boundary-edit mesh rebuild failed");
@@ -811,6 +998,15 @@ int main(void)
         return check_failed("return stream failed");
     if (world_get_block(&world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("saved block edit did not reload after eviction");
+    if (world_get_block(&world,
+                        saved_repeater_x,
+                        saved_repeater_y,
+                        saved_repeater_z) != BLOCK_REPEATER_EAST_OFF ||
+        world_repeater_delay_ticks(&world,
+                                   saved_repeater_x,
+                                   saved_repeater_y,
+                                   saved_repeater_z) != 3)
+        return check_failed("saved repeater delay did not reload after eviction");
 
     if (!world_stream_around(&world,
                              (float)(-2 * WORLD_CHUNK_SIZE - 1),
@@ -837,6 +1033,15 @@ int main(void)
         return check_failed("reload world_init_infinite_procedural failed");
     if (world_get_block(&reloaded_world, WORLD_CHUNK_SIZE, 1, 0) != BLOCK_WOOD)
         return check_failed("saved block edit did not survive world reload");
+    if (world_get_block(&reloaded_world,
+                        saved_repeater_x,
+                        saved_repeater_y,
+                        saved_repeater_z) != BLOCK_REPEATER_EAST_OFF ||
+        world_repeater_delay_ticks(&reloaded_world,
+                                   saved_repeater_x,
+                                   saved_repeater_y,
+                                   saved_repeater_z) != 3)
+        return check_failed("saved repeater delay did not survive world reload");
     world_free(&reloaded_world);
 
     if (!world_init_infinite_procedural(&capped_world,

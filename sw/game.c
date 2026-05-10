@@ -563,6 +563,123 @@ static bool game_block_is_trace_passable(BlockID id)
            id == BLOCK_LAVA_FLOW;
 }
 
+typedef struct {
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float min_z;
+    float max_z;
+} BlockTraceBounds;
+
+static bool block_trace_bounds(BlockID id, BlockTraceBounds *bounds)
+{
+    BlockTraceBounds out = {
+        .min_x = 0.0f, .max_x = 1.0f,
+        .min_y = 0.0f, .max_y = 1.0f,
+        .min_z = 0.0f, .max_z = 1.0f,
+    };
+
+    if (!bounds)
+        return false;
+
+    if (id == BLOCK_REDSTONE_WIRE_UNCONNECTED ||
+        id == BLOCK_REDSTONE_WIRE_OFF ||
+        id == BLOCK_REDSTONE_WIRE_ON) {
+        out.max_y = 0.08f;
+    } else if (block_is_pressure_plate(id)) {
+        out.min_x = 0.08f;
+        out.max_x = 0.92f;
+        out.max_y = block_pressure_plate_powered(id) ? 0.06f : 0.10f;
+        out.min_z = 0.08f;
+        out.max_z = 0.92f;
+    } else if (id == BLOCK_BUTTON || id == BLOCK_BUTTON_PRESSED) {
+        float inset = id == BLOCK_BUTTON_PRESSED ? 0.29f : 0.24f;
+
+        out.min_x = inset;
+        out.max_x = 1.0f - inset;
+        out.max_y = id == BLOCK_BUTTON_PRESSED ? 0.06f : 0.12f;
+        out.min_z = inset;
+        out.max_z = 1.0f - inset;
+    } else if (block_is_repeater(id) || block_is_comparator(id)) {
+        out.min_x = 0.09f;
+        out.max_x = 0.91f;
+        out.max_y = 0.46f;
+        out.min_z = 0.09f;
+        out.max_z = 0.91f;
+    } else if (block_is_lever(id)) {
+        out.min_x = 0.20f;
+        out.max_x = 0.80f;
+        out.max_y = 0.42f;
+        out.min_z = 0.20f;
+        out.max_z = 0.80f;
+    } else if (id == BLOCK_TORCH ||
+               id == BLOCK_REDSTONE_TORCH_OFF ||
+               id == BLOCK_REDSTONE_TORCH_ON) {
+        out.min_x = 0.32f;
+        out.max_x = 0.68f;
+        out.max_y = 0.92f;
+        out.min_z = 0.32f;
+        out.max_z = 0.68f;
+    } else {
+        return false;
+    }
+
+    *bounds = out;
+    return true;
+}
+
+static bool ray_intersects_block_bounds(Vec3 origin,
+                                        Vec3 dir,
+                                        int wx,
+                                        int wy,
+                                        int wz,
+                                        BlockTraceBounds bounds,
+                                        float max_distance)
+{
+    float t_min = 0.0f;
+    float t_max = max_distance;
+    float box_min[3] = {
+        (float)wx + bounds.min_x,
+        (float)wy + bounds.min_y,
+        (float)wz + bounds.min_z,
+    };
+    float box_max[3] = {
+        (float)wx + bounds.max_x,
+        (float)wy + bounds.max_y,
+        (float)wz + bounds.max_z,
+    };
+    float ray_origin[3] = { origin.x, origin.y, origin.z };
+    float ray_dir[3] = { dir.x, dir.y, dir.z };
+
+    for (int axis = 0; axis < 3; axis++) {
+        if (fabsf(ray_dir[axis]) < 0.000001f) {
+            if (ray_origin[axis] < box_min[axis] ||
+                ray_origin[axis] > box_max[axis])
+                return false;
+            continue;
+        }
+
+        float inv = 1.0f / ray_dir[axis];
+        float a = (box_min[axis] - ray_origin[axis]) * inv;
+        float b = (box_max[axis] - ray_origin[axis]) * inv;
+
+        if (a > b) {
+            float tmp = a;
+            a = b;
+            b = tmp;
+        }
+        if (a > t_min)
+            t_min = a;
+        if (b < t_max)
+            t_max = b;
+        if (t_min > t_max)
+            return false;
+    }
+
+    return t_max >= 0.0f && t_min <= max_distance;
+}
+
 static bool camera_is_underwater(const VoxelWorld *world, const Camera *cam)
 {
     int wx = (int)floorf(cam->position.x);
@@ -663,6 +780,13 @@ static bool trace_target_block(const VoxelWorld *world, const Camera *cam,
          * placeables like flowers still be hit and broken. The last
          * trace-passable cell becomes the placement position. */
         if (!game_block_is_trace_passable(block)) {
+            BlockTraceBounds bounds;
+
+            if (block_trace_bounds(block, &bounds) &&
+                !ray_intersects_block_bounds(cam->position, dir,
+                                             block_x, block_y, block_z,
+                                             bounds, max_distance))
+                continue;
             if (!out)
                 return true;
 

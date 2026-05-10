@@ -317,12 +317,15 @@ def place_counter_output_buses(world, cell_x, y, row_z, q_bus, nq_bus,
 
 def place_counter_controls(world, y, first_input_x, first_input_z,
                            reset_targets, display_lamps):
-    count_button_x = min(x for x, _, _ in display_lamps) - 5
+    count_button_x = max(x for x, _, _ in display_lamps) + 5
     count_button_z = display_lamps[0][2]
+    count_bus_z = count_button_z - 1
     count_input_x = first_input_x - 1
 
     world.set(count_button_x, y, count_button_z, "BLOCK_BUTTON")
-    repeater_line_z(world, count_input_x, y, count_button_z,
+    repeater_line_x(world, count_button_x, count_input_x, y,
+                    count_bus_z, "BLOCK_REPEATER_WEST_OFF", interval=8)
+    repeater_line_z(world, count_input_x, y, count_bus_z - 1,
                     first_input_z, "BLOCK_REPEATER_OFF", interval=8)
 
     for reset_x, reset_z in reset_targets:
@@ -338,7 +341,7 @@ def place_connected_counter_display(world,
                                     wy=5,
                                     decoder_y=7,
                                     decoder_z=36):
-    cell_xs = [-28, 2, 32]
+    cell_xs = [-8, 19, 46]
     row_zs = [16, 16, 16]
     q_bus = [cell_x + 24 for cell_x in cell_xs]
     nq_bus = [cell_x + 26 for cell_x in cell_xs]

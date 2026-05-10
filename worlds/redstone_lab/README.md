@@ -10,10 +10,10 @@ Landmarks from spawn:
 - West plot: a comparator latch. The west button sets it, the north button
   resets it, and the lamp marks the latched output.
 - South plot: a real three-bit ripple counter wired into a constructed
-  seven-segment decoder matrix. The count button sits just west of the segment
-  lamps, so the decoded digit remains visible while pressing it. The three
-  reset buttons are beside the flip-flop cells; pressing them from low bit to
-  high bit clears the counter.
+  seven-segment decoder matrix. The count button at roughly `14 / 5 / 30`
+  sits just east of the segment lamps, so the decoded digit remains visible
+  while pressing it. The three reset buttons are beside the flip-flop cells;
+  press them from low bit to high bit to clear the counter.
 - South-east display matrix: the Q/NQ literal buses, invalid-row torches,
   segment taps, repeaters, and segment lamps are all normal redstone
   parts fed by the counter outputs.

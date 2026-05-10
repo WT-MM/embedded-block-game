@@ -2849,7 +2849,7 @@ static void draw_recipe_lookup(RenderContext *ctx,
                                const SurvivalInventoryLayout *layout,
                                int recipe_page)
 {
-    char page_text[16];
+    char page_text[32];
     int recipe_count;
     int page_count;
     int page_len;

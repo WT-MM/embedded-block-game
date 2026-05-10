@@ -224,7 +224,8 @@ const char *world_biome_name(WorldBiome biome);
  * become smooth falling entities. Returns true if any block changed. */
 bool world_water_tick(VoxelWorld *world);
 /* Advance redstone by dt seconds. Repeaters use 0.1-second redstone ticks and
- * a configurable 1..4 tick delay. */
+ * a configurable 1..4 tick delay. Zero-delay wire/torch/comparator changes are
+ * settled in bounded passes during each update. */
 bool world_update_redstone(VoxelWorld *world, float dt);
 bool world_press_button(VoxelWorld *world, int wx, int wy, int wz);
 bool world_cycle_repeater_delay(VoxelWorld *world, int wx, int wy, int wz,

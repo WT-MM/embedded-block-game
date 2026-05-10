@@ -5,14 +5,14 @@ Tracked ultraflat sample world for redstone experiments.
 
 Landmarks from spawn:
 
-- Northwest plot: torch clock driving a lamp.
-- North plots: latch and D flip-flop work areas.
-- Southwest plot: one-way repeater and comparator demonstrations.
-- Southeast plot: button counter with a gold reset button and seven-segment lamp display.
+- Northwest plot: comparator rear-input and side-input demonstrations.
+- West plot: button pulse through two repeaters into a lamp.
+- East plot: real comparator-feedback latch/counter core with set and reset
+  buttons plus a floor seven-segment display target.
 
-The counter display uses the crafting-table anchor behind the display; diamond-base
-buttons increment it and gold-base buttons reset it. The display starts at 0.
+The old crafting-table display hook has been removed. Buttons now only inject
+normal redstone power; any state change in this world must come from the visible
+dust, repeaters, comparators, torches, and powered blocks.
 
 Right-click a repeater in-game to cycle its saved delay from 1 to 4 redstone
-ticks. The existing repeater demos are preconfigured with different delays so
-the moved post position is visible.
+ticks.

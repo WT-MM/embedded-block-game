@@ -1054,9 +1054,9 @@ static int snap_and_compact_polygon(Vertex2D *verts, int count)
     return out_count;
 }
 
-static void pack_edge_coef(struct edge_coef *edge,
-                           float x0, float y0, float x1, float y1)
+static struct edge_coef make_edge_coef(float x0, float y0, float x1, float y1)
 {
+    struct edge_coef edge;
     float A = y0 - y1;
     float B = x1 - x0;
     float C = -(A * x0 + B * y0);
@@ -1069,9 +1069,9 @@ static void pack_edge_coef(struct edge_coef *edge,
      */
     C += 0.5f * (A + B);
 
-    edge->A = to_q24_8(A);
-    edge->B = to_q24_8(B);
-    edge->C = to_q24_8(C);
+    edge.A = to_q24_8(A);
+    edge.B = to_q24_8(B);
+    edge.C = to_q24_8(C);
 
     /*
      * Use a top-left fill rule so adjacent quads share edges cleanly.
@@ -1084,10 +1084,12 @@ static void pack_edge_coef(struct edge_coef *edge,
      * This prevents shared-edge cracks and inconsistent side/bottom coverage.
      */
     if (fabsf(dx) < 1e-6f && fabsf(dy) < 1e-6f)
-        return;
+        return edge;
 
     if (!(dy < 0.0f || (fabsf(dy) < 1e-6f && dx > 0.0f)))
-        edge->C -= 1;
+        edge.C -= 1;
+
+    return edge;
 }
 
 /* Pack a float depth value into Q1.15 unsigned (clamp to [0,2)). */
@@ -2040,13 +2042,18 @@ static uint8_t redstone_wire_texture_for_mask(BlockID type,
 
 static int redstone_directional_uv_rotation(BlockID type)
 {
+    /*
+     * Vanilla repeater/comparator textures point toward their bottom edge in
+     * atlas space. With the flat top-face vertex order here, rotations 1 and 3
+     * map that edge to west/east respectively.
+     */
     switch (block_redstone_facing(type)) {
     case BLOCK_DOOR_FACING_EAST:
-        return 1;
+        return 3;
     case BLOCK_DOOR_FACING_SOUTH:
         return 2;
     case BLOCK_DOOR_FACING_WEST:
-        return 3;
+        return 1;
     case BLOCK_DOOR_FACING_NORTH:
     default:
         return 0;
@@ -3079,7 +3086,7 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     for (int i = 0; i < 4; i++) {
         float x0 = v[i].x,         y0 = v[i].y;
         float x1 = v[(i+1)%4].x,   y1 = v[(i+1)%4].y;
-        pack_edge_coef(&d->edges[i], x0, y0, x1, y1);
+        d->edges[i] = make_edge_coef(x0, y0, x1, y1);
     }
 
     /* Compute into locals first to avoid taking addresses of packed members. */

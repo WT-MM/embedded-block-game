@@ -572,6 +572,101 @@ int main(void)
     if (!world_set_block(&world, wire_neighbor_x, wire_y, wire_z, BLOCK_AIR) ||
         !world_set_block(&world, wire_x, wire_y, wire_z, BLOCK_AIR))
         return check_failed("redstone cleanup failed");
+
+    const int button_hook_x = 5;
+    const int button_hook_y = 12;
+    const int button_hook_z = 9;
+    const int display_anchor_x = 3;
+    const int display_anchor_y = 12;
+    const int display_anchor_z = 9;
+    if (!world_set_block(&world, display_anchor_x, display_anchor_y,
+                         display_anchor_z, BLOCK_CRAFTING_TABLE) ||
+        !world_set_block(&world, button_hook_x, button_hook_y - 1,
+                         button_hook_z, BLOCK_DIAMOND_BLOCK) ||
+        !world_set_block(&world, button_hook_x, button_hook_y,
+                         button_hook_z, BLOCK_BUTTON))
+        return check_failed("button side-effect fixture build failed");
+    if (!world_press_button(&world, button_hook_x, button_hook_y,
+                            button_hook_z))
+        return check_failed("button side-effect press failed");
+    if (world_get_block(&world, display_anchor_x + 6, display_anchor_y + 5,
+                        display_anchor_z) != BLOCK_AIR ||
+        world_get_block(&world, display_anchor_x + 6, display_anchor_y + 5,
+                        display_anchor_z + 1) != BLOCK_AIR)
+        return check_failed("button mutated display blocks outside redstone");
+    if (!world_set_block(&world, display_anchor_x, display_anchor_y,
+                         display_anchor_z, BLOCK_AIR) ||
+        !world_set_block(&world, button_hook_x, button_hook_y - 1,
+                         button_hook_z, BLOCK_AIR) ||
+        !world_set_block(&world, button_hook_x, button_hook_y,
+                         button_hook_z, BLOCK_AIR))
+        return check_failed("button side-effect cleanup failed");
+
+    const int edge_x = -7;
+    const int edge_y = 26;
+    const int edge_z = 9;
+    const int edge_button_x = edge_x - 3;
+    const int edge_delay_path[][2] = {
+        { -2, -1 }, { -2, -2 }, { -1, -2 }, { 0, -2 },
+    };
+    if (!world_set_block(&world, edge_button_x, edge_y, edge_z,
+                         BLOCK_BUTTON) ||
+        !world_set_block(&world, edge_x - 2, edge_y, edge_z,
+                         BLOCK_REDSTONE_WIRE_UNCONNECTED) ||
+        !world_set_block(&world, edge_x - 1, edge_y, edge_z,
+                         BLOCK_REDSTONE_WIRE_UNCONNECTED) ||
+        !world_set_block(&world, edge_x, edge_y, edge_z,
+                         BLOCK_COMPARATOR_EAST_OFF) ||
+        !world_set_block(&world, edge_x, edge_y, edge_z - 1,
+                         BLOCK_REPEATER_SOUTH_OFF) ||
+        !world_set_block(&world, edge_x + 1, edge_y, edge_z,
+                         BLOCK_LAMP_OFF))
+        return check_failed("edge detector fixture build failed");
+    for (size_t i = 0; i < sizeof(edge_delay_path) / sizeof(edge_delay_path[0]);
+         i++) {
+        if (!world_set_block(&world,
+                             edge_x + edge_delay_path[i][0],
+                             edge_y,
+                             edge_z + edge_delay_path[i][1],
+                             BLOCK_REDSTONE_WIRE_UNCONNECTED))
+            return check_failed("edge detector delay path build failed");
+    }
+    if (!world_press_button(&world, edge_button_x, edge_y, edge_z))
+        return check_failed("edge detector button press failed");
+    if (world_get_block(&world, edge_x, edge_y, edge_z) !=
+            BLOCK_COMPARATOR_EAST_ON ||
+        world_get_block(&world, edge_x + 1, edge_y, edge_z) != BLOCK_LAMP)
+        return check_failed("edge detector did not emit rising pulse");
+    world_update_redstone(&world, 0.1f);
+    if (world_get_block(&world, edge_x, edge_y, edge_z) !=
+            BLOCK_COMPARATOR_EAST_OFF ||
+        world_get_block(&world, edge_x, edge_y, edge_z - 1) !=
+            BLOCK_REPEATER_SOUTH_ON ||
+        world_get_block(&world, edge_x + 1, edge_y, edge_z) != BLOCK_LAMP_OFF)
+        return check_failed("edge detector pulse was not limited by delay");
+    for (int tick = 0; tick < 20; tick++) {
+        world_update_redstone(&world, 0.1f);
+        if (world_get_block(&world, edge_x + 1, edge_y, edge_z) !=
+            BLOCK_LAMP_OFF)
+            return check_failed("edge detector emitted a falling/held pulse");
+    }
+    if (!world_set_block(&world, edge_button_x, edge_y, edge_z, BLOCK_AIR) ||
+        !world_set_block(&world, edge_x - 2, edge_y, edge_z, BLOCK_AIR) ||
+        !world_set_block(&world, edge_x - 1, edge_y, edge_z, BLOCK_AIR) ||
+        !world_set_block(&world, edge_x, edge_y, edge_z, BLOCK_AIR) ||
+        !world_set_block(&world, edge_x, edge_y, edge_z - 1, BLOCK_AIR) ||
+        !world_set_block(&world, edge_x + 1, edge_y, edge_z, BLOCK_AIR))
+        return check_failed("edge detector cleanup failed");
+    for (size_t i = 0; i < sizeof(edge_delay_path) / sizeof(edge_delay_path[0]);
+         i++) {
+        if (!world_set_block(&world,
+                             edge_x + edge_delay_path[i][0],
+                             edge_y,
+                             edge_z + edge_delay_path[i][1],
+                             BLOCK_AIR))
+            return check_failed("edge detector delay path cleanup failed");
+    }
+
     const int repeater_x = 11;
     const int repeater_y = 26;
     const int repeater_z = 3;
@@ -645,6 +740,70 @@ int main(void)
         !world_set_block(&world, repeater_x + 1, repeater_y, repeater_z,
                          BLOCK_AIR))
         return check_failed("repeater cleanup failed");
+
+    const int torch_line_x = 7;
+    const int torch_line_y = 26;
+    const int torch_line_z = 5;
+    if (!world_set_block(&world, torch_line_x, torch_line_y - 1,
+                         torch_line_z, BLOCK_STONE) ||
+        !world_set_block(&world, torch_line_x, torch_line_y,
+                         torch_line_z, BLOCK_REDSTONE_TORCH_ON) ||
+        !world_set_block(&world, torch_line_x + 1, torch_line_y,
+                         torch_line_z, BLOCK_REDSTONE_WIRE_UNCONNECTED) ||
+        !world_set_block(&world, torch_line_x + 2, torch_line_y,
+                         torch_line_z, BLOCK_REDSTONE_WIRE_UNCONNECTED) ||
+        !world_set_block(&world, torch_line_x + 3, torch_line_y,
+                         torch_line_z, BLOCK_REDSTONE_WIRE_UNCONNECTED) ||
+        !world_set_block(&world, torch_line_x + 4, torch_line_y,
+                         torch_line_z, BLOCK_REPEATER_EAST_OFF) ||
+        !world_set_block(&world, torch_line_x + 5, torch_line_y,
+                         torch_line_z, BLOCK_LAMP_OFF))
+        return check_failed("torch line fixture build failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, torch_line_x, torch_line_y, torch_line_z) !=
+            BLOCK_REDSTONE_TORCH_ON ||
+        world_get_block(&world, torch_line_x + 1, torch_line_y,
+                        torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+        world_get_block(&world, torch_line_x + 2, torch_line_y,
+                        torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+        world_get_block(&world, torch_line_x + 3, torch_line_y,
+                        torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+        world_get_block(&world, torch_line_x + 4, torch_line_y,
+                        torch_line_z) != BLOCK_REPEATER_EAST_OFF ||
+        world_get_block(&world, torch_line_x + 5, torch_line_y,
+                        torch_line_z) != BLOCK_LAMP_OFF)
+        return check_failed("torch line did not settle before repeater delay");
+    for (int tick = 0; tick < 6; tick++) {
+        world_update_redstone(&world, 0.1f);
+        if (world_get_block(&world, torch_line_x, torch_line_y,
+                            torch_line_z) != BLOCK_REDSTONE_TORCH_ON ||
+            world_get_block(&world, torch_line_x + 1, torch_line_y,
+                            torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+            world_get_block(&world, torch_line_x + 2, torch_line_y,
+                            torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+            world_get_block(&world, torch_line_x + 3, torch_line_y,
+                            torch_line_z) != BLOCK_REDSTONE_WIRE_ON ||
+            world_get_block(&world, torch_line_x + 4, torch_line_y,
+                            torch_line_z) != BLOCK_REPEATER_EAST_ON ||
+            world_get_block(&world, torch_line_x + 5, torch_line_y,
+                            torch_line_z) != BLOCK_LAMP)
+            return check_failed("torch line flashed instead of staying stable");
+    }
+    if (!world_set_block(&world, torch_line_x, torch_line_y - 1,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x, torch_line_y,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x + 1, torch_line_y,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x + 2, torch_line_y,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x + 3, torch_line_y,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x + 4, torch_line_y,
+                         torch_line_z, BLOCK_AIR) ||
+        !world_set_block(&world, torch_line_x + 5, torch_line_y,
+                         torch_line_z, BLOCK_AIR))
+        return check_failed("torch line cleanup failed");
 
     const int not_x = 11;
     const int not_y = 26;
@@ -721,6 +880,95 @@ int main(void)
         !world_set_block(&world, comparator_x + 1, comparator_y, comparator_z,
                          BLOCK_AIR))
         return check_failed("comparator cleanup failed");
+
+    const int side_torch_x = 7;
+    const int side_torch_y = 27;
+    const int side_torch_z = 6;
+    if (!world_set_block(&world, side_torch_x, side_torch_y,
+                         side_torch_z, BLOCK_STONE) ||
+        !world_set_block(&world, side_torch_x + 1, side_torch_y,
+                         side_torch_z, BLOCK_REDSTONE_TORCH_ON) ||
+        !world_set_block(&world, side_torch_x + 2, side_torch_y,
+                         side_torch_z, BLOCK_LAMP_OFF))
+        return check_failed("side torch fixture build failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, side_torch_x + 1, side_torch_y,
+                        side_torch_z) != BLOCK_REDSTONE_TORCH_ON ||
+        world_get_block(&world, side_torch_x + 2, side_torch_y,
+                        side_torch_z) != BLOCK_LAMP)
+        return check_failed("side torch did not power adjacent load");
+    if (!world_set_block(&world, side_torch_x - 1, side_torch_y,
+                         side_torch_z, BLOCK_REDSTONE_BLOCK))
+        return check_failed("side torch input failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, side_torch_x + 1, side_torch_y,
+                        side_torch_z) != BLOCK_REDSTONE_TORCH_OFF ||
+        world_get_block(&world, side_torch_x + 2, side_torch_y,
+                        side_torch_z) != BLOCK_LAMP_OFF)
+        return check_failed("side torch did not invert powered support");
+    if (!world_set_block(&world, side_torch_x - 1, side_torch_y,
+                         side_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, side_torch_x, side_torch_y,
+                         side_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, side_torch_x + 1, side_torch_y,
+                         side_torch_z, BLOCK_AIR) ||
+        !world_set_block(&world, side_torch_x + 2, side_torch_y,
+                         side_torch_z, BLOCK_AIR))
+        return check_failed("side torch cleanup failed");
+
+    const int latch_x = 11;
+    const int latch_y = 27;
+    const int latch_z = 6;
+    const int latch_feedback[][2] = {
+        { 1, 0 }, { 2, 0 }, { 2, 1 }, { 2, 2 }, { 1, 2 }, { 0, 2 },
+        { -1, 2 }, { -2, 2 }, { -2, 1 }, { -2, 0 }, { -1, 0 },
+    };
+    if (!world_set_block(&world, latch_x, latch_y, latch_z,
+                         BLOCK_COMPARATOR_EAST_OFF))
+        return check_failed("comparator latch build failed");
+    for (size_t i = 0; i < sizeof(latch_feedback) / sizeof(latch_feedback[0]);
+         i++) {
+        if (!world_set_block(&world,
+                             latch_x + latch_feedback[i][0],
+                             latch_y,
+                             latch_z + latch_feedback[i][1],
+                             BLOCK_REDSTONE_WIRE_UNCONNECTED))
+            return check_failed("comparator latch feedback build failed");
+    }
+    if (!world_set_block(&world, latch_x - 3, latch_y, latch_z,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("comparator latch set failed");
+    world_update_redstone(&world, 0.0f);
+    if (!world_set_block(&world, latch_x - 3, latch_y, latch_z,
+                         BLOCK_AIR))
+        return check_failed("comparator latch set release failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, latch_x, latch_y, latch_z) !=
+            BLOCK_COMPARATOR_EAST_ON)
+        return check_failed("comparator latch did not hold");
+    if (!world_set_block(&world, latch_x, latch_y, latch_z - 1,
+                         BLOCK_REDSTONE_BLOCK))
+        return check_failed("comparator latch reset failed");
+    world_update_redstone(&world, 0.0f);
+    if (world_get_block(&world, latch_x, latch_y, latch_z) !=
+            BLOCK_COMPARATOR_EAST_OFF)
+        return check_failed("comparator latch did not reset");
+    if (!world_set_block(&world, latch_x, latch_y, latch_z - 1,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, latch_x, latch_y, latch_z,
+                         BLOCK_AIR) ||
+        !world_set_block(&world, latch_x - 3, latch_y, latch_z,
+                         BLOCK_AIR))
+        return check_failed("comparator latch cleanup failed");
+    for (size_t i = 0; i < sizeof(latch_feedback) / sizeof(latch_feedback[0]);
+         i++) {
+        if (!world_set_block(&world,
+                             latch_x + latch_feedback[i][0],
+                             latch_y,
+                             latch_z + latch_feedback[i][1],
+                             BLOCK_AIR))
+            return check_failed("comparator latch feedback cleanup failed");
+    }
 
     const int flower_x = 9;
     const int flower_y = 26;

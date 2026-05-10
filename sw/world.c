@@ -1908,6 +1908,27 @@ static bool ensure_chunk_face_capacity(Chunk *chunk, int needed)
     return true;
 }
 
+static bool append_chunk_face_checked(Chunk *chunk, int *out,
+                                      int x, int y, int z,
+                                      uint8_t face, BlockID type,
+                                      int u_size, int v_size,
+                                      uint8_t sky_light, uint8_t block_light,
+                                      uint8_t height)
+{
+    int needed;
+
+    if (!chunk || !out)
+        return false;
+
+    needed = *out + 1;
+    if (needed < *out || !ensure_chunk_face_capacity(chunk, needed))
+        return false;
+
+    append_chunk_face(chunk->faces, out, x, y, z, face, type, u_size, v_size,
+                      sky_light, block_light, height);
+    return true;
+}
+
 /* Build a freshly-allocated ChunkMesh from `chunk`'s blocks/lighting and
  * its neighbor cache `nb`. Does NOT publish to chunk->live_mesh and does
  * NOT update chunk->flags - those are the caller's responsibility under
@@ -1925,6 +1946,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
     int max_face_count;
     int out = 0;
     FaceBuildScratch *scratch;
+    bool ok = true;
 
     if (!chunk)
         return NULL;
@@ -1947,17 +1969,17 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
     if (!scratch)
         return NULL;
 
-    for (int f = 0; f < NUM_FACES; f++) {
+    for (int f = 0; ok && f < NUM_FACES; f++) {
         int layers;
         int width;
         int height;
 
         face_grid_dims((BlockFace)f, &layers, &width, &height);
-        for (int layer = 0; layer < layers; layer++) {
+        for (int layer = 0; ok && layer < layers; layer++) {
             memset(scratch, 0, sizeof(*scratch));
 
-            for (int v = 0; v < height; v++) {
-                for (int u = 0; u < width; u++) {
+            for (int v = 0; ok && v < height; v++) {
+                for (int u = 0; ok && u < width; u++) {
                     int x, y, z;
                     face_cell_to_block((BlockFace)f, layer, u, v, &x, &y, &z);
 
@@ -1988,8 +2010,8 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                 }
             }
 
-            for (int v = 0; v < height; v++) {
-                for (int u = 0; u < width; u++) {
+            for (int v = 0; ok && v < height; v++) {
+                for (int u = 0; ok && u < width; u++) {
                     BlockID id = scratch->mask[v][u];
                     uint8_t sky_light = scratch->sky_mask[v][u];
                     uint8_t block_light = scratch->block_mask[v][u];
@@ -2014,9 +2036,9 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                                                     ccz * WORLD_CHUNK_SIZE + z);
                         }
                         scratch->used[v][u] = true;
-                        append_chunk_face(chunk->faces, &out, x, y, z,
-                                          (BlockFace)f, id, 1, 1,
-                                          sky_light, block_light, h);
+                        ok = append_chunk_face_checked(chunk, &out, x, y, z,
+                                                       (uint8_t)f, id, 1, 1,
+                                                       sky_light, block_light, h);
                         continue;
                     }
 
@@ -2059,17 +2081,23 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                         scratch->used[v][u] = true;
                     }
 
-                    append_chunk_face(chunk->faces, &out, x, y, z,
-                                      (uint8_t)f, id, merge_w, merge_h,
-                                      sky_light, block_light, 8);
+                    ok = append_chunk_face_checked(chunk, &out, x, y, z,
+                                                   (uint8_t)f, id,
+                                                   merge_w, merge_h,
+                                                   sky_light, block_light, 8);
                 }
             }
         }
     }
 
-    for (int y = 0; y < WORLD_CHUNK_HEIGHT; y++) {
-        for (int z = 0; z < WORLD_CHUNK_SIZE; z++) {
-            for (int x = 0; x < WORLD_CHUNK_SIZE; x++) {
+    if (!ok) {
+        free(scratch);
+        return NULL;
+    }
+
+    for (int y = 0; ok && y < WORLD_CHUNK_HEIGHT; y++) {
+        for (int z = 0; ok && z < WORLD_CHUNK_SIZE; z++) {
+            for (int x = 0; ok && x < WORLD_CHUNK_SIZE; x++) {
                 BlockID id = chunk->blocks[y][z][x];
 
                 if (id == BLOCK_AIR || block_uses_cube_mesh(id))
@@ -2086,19 +2114,27 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
                     block_light = block_emission_level(id);
 
                 if (block_render_model(id) == BLOCK_RENDER_FLAT) {
-                    append_chunk_face(chunk->faces, &out, x, y, z,
-                                      CHUNK_FACE_FLAT, id, 1, 1,
-                                      sky_light, block_light, 8);
+                    ok = append_chunk_face_checked(chunk, &out, x, y, z,
+                                                   CHUNK_FACE_FLAT, id, 1, 1,
+                                                   sky_light, block_light, 8);
                 } else {
-                    append_chunk_face(chunk->faces, &out, x, y, z,
-                                      CHUNK_FACE_CROSS_A, id, 1, 1,
-                                      sky_light, block_light, 8);
-                    append_chunk_face(chunk->faces, &out, x, y, z,
-                                      CHUNK_FACE_CROSS_B, id, 1, 1,
-                                      sky_light, block_light, 8);
+                    ok = append_chunk_face_checked(chunk, &out, x, y, z,
+                                                   CHUNK_FACE_CROSS_A, id,
+                                                   1, 1, sky_light,
+                                                   block_light, 8);
+                    if (ok)
+                        ok = append_chunk_face_checked(chunk, &out, x, y, z,
+                                                       CHUNK_FACE_CROSS_B, id,
+                                                       1, 1, sky_light,
+                                                       block_light, 8);
                 }
             }
         }
+    }
+
+    if (!ok) {
+        free(scratch);
+        return NULL;
     }
 
     chunk->face_count = out;

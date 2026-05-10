@@ -86,7 +86,7 @@ tests/fpga_band_offset_test: tests/fpga_band_offset_test.c voxel_gpu.h
 game: game.c game_home.c game_home.h game_items.c game_items.h player_physics.c player_physics.h input.c input.h renderer.c renderer.h voxel_gpu.h gpu_transport.c gpu_transport.h virtual_gpu_protocol.h block_types.h block_types.c texture_tiles.def world.c world.h world_gen.c world_gen.h mesh_worker.c mesh_worker.h gen_worker.c gen_worker.h thread_affinity.c thread_affinity.h chat.c chat.h command_parser.c command_parser.h pause_menu.c pause_menu.h inventory.c inventory.h env_util.h
 	${CC} ${CFLAGS} ${THREAD_FLAGS} -o $@ game.c game_home.c game_items.c input.c renderer.c gpu_transport.c block_types.c world.c world_gen.c mesh_worker.c gen_worker.c thread_affinity.c player_physics.c chat.c command_parser.c pause_menu.c inventory.c -lm
 
-laptop_run:
+laptop_run: game
 	VOXEL_GPU_BACKEND=socket ./game
 
 clean: clean_outputs

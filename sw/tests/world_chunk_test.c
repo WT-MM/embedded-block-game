@@ -718,7 +718,7 @@ int main(void)
         return check_failed("initial world has no cached blocks/faces");
     if (!world_get_chunk(&world, 0, 0))
         return check_failed("center chunk missing after initial load");
-    if (world_near_chunk_radius(&world) != 1)
+    if (world_near_chunk_radius(&world) != 0)
         return check_failed("default near chunk radius changed");
     if (world_stream_chunks_per_frame(&world) != 0)
         return check_failed("default stream chunk cap changed");
@@ -989,6 +989,36 @@ int main(void)
     if (world_get_block(&world, cane_x, cane_y, cane_z) != BLOCK_AIR ||
         world_get_block(&world, cane_x, cane_y + 1, cane_z) != BLOCK_AIR)
         return check_failed("sugar cane survived broken support");
+    const int cactus_x = 6;
+    const int cactus_y = 23;
+    const int cactus_z = 11;
+    if (!world_set_block(&world, cactus_x, cactus_y - 1, cactus_z,
+                         BLOCK_SAND) ||
+        !world_set_block(&world, cactus_x, cactus_y, cactus_z,
+                         BLOCK_CACTUS) ||
+        !world_set_block(&world, cactus_x, cactus_y + 1, cactus_z,
+                         BLOCK_CACTUS) ||
+        !world_set_block(&world, cactus_x, cactus_y + 2, cactus_z,
+                         BLOCK_CACTUS))
+        return check_failed("cactus cascade fixture build failed");
+    if (!world_set_block(&world, cactus_x, cactus_y, cactus_z, BLOCK_AIR))
+        return check_failed("cactus base break failed");
+    if (world_get_block(&world, cactus_x, cactus_y + 1, cactus_z) !=
+            BLOCK_AIR ||
+        world_get_block(&world, cactus_x, cactus_y + 2, cactus_z) !=
+            BLOCK_AIR)
+        return check_failed("cactus above base did not break");
+    if (!world_set_block(&world, cactus_x, cactus_y, cactus_z,
+                         BLOCK_CACTUS) ||
+        !world_set_block(&world, cactus_x, cactus_y + 1, cactus_z,
+                         BLOCK_CACTUS) ||
+        !world_set_block(&world, cactus_x, cactus_y - 1, cactus_z,
+                         BLOCK_AIR))
+        return check_failed("cactus support break fixture failed");
+    if (world_get_block(&world, cactus_x, cactus_y, cactus_z) != BLOCK_AIR ||
+        world_get_block(&world, cactus_x, cactus_y + 1, cactus_z) !=
+            BLOCK_AIR)
+        return check_failed("cactus survived broken support");
     const int wire_x = 8;
     const int wire_y = 26;
     const int wire_z = 3;
@@ -2252,8 +2282,8 @@ int main(void)
     }
     if (capped_world.chunk_count != expected_chunks)
         return check_failed("capped stream did not eventually fill window");
-    world_set_near_chunk_radius(&capped_world, 0);
-    if (world_near_chunk_radius(&capped_world) != 0)
+    world_set_near_chunk_radius(&capped_world, 1);
+    if (world_near_chunk_radius(&capped_world) != 1)
         return check_failed("near chunk radius setter failed");
     if (!capped_world.meshes_dirty)
         return check_failed("near radius change did not dirty meshes");

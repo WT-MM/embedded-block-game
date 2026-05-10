@@ -3304,11 +3304,18 @@ int renderer_draw_chunk(RenderContext *ctx, const Block *blocks, int num_blocks)
 static bool falling_block_hides_mesh_cell(const VoxelWorld *world,
                                           int wx, int wy, int wz)
 {
-    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+    int seen = 0;
+
+    if (!world || world->falling_block_count <= 0)
+        return false;
+
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS &&
+                    seen < world->falling_block_count; i++) {
         const FallingBlock *falling = &world->falling_blocks[i];
 
         if (!falling->active)
             continue;
+        seen++;
         if (falling->wx == wx &&
             falling->origin_y == wy &&
             falling->wz == wz)
@@ -3322,11 +3329,17 @@ static int renderer_draw_falling_blocks(RenderContext *ctx,
                                         const VoxelWorld *world)
 {
     int before = ctx->n_quads;
+    int seen = 0;
 
-    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+    if (!world || world->falling_block_count <= 0)
+        return 0;
+
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS &&
+                    seen < world->falling_block_count; i++) {
         const FallingBlock *falling = &world->falling_blocks[i];
         if (!falling->active)
             continue;
+        seen++;
 
         Vec3 block_pos = {
             (float)falling->wx,
@@ -3341,6 +3354,23 @@ static int renderer_draw_falling_blocks(RenderContext *ctx,
     }
 
     return ctx->n_quads - before;
+}
+
+static bool cube_face_back_facing(BlockFace face,
+                                  float wx,
+                                  float wy,
+                                  float wz,
+                                  Vec3 cam_pos)
+{
+    switch (face) {
+    case FACE_TOP:    return cam_pos.y < wy + 1.0f;
+    case FACE_BOTTOM: return cam_pos.y > wy;
+    case FACE_RIGHT:  return cam_pos.x < wx + 1.0f;
+    case FACE_LEFT:   return cam_pos.x > wx;
+    case FACE_BACK:   return cam_pos.z < wz + 1.0f;
+    case FACE_FRONT:  return cam_pos.z > wz;
+    default:          return false;
+    }
 }
 
 int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
@@ -3412,65 +3442,25 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
     for (int i = 0; i < candidate_count; i++) {
         const Chunk *chunk = candidates[i].chunk;
         const ChunkMesh *mesh = candidates[i].mesh;
+        const int opaque_cube_count = mesh->opaque_cube_face_count;
+        const int opaque_face_count = mesh->opaque_face_count;
 
-        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+        for (int face_index = 0; face_index < opaque_cube_count; face_index++) {
             const ChunkFace *face = &mesh->faces[face_index];
             BlockID id = (BlockID)face->type;
             int wxi = chunk->chunk_x * WORLD_CHUNK_SIZE + (int)face->x;
             int wyi = (int)face->y;
             int wzi = chunk->chunk_z * WORLD_CHUNK_SIZE + (int)face->z;
-
-            if (block_is_translucent(id))
-                continue;
             if (falling_block_hides_mesh_cell(world, wxi, wyi, wzi))
                 continue;
 
             float wx = (float)wxi;
             float wy = (float)wyi;
             float wz = (float)wzi;
-            BlockRenderModel model = block_render_model(id);
 
-            if (model == BLOCK_RENDER_CROSS ||
-                model == BLOCK_RENDER_TORCH ||
-                model == BLOCK_RENDER_DOOR ||
-                model == BLOCK_RENDER_FLAT) {
-                Vec3 block_pos = { wx, wy, wz };
-                uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
-                                                                    FACE_TOP,
-                                                                    face->sky_light,
-                                                                    face->block_light);
-
-                if (model == BLOCK_RENDER_CROSS)
-                    emit_cross_block_face_lit(ctx, id, block_pos,
-                                              face->face, light_flags);
-                else if (model == BLOCK_RENDER_TORCH)
-                    emit_torch_block_face_lit(ctx, id, block_pos,
-                                              face->face, face->height,
-                                              light_flags);
-                else if (model == BLOCK_RENDER_DOOR)
-                    emit_door_block_face_lit(ctx, id, block_pos,
-                                             face->face, light_flags);
-                else
-                    emit_flat_block_face_lit(ctx, id, world, block_pos,
-                                             wxi, wyi, wzi, face->height,
-                                             light_flags);
-                if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
-                    ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
-                    return ctx->n_quads - before;
-                }
+            if (cube_face_back_facing((BlockFace)face->face,
+                                      wx, wy, wz, cam_pos))
                 continue;
-            }
-
-            /* Early back-face cull using axis-aligned normal. */
-            switch ((BlockFace)face->face) {
-            case FACE_TOP:    if (cam_pos.y < wy + 1.0f) continue; break;
-            case FACE_BOTTOM: if (cam_pos.y > wy)         continue; break;
-            case FACE_RIGHT:  if (cam_pos.x < wx + 1.0f) continue; break;
-            case FACE_LEFT:   if (cam_pos.x > wx)         continue; break;
-            case FACE_BACK:   if (cam_pos.z < wz + 1.0f) continue; break;
-            case FACE_FRONT:  if (cam_pos.z > wz)         continue; break;
-            default: break;
-            }
 
             Vec3 block_pos = { wx, wy, wz };
             uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
@@ -3484,6 +3474,48 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
                                        face->v_size ? face->v_size : 1,
                                        face->height ? face->height : 8,
                                        light_flags);
+            if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
+                ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
+                return ctx->n_quads - before;
+            }
+        }
+
+        for (int face_index = opaque_cube_count;
+             face_index < opaque_face_count;
+             face_index++) {
+            const ChunkFace *face = &mesh->faces[face_index];
+            BlockID id = (BlockID)face->type;
+            int wxi = chunk->chunk_x * WORLD_CHUNK_SIZE + (int)face->x;
+            int wyi = (int)face->y;
+            int wzi = chunk->chunk_z * WORLD_CHUNK_SIZE + (int)face->z;
+            if (falling_block_hides_mesh_cell(world, wxi, wyi, wzi))
+                continue;
+
+            Vec3 block_pos = {
+                (float)wxi,
+                (float)wyi,
+                (float)wzi,
+            };
+            BlockRenderModel model = block_render_model(id);
+            uint8_t light_flags = choose_chunk_face_light_flags(ctx, id,
+                                                                FACE_TOP,
+                                                                face->sky_light,
+                                                                face->block_light);
+
+            if (model == BLOCK_RENDER_CROSS)
+                emit_cross_block_face_lit(ctx, id, block_pos,
+                                          face->face, light_flags);
+            else if (model == BLOCK_RENDER_TORCH)
+                emit_torch_block_face_lit(ctx, id, block_pos,
+                                          face->face, face->height,
+                                          light_flags);
+            else if (model == BLOCK_RENDER_DOOR)
+                emit_door_block_face_lit(ctx, id, block_pos,
+                                         face->face, light_flags);
+            else
+                emit_flat_block_face_lit(ctx, id, world, block_pos,
+                                         wxi, wyi, wzi, face->height,
+                                         light_flags);
             if (ctx->n_quads >= MAX_QUADS_IN_FLIGHT) {
                 ctx->occlusion_pass = OCCLUSION_PASS_DISABLED;
                 return ctx->n_quads - before;
@@ -3512,10 +3544,13 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
         const float chunk_ox = (float)(chunk->chunk_x * WORLD_CHUNK_SIZE);
         const float chunk_oz = (float)(chunk->chunk_z * WORLD_CHUNK_SIZE);
 
-        for (int face_index = 0; face_index < mesh->face_count; face_index++) {
+        if (mesh->opaque_face_count >= mesh->face_count)
+            continue;
+
+        for (int face_index = mesh->opaque_face_count;
+             face_index < mesh->face_count;
+             face_index++) {
             const ChunkFace *face = &mesh->faces[face_index];
-            if (!block_is_translucent((BlockID)face->type))
-                continue;
 
             float wx = chunk_ox + (float)face->x;
             float wy = (float)face->y;

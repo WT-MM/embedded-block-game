@@ -23,7 +23,7 @@
  * T-junction / UV-shimmer artifacts caused by merged quads stay out of
  * the viewer's foreground, while distant chunks (which dominate face
  * counts at large render distances) still get the merge win. */
-#define DEFAULT_NEAR_CHUNK_RADIUS 1
+#define DEFAULT_NEAR_CHUNK_RADIUS 0
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define STREAM_CHUNKS_PER_FRAME_MAX 64
 #define WORLD_META_VERSION 2u
@@ -959,7 +959,8 @@ static void initialize_chunk_slot(Chunk *chunk, int chunk_x, int chunk_z,
     clear_chunk_lighting(chunk);
     chunk->chunk_x = chunk_x;
     chunk->chunk_z = chunk_z;
-    chunk->flags = CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
+    chunk->flags = CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY |
+                   CHUNK_FLAG_ENV_DIRTY;
     chunk->generation = generation ? generation : 1u;
     chunk->last_used_epoch = stream_epoch;
     chunk->face_count = 0;
@@ -1006,6 +1007,35 @@ static void mark_chunk_and_neighbors_dirty(VoxelWorld *world, int chunk_x, int c
     mark_chunk_coord_dirty(world, chunk_x + 1, chunk_z);
     mark_chunk_coord_dirty(world, chunk_x, chunk_z - 1);
     mark_chunk_coord_dirty(world, chunk_x, chunk_z + 1);
+}
+
+static void mark_chunk_env_dirty(Chunk *chunk)
+{
+    if (!chunk || !(chunk->flags & CHUNK_FLAG_LOADED))
+        return;
+
+    chunk->flags |= CHUNK_FLAG_ENV_DIRTY;
+}
+
+static void mark_chunk_coord_env_dirty(VoxelWorld *world,
+                                       int chunk_x,
+                                       int chunk_z)
+{
+    int index = chunk_lookup_find_index(world, chunk_x, chunk_z);
+
+    if (index >= 0)
+        mark_chunk_env_dirty(&world->chunks[index]);
+}
+
+static void mark_chunk_and_neighbors_env_dirty(VoxelWorld *world,
+                                               int chunk_x,
+                                               int chunk_z)
+{
+    mark_chunk_coord_env_dirty(world, chunk_x, chunk_z);
+    mark_chunk_coord_env_dirty(world, chunk_x - 1, chunk_z);
+    mark_chunk_coord_env_dirty(world, chunk_x + 1, chunk_z);
+    mark_chunk_coord_env_dirty(world, chunk_x, chunk_z - 1);
+    mark_chunk_coord_env_dirty(world, chunk_x, chunk_z + 1);
 }
 
 static bool neighbor_is_loading_locked(const VoxelWorld *world,
@@ -1181,6 +1211,41 @@ static ChunkMesh *chunk_mesh_alloc(int face_count)
     }
     mesh->face_count = face_count;
     return mesh;
+}
+
+static void chunk_mesh_copy_partitioned(ChunkMesh *mesh,
+                                        const ChunkFace *faces,
+                                        int face_count)
+{
+    int out = 0;
+
+    if (!mesh || !faces || face_count <= 0)
+        return;
+
+    for (int i = 0; i < face_count; i++) {
+        BlockID id = (BlockID)faces[i].type;
+
+        if (!block_is_translucent(id) &&
+            block_render_model(id) == BLOCK_RENDER_CUBE)
+            mesh->faces[out++] = faces[i];
+    }
+    mesh->opaque_cube_face_count = out;
+
+    for (int i = 0; i < face_count; i++) {
+        BlockID id = (BlockID)faces[i].type;
+
+        if (!block_is_translucent(id) &&
+            block_render_model(id) != BLOCK_RENDER_CUBE)
+            mesh->faces[out++] = faces[i];
+    }
+    mesh->opaque_face_count = out;
+
+    for (int i = 0; i < face_count; i++) {
+        BlockID id = (BlockID)faces[i].type;
+
+        if (block_is_translucent(id))
+            mesh->faces[out++] = faces[i];
+    }
 }
 
 /* Atomically publish a freshly-built ChunkMesh as the chunk's live_mesh.
@@ -2337,8 +2402,7 @@ static ChunkMesh *chunk_build_mesh_unpublished(Chunk *chunk,
         return NULL;
     }
     if (out > 0)
-        memcpy(snapshot->faces, chunk->faces,
-               (size_t)out * sizeof(ChunkFace));
+        chunk_mesh_copy_partitioned(snapshot, chunk->faces, out);
     snapshot->generation = chunk->generation;
     snapshot->meshed_near = is_near;
     free(scratch);
@@ -2971,7 +3035,8 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
                    sizeof(chunk->redstone_data));
             memset(chunk->block_light, 0, sizeof(chunk->block_light));
             chunk->flags &= ~(CHUNK_FLAG_LOADING | CHUNK_FLAG_GEN_QUEUED);
-            chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY;
+            chunk->flags |= CHUNK_FLAG_LOADED | CHUNK_FLAG_MESH_DIRTY |
+                            CHUNK_FLAG_ENV_DIRTY;
             if (result->has_light_emitters)
                 world->has_light_emitters = true;
             if (needs_light_rebuild)
@@ -3192,22 +3257,33 @@ bool world_flush(VoxelWorld *world)
 static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
                                    BlockID type);
 
-static bool block_can_support_sugar_cane(BlockID type)
+static bool block_can_support_vertical_plant(BlockID plant, BlockID support)
 {
-    return type == BLOCK_SAND || type == BLOCK_SUGAR_CANE;
+    if (plant == BLOCK_SUGAR_CANE)
+        return support == BLOCK_SAND || support == BLOCK_SUGAR_CANE;
+    if (plant == BLOCK_CACTUS)
+        return support == BLOCK_SAND || support == BLOCK_CACTUS;
+    return true;
 }
 
-static bool world_clear_sugar_cane_above_locked(VoxelWorld *world,
-                                                int wx,
-                                                int wy,
-                                                int wz)
+static bool world_clear_unsupported_vertical_plant_above_locked(
+    VoxelWorld *world,
+    int wx,
+    int wy,
+    int wz,
+    BlockID support)
 {
     bool success = true;
 
     for (int y = wy + 1; y < WORLD_CHUNK_HEIGHT; y++) {
-        if (world_get_block(world, wx, y, wz) != BLOCK_SUGAR_CANE)
+        BlockID plant = world_get_block(world, wx, y, wz);
+
+        if (plant != BLOCK_SUGAR_CANE && plant != BLOCK_CACTUS)
+            break;
+        if (block_can_support_vertical_plant(plant, support))
             break;
         success &= world_set_block_locked(world, wx, y, wz, BLOCK_AIR);
+        support = BLOCK_AIR;
     }
 
     return success;
@@ -3282,6 +3358,7 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
     }
 
     mark_chunk_and_adjacent_dirty_for_block(world, wx, wz);
+    mark_chunk_and_neighbors_env_dirty(world, chunk_x, chunk_z);
     update_column_sky_light(world, wx, wz);
 
     old_emission = block_emission_level(old_type);
@@ -3332,8 +3409,8 @@ static bool world_set_block_locked(VoxelWorld *world, int wx, int wy, int wz,
     else if (old_emission > 0)
         world_recompute_light_emitters_locked(world);
 
-    if (!block_can_support_sugar_cane(type))
-        success &= world_clear_sugar_cane_above_locked(world, wx, wy, wz);
+    success &= world_clear_unsupported_vertical_plant_above_locked(
+        world, wx, wy, wz, type);
 
     if (success &&
         redstone_block_change_needs_update_locked(world, wx, wy, wz,
@@ -5269,6 +5346,8 @@ static bool fluid_resolve_lava_water_collisions_locked(VoxelWorld *world)
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
+        if (!(chunk->flags & CHUNK_FLAG_ENV_DIRTY))
+            continue;
 
         int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
         int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
@@ -5313,6 +5392,8 @@ static bool fluid_tick_locked(VoxelWorld *world,
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
+        if (!(chunk->flags & CHUNK_FLAG_ENV_DIRTY))
+            continue;
 
         int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
         int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
@@ -5351,6 +5432,8 @@ static bool fluid_tick_locked(VoxelWorld *world,
          ci++) {
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        if (!(chunk->flags & CHUNK_FLAG_ENV_DIRTY))
             continue;
 
         int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
@@ -5466,11 +5549,18 @@ static bool fluid_tick_locked(VoxelWorld *world,
 static bool falling_block_active_below_locked(const VoxelWorld *world,
                                               int wx, int wy, int wz)
 {
-    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS; i++) {
+    int seen = 0;
+
+    if (!world || world->falling_block_count <= 0)
+        return false;
+
+    for (int i = 0; i < WORLD_MAX_FALLING_BLOCKS &&
+                    seen < world->falling_block_count; i++) {
         const FallingBlock *block = &world->falling_blocks[i];
 
         if (!block->active)
             continue;
+        seen++;
         if (block->wx == wx && block->wz == wz && block->y < (float)wy)
             return true;
     }
@@ -5570,6 +5660,8 @@ static bool falling_blocks_tick_locked(VoxelWorld *world, WaterTickStats *stats)
         Chunk *chunk = &world->chunks[ci];
         if (!(chunk->flags & CHUNK_FLAG_LOADED))
             continue;
+        if (!(chunk->flags & CHUNK_FLAG_ENV_DIRTY))
+            continue;
 
         int ox = chunk->chunk_x * WORLD_CHUNK_SIZE;
         int oz = chunk->chunk_z * WORLD_CHUNK_SIZE;
@@ -5602,6 +5694,31 @@ static bool falling_blocks_tick_locked(VoxelWorld *world, WaterTickStats *stats)
     return changed;
 }
 
+static bool world_has_env_dirty_locked(const VoxelWorld *world)
+{
+    if (!world)
+        return false;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        const Chunk *chunk = &world->chunks[i];
+
+        if ((chunk->flags & CHUNK_FLAG_LOADED) &&
+            (chunk->flags & CHUNK_FLAG_ENV_DIRTY))
+            return true;
+    }
+
+    return false;
+}
+
+static void world_clear_env_dirty_locked(VoxelWorld *world)
+{
+    if (!world)
+        return;
+
+    for (int i = 0; i < world->chunk_count; i++)
+        world->chunks[i].flags &= ~CHUNK_FLAG_ENV_DIRTY;
+}
+
 bool world_water_tick(VoxelWorld *world)
 {
     if (!world)
@@ -5611,12 +5728,20 @@ bool world_water_tick(VoxelWorld *world)
     WaterTickStats stats = {0};
 
     world_lock(world);
+    if (!world_has_env_dirty_locked(world)) {
+        world_unlock(world);
+        g_water_tick_stats = stats;
+        return false;
+    }
+
     changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= fluid_tick_locked(world, &WATER_FLUID, &stats);
     changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= fluid_tick_locked(world, &LAVA_FLUID, &stats);
     changed |= fluid_resolve_lava_water_collisions_locked(world);
     changed |= falling_blocks_tick_locked(world, &stats);
+    if (!changed)
+        world_clear_env_dirty_locked(world);
     world_unlock(world);
 
     g_water_tick_stats = stats;

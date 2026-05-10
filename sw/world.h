@@ -68,6 +68,9 @@ typedef struct {
 typedef struct ChunkMesh {
     ChunkFace *faces;
     int face_count;
+    /* faces are ordered [opaque cube][opaque non-cube][translucent]. */
+    int opaque_cube_face_count;
+    int opaque_face_count;
     uint32_t generation;
     bool meshed_near;
 } ChunkMesh;
@@ -93,6 +96,9 @@ typedef enum {
      * the main FIFO. Cleared by drain when the chunk is pushed onto
      * the priority queue. */
     CHUNK_FLAG_MESH_EDIT_PRIORITY = 1u << 8,
+    /* Needs a fluid/gravity scan. Cleared after an environment tick finds
+     * no changes in the dirty set. */
+    CHUNK_FLAG_ENV_DIRTY = 1u << 9,
 } ChunkFlags;
 
 typedef struct {

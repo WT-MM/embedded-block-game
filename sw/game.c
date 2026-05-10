@@ -4111,6 +4111,7 @@ home_menu_start:
     double perf_sleep_ns = 0.0;
     double perf_work_ns = 0.0;
     double perf_max_work_ns = 0.0;
+    double perf_environment_ns = 0.0;
     double perf_physics_ns = 0.0;
     double perf_stream_ns = 0.0;
     double perf_stream_wait_ns = 0.0;
@@ -4141,9 +4142,16 @@ home_menu_start:
 
         /* Minecraft-style environment simulation: intentionally slower than
          * placement so fluids and falling blocks move visibly. */
+        double environment_ns = 0.0;
         if (environment_tick_accumulator >= ENVIRONMENT_TICK_INTERVAL) {
+            struct timespec environment_start, environment_end;
+
             environment_tick_accumulator -= ENVIRONMENT_TICK_INTERVAL;
+            clock_gettime(CLOCK_MONOTONIC, &environment_start);
             world_water_tick(&world);
+            clock_gettime(CLOCK_MONOTONIC, &environment_end);
+            environment_ns =
+                (double)ns_diff(&environment_end, &environment_start);
             if (debug_enabled) {
                 WaterTickStats ws = world_water_tick_stats();
                 if (ws.sources_seen || ws.flows_seen || ws.spread_placed ||
@@ -5108,6 +5116,7 @@ home_menu_start:
         perf_end_ns += end_ns;
         perf_sleep_ns += sleep_ns;
         perf_work_ns += work_ns;
+        perf_environment_ns += environment_ns;
         perf_physics_ns += (double)ns_diff(&physics_end, &physics_start);
         perf_stream_ns += (double)ns_diff(&stream_end, &stream_start);
         perf_stream_wait_ns += (double)world.last_stream_lock_wait_ns;
@@ -5142,8 +5151,9 @@ home_menu_start:
                         "update=%5.2fms begin=%5.2fms draw=%6.2fms "
                         "end=%6.2fms sleep=%5.2fms max_work=%6.2fms "
                         "quads=%5.1f sky=%4.1f phys=%4.1f drop=%4.1f "
-                        "upd_phys=%5.2f stream=%5.2f wait=%5.2f body=%5.2f "
-                        "light=%5.2f gen=%5.2f mesh=%5.2f\n",
+                        "env=%5.2f upd_phys=%5.2f stream=%5.2f "
+                        "wait=%5.2f body=%5.2f light=%5.2f gen=%5.2f "
+                        "mesh=%5.2f\n",
                         fps,
                         ns_to_ms((double)perf_elapsed_ns / frame_div),
                         ns_to_ms(perf_work_ns / frame_div),
@@ -5157,6 +5167,7 @@ home_menu_start:
                         (double)perf_sky_quads / frame_div,
                         (double)perf_physics_steps / frame_div,
                         (double)perf_physics_dropped_steps / frame_div,
+                        ns_to_ms(perf_environment_ns / frame_div),
                         ns_to_ms(perf_physics_ns / frame_div),
                         ns_to_ms(perf_stream_ns / frame_div),
                         ns_to_ms(perf_stream_wait_ns / frame_div),
@@ -5178,6 +5189,7 @@ home_menu_start:
             perf_end_ns = 0.0;
             perf_sleep_ns = 0.0;
             perf_work_ns = 0.0;
+            perf_environment_ns = 0.0;
             perf_physics_ns = 0.0;
             perf_stream_ns = 0.0;
             perf_stream_wait_ns = 0.0;

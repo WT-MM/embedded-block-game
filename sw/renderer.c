@@ -19,7 +19,7 @@
 #define VIEW_Y_MIN 0.0f
 #define VIEW_X_MAX SCREEN_WIDTH
 #define VIEW_Y_MAX SCREEN_HEIGHT
-#define MAX_VIEW_CLIP_VERTS 8
+#define MAX_VIEW_CLIP_VERTS 12
 #define PI_F 3.14159265358979323846f
 #define SKY_DAY_LENGTH_SECONDS 180.0f
 #define SKY_DOME_DISTANCE 512.0f
@@ -227,6 +227,10 @@ struct RenderContext {
 static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad);
 static bool stage_projected_quad_no_clip(RenderContext *ctx,
                                          const RenderQuad *quad);
+static bool stage_projected_polygon(RenderContext *ctx,
+                                    const RenderQuad *quad,
+                                    const Vertex2D *verts,
+                                    int count);
 
 typedef struct {
     float x, y, z;
@@ -865,17 +869,75 @@ static int clip_polygon_against_boundary(const Vertex2D *in, int count,
                 clipped.x = bound;
             else
                 clipped.y = bound;
+            if (out_count >= MAX_VIEW_CLIP_VERTS)
+                return 0;
             out[out_count++] = clipped;
         }
 
-        if (cur_inside)
+        if (cur_inside) {
+            if (out_count >= MAX_VIEW_CLIP_VERTS)
+                return 0;
             out[out_count++] = cur;
+        }
 
         prev = cur;
         prev_inside = cur_inside;
     }
 
     return out_count;
+}
+
+static int clip_polygon_against_y_bound(const Vertex2D *in, int count,
+                                        Vertex2D *out, float bound,
+                                        bool keep_greater_equal)
+{
+    if (count <= 0)
+        return 0;
+
+    int out_count = 0;
+    Vertex2D prev = in[count - 1];
+    bool prev_inside = keep_greater_equal ? (prev.y >= bound) :
+                                            (prev.y <= bound);
+
+    for (int i = 0; i < count; i++) {
+        Vertex2D cur = in[i];
+        bool cur_inside = keep_greater_equal ? (cur.y >= bound) :
+                                               (cur.y <= bound);
+
+        if (prev_inside != cur_inside) {
+            float denom = cur.y - prev.y;
+            float t = fabsf(denom) < 1e-6f ? 0.0f : (bound - prev.y) / denom;
+            Vertex2D clipped = lerp_vertex2d(&prev, &cur, t);
+
+            clipped.y = bound;
+            if (out_count >= MAX_VIEW_CLIP_VERTS)
+                return 0;
+            out[out_count++] = clipped;
+        }
+
+        if (cur_inside) {
+            if (out_count >= MAX_VIEW_CLIP_VERTS)
+                return 0;
+            out[out_count++] = cur;
+        }
+
+        prev = cur;
+        prev_inside = cur_inside;
+    }
+
+    return out_count;
+}
+
+static int clip_polygon_to_y_range(const Vertex2D *in, int count,
+                                   Vertex2D *out, float y_min, float y_max)
+{
+    Vertex2D tmp[MAX_VIEW_CLIP_VERTS];
+
+    count = clip_polygon_against_y_bound(in, count, tmp, y_min, true);
+    if (count == 0)
+        return 0;
+    count = clip_polygon_against_y_bound(tmp, count, out, y_max, false);
+    return count;
 }
 
 static int clip_polygon_to_viewport(const Vertex2D in[4], Vertex2D out[MAX_VIEW_CLIP_VERTS])
@@ -1055,6 +1117,119 @@ static int snap_and_compact_polygon(Vertex2D *verts, int count)
     return out_count;
 }
 
+static bool split_quads_at_hw_band_edges(void)
+{
+    static int cached = -1;
+
+    if (cached < 0)
+        cached = env_flag("VOXEL_SPLIT_BAND_QUADS", true) ? 1 : 0;
+    return cached != 0;
+}
+
+static bool stage_polygon_as_quads(RenderContext *ctx,
+                                   const RenderQuad *src,
+                                   const Vertex2D *verts,
+                                   int count)
+{
+    Vertex2D compact[MAX_VIEW_CLIP_VERTS];
+
+    if (count > MAX_VIEW_CLIP_VERTS)
+        return false;
+    memcpy(compact, verts, (size_t)count * sizeof(*compact));
+    count = snap_and_compact_polygon(compact, count);
+    if (count < 3)
+        return false;
+
+    if (count == 3) {
+        RenderQuad tri = {
+            .vertices = { compact[0], compact[1], compact[2], compact[2] },
+            .texture_id = src->texture_id,
+            .color_tint = src->color_tint,
+            .flags = src->flags,
+        };
+        return stage_prepared_quad(ctx, tri);
+    }
+
+    if (count == 4) {
+        RenderQuad quad = {
+            .vertices = { compact[0], compact[1], compact[2], compact[3] },
+            .texture_id = src->texture_id,
+            .color_tint = src->color_tint,
+            .flags = src->flags,
+        };
+        return stage_prepared_quad(ctx, quad);
+    }
+
+    bool emitted = false;
+    for (int i = 1; i + 1 < count; i++) {
+        RenderQuad tri = {
+            .vertices = { compact[0], compact[i], compact[i + 1], compact[i + 1] },
+            .texture_id = src->texture_id,
+            .color_tint = src->color_tint,
+            .flags = src->flags,
+        };
+        if (stage_prepared_quad(ctx, tri))
+            emitted = true;
+    }
+    return emitted;
+}
+
+static bool stage_projected_polygon(RenderContext *ctx,
+                                    const RenderQuad *quad,
+                                    const Vertex2D *verts,
+                                    int count)
+{
+    if (count < 3)
+        return false;
+
+    float y_min = verts[0].y;
+    float y_max = verts[0].y;
+    for (int i = 1; i < count; i++) {
+        if (verts[i].y < y_min) y_min = verts[i].y;
+        if (verts[i].y > y_max) y_max = verts[i].y;
+    }
+
+    if (!split_quads_at_hw_band_edges())
+        return stage_polygon_as_quads(ctx, quad, verts, count);
+    if (!(quad->flags & QUAD_FLAG_TEX))
+        return stage_polygon_as_quads(ctx, quad, verts, count);
+
+    /*
+     * The hardware renderer consumes one 60px-tall resident band at a time.
+     * Clip in float space before descriptor packing so each per-band descriptor
+     * gets its own freshly solved UV/depth planes. This avoids stitching bands
+     * together by adding dy to already-quantized Q16.16/Q1.15 starts, which can
+     * show up as texture shimmer or a horizontal slice on tall faces.
+     */
+    const float band_h = (float)VOXEL_BAND_CACHE_HEIGHT;
+    int first_band = (int)floorf(y_min / band_h);
+    int last_band = (int)floorf(y_max / band_h);
+    if (first_band < 0) first_band = 0;
+    if (last_band < 0) last_band = 0;
+    if (first_band >= (int)VOXEL_BAND_COUNT)
+        first_band = (int)VOXEL_BAND_COUNT - 1;
+    if (last_band >= (int)VOXEL_BAND_COUNT)
+        last_band = (int)VOXEL_BAND_COUNT - 1;
+
+    if (first_band == last_band)
+        return stage_polygon_as_quads(ctx, quad, verts, count);
+
+    bool emitted = false;
+    for (int band = first_band; band <= last_band; band++) {
+        Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
+        float band_y_min = (float)band * band_h;
+        float band_y_max = (float)(band + 1) * band_h;
+        int clipped_count = clip_polygon_to_y_range(verts, count, clipped,
+                                                    band_y_min, band_y_max);
+
+        if (clipped_count >= 3 &&
+            stage_polygon_as_quads(ctx, quad, clipped, clipped_count))
+            emitted = true;
+    }
+
+    return emitted;
+}
+
 static struct edge_coef make_edge_coef(float x0, float y0, float x1, float y1)
 {
     struct edge_coef edge;
@@ -1162,9 +1337,9 @@ static void ensure_clockwise_winding(Vertex2D v[4])
  * and 1/w are all exactly linear in screen space, so any 3 of the 4 projected
  * vertices should yield the same plane. Clip vertices, Q24.8 snapping and
  * floating-point rounding can still produce tiny disagreements between
- * triples. Pick the largest-area screen-space triple: it is still
- * deterministic, but avoids fitting UV/depth from a nearly collapsed edge-on
- * triangle where one sub-pixel snap can explode the gradients.
+ * triples; picking the first non-degenerate triple in a fixed order removes
+ * the frame-to-frame jitter where the "winning" triple flipped under
+ * sub-pixel camera motion.
  */
 static const int kAttrTriples[4][3] = {
     { 0, 1, 2 },
@@ -1187,9 +1362,6 @@ typedef struct {
 
 static PlaneBasis choose_plane_basis(const Vertex2D v[4])
 {
-    PlaneBasis best = { 0 };
-    float best_abs_det = 0.0f;
-
     for (int i = 0; i < 4; i++) {
         int a = kAttrTriples[i][0];
         int b = kAttrTriples[i][1];
@@ -1199,17 +1371,12 @@ static PlaneBasis choose_plane_basis(const Vertex2D v[4])
         float bx = v[c].x - v[a].x;
         float by = v[c].y - v[a].y;
         float det = ax * by - ay * bx;
-        float abs_det = fabsf(det);
 
-        if (abs_det > best_abs_det) {
-            best_abs_det = abs_det;
-            best = (PlaneBasis){ a, b, c, ax, ay, bx, by, det, true };
-        }
+        if (fabsf(det) > 1e-6f)
+            return (PlaneBasis){ a, b, c, ax, ay, bx, by, det, true };
     }
 
-    if (best_abs_det <= 1e-4f)
-        return (PlaneBasis){ 0 };
-    return best;
+    return (PlaneBasis){ 0 };
 }
 
 static void solve_attr_with_basis(const PlaneBasis *basis,
@@ -1479,30 +1646,9 @@ static bool stage_projected_quad_no_clip(RenderContext *ctx,
                                          const RenderQuad *quad)
 {
     Vertex2D verts[4];
-    int count;
 
     memcpy(verts, quad->vertices, sizeof(verts));
-    count = snap_and_compact_polygon(verts, 4);
-    if (count < 3)
-        return false;
-
-    if (count == 3) {
-        RenderQuad tri = {
-            .vertices = { verts[0], verts[1], verts[2], verts[2] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-            .flags = quad->flags,
-        };
-        return stage_prepared_quad(ctx, tri);
-    }
-
-    RenderQuad unclipped = {
-        .vertices = { verts[0], verts[1], verts[2], verts[3] },
-        .texture_id = quad->texture_id,
-        .color_tint = quad->color_tint,
-        .flags = quad->flags,
-    };
-    return stage_prepared_quad(ctx, unclipped);
+    return stage_projected_polygon(ctx, quad, verts, 4);
 }
 
 static bool emit_camera_quad(RenderContext *ctx, const CameraVertex verts_cam[4],
@@ -3263,48 +3409,7 @@ bool renderer_push_quad(RenderContext *ctx, const RenderQuad *quad)
     Vertex2D clipped[MAX_VIEW_CLIP_VERTS];
     int count = clip_polygon_to_viewport(quad->vertices, clipped);
 
-    /*
-     * Viewport clipping can create duplicate boundary vertices once we snap to
-     * the Q24.8 raster grid. Compact first, then triangulate any larger n-gons
-     * so clipped slivers do not turn into missing wedges at the screen edge.
-     */
-    count = snap_and_compact_polygon(clipped, count);
-    if (count < 3)
-        return false;
-
-    if (count == 3) {
-        RenderQuad tri = {
-            .vertices = { clipped[0], clipped[1], clipped[2], clipped[2] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-            .flags = quad->flags,
-        };
-        return stage_prepared_quad(ctx, tri);
-    }
-
-    if (count == 4) {
-        RenderQuad clipped_quad = {
-            .vertices = { clipped[0], clipped[1], clipped[2], clipped[3] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-            .flags = quad->flags,
-        };
-        return stage_prepared_quad(ctx, clipped_quad);
-    }
-
-    bool emitted = false;
-    for (int i = 1; i + 1 < count; i++) {
-        RenderQuad tri = {
-            .vertices = { clipped[0], clipped[i], clipped[i + 1], clipped[i + 1] },
-            .texture_id = quad->texture_id,
-            .color_tint = quad->color_tint,
-            .flags = quad->flags,
-        };
-        if (stage_prepared_quad(ctx, tri))
-            emitted = true;
-    }
-
-    return emitted;
+    return stage_projected_polygon(ctx, quad, clipped, count);
 }
 
 static void renderer_draw_block_faces(RenderContext *ctx, const Block *block,

@@ -1,0 +1,40 @@
+%% Generated from RTL/C/Platform Designer source. Do not hand-edit generated diagrams.
+%% Regenerate with: make diagrams
+flowchart TB
+main["game.c main()"]:::hps
+rinit["renderer_init()"]:::hps
+gopen["gpu_transport_open()"]:::hps
+begin["renderer_begin_frame()"]:::hps
+drawsky["renderer_draw_sky()"]:::hps
+drawworld["renderer_draw_world()"]:::hps
+stage["stage_prepared_quad()"]:::hps
+bin["gpu_transport_bin_descriptor()"]:::hps
+endf["renderer_end_frame()"]:::hps
+clear["gpu_transport_clear()"]:::hps
+flush["renderer_flush_gpu_state()"]:::hps
+submit["gpu_transport_submit_descriptors()"]:::hps
+prebin["submit_hw_prebinned()"]:::hps
+band["submit_hw_band_flat()"]:::hps
+flip["gpu_transport_flip()"]:::hps
+drv_ioctl["sw/voxel_gpu.c voxel_ioctl()"]:::hps
+drv_write["sw/voxel_gpu.c voxel_write()"]:::hps
+main --> rinit --> gopen
+main --> begin --> bin
+main --> drawsky --> stage --> bin
+main --> drawworld --> stage
+main --> endf
+endf --> clear --> drv_ioctl
+endf --> flush --> drv_ioctl
+endf --> submit --> prebin --> band
+band --> drv_ioctl
+band --> drv_write
+endf --> flip --> drv_ioctl
+
+classDef hps fill:#e8f1ff,stroke:#2f63b8,stroke-width:1px,color:#0d2448;
+classDef fpga fill:#e9f7ef,stroke:#2a7a45,stroke-width:1px,color:#0d341c;
+classDef reg fill:#fff3cc,stroke:#b98500,stroke-width:1px,color:#3d2c00;
+classDef mem fill:#f4e9ff,stroke:#6e3fa0,stroke-width:1px,color:#2d124a;
+classDef bus fill:#ffe8df,stroke:#b55632,stroke-width:1px,color:#4a1f0b;
+classDef ctrl fill:#ffe9ef,stroke:#b83a58,stroke-width:1px,color:#4a0d1b;
+classDef math fill:#e6fbff,stroke:#247a91,stroke-width:1px,color:#09313d;
+classDef out fill:#eeeeee,stroke:#555555,stroke-width:1px,color:#222222;

@@ -1,0 +1,30 @@
+%% Source: sw/voxel_gpu.h (register layout), sw/voxel_gpu.c (kernel
+%% MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv (Avalon-MM front end + FIFO).
+flowchart LR
+    classDef user fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef kern fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef bus fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+
+    UA["User app<br/>gpu_transport_submit_band()"]:::user
+    UA -- "write(fd, desc_bytes, len)" --> KW["voxel_write()<br/>(kernel)"]:::kern
+    KW -- "iowrite32_rep base+0x1000,<br/>cnt words" --> MMIO[/"Avalon-MM lwslave<br/>address[12:0] = word offset<br/>writedata[31:0]"/]:::bus
+
+    MMIO -- "addr in 0x400..0x7FF<br/>(FIFO_WINDOW)" --> FIFO[("fifo_mem<br/>1024 x 32, M10K")]:::fpga
+    MMIO -- "addr 0x00E (BAND_CTRL)" --> CMD["BAND_CTRL.BEGIN / FLUSH"]:::fpga
+    MMIO -- "addr 0x000 (CONTROL)" --> CTRL["CONTROL: EN, FLP, CLR"]:::fpga
+    MMIO -- "addr 0x005-0x006 (FOG_*)" --> FOG["fog_range / fog_ctrl"]:::fpga
+    MMIO -- "addr 0x003-0x004 (PALETTE_*)" --> PAL["palette[256]"]:::fpga
+    MMIO -- "addr 0x01A-0x01B (SKY_PAL_*)" --> SKY["sky_palette[24]"]:::fpga
+    MMIO -- "addr 0x008-0x00B (EXTMEM_*)" --> EXT["extmem_*<br/>(scanout / flip)"]:::fpga
+
+    FIFO --> FETCH["ST_FETCH<br/>descriptor assembler"]:::fpga
+    CMD --> ENG["engine FSM<br/>(engine_state_t)"]:::fpga
+    CTRL --> ENG
+    FETCH --> ENG
+    ENG --> PIPE["13-stage pixel pipeline"]:::fpga
+    PIPE --> CACHE[("fb_back_ram + z_ram<br/>banked M10K caches")]:::fpga
+    CACHE --> FLUSH["bg flush"]:::fpga
+    FLUSH --> SDC["Sdram_Control"]:::fpga
+    SDC --> SDR[("Board SDR SDRAM<br/>(double FB, RGB565)")]:::fpga
+    SDR --> VGA["voxel_vga_counters<br/>VGA out"]:::fpga

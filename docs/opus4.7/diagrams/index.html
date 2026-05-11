@@ -1,0 +1,2614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>voxel_gpu diagram viewer</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: #111; max-width: 1280px; margin: 24px auto; padding: 0 24px; }
+  h1 { margin-top: 0; }
+  h2 { margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  h3 { margin-bottom: 4px; }
+  .desc { color: #555; margin: 0 0 6px 0; }
+  .source { color: #777; font-size: 12px; margin-bottom: 8px; }
+  .diagram-card { background: #fafafa; border: 1px solid #e2e2e2; border-radius: 6px;
+                  padding: 12px 16px; margin: 16px 0; overflow-x: auto; }
+  .mermaid { background: #fff; padding: 8px; border-radius: 4px; }
+  details > summary { cursor: pointer; color: #555; margin-top: 4px; }
+  pre.src { background: #f4f4f4; padding: 8px; border-radius: 4px; font-size: 12px;
+            overflow-x: auto; white-space: pre; }
+  nav { background: #f0f4f8; border: 1px solid #cfd8dc; border-radius: 6px;
+        padding: 12px 16px; margin: 16px 0; }
+  nav ul { margin: 0; padding-left: 18px; }
+  nav code { background: rgba(0,0,0,0.05); padding: 0 4px; border-radius: 3px; }
+  table.doctable { border-collapse: collapse; width: 100%; margin: 8px 0 16px 0; }
+  table.doctable th, table.doctable td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+  table.doctable th { background: #f0f4f8; }
+  .wave-container { background: #fff; padding: 8px; border-radius: 4px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<!-- WaveDrom: skin first, then main lib, per wavedrom.com docs. -->
+<script src="https://wavedrom.com/skins/default.js" type="text/javascript"></script>
+<script src="https://wavedrom.com/wavedrom.min.js" type="text/javascript"></script>
+</head>
+<body onload="WaveDrom.ProcessAll()">
+<h1>voxel_gpu diagram viewer</h1>
+<p>Open this file in a browser; every diagram below is inlined.
+Mermaid and WaveDrom render client-side via CDN scripts.</p>
+
+<nav>
+  <strong>Jump to:</strong>
+  <ul>
+    <li><a href="#system-level-hps-and-fpga">System-level (HPS + FPGA)</a></li>
+    <li><a href="#hps-software-stack">HPS software stack</a></li>
+    <li><a href="#voxel_gpu-internals-generated">voxel_gpu internals (generated)</a></li>
+    <li><a href="#timing">Timing (WaveDrom)</a></li>
+    <li><a href="#breakdowns">Markdown breakdowns</a></li>
+  </ul>
+</nav>
+<h2 id="system-level-hps-and-fpga">System-level (HPS + FPGA)</h2>
+<div class="diagram-card">
+<h3>full_system_architecture.mmd</h3>
+<p class="desc">Top-level Cyclone V SoC partition (HPS, FPGA, SDRAM, VGA).</p>
+<p class="source">source file: <code>docs/diagrams/full_system_architecture.mmd</code></p>
+<div class="mermaid">
+%% Source: hw/soc_system.qsys, hw/soc_system_top.sv, hw/voxel_gpu_hw.tcl,
+%% sw/voxel_gpu.c, sw/voxel_gpu.h. Cyclone V SoC (5CSEMA5F31C6).
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef mem fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef io fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef sw fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph SOC[&quot;Cyclone V SoC (5CSEMA5F31C6)&quot;]
+        direction LR
+        subgraph HPS[&quot;HPS (ARM Cortex-A9, dual-core)&quot;]
+            direction TB
+            APP[&quot;sw/game.c&lt;br/&gt;+ renderer.c&quot;]
+            TR[&quot;sw/gpu_transport.c&lt;br/&gt;(userspace transport)&quot;]
+            KMOD[&quot;sw/voxel_gpu.c&lt;br/&gt;(platform driver, /dev/voxel_gpu)&quot;]
+            APP --&gt; TR --&gt; KMOD
+            class APP,TR sw
+            class KMOD sw
+        end
+        subgraph FAB[&quot;FPGA fabric&quot;]
+            direction TB
+            VGPU[&quot;voxel_gpu&lt;br/&gt;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;]
+            VGA[&quot;VGA timing&lt;br/&gt;voxel_vga_counters&quot;]
+            SDC[&quot;Sdram_Control&lt;br/&gt;(SDR SDRAM ctrl)&quot;]
+            VGPU --&gt; VGA
+            VGPU --&gt; SDC
+            class VGPU,VGA,SDC fpga
+        end
+        class HPS hps
+        class FAB fpga
+    end
+
+    HPS_DDR3[(&quot;HPS DDR3&lt;br/&gt;(via hps_0.memory)&quot;)]:::mem
+    SDRAM[(&quot;Board SDR SDRAM&lt;br/&gt;(double framebuffer&lt;br/&gt;RGB565)&quot;)]:::mem
+    VGA_OUT[&quot;VGA DAC -&gt; monitor&quot;]:::io
+    HID[&quot;USB keyboard/mouse&quot;]:::io
+
+    KMOD -- &quot;Avalon-MM lwslave&lt;br/&gt;(hps_0.h2f_lw_axi_master)&quot; --&gt; VGPU
+    HPS -. HPS DDR3 .- HPS_DDR3
+    SDC -- &quot;DRAM_ADDR/DQ/...&lt;br/&gt;conduit&quot; --&gt; SDRAM
+    VGA -- &quot;VGA_R/G/B + HS/VS&lt;br/&gt;conduit&quot; --&gt; VGA_OUT
+    HID --&gt; APP
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: hw/soc_system.qsys, hw/soc_system_top.sv, hw/voxel_gpu_hw.tcl,
+%% sw/voxel_gpu.c, sw/voxel_gpu.h. Cyclone V SoC (5CSEMA5F31C6).
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef mem fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef io fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef sw fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph SOC[&quot;Cyclone V SoC (5CSEMA5F31C6)&quot;]
+        direction LR
+        subgraph HPS[&quot;HPS (ARM Cortex-A9, dual-core)&quot;]
+            direction TB
+            APP[&quot;sw/game.c&lt;br/&gt;+ renderer.c&quot;]
+            TR[&quot;sw/gpu_transport.c&lt;br/&gt;(userspace transport)&quot;]
+            KMOD[&quot;sw/voxel_gpu.c&lt;br/&gt;(platform driver, /dev/voxel_gpu)&quot;]
+            APP --&gt; TR --&gt; KMOD
+            class APP,TR sw
+            class KMOD sw
+        end
+        subgraph FAB[&quot;FPGA fabric&quot;]
+            direction TB
+            VGPU[&quot;voxel_gpu&lt;br/&gt;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;]
+            VGA[&quot;VGA timing&lt;br/&gt;voxel_vga_counters&quot;]
+            SDC[&quot;Sdram_Control&lt;br/&gt;(SDR SDRAM ctrl)&quot;]
+            VGPU --&gt; VGA
+            VGPU --&gt; SDC
+            class VGPU,VGA,SDC fpga
+        end
+        class HPS hps
+        class FAB fpga
+    end
+
+    HPS_DDR3[(&quot;HPS DDR3&lt;br/&gt;(via hps_0.memory)&quot;)]:::mem
+    SDRAM[(&quot;Board SDR SDRAM&lt;br/&gt;(double framebuffer&lt;br/&gt;RGB565)&quot;)]:::mem
+    VGA_OUT[&quot;VGA DAC -&gt; monitor&quot;]:::io
+    HID[&quot;USB keyboard/mouse&quot;]:::io
+
+    KMOD -- &quot;Avalon-MM lwslave&lt;br/&gt;(hps_0.h2f_lw_axi_master)&quot; --&gt; VGPU
+    HPS -. HPS DDR3 .- HPS_DDR3
+    SDC -- &quot;DRAM_ADDR/DQ/...&lt;br/&gt;conduit&quot; --&gt; SDRAM
+    VGA -- &quot;VGA_R/G/B + HS/VS&lt;br/&gt;conduit&quot; --&gt; VGA_OUT
+    HID --&gt; APP
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>soc_system_context.mmd</h3>
+<p class="desc">Platform Designer module + connection graph (from hw/soc_system.qsys).</p>
+<p class="source">source file: <code>docs/diagrams/soc_system_context.mmd</code></p>
+<div class="mermaid">
+%% Source: hw/soc_system.qsys (Platform Designer module + connection
+%% list). soc_system.v is generated by qsys-generate and is NOT in
+%% the repo; the .qsys file is authoritative.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef pll fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef sdram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef gpu fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef clk fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+
+    CLK[&quot;clk_0&lt;br/&gt;kind=clock_source&lt;br/&gt;50 MHz&quot;]:::clk
+    SDRAMPLL[&quot;sdram_clocks&lt;br/&gt;kind=altera_up_avalon_sys_sdram_pll&quot;]:::pll
+    HPS[&quot;hps_0&lt;br/&gt;kind=altera_hps (v19.1)&quot;]:::hps
+    GPU[&quot;voxel_gpu_0&lt;br/&gt;kind=voxel_gpu (v1.0)&quot;]:::gpu
+    SDRAMC[&quot;fpga_sdram&lt;br/&gt;kind=altera_avalon_new_sdram_controller&quot;]:::sdram
+
+    CLK -- clock --&gt; SDRAMPLL
+    SDRAMPLL -- sys_clk --&gt; SDRAMC
+    SDRAMPLL -- sys_clk --&gt; HPS
+    SDRAMPLL -- sys_clk --&gt; GPU
+    SDRAMPLL -- sdram_clk --&gt; SDRAMC
+
+    HPS -- &quot;h2f_axi_master (avalon)&quot; --&gt; SDRAMC
+    HPS -- &quot;h2f_lw_axi_master (avalon)&quot; --&gt; GPU
+
+    %% Conduits exported to soc_system_top.sv pins:
+    HPS -. hps_io / memory .-&gt; HPSIO[&quot;hps pin set,&lt;br/&gt;DDR3&quot;]:::hps
+    GPU -. vga conduit .-&gt; VGAOUT[&quot;VGA_R/G/B + HS/VS&quot;]:::gpu
+    GPU -. voxel_sdram conduit .-&gt; DRAM[&quot;Board SDR SDRAM&lt;br/&gt;(via Sdram_Control inside voxel_gpu)&quot;]:::sdram
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: hw/soc_system.qsys (Platform Designer module + connection
+%% list). soc_system.v is generated by qsys-generate and is NOT in
+%% the repo; the .qsys file is authoritative.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef pll fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef sdram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef gpu fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef clk fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+
+    CLK[&quot;clk_0&lt;br/&gt;kind=clock_source&lt;br/&gt;50 MHz&quot;]:::clk
+    SDRAMPLL[&quot;sdram_clocks&lt;br/&gt;kind=altera_up_avalon_sys_sdram_pll&quot;]:::pll
+    HPS[&quot;hps_0&lt;br/&gt;kind=altera_hps (v19.1)&quot;]:::hps
+    GPU[&quot;voxel_gpu_0&lt;br/&gt;kind=voxel_gpu (v1.0)&quot;]:::gpu
+    SDRAMC[&quot;fpga_sdram&lt;br/&gt;kind=altera_avalon_new_sdram_controller&quot;]:::sdram
+
+    CLK -- clock --&gt; SDRAMPLL
+    SDRAMPLL -- sys_clk --&gt; SDRAMC
+    SDRAMPLL -- sys_clk --&gt; HPS
+    SDRAMPLL -- sys_clk --&gt; GPU
+    SDRAMPLL -- sdram_clk --&gt; SDRAMC
+
+    HPS -- &quot;h2f_axi_master (avalon)&quot; --&gt; SDRAMC
+    HPS -- &quot;h2f_lw_axi_master (avalon)&quot; --&gt; GPU
+
+    %% Conduits exported to soc_system_top.sv pins:
+    HPS -. hps_io / memory .-&gt; HPSIO[&quot;hps pin set,&lt;br/&gt;DDR3&quot;]:::hps
+    GPU -. vga conduit .-&gt; VGAOUT[&quot;VGA_R/G/B + HS/VS&quot;]:::gpu
+    GPU -. voxel_sdram conduit .-&gt; DRAM[&quot;Board SDR SDRAM&lt;br/&gt;(via Sdram_Control inside voxel_gpu)&quot;]:::sdram
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>hps_fpga_ownership.mmd</h3>
+<p class="desc">Who owns what across the HPS/FPGA boundary.</p>
+<p class="source">source file: <code>docs/diagrams/hps_fpga_ownership.mmd</code></p>
+<div class="mermaid">
+%% Source: sw/* (HPS side), hw/voxel_gpu/rtl/* (FPGA side),
+%% hw/soc_system.qsys connections, sw/voxel_gpu.h register map.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef shared fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph HPS[&quot;HPS responsibilities&quot;]
+        direction TB
+        H1[&quot;Game state + world chunks&lt;br/&gt;sw/world.c, world_gen.c&quot;]
+        H2[&quot;Mesh + cull&lt;br/&gt;sw/mesh_worker.c&quot;]
+        H3[&quot;Build per-quad descriptors&lt;br/&gt;(quad_desc, quad_desc_uv)&lt;br/&gt;sw/renderer.c&quot;]
+        H4[&quot;Bin descriptors by 60-line band&lt;br/&gt;sw/gpu_transport.c&quot;]
+        H5[&quot;Stream FIFO_WINDOW writes&lt;br/&gt;sw/voxel_gpu.c (iowrite32_rep)&quot;]
+        H6[&quot;Sky palette + fog upload&lt;br/&gt;VOXEL_IOC_SET_SKY_PALETTE,&lt;br/&gt;VOXEL_IOC_SET_FOG&quot;]
+        H1 --&gt; H2 --&gt; H3 --&gt; H4 --&gt; H5
+        H3 --&gt; H6
+    end
+    class HPS hps
+
+    subgraph BUS[&quot;Shared / boundary&quot;]
+        direction TB
+        B1[&quot;Avalon-MM lwslave&lt;br/&gt;(13-bit word addr, 32 b data)&quot;]
+        B2[&quot;/dev/voxel_gpu misc device&quot;]
+        B3[&quot;SDR SDRAM (double FB, RGB565)&quot;]
+    end
+    class BUS shared
+
+    subgraph FPGA[&quot;FPGA responsibilities&quot;]
+        direction TB
+        F1[&quot;FIFO 1024x32 (M10K)&quot;]
+        F2[&quot;Descriptor decode + ST_FETCH&quot;]
+        F3[&quot;Edge / Z / UV rasterizer&lt;br/&gt;voxel_raster_setup + voxel_draw_step&quot;]
+        F4[&quot;Per-pixel 1/w + UV&lt;br/&gt;voxel_iw_normalize -&gt;&lt;br/&gt;voxel_recip_interpolate -&gt;&lt;br/&gt;voxel_w_denormalize&quot;]
+        F5[&quot;Texture ROM lookup&lt;br/&gt;voxel_texture_rom&quot;]
+        F6[&quot;Palette + fog + alpha blend&lt;br/&gt;voxel_fog_blend&quot;]
+        F7[&quot;Band cache writes&lt;br/&gt;fb_back_ram_A/B, z_ram_A/B&quot;]
+        F8[&quot;Background flush -&gt; SDRAM&lt;br/&gt;Sdram_Control&quot;]
+        F9[&quot;VGA scanout&lt;br/&gt;voxel_vga_counters&quot;]
+        F1 --&gt; F2 --&gt; F3 --&gt; F4 --&gt; F5 --&gt; F6 --&gt; F7 --&gt; F8 --&gt; F9
+    end
+    class FPGA fpga
+
+    H5 --&gt; B1 --&gt; F1
+    H6 --&gt; B1
+    H4 -. ioctls .-&gt; B2 --&gt; B1
+    F8 --&gt; B3
+    B3 -. scanout .-&gt; F9
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: sw/* (HPS side), hw/voxel_gpu/rtl/* (FPGA side),
+%% hw/soc_system.qsys connections, sw/voxel_gpu.h register map.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef shared fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph HPS[&quot;HPS responsibilities&quot;]
+        direction TB
+        H1[&quot;Game state + world chunks&lt;br/&gt;sw/world.c, world_gen.c&quot;]
+        H2[&quot;Mesh + cull&lt;br/&gt;sw/mesh_worker.c&quot;]
+        H3[&quot;Build per-quad descriptors&lt;br/&gt;(quad_desc, quad_desc_uv)&lt;br/&gt;sw/renderer.c&quot;]
+        H4[&quot;Bin descriptors by 60-line band&lt;br/&gt;sw/gpu_transport.c&quot;]
+        H5[&quot;Stream FIFO_WINDOW writes&lt;br/&gt;sw/voxel_gpu.c (iowrite32_rep)&quot;]
+        H6[&quot;Sky palette + fog upload&lt;br/&gt;VOXEL_IOC_SET_SKY_PALETTE,&lt;br/&gt;VOXEL_IOC_SET_FOG&quot;]
+        H1 --&gt; H2 --&gt; H3 --&gt; H4 --&gt; H5
+        H3 --&gt; H6
+    end
+    class HPS hps
+
+    subgraph BUS[&quot;Shared / boundary&quot;]
+        direction TB
+        B1[&quot;Avalon-MM lwslave&lt;br/&gt;(13-bit word addr, 32 b data)&quot;]
+        B2[&quot;/dev/voxel_gpu misc device&quot;]
+        B3[&quot;SDR SDRAM (double FB, RGB565)&quot;]
+    end
+    class BUS shared
+
+    subgraph FPGA[&quot;FPGA responsibilities&quot;]
+        direction TB
+        F1[&quot;FIFO 1024x32 (M10K)&quot;]
+        F2[&quot;Descriptor decode + ST_FETCH&quot;]
+        F3[&quot;Edge / Z / UV rasterizer&lt;br/&gt;voxel_raster_setup + voxel_draw_step&quot;]
+        F4[&quot;Per-pixel 1/w + UV&lt;br/&gt;voxel_iw_normalize -&gt;&lt;br/&gt;voxel_recip_interpolate -&gt;&lt;br/&gt;voxel_w_denormalize&quot;]
+        F5[&quot;Texture ROM lookup&lt;br/&gt;voxel_texture_rom&quot;]
+        F6[&quot;Palette + fog + alpha blend&lt;br/&gt;voxel_fog_blend&quot;]
+        F7[&quot;Band cache writes&lt;br/&gt;fb_back_ram_A/B, z_ram_A/B&quot;]
+        F8[&quot;Background flush -&gt; SDRAM&lt;br/&gt;Sdram_Control&quot;]
+        F9[&quot;VGA scanout&lt;br/&gt;voxel_vga_counters&quot;]
+        F1 --&gt; F2 --&gt; F3 --&gt; F4 --&gt; F5 --&gt; F6 --&gt; F7 --&gt; F8 --&gt; F9
+    end
+    class FPGA fpga
+
+    H5 --&gt; B1 --&gt; F1
+    H6 --&gt; B1
+    H4 -. ioctls .-&gt; B2 --&gt; B1
+    F8 --&gt; B3
+    B3 -. scanout .-&gt; F9
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>memory_and_buffer_ownership.mmd</h3>
+<p class="desc">On-chip M10K/MLAB caches, ROMs, off-chip SDRAM and HPS DDR3.</p>
+<p class="source">source file: <code>docs/diagrams/memory_and_buffer_ownership.mmd</code></p>
+<div class="mermaid">
+%% Source: hw/voxel_gpu/rtl/voxel_gpu.sv (M10K / MLAB / ROM declarations),
+%% voxel_sdp_ram.sv, voxel_texture_rom.sv, sw/voxel_gpu.h
+%% (EXTMEM_FRONT_BASE / EXTMEM_BACK_BASE).
+flowchart TB
+    classDef m10k fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef mlab fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef sdram fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ddr3 fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph ONCHIP[&quot;On-chip storage inside voxel_gpu&quot;]
+        FIFO[&quot;fifo_mem&lt;br/&gt;1024 x 32 (M10K)&lt;br/&gt;ramstyle = M10K&quot;]:::m10k
+        FB_A[&quot;fb_back_ram_A&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        FB_B[&quot;fb_back_ram_B&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        Z_A[&quot;z_ram_A&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        Z_B[&quot;z_ram_B&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        TROM[&quot;texture_rom&lt;br/&gt;voxel_texture_rom&lt;br/&gt;2 x altsyncram ROM&lt;br/&gt;(port A = lane0, B = lane1)&lt;br/&gt;32768 x 8 (textures.mif)&quot;]:::rom
+        PAL[&quot;palette[256]&lt;br/&gt;ramstyle = logic (MLAB)&lt;br/&gt;24 b&quot;]:::mlab
+        SKY[&quot;sky_palette[24]&lt;br/&gt;ramstyle = logic (MLAB)&lt;br/&gt;24 b&quot;]:::mlab
+        RLUT[&quot;recip_lut[1025]&lt;br/&gt;ramstyle = logic&lt;br/&gt;32 b (1/x LUT)&quot;]:::mlab
+    end
+
+    subgraph OFFCHIP[&quot;Off-chip&quot;]
+        SDRAM[(&quot;Board SDR SDRAM&lt;br/&gt;(via Sdram_Control)&lt;br/&gt;FB front + back&lt;br/&gt;RGB565, 640x480 = 614400 B each&quot;)]:::sdram
+        DDR3[(&quot;HPS DDR3&lt;br/&gt;(hps_0.memory conduit)&lt;br/&gt;Linux + user heap&quot;)]:::ddr3
+    end
+
+    FB_A -- bg flush --&gt; SDRAM
+    FB_B -- bg flush --&gt; SDRAM
+    SDRAM -- scanout --&gt; VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA out&quot;]
+    DDR3 -. iowrite32_rep .-&gt; FIFO
+
+    FIFO --&gt; ST_FETCH[&quot;ST_FETCH&quot;]
+    ST_FETCH --&gt; PIPE[&quot;pixel pipeline&quot;]
+    PIPE --&gt; PAL
+    PIPE --&gt; SKY
+    PIPE --&gt; RLUT
+    PIPE --&gt; TROM
+    PIPE --&gt; FB_A
+    PIPE --&gt; FB_B
+    PIPE --&gt; Z_A
+    PIPE --&gt; Z_B
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: hw/voxel_gpu/rtl/voxel_gpu.sv (M10K / MLAB / ROM declarations),
+%% voxel_sdp_ram.sv, voxel_texture_rom.sv, sw/voxel_gpu.h
+%% (EXTMEM_FRONT_BASE / EXTMEM_BACK_BASE).
+flowchart TB
+    classDef m10k fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef mlab fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef sdram fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ddr3 fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph ONCHIP[&quot;On-chip storage inside voxel_gpu&quot;]
+        FIFO[&quot;fifo_mem&lt;br/&gt;1024 x 32 (M10K)&lt;br/&gt;ramstyle = M10K&quot;]:::m10k
+        FB_A[&quot;fb_back_ram_A&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        FB_B[&quot;fb_back_ram_B&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        Z_A[&quot;z_ram_A&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        Z_B[&quot;z_ram_B&lt;br/&gt;voxel_banked_sdp_ram&lt;br/&gt;2 x M10K (even/odd x)&lt;br/&gt;BAND_PIXELS x 16&quot;]:::m10k
+        TROM[&quot;texture_rom&lt;br/&gt;voxel_texture_rom&lt;br/&gt;2 x altsyncram ROM&lt;br/&gt;(port A = lane0, B = lane1)&lt;br/&gt;32768 x 8 (textures.mif)&quot;]:::rom
+        PAL[&quot;palette[256]&lt;br/&gt;ramstyle = logic (MLAB)&lt;br/&gt;24 b&quot;]:::mlab
+        SKY[&quot;sky_palette[24]&lt;br/&gt;ramstyle = logic (MLAB)&lt;br/&gt;24 b&quot;]:::mlab
+        RLUT[&quot;recip_lut[1025]&lt;br/&gt;ramstyle = logic&lt;br/&gt;32 b (1/x LUT)&quot;]:::mlab
+    end
+
+    subgraph OFFCHIP[&quot;Off-chip&quot;]
+        SDRAM[(&quot;Board SDR SDRAM&lt;br/&gt;(via Sdram_Control)&lt;br/&gt;FB front + back&lt;br/&gt;RGB565, 640x480 = 614400 B each&quot;)]:::sdram
+        DDR3[(&quot;HPS DDR3&lt;br/&gt;(hps_0.memory conduit)&lt;br/&gt;Linux + user heap&quot;)]:::ddr3
+    end
+
+    FB_A -- bg flush --&gt; SDRAM
+    FB_B -- bg flush --&gt; SDRAM
+    SDRAM -- scanout --&gt; VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA out&quot;]
+    DDR3 -. iowrite32_rep .-&gt; FIFO
+
+    FIFO --&gt; ST_FETCH[&quot;ST_FETCH&quot;]
+    ST_FETCH --&gt; PIPE[&quot;pixel pipeline&quot;]
+    PIPE --&gt; PAL
+    PIPE --&gt; SKY
+    PIPE --&gt; RLUT
+    PIPE --&gt; TROM
+    PIPE --&gt; FB_A
+    PIPE --&gt; FB_B
+    PIPE --&gt; Z_A
+    PIPE --&gt; Z_B
+</pre>
+</details>
+</div>
+<h2 id="hps-software-stack">HPS software stack</h2>
+<div class="diagram-card">
+<h3>hps_software_architecture.mmd</h3>
+<p class="desc">main() -&gt; renderer -&gt; gpu_transport -&gt; /dev/voxel_gpu.</p>
+<p class="source">source file: <code>docs/diagrams/hps_software_architecture.mmd</code></p>
+<div class="mermaid">
+%% Source: sw/game.c, sw/renderer.c, sw/gpu_transport.c, sw/voxel_gpu.c,
+%% sw/voxel_gpu.h. Functions named with file:line where useful.
+flowchart TB
+    classDef app fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+
+    subgraph USER[&quot;User-space (HPS Linux)&quot;]
+        direction TB
+        MAIN[&quot;sw/game.c::main()&lt;br/&gt;main loop: input -&gt; sim -&gt; render&quot;]
+        WORLD[&quot;sw/world.c / world_gen.c&lt;br/&gt;chunk gen + dirty tracking&quot;]
+        MESH[&quot;sw/mesh_worker.c&lt;br/&gt;greedy-mesh + cull&quot;]
+        REN[&quot;sw/renderer.c&lt;br/&gt;renderer_begin_frame / _end_frame&quot;]
+        TR[&quot;sw/gpu_transport.c&lt;br/&gt;per-band descriptor bins,&lt;br/&gt;ioctl dispatch&quot;]
+        class MAIN,WORLD,MESH app
+        class REN ren
+        class TR tr
+        MAIN --&gt; WORLD --&gt; MESH --&gt; REN --&gt; TR
+    end
+
+    subgraph KERN[&quot;Kernel (linux platform driver)&quot;]
+        direction TB
+        OPEN[&quot;voxel_open / voxel_release&quot;]
+        WRITE[&quot;voxel_write&lt;br/&gt;(iowrite32_rep into FIFO_WINDOW)&quot;]
+        IOCTL[&quot;voxel_ioctl&lt;br/&gt;BEGIN_BAND / END_BAND /&lt;br/&gt;FLIP / FLIP_ASYNC / WAIT_FLIP /&lt;br/&gt;SET_PALETTE / SET_FOG / ...&quot;]
+        POLL[&quot;voxel_poll_status&lt;br/&gt;(STATUS reg polling)&quot;]
+        class OPEN,WRITE,IOCTL,POLL km
+        WRITE --&gt; POLL
+        IOCTL --&gt; POLL
+    end
+
+    DEV[(&quot;/dev/voxel_gpu&quot;)]:::km
+    AVL[(&quot;Avalon-MM lwslave&lt;br/&gt;hps_0.h2f_lw_axi_master -&gt;&lt;br/&gt;voxel_gpu_0.avalon_slave_0&quot;)]
+
+    TR -- write(2) bytes --&gt; DEV --&gt; WRITE
+    TR -- ioctl(2) --&gt; DEV --&gt; IOCTL
+    WRITE -- 32-bit MMIO --&gt; AVL
+    IOCTL -- 32-bit MMIO --&gt; AVL
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: sw/game.c, sw/renderer.c, sw/gpu_transport.c, sw/voxel_gpu.c,
+%% sw/voxel_gpu.h. Functions named with file:line where useful.
+flowchart TB
+    classDef app fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+
+    subgraph USER[&quot;User-space (HPS Linux)&quot;]
+        direction TB
+        MAIN[&quot;sw/game.c::main()&lt;br/&gt;main loop: input -&gt; sim -&gt; render&quot;]
+        WORLD[&quot;sw/world.c / world_gen.c&lt;br/&gt;chunk gen + dirty tracking&quot;]
+        MESH[&quot;sw/mesh_worker.c&lt;br/&gt;greedy-mesh + cull&quot;]
+        REN[&quot;sw/renderer.c&lt;br/&gt;renderer_begin_frame / _end_frame&quot;]
+        TR[&quot;sw/gpu_transport.c&lt;br/&gt;per-band descriptor bins,&lt;br/&gt;ioctl dispatch&quot;]
+        class MAIN,WORLD,MESH app
+        class REN ren
+        class TR tr
+        MAIN --&gt; WORLD --&gt; MESH --&gt; REN --&gt; TR
+    end
+
+    subgraph KERN[&quot;Kernel (linux platform driver)&quot;]
+        direction TB
+        OPEN[&quot;voxel_open / voxel_release&quot;]
+        WRITE[&quot;voxel_write&lt;br/&gt;(iowrite32_rep into FIFO_WINDOW)&quot;]
+        IOCTL[&quot;voxel_ioctl&lt;br/&gt;BEGIN_BAND / END_BAND /&lt;br/&gt;FLIP / FLIP_ASYNC / WAIT_FLIP /&lt;br/&gt;SET_PALETTE / SET_FOG / ...&quot;]
+        POLL[&quot;voxel_poll_status&lt;br/&gt;(STATUS reg polling)&quot;]
+        class OPEN,WRITE,IOCTL,POLL km
+        WRITE --&gt; POLL
+        IOCTL --&gt; POLL
+    end
+
+    DEV[(&quot;/dev/voxel_gpu&quot;)]:::km
+    AVL[(&quot;Avalon-MM lwslave&lt;br/&gt;hps_0.h2f_lw_axi_master -&gt;&lt;br/&gt;voxel_gpu_0.avalon_slave_0&quot;)]
+
+    TR -- write(2) bytes --&gt; DEV --&gt; WRITE
+    TR -- ioctl(2) --&gt; DEV --&gt; IOCTL
+    WRITE -- 32-bit MMIO --&gt; AVL
+    IOCTL -- 32-bit MMIO --&gt; AVL
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>hps_to_fpga_dataflow.mmd</h3>
+<p class="desc">User-space bytes -&gt; kernel MMIO -&gt; Avalon-MM -&gt; on-chip FIFO.</p>
+<p class="source">source file: <code>docs/diagrams/hps_to_fpga_dataflow.mmd</code></p>
+<div class="mermaid">
+%% Source: sw/voxel_gpu.h (register layout), sw/voxel_gpu.c (kernel
+%% MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv (Avalon-MM front end + FIFO).
+flowchart LR
+    classDef user fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef kern fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef bus fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+
+    UA[&quot;User app&lt;br/&gt;gpu_transport_submit_band()&quot;]:::user
+    UA -- &quot;write(fd, desc_bytes, len)&quot; --&gt; KW[&quot;voxel_write()&lt;br/&gt;(kernel)&quot;]:::kern
+    KW -- &quot;iowrite32_rep base+0x1000,&lt;br/&gt;cnt words&quot; --&gt; MMIO[/&quot;Avalon-MM lwslave&lt;br/&gt;address[12:0] = word offset&lt;br/&gt;writedata[31:0]&quot;/]:::bus
+
+    MMIO -- &quot;addr in 0x400..0x7FF&lt;br/&gt;(FIFO_WINDOW)&quot; --&gt; FIFO[(&quot;fifo_mem&lt;br/&gt;1024 x 32, M10K&quot;)]:::fpga
+    MMIO -- &quot;addr 0x00E (BAND_CTRL)&quot; --&gt; CMD[&quot;BAND_CTRL.BEGIN / FLUSH&quot;]:::fpga
+    MMIO -- &quot;addr 0x000 (CONTROL)&quot; --&gt; CTRL[&quot;CONTROL: EN, FLP, CLR&quot;]:::fpga
+    MMIO -- &quot;addr 0x005-0x006 (FOG_*)&quot; --&gt; FOG[&quot;fog_range / fog_ctrl&quot;]:::fpga
+    MMIO -- &quot;addr 0x003-0x004 (PALETTE_*)&quot; --&gt; PAL[&quot;palette[256]&quot;]:::fpga
+    MMIO -- &quot;addr 0x01A-0x01B (SKY_PAL_*)&quot; --&gt; SKY[&quot;sky_palette[24]&quot;]:::fpga
+    MMIO -- &quot;addr 0x008-0x00B (EXTMEM_*)&quot; --&gt; EXT[&quot;extmem_*&lt;br/&gt;(scanout / flip)&quot;]:::fpga
+
+    FIFO --&gt; FETCH[&quot;ST_FETCH&lt;br/&gt;descriptor assembler&quot;]:::fpga
+    CMD --&gt; ENG[&quot;engine FSM&lt;br/&gt;(engine_state_t)&quot;]:::fpga
+    CTRL --&gt; ENG
+    FETCH --&gt; ENG
+    ENG --&gt; PIPE[&quot;13-stage pixel pipeline&quot;]:::fpga
+    PIPE --&gt; CACHE[(&quot;fb_back_ram + z_ram&lt;br/&gt;banked M10K caches&quot;)]:::fpga
+    CACHE --&gt; FLUSH[&quot;bg flush&quot;]:::fpga
+    FLUSH --&gt; SDC[&quot;Sdram_Control&quot;]:::fpga
+    SDC --&gt; SDR[(&quot;Board SDR SDRAM&lt;br/&gt;(double FB, RGB565)&quot;)]:::fpga
+    SDR --&gt; VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA out&quot;]:::fpga
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: sw/voxel_gpu.h (register layout), sw/voxel_gpu.c (kernel
+%% MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv (Avalon-MM front end + FIFO).
+flowchart LR
+    classDef user fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef kern fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef bus fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+
+    UA[&quot;User app&lt;br/&gt;gpu_transport_submit_band()&quot;]:::user
+    UA -- &quot;write(fd, desc_bytes, len)&quot; --&gt; KW[&quot;voxel_write()&lt;br/&gt;(kernel)&quot;]:::kern
+    KW -- &quot;iowrite32_rep base+0x1000,&lt;br/&gt;cnt words&quot; --&gt; MMIO[/&quot;Avalon-MM lwslave&lt;br/&gt;address[12:0] = word offset&lt;br/&gt;writedata[31:0]&quot;/]:::bus
+
+    MMIO -- &quot;addr in 0x400..0x7FF&lt;br/&gt;(FIFO_WINDOW)&quot; --&gt; FIFO[(&quot;fifo_mem&lt;br/&gt;1024 x 32, M10K&quot;)]:::fpga
+    MMIO -- &quot;addr 0x00E (BAND_CTRL)&quot; --&gt; CMD[&quot;BAND_CTRL.BEGIN / FLUSH&quot;]:::fpga
+    MMIO -- &quot;addr 0x000 (CONTROL)&quot; --&gt; CTRL[&quot;CONTROL: EN, FLP, CLR&quot;]:::fpga
+    MMIO -- &quot;addr 0x005-0x006 (FOG_*)&quot; --&gt; FOG[&quot;fog_range / fog_ctrl&quot;]:::fpga
+    MMIO -- &quot;addr 0x003-0x004 (PALETTE_*)&quot; --&gt; PAL[&quot;palette[256]&quot;]:::fpga
+    MMIO -- &quot;addr 0x01A-0x01B (SKY_PAL_*)&quot; --&gt; SKY[&quot;sky_palette[24]&quot;]:::fpga
+    MMIO -- &quot;addr 0x008-0x00B (EXTMEM_*)&quot; --&gt; EXT[&quot;extmem_*&lt;br/&gt;(scanout / flip)&quot;]:::fpga
+
+    FIFO --&gt; FETCH[&quot;ST_FETCH&lt;br/&gt;descriptor assembler&quot;]:::fpga
+    CMD --&gt; ENG[&quot;engine FSM&lt;br/&gt;(engine_state_t)&quot;]:::fpga
+    CTRL --&gt; ENG
+    FETCH --&gt; ENG
+    ENG --&gt; PIPE[&quot;13-stage pixel pipeline&quot;]:::fpga
+    PIPE --&gt; CACHE[(&quot;fb_back_ram + z_ram&lt;br/&gt;banked M10K caches&quot;)]:::fpga
+    CACHE --&gt; FLUSH[&quot;bg flush&quot;]:::fpga
+    FLUSH --&gt; SDC[&quot;Sdram_Control&quot;]:::fpga
+    SDC --&gt; SDR[(&quot;Board SDR SDRAM&lt;br/&gt;(double FB, RGB565)&quot;)]:::fpga
+    SDR --&gt; VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA out&quot;]:::fpga
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>register_interface_flow.mmd</h3>
+<p class="desc">ioctl dispatch -&gt; CSRs -&gt; in-hardware effects.</p>
+<p class="source">source file: <code>docs/diagrams/register_interface_flow.mmd</code></p>
+<div class="mermaid">
+%% Source: sw/voxel_gpu.h (byte offsets), hw/voxel_gpu/rtl/voxel_gpu.sv
+%% (ADDR_* word-address localparams), sw/voxel_gpu.c (ioctl handlers).
+flowchart LR
+    classDef sw fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ioctl fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef reg fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef act fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+
+    subgraph SW[&quot;User-space (sw/gpu_transport.c)&quot;]
+        SUBMIT[&quot;submit band: BEGIN/END_BAND&quot;]
+        FLIPSW[&quot;flip frame&quot;]
+        PALSW[&quot;palette upload&quot;]
+        FOGSW[&quot;fog config&quot;]
+        EXTSW[&quot;extmem config&quot;]
+        STSW[&quot;status / perf read&quot;]
+    end
+    class SUBMIT,FLIPSW,PALSW,FOGSW,EXTSW,STSW sw
+
+    subgraph IOCTL[&quot;ioctls (sw/voxel_gpu.c)&quot;]
+        IBB[&quot;VOXEL_IOC_BEGIN_BAND&quot;]
+        IEB[&quot;VOXEL_IOC_END_BAND&quot;]
+        IFL[&quot;VOXEL_IOC_FLIP / FLIP_ASYNC / WAIT_FLIP&quot;]
+        IPL[&quot;VOXEL_IOC_SET_PALETTE / SET_SKY_PALETTE&quot;]
+        IFO[&quot;VOXEL_IOC_SET_FOG&quot;]
+        IEX[&quot;VOXEL_IOC_SET_EXTMEM / GET_EXTMEM&quot;]
+        IST[&quot;VOXEL_IOC_GET_STATUS / GET_PERF / GET_PERF2&quot;]
+        ICLR[&quot;VOXEL_IOC_CLEAR_FRAME&quot;]
+    end
+    class IBB,IEB,IFL,IPL,IFO,IEX,IST,ICLR ioctl
+
+    subgraph REG[&quot;voxel_gpu CSRs (word addrs in RTL)&quot;]
+        R_CTRL[&quot;0x000 CONTROL EN/FLP/IEN/CLR&quot;]
+        R_STAT[&quot;0x001 STATUS BSY/FFL/FEM/VSY/FIFO_COUNT&quot;]
+        R_FCNT[&quot;0x002 FRAME_COUNT&quot;]
+        R_PAL[&quot;0x003/0x004 PALETTE_ADDR/DATA&quot;]
+        R_FOG[&quot;0x005/0x006 FOG_RANGE/FOG_CTRL&quot;]
+        R_EXT[&quot;0x007-0x00C EXTMEM_*&quot;]
+        R_BAND[&quot;0x00D-0x00F BAND_INDEX/CTRL/WINDOW&quot;]
+        R_PERF[&quot;0x010-0x019 PERF_*&quot;]
+        R_SKY[&quot;0x01A/0x01B SKY_PAL_ADDR/DATA&quot;]
+        R_FIFO[&quot;0x400-0x7FF FIFO_WINDOW (4 KB)&quot;]
+    end
+    class R_CTRL,R_STAT,R_FCNT,R_PAL,R_FOG,R_EXT,R_BAND,R_PERF,R_SKY,R_FIFO reg
+
+    SUBMIT --&gt; IBB --&gt; R_BAND
+    SUBMIT -- &quot;write(2) into FIFO&quot; --&gt; R_FIFO
+    SUBMIT --&gt; IEB --&gt; R_BAND
+    FLIPSW --&gt; IFL --&gt; R_CTRL
+    PALSW --&gt; IPL --&gt; R_PAL
+    PALSW --&gt; IPL --&gt; R_SKY
+    FOGSW --&gt; IFO --&gt; R_FOG
+    EXTSW --&gt; IEX --&gt; R_EXT
+    STSW --&gt; IST --&gt; R_STAT
+    STSW --&gt; IST --&gt; R_PERF
+    STSW --&gt; IST --&gt; R_FCNT
+    FLIPSW --&gt; ICLR --&gt; R_CTRL
+
+    R_FIFO --&gt; ACT_FETCH[&quot;ST_FETCH desc assembler&quot;]:::act
+    R_CTRL --&gt; ACT_FSM[&quot;engine FSM control&quot;]:::act
+    R_BAND --&gt; ACT_FSM
+    R_FOG --&gt; ACT_BLEND[&quot;voxel_fog_blend&quot;]:::act
+    R_PAL --&gt; ACT_PAL[&quot;palette[256]&quot;]:::act
+    R_SKY --&gt; ACT_SKY[&quot;sky_palette[24]&quot;]:::act
+    R_EXT --&gt; ACT_SDR[&quot;Sdram_Control / scanout&quot;]:::act
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: sw/voxel_gpu.h (byte offsets), hw/voxel_gpu/rtl/voxel_gpu.sv
+%% (ADDR_* word-address localparams), sw/voxel_gpu.c (ioctl handlers).
+flowchart LR
+    classDef sw fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ioctl fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef reg fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef act fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+
+    subgraph SW[&quot;User-space (sw/gpu_transport.c)&quot;]
+        SUBMIT[&quot;submit band: BEGIN/END_BAND&quot;]
+        FLIPSW[&quot;flip frame&quot;]
+        PALSW[&quot;palette upload&quot;]
+        FOGSW[&quot;fog config&quot;]
+        EXTSW[&quot;extmem config&quot;]
+        STSW[&quot;status / perf read&quot;]
+    end
+    class SUBMIT,FLIPSW,PALSW,FOGSW,EXTSW,STSW sw
+
+    subgraph IOCTL[&quot;ioctls (sw/voxel_gpu.c)&quot;]
+        IBB[&quot;VOXEL_IOC_BEGIN_BAND&quot;]
+        IEB[&quot;VOXEL_IOC_END_BAND&quot;]
+        IFL[&quot;VOXEL_IOC_FLIP / FLIP_ASYNC / WAIT_FLIP&quot;]
+        IPL[&quot;VOXEL_IOC_SET_PALETTE / SET_SKY_PALETTE&quot;]
+        IFO[&quot;VOXEL_IOC_SET_FOG&quot;]
+        IEX[&quot;VOXEL_IOC_SET_EXTMEM / GET_EXTMEM&quot;]
+        IST[&quot;VOXEL_IOC_GET_STATUS / GET_PERF / GET_PERF2&quot;]
+        ICLR[&quot;VOXEL_IOC_CLEAR_FRAME&quot;]
+    end
+    class IBB,IEB,IFL,IPL,IFO,IEX,IST,ICLR ioctl
+
+    subgraph REG[&quot;voxel_gpu CSRs (word addrs in RTL)&quot;]
+        R_CTRL[&quot;0x000 CONTROL EN/FLP/IEN/CLR&quot;]
+        R_STAT[&quot;0x001 STATUS BSY/FFL/FEM/VSY/FIFO_COUNT&quot;]
+        R_FCNT[&quot;0x002 FRAME_COUNT&quot;]
+        R_PAL[&quot;0x003/0x004 PALETTE_ADDR/DATA&quot;]
+        R_FOG[&quot;0x005/0x006 FOG_RANGE/FOG_CTRL&quot;]
+        R_EXT[&quot;0x007-0x00C EXTMEM_*&quot;]
+        R_BAND[&quot;0x00D-0x00F BAND_INDEX/CTRL/WINDOW&quot;]
+        R_PERF[&quot;0x010-0x019 PERF_*&quot;]
+        R_SKY[&quot;0x01A/0x01B SKY_PAL_ADDR/DATA&quot;]
+        R_FIFO[&quot;0x400-0x7FF FIFO_WINDOW (4 KB)&quot;]
+    end
+    class R_CTRL,R_STAT,R_FCNT,R_PAL,R_FOG,R_EXT,R_BAND,R_PERF,R_SKY,R_FIFO reg
+
+    SUBMIT --&gt; IBB --&gt; R_BAND
+    SUBMIT -- &quot;write(2) into FIFO&quot; --&gt; R_FIFO
+    SUBMIT --&gt; IEB --&gt; R_BAND
+    FLIPSW --&gt; IFL --&gt; R_CTRL
+    PALSW --&gt; IPL --&gt; R_PAL
+    PALSW --&gt; IPL --&gt; R_SKY
+    FOGSW --&gt; IFO --&gt; R_FOG
+    EXTSW --&gt; IEX --&gt; R_EXT
+    STSW --&gt; IST --&gt; R_STAT
+    STSW --&gt; IST --&gt; R_PERF
+    STSW --&gt; IST --&gt; R_FCNT
+    FLIPSW --&gt; ICLR --&gt; R_CTRL
+
+    R_FIFO --&gt; ACT_FETCH[&quot;ST_FETCH desc assembler&quot;]:::act
+    R_CTRL --&gt; ACT_FSM[&quot;engine FSM control&quot;]:::act
+    R_BAND --&gt; ACT_FSM
+    R_FOG --&gt; ACT_BLEND[&quot;voxel_fog_blend&quot;]:::act
+    R_PAL --&gt; ACT_PAL[&quot;palette[256]&quot;]:::act
+    R_SKY --&gt; ACT_SKY[&quot;sky_palette[24]&quot;]:::act
+    R_EXT --&gt; ACT_SDR[&quot;Sdram_Control / scanout&quot;]:::act
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>game_to_pixels_flow.mmd</h3>
+<p class="desc">End-to-end frame: game.c main loop to VGA scan-out.</p>
+<p class="source">source file: <code>docs/diagrams/game_to_pixels_flow.mmd</code></p>
+<div class="mermaid">
+%% Source: sw/game.c (main loop), sw/renderer.c (renderer_begin_frame /
+%% _end_frame, gpu_transport_open), sw/gpu_transport.c (bin + ioctl
+%% dispatch), sw/voxel_gpu.c (kernel MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv
+%% (ST_FETCH .. ST_DRAW .. ST_CACHE_FLUSH_*), voxel_vga_counters.sv.
+flowchart LR
+    classDef game fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef hw fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef out fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+
+    A[&quot;sw/game.c&lt;br/&gt;main() while loop&quot;]:::game
+    B[&quot;sample input,&lt;br/&gt;step physics,&lt;br/&gt;update world&quot;]:::game
+    C[&quot;renderer_begin_frame()&lt;br/&gt;sw/renderer.c&quot;]:::ren
+    D[&quot;renderer_draw_*&lt;br/&gt;(world quads, UI)&quot;]:::ren
+    E[&quot;gpu_transport_begin_descriptors()&lt;br/&gt;+ append into per-band bins&quot;]:::tr
+    F[&quot;per-band submit:&lt;br/&gt;VOXEL_IOC_BEGIN_BAND -&gt;\nwrite(fd, desc bytes) -&gt;\nVOXEL_IOC_END_BAND&quot;]:::tr
+    G[&quot;voxel_write -&gt;&lt;br/&gt;iowrite32_rep into FIFO_WINDOW&quot;]:::km
+    H[&quot;ST_FETCH -&gt; ST_SETUP -&gt;&lt;br/&gt;ST_DRAW (13-stage pipe, 2 px/cycle)&quot;]:::hw
+    I[&quot;band cache (M10K)&lt;br/&gt;fb_back_ram + z_ram&quot;]:::hw
+    J[&quot;ST_CACHE_FLUSH_COLOR -&gt;&lt;br/&gt;Sdram_Control writes RGB565&quot;]:::hw
+    K[&quot;SDR SDRAM&lt;br/&gt;back frame&quot;]:::hw
+    L[&quot;renderer_end_frame() -&gt;&lt;br/&gt;gpu_transport_flip()&quot;]:::ren
+    M[&quot;VOXEL_IOC_FLIP / FLIP_ASYNC&lt;br/&gt;CONTROL.FLP swap on vsync&quot;]:::km
+    N[&quot;scanout reads SDRAM front frame&quot;]:::hw
+    O[&quot;voxel_vga_counters drives&lt;br/&gt;VGA_R/G/B + HS/VS @ 25 MHz&quot;]:::out
+
+    A --&gt; B --&gt; C --&gt; D --&gt; E --&gt; F --&gt; G --&gt; H --&gt; I --&gt; J --&gt; K
+    C --&gt; L
+    L --&gt; M
+    K --&gt; N --&gt; O
+    M -. swaps front&lt;-&gt;back .-&gt; K
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Source: sw/game.c (main loop), sw/renderer.c (renderer_begin_frame /
+%% _end_frame, gpu_transport_open), sw/gpu_transport.c (bin + ioctl
+%% dispatch), sw/voxel_gpu.c (kernel MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv
+%% (ST_FETCH .. ST_DRAW .. ST_CACHE_FLUSH_*), voxel_vga_counters.sv.
+flowchart LR
+    classDef game fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef hw fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef out fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+
+    A[&quot;sw/game.c&lt;br/&gt;main() while loop&quot;]:::game
+    B[&quot;sample input,&lt;br/&gt;step physics,&lt;br/&gt;update world&quot;]:::game
+    C[&quot;renderer_begin_frame()&lt;br/&gt;sw/renderer.c&quot;]:::ren
+    D[&quot;renderer_draw_*&lt;br/&gt;(world quads, UI)&quot;]:::ren
+    E[&quot;gpu_transport_begin_descriptors()&lt;br/&gt;+ append into per-band bins&quot;]:::tr
+    F[&quot;per-band submit:&lt;br/&gt;VOXEL_IOC_BEGIN_BAND -&gt;\nwrite(fd, desc bytes) -&gt;\nVOXEL_IOC_END_BAND&quot;]:::tr
+    G[&quot;voxel_write -&gt;&lt;br/&gt;iowrite32_rep into FIFO_WINDOW&quot;]:::km
+    H[&quot;ST_FETCH -&gt; ST_SETUP -&gt;&lt;br/&gt;ST_DRAW (13-stage pipe, 2 px/cycle)&quot;]:::hw
+    I[&quot;band cache (M10K)&lt;br/&gt;fb_back_ram + z_ram&quot;]:::hw
+    J[&quot;ST_CACHE_FLUSH_COLOR -&gt;&lt;br/&gt;Sdram_Control writes RGB565&quot;]:::hw
+    K[&quot;SDR SDRAM&lt;br/&gt;back frame&quot;]:::hw
+    L[&quot;renderer_end_frame() -&gt;&lt;br/&gt;gpu_transport_flip()&quot;]:::ren
+    M[&quot;VOXEL_IOC_FLIP / FLIP_ASYNC&lt;br/&gt;CONTROL.FLP swap on vsync&quot;]:::km
+    N[&quot;scanout reads SDRAM front frame&quot;]:::hw
+    O[&quot;voxel_vga_counters drives&lt;br/&gt;VGA_R/G/B + HS/VS @ 25 MHz&quot;]:::out
+
+    A --&gt; B --&gt; C --&gt; D --&gt; E --&gt; F --&gt; G --&gt; H --&gt; I --&gt; J --&gt; K
+    C --&gt; L
+    L --&gt; M
+    K --&gt; N --&gt; O
+    M -. swaps front&lt;-&gt;back .-&gt; K
+</pre>
+</details>
+</div>
+<h2 id="voxel_gpu-internals-generated">voxel_gpu internals (generated)</h2>
+<div class="diagram-card">
+<h3>voxel_gpu_module_hierarchy.mmd</h3>
+<p class="desc">Submodule instances inside voxel_gpu, extracted from voxel_gpu.sv.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_module_hierarchy.mmd</code></p>
+<div class="mermaid">
+%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+flowchart TB
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef stage fill:#e6e6e6,stroke:#444,color:#111;
+    classDef reg fill:#ffffff,stroke:#444,color:#111;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef fifo fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef op fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef mmio fill:#f6bdd1,stroke:#7a1a45,color:#28091a;
+    VG[&quot;voxel_gpu&lt;br/&gt;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;]
+    class VG fpga
+    subgraph G_Raster_math_combinational[&quot;Raster math (combinational)&quot;]
+        M_voxel_raster_setup[&quot;voxel_raster_setup&quot;]
+        class M_voxel_raster_setup op
+        M_voxel_draw_step[&quot;voxel_draw_step&quot;]
+        class M_voxel_draw_step op
+    end
+    VG --&gt; G_Raster_math_combinational
+    subgraph G_Reciprocal_combinational[&quot;Reciprocal (combinational)&quot;]
+        M_voxel_iw_normalize[&quot;voxel_iw_normalize x2&quot;]
+        class M_voxel_iw_normalize op
+        M_voxel_recip_interpolate[&quot;voxel_recip_interpolate x2&quot;]
+        class M_voxel_recip_interpolate op
+        M_voxel_w_denormalize[&quot;voxel_w_denormalize x2&quot;]
+        class M_voxel_w_denormalize op
+    end
+    VG --&gt; G_Reciprocal_combinational
+    subgraph G_Fog_blend_combinational[&quot;Fog/blend (combinational)&quot;]
+        M_voxel_fog_blend[&quot;voxel_fog_blend x2&quot;]
+        class M_voxel_fog_blend op
+    end
+    VG --&gt; G_Fog_blend_combinational
+    subgraph G_Display_timing[&quot;Display timing&quot;]
+        M_voxel_vga_counters[&quot;voxel_vga_counters&quot;]
+        class M_voxel_vga_counters ctrl
+    end
+    VG --&gt; G_Display_timing
+    subgraph G_Off-chip_SDRAM[&quot;Off-chip SDRAM&quot;]
+        M_Sdram_Control[&quot;Sdram_Control&quot;]
+        class M_Sdram_Control ctrl
+    end
+    VG --&gt; G_Off-chip_SDRAM
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+flowchart TB
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef stage fill:#e6e6e6,stroke:#444,color:#111;
+    classDef reg fill:#ffffff,stroke:#444,color:#111;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef fifo fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef op fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef mmio fill:#f6bdd1,stroke:#7a1a45,color:#28091a;
+    VG[&quot;voxel_gpu&lt;br/&gt;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;]
+    class VG fpga
+    subgraph G_Raster_math_combinational[&quot;Raster math (combinational)&quot;]
+        M_voxel_raster_setup[&quot;voxel_raster_setup&quot;]
+        class M_voxel_raster_setup op
+        M_voxel_draw_step[&quot;voxel_draw_step&quot;]
+        class M_voxel_draw_step op
+    end
+    VG --&gt; G_Raster_math_combinational
+    subgraph G_Reciprocal_combinational[&quot;Reciprocal (combinational)&quot;]
+        M_voxel_iw_normalize[&quot;voxel_iw_normalize x2&quot;]
+        class M_voxel_iw_normalize op
+        M_voxel_recip_interpolate[&quot;voxel_recip_interpolate x2&quot;]
+        class M_voxel_recip_interpolate op
+        M_voxel_w_denormalize[&quot;voxel_w_denormalize x2&quot;]
+        class M_voxel_w_denormalize op
+    end
+    VG --&gt; G_Reciprocal_combinational
+    subgraph G_Fog_blend_combinational[&quot;Fog/blend (combinational)&quot;]
+        M_voxel_fog_blend[&quot;voxel_fog_blend x2&quot;]
+        class M_voxel_fog_blend op
+    end
+    VG --&gt; G_Fog_blend_combinational
+    subgraph G_Display_timing[&quot;Display timing&quot;]
+        M_voxel_vga_counters[&quot;voxel_vga_counters&quot;]
+        class M_voxel_vga_counters ctrl
+    end
+    VG --&gt; G_Display_timing
+    subgraph G_Off-chip_SDRAM[&quot;Off-chip SDRAM&quot;]
+        M_Sdram_Control[&quot;Sdram_Control&quot;]
+        class M_Sdram_Control ctrl
+    end
+    VG --&gt; G_Off-chip_SDRAM
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_pipeline.mmd</h3>
+<p class="desc">13-stage pipeline with per-stage registers, generated from RTL.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_pipeline.mmd</code></p>
+<div class="mermaid">
+%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef stage fill:#e6e6e6,stroke:#444,color:#111;
+    classDef reg fill:#ffffff,stroke:#444,color:#111;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef fifo fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef op fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef mmio fill:#f6bdd1,stroke:#7a1a45,color:#28091a;
+    %% Pipeline stages move left-to-right. Each subgraph
+    %% is the registered output of that stage (always_ff @ clk),
+    %% with major combinational operators that feed it.
+    subgraph FE[Front end]
+        FIFO[(FIFO 1024x32&lt;br/&gt;fifo_mem)]
+        FETCH{{ST_FETCH&lt;br/&gt;descriptor assembler}}
+        SETUP[/voxel_raster_setup&lt;br/&gt;edge_eval, z/uw/vw/iw start/]
+        STEP[/voxel_draw_step&lt;br/&gt;lane1 + next pair/row deltas/]
+        FIFO --&gt; FETCH --&gt; SETUP --&gt; STEP
+    end
+    class FIFO fifo
+    class FETCH ctrl
+    class SETUP,STEP op
+    subgraph S_pipe0[&quot;S0 pipe0&lt;br/&gt;&lt;i&gt;Edge-test setup + UV/iw extraction&lt;/i&gt;&quot;]
+        pipe0_addr[&quot;pipe0_addr&quot;]
+        class pipe0_addr reg
+        pipe0_alpha[&quot;pipe0_alpha&quot;]
+        class pipe0_alpha reg
+        pipe0_alpha_key[&quot;pipe0_alpha_key&quot;]
+        class pipe0_alpha_key reg
+        pipe0_fog[&quot;pipe0_fog&quot;]
+        class pipe0_fog reg
+        pipe0_inside[&quot;pipe0_inside&quot;]
+        class pipe0_inside reg
+        pipe0_iw_q[&quot;pipe0_iw_q&quot;]
+        class pipe0_iw_q reg
+        pipe0_light_bank[&quot;pipe0_light_bank&quot;]
+        class pipe0_light_bank reg
+        pipe0_tex_or_color[&quot;pipe0_tex_or_color&quot;]
+        class pipe0_tex_or_color reg
+        pipe0_more[/&quot;... +8 more&quot;/]
+        class pipe0_more reg
+    end
+    class S_pipe0 stage
+    STEP --&gt; S_pipe0
+    subgraph S_recip0[&quot;S1 recip0&lt;br/&gt;&lt;i&gt;iw normalize, MSB extraction&lt;/i&gt;&quot;]
+        recip0_addr[&quot;recip0_addr&quot;]
+        class recip0_addr reg
+        recip0_alpha[&quot;recip0_alpha&quot;]
+        class recip0_alpha reg
+        recip0_alpha_key[&quot;recip0_alpha_key&quot;]
+        class recip0_alpha_key reg
+        recip0_fog[&quot;recip0_fog&quot;]
+        class recip0_fog reg
+        recip0_inside[&quot;recip0_inside&quot;]
+        class recip0_inside reg
+        recip0_iw_msb[&quot;recip0_iw_msb&quot;]
+        class recip0_iw_msb reg
+        recip0_iw_norm_q[&quot;recip0_iw_norm_q&quot;]
+        class recip0_iw_norm_q reg
+        recip0_iw_zero[&quot;recip0_iw_zero&quot;]
+        class recip0_iw_zero reg
+        recip0_more[/&quot;... +10 more&quot;/]
+        class recip0_more reg
+    end
+    class S_recip0 stage
+    S_pipe0 --&gt; S_recip0
+    subgraph S_recip1[&quot;S2 recip1&lt;br/&gt;&lt;i&gt;1/iw LUT fetch (lo,hi entries)&lt;/i&gt;&quot;]
+        recip1_addr[&quot;recip1_addr&quot;]
+        class recip1_addr reg
+        recip1_alpha[&quot;recip1_alpha&quot;]
+        class recip1_alpha reg
+        recip1_alpha_key[&quot;recip1_alpha_key&quot;]
+        class recip1_alpha_key reg
+        recip1_dst_rgb565[&quot;recip1_dst_rgb565&quot;]
+        class recip1_dst_rgb565 reg
+        recip1_fog[&quot;recip1_fog&quot;]
+        class recip1_fog reg
+        recip1_inside[&quot;recip1_inside&quot;]
+        class recip1_inside reg
+        recip1_iw_lut_frac[&quot;recip1_iw_lut_frac&quot;]
+        class recip1_iw_lut_frac reg
+        recip1_iw_msb[&quot;recip1_iw_msb&quot;]
+        class recip1_iw_msb reg
+        recip1_more[/&quot;... +14 more&quot;/]
+        class recip1_more reg
+    end
+    class S_recip1 stage
+    S_recip0 --&gt; S_recip1
+    subgraph S_recip2[&quot;S3 recip2&lt;br/&gt;&lt;i&gt;Linear interpolate (LUT lo,hi,frac)&lt;/i&gt;&quot;]
+        recip2_addr[&quot;recip2_addr&quot;]
+        class recip2_addr reg
+        recip2_alpha[&quot;recip2_alpha&quot;]
+        class recip2_alpha reg
+        recip2_alpha_key[&quot;recip2_alpha_key&quot;]
+        class recip2_alpha_key reg
+        recip2_dst_rgb565[&quot;recip2_dst_rgb565&quot;]
+        class recip2_dst_rgb565 reg
+        recip2_fog[&quot;recip2_fog&quot;]
+        class recip2_fog reg
+        recip2_inside[&quot;recip2_inside&quot;]
+        class recip2_inside reg
+        recip2_iw_msb[&quot;recip2_iw_msb&quot;]
+        class recip2_iw_msb reg
+        recip2_iw_zero[&quot;recip2_iw_zero&quot;]
+        class recip2_iw_zero reg
+        recip2_more[/&quot;... +12 more&quot;/]
+        class recip2_more reg
+    end
+    class S_recip2 stage
+    S_recip1 --&gt; S_recip2
+    subgraph S_pipe1[&quot;S4 pipe1&lt;br/&gt;&lt;i&gt;w denormalize -&gt; per-pixel w (Q16.16)&lt;/i&gt;&quot;]
+        pipe1_addr[&quot;pipe1_addr&quot;]
+        class pipe1_addr reg
+        pipe1_alpha[&quot;pipe1_alpha&quot;]
+        class pipe1_alpha reg
+        pipe1_alpha_key[&quot;pipe1_alpha_key&quot;]
+        class pipe1_alpha_key reg
+        pipe1_dst_rgb565[&quot;pipe1_dst_rgb565&quot;]
+        class pipe1_dst_rgb565 reg
+        pipe1_fog[&quot;pipe1_fog&quot;]
+        class pipe1_fog reg
+        pipe1_inside[&quot;pipe1_inside&quot;]
+        class pipe1_inside reg
+        pipe1_light_bank[&quot;pipe1_light_bank&quot;]
+        class pipe1_light_bank reg
+        pipe1_tex_or_color[&quot;pipe1_tex_or_color&quot;]
+        class pipe1_tex_or_color reg
+        pipe1_more[/&quot;... +10 more&quot;/]
+        class pipe1_more reg
+        pipe1_ops[[&quot;ops: MUL&quot;]]
+        class pipe1_ops op
+    end
+    class S_pipe1 stage
+    S_recip2 --&gt; S_pipe1
+    subgraph S_tex0[&quot;S5 tex0&lt;br/&gt;&lt;i&gt;u = uw*w, v = vw*w  (perspective-correct UV)&lt;/i&gt;&quot;]
+        tex0_addr[&quot;tex0_addr&quot;]
+        class tex0_addr reg
+        tex0_alpha[&quot;tex0_alpha&quot;]
+        class tex0_alpha reg
+        tex0_alpha_key[&quot;tex0_alpha_key&quot;]
+        class tex0_alpha_key reg
+        tex0_dst_rgb565[&quot;tex0_dst_rgb565&quot;]
+        class tex0_dst_rgb565 reg
+        tex0_fog[&quot;tex0_fog&quot;]
+        class tex0_fog reg
+        tex0_inside[&quot;tex0_inside&quot;]
+        class tex0_inside reg
+        tex0_light_bank[&quot;tex0_light_bank&quot;]
+        class tex0_light_bank reg
+        tex0_tex_or_color[&quot;tex0_tex_or_color&quot;]
+        class tex0_tex_or_color reg
+        tex0_more[/&quot;... +10 more&quot;/]
+        class tex0_more reg
+    end
+    class S_tex0 stage
+    S_pipe1 --&gt; S_tex0
+    subgraph S_pipe2[&quot;S6 pipe2&lt;br/&gt;&lt;i&gt;Texture address build (tile,u,v)&lt;/i&gt;&quot;]
+        pipe2_addr[&quot;pipe2_addr&quot;]
+        class pipe2_addr reg
+        pipe2_alpha[&quot;pipe2_alpha&quot;]
+        class pipe2_alpha reg
+        pipe2_alpha_key[&quot;pipe2_alpha_key&quot;]
+        class pipe2_alpha_key reg
+        pipe2_dst_rgb565[&quot;pipe2_dst_rgb565&quot;]
+        class pipe2_dst_rgb565 reg
+        pipe2_fog[&quot;pipe2_fog&quot;]
+        class pipe2_fog reg
+        pipe2_inside[&quot;pipe2_inside&quot;]
+        class pipe2_inside reg
+        pipe2_light_bank[&quot;pipe2_light_bank&quot;]
+        class pipe2_light_bank reg
+        pipe2_tex_addr[&quot;pipe2_tex_addr&quot;]
+        class pipe2_tex_addr reg
+        pipe2_more[/&quot;... +9 more&quot;/]
+        class pipe2_more reg
+    end
+    class S_pipe2 stage
+    S_tex0 --&gt; S_pipe2
+    subgraph S_draw_pipe[&quot;S7 draw_pipe&lt;br/&gt;&lt;i&gt;Texture ROM read, light bank, dst Z/RGB fetch&lt;/i&gt;&quot;]
+        draw_pipe_addr[&quot;draw_pipe_addr&quot;]
+        class draw_pipe_addr reg
+        draw_pipe_alpha[&quot;draw_pipe_alpha&quot;]
+        class draw_pipe_alpha reg
+        draw_pipe_alpha_key[&quot;draw_pipe_alpha_key&quot;]
+        class draw_pipe_alpha_key reg
+        draw_pipe_dst_rgb565[&quot;draw_pipe_dst_rgb565&quot;]
+        class draw_pipe_dst_rgb565 reg
+        draw_pipe_fog[&quot;draw_pipe_fog&quot;]
+        class draw_pipe_fog reg
+        draw_pipe_inside[&quot;draw_pipe_inside&quot;]
+        class draw_pipe_inside reg
+        draw_pipe_light_bank[&quot;draw_pipe_light_bank&quot;]
+        class draw_pipe_light_bank reg
+        draw_pipe_tex_or_color[&quot;draw_pipe_tex_or_color&quot;]
+        class draw_pipe_tex_or_color reg
+        draw_pipe_more[/&quot;... +8 more&quot;/]
+        class draw_pipe_more reg
+        draw_pipe_ops[[&quot;ops: MUL, MUL+ADD+SHR&quot;]]
+        class draw_pipe_ops op
+    end
+    class S_draw_pipe stage
+    S_pipe2 --&gt; S_draw_pipe
+    subgraph S_pal_rd[&quot;S8 pal_rd&lt;br/&gt;&lt;i&gt;Palette address register&lt;/i&gt;&quot;]
+        pal_rd_addr[&quot;pal_rd_addr&quot;]
+        class pal_rd_addr reg
+        pal_rd_alpha[&quot;pal_rd_alpha&quot;]
+        class pal_rd_alpha reg
+        pal_rd_dst_rgb565[&quot;pal_rd_dst_rgb565&quot;]
+        class pal_rd_dst_rgb565 reg
+        pal_rd_fog[&quot;pal_rd_fog&quot;]
+        class pal_rd_fog reg
+        pal_rd_fog_addr[&quot;pal_rd_fog_addr&quot;]
+        class pal_rd_fog_addr reg
+        pal_rd_pass[&quot;pal_rd_pass&quot;]
+        class pal_rd_pass reg
+        pal_rd_ray_scale_q16[&quot;pal_rd_ray_scale_q16&quot;]
+        class pal_rd_ray_scale_q16 reg
+        pal_rd_sky_index[&quot;pal_rd_sky_index&quot;]
+        class pal_rd_sky_index reg
+        pal_rd_more[/&quot;... +6 more&quot;/]
+        class pal_rd_more reg
+    end
+    class S_pal_rd stage
+    S_draw_pipe --&gt; S_pal_rd
+    subgraph S_plr[&quot;S9 plr&lt;br/&gt;&lt;i&gt;Palette[] read -&gt; 24-bit RGB, RGB-&gt;RGB565&lt;/i&gt;&quot;]
+        plr_addr[&quot;plr_addr&quot;]
+        class plr_addr reg
+        plr_alpha[&quot;plr_alpha&quot;]
+        class plr_alpha reg
+        plr_dst_rgb565[&quot;plr_dst_rgb565&quot;]
+        class plr_dst_rgb565 reg
+        plr_fog[&quot;plr_fog&quot;]
+        class plr_fog reg
+        plr_fog_rgb[&quot;plr_fog_rgb&quot;]
+        class plr_fog_rgb reg
+        plr_pass[&quot;plr_pass&quot;]
+        class plr_pass reg
+        plr_ray_scale_q16[&quot;plr_ray_scale_q16&quot;]
+        class plr_ray_scale_q16 reg
+        plr_src_rgb[&quot;plr_src_rgb&quot;]
+        class plr_src_rgb reg
+        plr_more[/&quot;... +4 more&quot;/]
+        class plr_more reg
+    end
+    class S_plr stage
+    S_pal_rd --&gt; S_plr
+    subgraph S_fog0[&quot;S10 fog0&lt;br/&gt;&lt;i&gt;Radial distance: r^2/f^2, ray scale&lt;/i&gt;&quot;]
+        fog0_addr[&quot;fog0_addr&quot;]
+        class fog0_addr reg
+        fog0_alpha[&quot;fog0_alpha&quot;]
+        class fog0_alpha reg
+        fog0_dst_rgb565[&quot;fog0_dst_rgb565&quot;]
+        class fog0_dst_rgb565 reg
+        fog0_fog[&quot;fog0_fog&quot;]
+        class fog0_fog reg
+        fog0_fog_rgb565[&quot;fog0_fog_rgb565&quot;]
+        class fog0_fog_rgb565 reg
+        fog0_pass[&quot;fog0_pass&quot;]
+        class fog0_pass reg
+        fog0_ray_scale_q16[&quot;fog0_ray_scale_q16&quot;]
+        class fog0_ray_scale_q16 reg
+        fog0_src_rgb565[&quot;fog0_src_rgb565&quot;]
+        class fog0_src_rgb565 reg
+        fog0_more[/&quot;... +4 more&quot;/]
+        class fog0_more reg
+        fog0_ops[[&quot;ops: MUL&quot;]]
+        class fog0_ops op
+    end
+    class S_fog0 stage
+    S_plr --&gt; S_fog0
+    subgraph S_fog1[&quot;S11 fog1&lt;br/&gt;&lt;i&gt;Fog blend + alpha blend (voxel_fog_blend)&lt;/i&gt;&quot;]
+        fog1_addr[&quot;fog1_addr&quot;]
+        class fog1_addr reg
+        fog1_alpha[&quot;fog1_alpha&quot;]
+        class fog1_alpha reg
+        fog1_dst_rgb565[&quot;fog1_dst_rgb565&quot;]
+        class fog1_dst_rgb565 reg
+        fog1_fog[&quot;fog1_fog&quot;]
+        class fog1_fog reg
+        fog1_fog_rgb565[&quot;fog1_fog_rgb565&quot;]
+        class fog1_fog_rgb565 reg
+        fog1_pass[&quot;fog1_pass&quot;]
+        class fog1_pass reg
+        fog1_radial_q8_8[&quot;fog1_radial_q8_8&quot;]
+        class fog1_radial_q8_8 reg
+        fog1_src_rgb565[&quot;fog1_src_rgb565&quot;]
+        class fog1_src_rgb565 reg
+        fog1_more[/&quot;... +3 more&quot;/]
+        class fog1_more reg
+    end
+    class S_fog1 stage
+    S_fog0 --&gt; S_fog1
+    subgraph S_commit[&quot;S12 commit&lt;br/&gt;&lt;i&gt;Z-test, color/Z write to band cache&lt;/i&gt;&quot;]
+        commit_addr[&quot;commit_addr&quot;]
+        class commit_addr reg
+        commit_color[&quot;commit_color&quot;]
+        class commit_color reg
+        commit_pass[&quot;commit_pass&quot;]
+        class commit_pass reg
+        commit_valid[&quot;commit_valid&quot;]
+        class commit_valid reg
+        commit_z[&quot;commit_z&quot;]
+        class commit_z reg
+        commit_ztest[&quot;commit_ztest&quot;]
+        class commit_ztest reg
+    end
+    class S_commit stage
+    S_fog1 --&gt; S_commit
+    subgraph BE[Back end]
+        ZRAM[(z_ram_A/B&lt;br/&gt;banked SDP M10K)]
+        FBRAM[(fb_back_ram_A/B&lt;br/&gt;banked SDP M10K)]
+        TROM[(voxel_texture_rom&lt;br/&gt;2x altsyncram ROM)]
+        SDRAMC[/Sdram_Control&lt;br/&gt;vendor SDRAM ctrl/]
+        VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA_R/G/B + HS/VS&quot;]
+    end
+    class ZRAM,FBRAM ram
+    class TROM rom
+    class SDRAMC,VGA ctrl
+    S_pipe2 -. tex_addr .-&gt; TROM
+    TROM -. tex_data .-&gt; S_draw_pipe
+    S_commit -- color write --&gt; FBRAM
+    S_commit -- z write --&gt; ZRAM
+    FBRAM -- scanout --&gt; SDRAMC
+    SDRAMC -- pixel words --&gt; VGA
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+flowchart LR
+    classDef hps fill:#fde2c4,stroke:#b06000,color:#3a2200;
+    classDef fpga fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef stage fill:#e6e6e6,stroke:#444,color:#111;
+    classDef reg fill:#ffffff,stroke:#444,color:#111;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef fifo fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef op fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef mmio fill:#f6bdd1,stroke:#7a1a45,color:#28091a;
+    %% Pipeline stages move left-to-right. Each subgraph
+    %% is the registered output of that stage (always_ff @ clk),
+    %% with major combinational operators that feed it.
+    subgraph FE[Front end]
+        FIFO[(FIFO 1024x32&lt;br/&gt;fifo_mem)]
+        FETCH{{ST_FETCH&lt;br/&gt;descriptor assembler}}
+        SETUP[/voxel_raster_setup&lt;br/&gt;edge_eval, z/uw/vw/iw start/]
+        STEP[/voxel_draw_step&lt;br/&gt;lane1 + next pair/row deltas/]
+        FIFO --&gt; FETCH --&gt; SETUP --&gt; STEP
+    end
+    class FIFO fifo
+    class FETCH ctrl
+    class SETUP,STEP op
+    subgraph S_pipe0[&quot;S0 pipe0&lt;br/&gt;&lt;i&gt;Edge-test setup + UV/iw extraction&lt;/i&gt;&quot;]
+        pipe0_addr[&quot;pipe0_addr&quot;]
+        class pipe0_addr reg
+        pipe0_alpha[&quot;pipe0_alpha&quot;]
+        class pipe0_alpha reg
+        pipe0_alpha_key[&quot;pipe0_alpha_key&quot;]
+        class pipe0_alpha_key reg
+        pipe0_fog[&quot;pipe0_fog&quot;]
+        class pipe0_fog reg
+        pipe0_inside[&quot;pipe0_inside&quot;]
+        class pipe0_inside reg
+        pipe0_iw_q[&quot;pipe0_iw_q&quot;]
+        class pipe0_iw_q reg
+        pipe0_light_bank[&quot;pipe0_light_bank&quot;]
+        class pipe0_light_bank reg
+        pipe0_tex_or_color[&quot;pipe0_tex_or_color&quot;]
+        class pipe0_tex_or_color reg
+        pipe0_more[/&quot;... +8 more&quot;/]
+        class pipe0_more reg
+    end
+    class S_pipe0 stage
+    STEP --&gt; S_pipe0
+    subgraph S_recip0[&quot;S1 recip0&lt;br/&gt;&lt;i&gt;iw normalize, MSB extraction&lt;/i&gt;&quot;]
+        recip0_addr[&quot;recip0_addr&quot;]
+        class recip0_addr reg
+        recip0_alpha[&quot;recip0_alpha&quot;]
+        class recip0_alpha reg
+        recip0_alpha_key[&quot;recip0_alpha_key&quot;]
+        class recip0_alpha_key reg
+        recip0_fog[&quot;recip0_fog&quot;]
+        class recip0_fog reg
+        recip0_inside[&quot;recip0_inside&quot;]
+        class recip0_inside reg
+        recip0_iw_msb[&quot;recip0_iw_msb&quot;]
+        class recip0_iw_msb reg
+        recip0_iw_norm_q[&quot;recip0_iw_norm_q&quot;]
+        class recip0_iw_norm_q reg
+        recip0_iw_zero[&quot;recip0_iw_zero&quot;]
+        class recip0_iw_zero reg
+        recip0_more[/&quot;... +10 more&quot;/]
+        class recip0_more reg
+    end
+    class S_recip0 stage
+    S_pipe0 --&gt; S_recip0
+    subgraph S_recip1[&quot;S2 recip1&lt;br/&gt;&lt;i&gt;1/iw LUT fetch (lo,hi entries)&lt;/i&gt;&quot;]
+        recip1_addr[&quot;recip1_addr&quot;]
+        class recip1_addr reg
+        recip1_alpha[&quot;recip1_alpha&quot;]
+        class recip1_alpha reg
+        recip1_alpha_key[&quot;recip1_alpha_key&quot;]
+        class recip1_alpha_key reg
+        recip1_dst_rgb565[&quot;recip1_dst_rgb565&quot;]
+        class recip1_dst_rgb565 reg
+        recip1_fog[&quot;recip1_fog&quot;]
+        class recip1_fog reg
+        recip1_inside[&quot;recip1_inside&quot;]
+        class recip1_inside reg
+        recip1_iw_lut_frac[&quot;recip1_iw_lut_frac&quot;]
+        class recip1_iw_lut_frac reg
+        recip1_iw_msb[&quot;recip1_iw_msb&quot;]
+        class recip1_iw_msb reg
+        recip1_more[/&quot;... +14 more&quot;/]
+        class recip1_more reg
+    end
+    class S_recip1 stage
+    S_recip0 --&gt; S_recip1
+    subgraph S_recip2[&quot;S3 recip2&lt;br/&gt;&lt;i&gt;Linear interpolate (LUT lo,hi,frac)&lt;/i&gt;&quot;]
+        recip2_addr[&quot;recip2_addr&quot;]
+        class recip2_addr reg
+        recip2_alpha[&quot;recip2_alpha&quot;]
+        class recip2_alpha reg
+        recip2_alpha_key[&quot;recip2_alpha_key&quot;]
+        class recip2_alpha_key reg
+        recip2_dst_rgb565[&quot;recip2_dst_rgb565&quot;]
+        class recip2_dst_rgb565 reg
+        recip2_fog[&quot;recip2_fog&quot;]
+        class recip2_fog reg
+        recip2_inside[&quot;recip2_inside&quot;]
+        class recip2_inside reg
+        recip2_iw_msb[&quot;recip2_iw_msb&quot;]
+        class recip2_iw_msb reg
+        recip2_iw_zero[&quot;recip2_iw_zero&quot;]
+        class recip2_iw_zero reg
+        recip2_more[/&quot;... +12 more&quot;/]
+        class recip2_more reg
+    end
+    class S_recip2 stage
+    S_recip1 --&gt; S_recip2
+    subgraph S_pipe1[&quot;S4 pipe1&lt;br/&gt;&lt;i&gt;w denormalize -&gt; per-pixel w (Q16.16)&lt;/i&gt;&quot;]
+        pipe1_addr[&quot;pipe1_addr&quot;]
+        class pipe1_addr reg
+        pipe1_alpha[&quot;pipe1_alpha&quot;]
+        class pipe1_alpha reg
+        pipe1_alpha_key[&quot;pipe1_alpha_key&quot;]
+        class pipe1_alpha_key reg
+        pipe1_dst_rgb565[&quot;pipe1_dst_rgb565&quot;]
+        class pipe1_dst_rgb565 reg
+        pipe1_fog[&quot;pipe1_fog&quot;]
+        class pipe1_fog reg
+        pipe1_inside[&quot;pipe1_inside&quot;]
+        class pipe1_inside reg
+        pipe1_light_bank[&quot;pipe1_light_bank&quot;]
+        class pipe1_light_bank reg
+        pipe1_tex_or_color[&quot;pipe1_tex_or_color&quot;]
+        class pipe1_tex_or_color reg
+        pipe1_more[/&quot;... +10 more&quot;/]
+        class pipe1_more reg
+        pipe1_ops[[&quot;ops: MUL&quot;]]
+        class pipe1_ops op
+    end
+    class S_pipe1 stage
+    S_recip2 --&gt; S_pipe1
+    subgraph S_tex0[&quot;S5 tex0&lt;br/&gt;&lt;i&gt;u = uw*w, v = vw*w  (perspective-correct UV)&lt;/i&gt;&quot;]
+        tex0_addr[&quot;tex0_addr&quot;]
+        class tex0_addr reg
+        tex0_alpha[&quot;tex0_alpha&quot;]
+        class tex0_alpha reg
+        tex0_alpha_key[&quot;tex0_alpha_key&quot;]
+        class tex0_alpha_key reg
+        tex0_dst_rgb565[&quot;tex0_dst_rgb565&quot;]
+        class tex0_dst_rgb565 reg
+        tex0_fog[&quot;tex0_fog&quot;]
+        class tex0_fog reg
+        tex0_inside[&quot;tex0_inside&quot;]
+        class tex0_inside reg
+        tex0_light_bank[&quot;tex0_light_bank&quot;]
+        class tex0_light_bank reg
+        tex0_tex_or_color[&quot;tex0_tex_or_color&quot;]
+        class tex0_tex_or_color reg
+        tex0_more[/&quot;... +10 more&quot;/]
+        class tex0_more reg
+    end
+    class S_tex0 stage
+    S_pipe1 --&gt; S_tex0
+    subgraph S_pipe2[&quot;S6 pipe2&lt;br/&gt;&lt;i&gt;Texture address build (tile,u,v)&lt;/i&gt;&quot;]
+        pipe2_addr[&quot;pipe2_addr&quot;]
+        class pipe2_addr reg
+        pipe2_alpha[&quot;pipe2_alpha&quot;]
+        class pipe2_alpha reg
+        pipe2_alpha_key[&quot;pipe2_alpha_key&quot;]
+        class pipe2_alpha_key reg
+        pipe2_dst_rgb565[&quot;pipe2_dst_rgb565&quot;]
+        class pipe2_dst_rgb565 reg
+        pipe2_fog[&quot;pipe2_fog&quot;]
+        class pipe2_fog reg
+        pipe2_inside[&quot;pipe2_inside&quot;]
+        class pipe2_inside reg
+        pipe2_light_bank[&quot;pipe2_light_bank&quot;]
+        class pipe2_light_bank reg
+        pipe2_tex_addr[&quot;pipe2_tex_addr&quot;]
+        class pipe2_tex_addr reg
+        pipe2_more[/&quot;... +9 more&quot;/]
+        class pipe2_more reg
+    end
+    class S_pipe2 stage
+    S_tex0 --&gt; S_pipe2
+    subgraph S_draw_pipe[&quot;S7 draw_pipe&lt;br/&gt;&lt;i&gt;Texture ROM read, light bank, dst Z/RGB fetch&lt;/i&gt;&quot;]
+        draw_pipe_addr[&quot;draw_pipe_addr&quot;]
+        class draw_pipe_addr reg
+        draw_pipe_alpha[&quot;draw_pipe_alpha&quot;]
+        class draw_pipe_alpha reg
+        draw_pipe_alpha_key[&quot;draw_pipe_alpha_key&quot;]
+        class draw_pipe_alpha_key reg
+        draw_pipe_dst_rgb565[&quot;draw_pipe_dst_rgb565&quot;]
+        class draw_pipe_dst_rgb565 reg
+        draw_pipe_fog[&quot;draw_pipe_fog&quot;]
+        class draw_pipe_fog reg
+        draw_pipe_inside[&quot;draw_pipe_inside&quot;]
+        class draw_pipe_inside reg
+        draw_pipe_light_bank[&quot;draw_pipe_light_bank&quot;]
+        class draw_pipe_light_bank reg
+        draw_pipe_tex_or_color[&quot;draw_pipe_tex_or_color&quot;]
+        class draw_pipe_tex_or_color reg
+        draw_pipe_more[/&quot;... +8 more&quot;/]
+        class draw_pipe_more reg
+        draw_pipe_ops[[&quot;ops: MUL, MUL+ADD+SHR&quot;]]
+        class draw_pipe_ops op
+    end
+    class S_draw_pipe stage
+    S_pipe2 --&gt; S_draw_pipe
+    subgraph S_pal_rd[&quot;S8 pal_rd&lt;br/&gt;&lt;i&gt;Palette address register&lt;/i&gt;&quot;]
+        pal_rd_addr[&quot;pal_rd_addr&quot;]
+        class pal_rd_addr reg
+        pal_rd_alpha[&quot;pal_rd_alpha&quot;]
+        class pal_rd_alpha reg
+        pal_rd_dst_rgb565[&quot;pal_rd_dst_rgb565&quot;]
+        class pal_rd_dst_rgb565 reg
+        pal_rd_fog[&quot;pal_rd_fog&quot;]
+        class pal_rd_fog reg
+        pal_rd_fog_addr[&quot;pal_rd_fog_addr&quot;]
+        class pal_rd_fog_addr reg
+        pal_rd_pass[&quot;pal_rd_pass&quot;]
+        class pal_rd_pass reg
+        pal_rd_ray_scale_q16[&quot;pal_rd_ray_scale_q16&quot;]
+        class pal_rd_ray_scale_q16 reg
+        pal_rd_sky_index[&quot;pal_rd_sky_index&quot;]
+        class pal_rd_sky_index reg
+        pal_rd_more[/&quot;... +6 more&quot;/]
+        class pal_rd_more reg
+    end
+    class S_pal_rd stage
+    S_draw_pipe --&gt; S_pal_rd
+    subgraph S_plr[&quot;S9 plr&lt;br/&gt;&lt;i&gt;Palette[] read -&gt; 24-bit RGB, RGB-&gt;RGB565&lt;/i&gt;&quot;]
+        plr_addr[&quot;plr_addr&quot;]
+        class plr_addr reg
+        plr_alpha[&quot;plr_alpha&quot;]
+        class plr_alpha reg
+        plr_dst_rgb565[&quot;plr_dst_rgb565&quot;]
+        class plr_dst_rgb565 reg
+        plr_fog[&quot;plr_fog&quot;]
+        class plr_fog reg
+        plr_fog_rgb[&quot;plr_fog_rgb&quot;]
+        class plr_fog_rgb reg
+        plr_pass[&quot;plr_pass&quot;]
+        class plr_pass reg
+        plr_ray_scale_q16[&quot;plr_ray_scale_q16&quot;]
+        class plr_ray_scale_q16 reg
+        plr_src_rgb[&quot;plr_src_rgb&quot;]
+        class plr_src_rgb reg
+        plr_more[/&quot;... +4 more&quot;/]
+        class plr_more reg
+    end
+    class S_plr stage
+    S_pal_rd --&gt; S_plr
+    subgraph S_fog0[&quot;S10 fog0&lt;br/&gt;&lt;i&gt;Radial distance: r^2/f^2, ray scale&lt;/i&gt;&quot;]
+        fog0_addr[&quot;fog0_addr&quot;]
+        class fog0_addr reg
+        fog0_alpha[&quot;fog0_alpha&quot;]
+        class fog0_alpha reg
+        fog0_dst_rgb565[&quot;fog0_dst_rgb565&quot;]
+        class fog0_dst_rgb565 reg
+        fog0_fog[&quot;fog0_fog&quot;]
+        class fog0_fog reg
+        fog0_fog_rgb565[&quot;fog0_fog_rgb565&quot;]
+        class fog0_fog_rgb565 reg
+        fog0_pass[&quot;fog0_pass&quot;]
+        class fog0_pass reg
+        fog0_ray_scale_q16[&quot;fog0_ray_scale_q16&quot;]
+        class fog0_ray_scale_q16 reg
+        fog0_src_rgb565[&quot;fog0_src_rgb565&quot;]
+        class fog0_src_rgb565 reg
+        fog0_more[/&quot;... +4 more&quot;/]
+        class fog0_more reg
+        fog0_ops[[&quot;ops: MUL&quot;]]
+        class fog0_ops op
+    end
+    class S_fog0 stage
+    S_plr --&gt; S_fog0
+    subgraph S_fog1[&quot;S11 fog1&lt;br/&gt;&lt;i&gt;Fog blend + alpha blend (voxel_fog_blend)&lt;/i&gt;&quot;]
+        fog1_addr[&quot;fog1_addr&quot;]
+        class fog1_addr reg
+        fog1_alpha[&quot;fog1_alpha&quot;]
+        class fog1_alpha reg
+        fog1_dst_rgb565[&quot;fog1_dst_rgb565&quot;]
+        class fog1_dst_rgb565 reg
+        fog1_fog[&quot;fog1_fog&quot;]
+        class fog1_fog reg
+        fog1_fog_rgb565[&quot;fog1_fog_rgb565&quot;]
+        class fog1_fog_rgb565 reg
+        fog1_pass[&quot;fog1_pass&quot;]
+        class fog1_pass reg
+        fog1_radial_q8_8[&quot;fog1_radial_q8_8&quot;]
+        class fog1_radial_q8_8 reg
+        fog1_src_rgb565[&quot;fog1_src_rgb565&quot;]
+        class fog1_src_rgb565 reg
+        fog1_more[/&quot;... +3 more&quot;/]
+        class fog1_more reg
+    end
+    class S_fog1 stage
+    S_fog0 --&gt; S_fog1
+    subgraph S_commit[&quot;S12 commit&lt;br/&gt;&lt;i&gt;Z-test, color/Z write to band cache&lt;/i&gt;&quot;]
+        commit_addr[&quot;commit_addr&quot;]
+        class commit_addr reg
+        commit_color[&quot;commit_color&quot;]
+        class commit_color reg
+        commit_pass[&quot;commit_pass&quot;]
+        class commit_pass reg
+        commit_valid[&quot;commit_valid&quot;]
+        class commit_valid reg
+        commit_z[&quot;commit_z&quot;]
+        class commit_z reg
+        commit_ztest[&quot;commit_ztest&quot;]
+        class commit_ztest reg
+    end
+    class S_commit stage
+    S_fog1 --&gt; S_commit
+    subgraph BE[Back end]
+        ZRAM[(z_ram_A/B&lt;br/&gt;banked SDP M10K)]
+        FBRAM[(fb_back_ram_A/B&lt;br/&gt;banked SDP M10K)]
+        TROM[(voxel_texture_rom&lt;br/&gt;2x altsyncram ROM)]
+        SDRAMC[/Sdram_Control&lt;br/&gt;vendor SDRAM ctrl/]
+        VGA[&quot;voxel_vga_counters&lt;br/&gt;VGA_R/G/B + HS/VS&quot;]
+    end
+    class ZRAM,FBRAM ram
+    class TROM rom
+    class SDRAMC,VGA ctrl
+    S_pipe2 -. tex_addr .-&gt; TROM
+    TROM -. tex_data .-&gt; S_draw_pipe
+    S_commit -- color write --&gt; FBRAM
+    S_commit -- z write --&gt; ZRAM
+    FBRAM -- scanout --&gt; SDRAMC
+    SDRAMC -- pixel words --&gt; VGA
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_datapath.mmd</h3>
+<p class="desc">2 px/cycle datapath with lane0/lane1 module instances.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_datapath.mmd</code></p>
+<div class="mermaid">
+%% Auto-generated by scripts/gen_datapath_diagram.py
+%% Source: hw/voxel_gpu/rtl/voxel_gpu.sv + voxel_raster_math.sv +
+%%         voxel_recip_math.sv + voxel_fog_blend.sv.
+%% Lane0/lane1 instances grepped directly from the voxel_gpu RTL.
+flowchart LR
+    classDef lane0 fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef lane1 fill:#ffe3c6,stroke:#a05a00,color:#3a2200;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef shared fill:#fff1a8,stroke:#806400,color:#231a00;
+    %% Two-lane datapath: lane0 = even x pixel, lane1 = odd x pixel.
+    %% Each clock the draw step advances by 2 pixels; the lane1 column
+    %% carries the same RTL state with the `_o` suffix.
+    subgraph FRONT[Front end]
+        FIFO[(fifo_mem&lt;br/&gt;1024 x 32, M10K)]
+        FETCH{{ST_FETCH&lt;br/&gt;descriptor assembler}}
+        SETUP[/voxel_raster_setup&lt;br/&gt;edge/z/uv start/]
+        STEP[/voxel_draw_step&lt;br/&gt;+dx/+row deltas, 2 px/cycle/]
+        FIFO --&gt; FETCH --&gt; SETUP --&gt; STEP
+    end
+    class FIFO shared
+    class FETCH ctrl
+    class SETUP,STEP shared
+    subgraph RECIP[&quot;S1..S3 reciprocal (per-pixel 1/w)&quot;]
+        direction TB
+        IW_iw_norm_lane0[&quot;voxel_iw_normalize&lt;br/&gt;iw_norm_lane0&quot;]
+        class IW_iw_norm_lane0 lane0
+        IW_iw_norm_lane1[&quot;voxel_iw_normalize&lt;br/&gt;iw_norm_lane1&quot;]
+        class IW_iw_norm_lane1 lane1
+        RI_recip_interp_lane0[&quot;voxel_recip_interpolate&lt;br/&gt;recip_interp_lane0&quot;]
+        class RI_recip_interp_lane0 lane0
+        RI_recip_interp_lane1[&quot;voxel_recip_interpolate&lt;br/&gt;recip_interp_lane1&quot;]
+        class RI_recip_interp_lane1 lane1
+        WD_w_denorm_lane0[&quot;voxel_w_denormalize&lt;br/&gt;w_denorm_lane0&quot;]
+        class WD_w_denorm_lane0 lane0
+        WD_w_denorm_lane1[&quot;voxel_w_denormalize&lt;br/&gt;w_denorm_lane1&quot;]
+        class WD_w_denorm_lane1 lane1
+        IW_iw_norm_lane0 --&gt; RI_recip_interp_lane0
+        RI_recip_interp_lane0 --&gt; WD_w_denorm_lane0
+        IW_iw_norm_lane1 --&gt; RI_recip_interp_lane1
+        RI_recip_interp_lane1 --&gt; WD_w_denorm_lane1
+        RLUT[(recip_lut&lt;br/&gt;1025 x 32, ramstyle=logic)]
+        class RLUT shared
+        RLUT -. lo,hi entries .-&gt; RI_recip_interp_lane0
+        RLUT -. lo,hi entries .-&gt; RI_recip_interp_lane1
+    end
+    STEP --&gt; RECIP
+    subgraph TEX[&quot;S5..S7 perspective UV and texture fetch&quot;]
+        direction TB
+        UV0[/&quot;tex0 lane0:&lt;br/&gt;u = uw*w&lt;br/&gt;v = vw*w&quot;/]
+        UV1[/&quot;tex0 lane1:&lt;br/&gt;u_o = uw_o*w_o&lt;br/&gt;v_o = vw_o*w_o&quot;/]
+        ADDR0[&quot;pipe2_tex_addr&quot;]
+        ADDR1[&quot;pipe2_tex_addr_o&quot;]
+        TROM[(voxel_texture_rom&lt;br/&gt;2 x altsyncram ROM&lt;br/&gt;port A = lane0, port B = lane1)]
+        UV0 --&gt; ADDR0 --&gt; TROM
+        UV1 --&gt; ADDR1 --&gt; TROM
+        class UV0,ADDR0 lane0
+        class UV1,ADDR1 lane1
+        class TROM rom
+    end
+    RECIP --&gt; TEX
+    subgraph SHADE[&quot;S8..S11 palette and fog/blend&quot;]
+        direction TB
+        PAL[(palette[256] + sky_palette[24]&lt;br/&gt;ramstyle=logic)]
+        PAL_LANE0[&quot;pal_rd / plr lane0&lt;br/&gt;RGB888 -&gt; RGB565&quot;]
+        PAL_LANE1[&quot;pal_rd / plr lane1&lt;br/&gt;RGB888 -&gt; RGB565&quot;]
+        PAL --&gt; PAL_LANE0
+        PAL --&gt; PAL_LANE1
+        FB_fog_blend_lane0[&quot;voxel_fog_blend&lt;br/&gt;fog_blend_lane0&quot;]
+        class FB_fog_blend_lane0 lane0
+        PAL_LANE0 --&gt; FB_fog_blend_lane0
+        FB_fog_blend_lane1[&quot;voxel_fog_blend&lt;br/&gt;fog_blend_lane1&quot;]
+        class FB_fog_blend_lane1 lane1
+        PAL_LANE1 --&gt; FB_fog_blend_lane1
+        class PAL shared
+        class PAL_LANE0 lane0
+        class PAL_LANE1 lane1
+    end
+    TEX --&gt; SHADE
+    subgraph COMMIT[&quot;S12 commit and band caches&quot;]
+        direction TB
+        Z_E[(z_ram_A/B even bank&lt;br/&gt;voxel_banked_sdp_ram)]
+        Z_O[(z_ram_A/B odd bank&lt;br/&gt;voxel_banked_sdp_ram)]
+        FB_E[(fb_back_ram_A/B even&lt;br/&gt;voxel_banked_sdp_ram)]
+        FB_O[(fb_back_ram_A/B odd&lt;br/&gt;voxel_banked_sdp_ram)]
+        class Z_E,Z_O,FB_E,FB_O ram
+        L0COMMIT[&quot;lane0 z-test + write&quot;]
+        L1COMMIT[&quot;lane1 z-test + write&quot;]
+        class L0COMMIT lane0
+        class L1COMMIT lane1
+        L0COMMIT --&gt; Z_E
+        L0COMMIT --&gt; FB_E
+        L1COMMIT --&gt; Z_O
+        L1COMMIT --&gt; FB_O
+    end
+    SHADE --&gt; COMMIT
+    subgraph SCAN[&quot;Scan-out&quot;]
+        SDRAMC[/Sdram_Control&lt;br/&gt;vendor SDR SDRAM ctrl/]
+        VGA[&quot;voxel_vga_counters&lt;br/&gt;640x480 @ 25 MHz&lt;br/&gt;VGA_R/G/B + HS/VS&quot;]
+        class SDRAMC,VGA ctrl
+        SDRAMC --&gt; VGA
+    end
+    COMMIT -- bg flush --&gt; SDRAMC
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Auto-generated by scripts/gen_datapath_diagram.py
+%% Source: hw/voxel_gpu/rtl/voxel_gpu.sv + voxel_raster_math.sv +
+%%         voxel_recip_math.sv + voxel_fog_blend.sv.
+%% Lane0/lane1 instances grepped directly from the voxel_gpu RTL.
+flowchart LR
+    classDef lane0 fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef lane1 fill:#ffe3c6,stroke:#a05a00,color:#3a2200;
+    classDef ram fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef ctrl fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+    classDef shared fill:#fff1a8,stroke:#806400,color:#231a00;
+    %% Two-lane datapath: lane0 = even x pixel, lane1 = odd x pixel.
+    %% Each clock the draw step advances by 2 pixels; the lane1 column
+    %% carries the same RTL state with the `_o` suffix.
+    subgraph FRONT[Front end]
+        FIFO[(fifo_mem&lt;br/&gt;1024 x 32, M10K)]
+        FETCH{{ST_FETCH&lt;br/&gt;descriptor assembler}}
+        SETUP[/voxel_raster_setup&lt;br/&gt;edge/z/uv start/]
+        STEP[/voxel_draw_step&lt;br/&gt;+dx/+row deltas, 2 px/cycle/]
+        FIFO --&gt; FETCH --&gt; SETUP --&gt; STEP
+    end
+    class FIFO shared
+    class FETCH ctrl
+    class SETUP,STEP shared
+    subgraph RECIP[&quot;S1..S3 reciprocal (per-pixel 1/w)&quot;]
+        direction TB
+        IW_iw_norm_lane0[&quot;voxel_iw_normalize&lt;br/&gt;iw_norm_lane0&quot;]
+        class IW_iw_norm_lane0 lane0
+        IW_iw_norm_lane1[&quot;voxel_iw_normalize&lt;br/&gt;iw_norm_lane1&quot;]
+        class IW_iw_norm_lane1 lane1
+        RI_recip_interp_lane0[&quot;voxel_recip_interpolate&lt;br/&gt;recip_interp_lane0&quot;]
+        class RI_recip_interp_lane0 lane0
+        RI_recip_interp_lane1[&quot;voxel_recip_interpolate&lt;br/&gt;recip_interp_lane1&quot;]
+        class RI_recip_interp_lane1 lane1
+        WD_w_denorm_lane0[&quot;voxel_w_denormalize&lt;br/&gt;w_denorm_lane0&quot;]
+        class WD_w_denorm_lane0 lane0
+        WD_w_denorm_lane1[&quot;voxel_w_denormalize&lt;br/&gt;w_denorm_lane1&quot;]
+        class WD_w_denorm_lane1 lane1
+        IW_iw_norm_lane0 --&gt; RI_recip_interp_lane0
+        RI_recip_interp_lane0 --&gt; WD_w_denorm_lane0
+        IW_iw_norm_lane1 --&gt; RI_recip_interp_lane1
+        RI_recip_interp_lane1 --&gt; WD_w_denorm_lane1
+        RLUT[(recip_lut&lt;br/&gt;1025 x 32, ramstyle=logic)]
+        class RLUT shared
+        RLUT -. lo,hi entries .-&gt; RI_recip_interp_lane0
+        RLUT -. lo,hi entries .-&gt; RI_recip_interp_lane1
+    end
+    STEP --&gt; RECIP
+    subgraph TEX[&quot;S5..S7 perspective UV and texture fetch&quot;]
+        direction TB
+        UV0[/&quot;tex0 lane0:&lt;br/&gt;u = uw*w&lt;br/&gt;v = vw*w&quot;/]
+        UV1[/&quot;tex0 lane1:&lt;br/&gt;u_o = uw_o*w_o&lt;br/&gt;v_o = vw_o*w_o&quot;/]
+        ADDR0[&quot;pipe2_tex_addr&quot;]
+        ADDR1[&quot;pipe2_tex_addr_o&quot;]
+        TROM[(voxel_texture_rom&lt;br/&gt;2 x altsyncram ROM&lt;br/&gt;port A = lane0, port B = lane1)]
+        UV0 --&gt; ADDR0 --&gt; TROM
+        UV1 --&gt; ADDR1 --&gt; TROM
+        class UV0,ADDR0 lane0
+        class UV1,ADDR1 lane1
+        class TROM rom
+    end
+    RECIP --&gt; TEX
+    subgraph SHADE[&quot;S8..S11 palette and fog/blend&quot;]
+        direction TB
+        PAL[(palette[256] + sky_palette[24]&lt;br/&gt;ramstyle=logic)]
+        PAL_LANE0[&quot;pal_rd / plr lane0&lt;br/&gt;RGB888 -&gt; RGB565&quot;]
+        PAL_LANE1[&quot;pal_rd / plr lane1&lt;br/&gt;RGB888 -&gt; RGB565&quot;]
+        PAL --&gt; PAL_LANE0
+        PAL --&gt; PAL_LANE1
+        FB_fog_blend_lane0[&quot;voxel_fog_blend&lt;br/&gt;fog_blend_lane0&quot;]
+        class FB_fog_blend_lane0 lane0
+        PAL_LANE0 --&gt; FB_fog_blend_lane0
+        FB_fog_blend_lane1[&quot;voxel_fog_blend&lt;br/&gt;fog_blend_lane1&quot;]
+        class FB_fog_blend_lane1 lane1
+        PAL_LANE1 --&gt; FB_fog_blend_lane1
+        class PAL shared
+        class PAL_LANE0 lane0
+        class PAL_LANE1 lane1
+    end
+    TEX --&gt; SHADE
+    subgraph COMMIT[&quot;S12 commit and band caches&quot;]
+        direction TB
+        Z_E[(z_ram_A/B even bank&lt;br/&gt;voxel_banked_sdp_ram)]
+        Z_O[(z_ram_A/B odd bank&lt;br/&gt;voxel_banked_sdp_ram)]
+        FB_E[(fb_back_ram_A/B even&lt;br/&gt;voxel_banked_sdp_ram)]
+        FB_O[(fb_back_ram_A/B odd&lt;br/&gt;voxel_banked_sdp_ram)]
+        class Z_E,Z_O,FB_E,FB_O ram
+        L0COMMIT[&quot;lane0 z-test + write&quot;]
+        L1COMMIT[&quot;lane1 z-test + write&quot;]
+        class L0COMMIT lane0
+        class L1COMMIT lane1
+        L0COMMIT --&gt; Z_E
+        L0COMMIT --&gt; FB_E
+        L1COMMIT --&gt; Z_O
+        L1COMMIT --&gt; FB_O
+    end
+    SHADE --&gt; COMMIT
+    subgraph SCAN[&quot;Scan-out&quot;]
+        SDRAMC[/Sdram_Control&lt;br/&gt;vendor SDR SDRAM ctrl/]
+        VGA[&quot;voxel_vga_counters&lt;br/&gt;640x480 @ 25 MHz&lt;br/&gt;VGA_R/G/B + HS/VS&quot;]
+        class SDRAMC,VGA ctrl
+        SDRAMC --&gt; VGA
+    end
+    COMMIT -- bg flush --&gt; SDRAMC
+</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_control_fsm.mmd</h3>
+<p class="desc">engine_state_t FSM transitions, attributed by case-arm scan.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_control_fsm.mmd</code></p>
+<div class="mermaid">
+%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+stateDiagram-v2
+    %% engine_state_t in voxel_gpu.sv; transitions extracted
+    %% from &#x27;state &lt;= ST_X&#x27; assignments by scanning the
+    %% enclosing case-arm (heuristic; &#x27;?&#x27; = unknown source).
+    [*] --&gt; ST_IDLE
+    ST_CACHE_DRAIN_COLOR --&gt; ST_CACHE_START_LOAD_Z
+    ST_CACHE_DRAIN_Z --&gt; ST_IDLE
+    ST_CACHE_EVICT --&gt; ST_CACHE_FLUSH_COLOR
+    ST_CACHE_EVICT --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_FLUSH_COLOR --&gt; ST_IDLE
+    ST_CACHE_FLUSH_Z --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_FLUSH_Z --&gt; ST_IDLE
+    ST_CACHE_INIT --&gt; ST_IDLE
+    ST_CACHE_LOAD_COLOR --&gt; ST_CACHE_DRAIN_COLOR
+    ST_CACHE_LOAD_Z --&gt; ST_CACHE_DRAIN_Z
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_INIT
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_LOAD_COLOR
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_START_LOAD_Z --&gt; ST_CACHE_LOAD_Z
+    ST_CLEAR --&gt; ST_IDLE
+    ST_DRAW_FLUSH --&gt; ST_DRAW_FLUSH
+    ST_DRAW_FLUSH --&gt; ST_FETCH
+    ST_DRAW_FLUSH --&gt; ST_IDLE
+    ST_FETCH --&gt; ST_IDLE
+    ST_FETCH --&gt; ST_SETUP
+    ST_IDLE --&gt; ST_CACHE_INIT
+    ST_IDLE --&gt; ST_CLEAR
+    ST_IDLE --&gt; ST_FETCH
+    ST_SETUP --&gt; ST_DRAW
+
+</div>
+<details><summary>show Mermaid source</summary>
+<pre class="src">%% Auto-generated by scripts/gen_pipeline_diagram.py
+%% Do not hand-edit. Source: hw/voxel_gpu/rtl/voxel_gpu.sv and friends.
+stateDiagram-v2
+    %% engine_state_t in voxel_gpu.sv; transitions extracted
+    %% from &#x27;state &lt;= ST_X&#x27; assignments by scanning the
+    %% enclosing case-arm (heuristic; &#x27;?&#x27; = unknown source).
+    [*] --&gt; ST_IDLE
+    ST_CACHE_DRAIN_COLOR --&gt; ST_CACHE_START_LOAD_Z
+    ST_CACHE_DRAIN_Z --&gt; ST_IDLE
+    ST_CACHE_EVICT --&gt; ST_CACHE_FLUSH_COLOR
+    ST_CACHE_EVICT --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_FLUSH_COLOR --&gt; ST_IDLE
+    ST_CACHE_FLUSH_Z --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_FLUSH_Z --&gt; ST_IDLE
+    ST_CACHE_INIT --&gt; ST_IDLE
+    ST_CACHE_LOAD_COLOR --&gt; ST_CACHE_DRAIN_COLOR
+    ST_CACHE_LOAD_Z --&gt; ST_CACHE_DRAIN_Z
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_INIT
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_LOAD_COLOR
+    ST_CACHE_SELECT_FILL --&gt; ST_CACHE_SELECT_FILL
+    ST_CACHE_START_LOAD_Z --&gt; ST_CACHE_LOAD_Z
+    ST_CLEAR --&gt; ST_IDLE
+    ST_DRAW_FLUSH --&gt; ST_DRAW_FLUSH
+    ST_DRAW_FLUSH --&gt; ST_FETCH
+    ST_DRAW_FLUSH --&gt; ST_IDLE
+    ST_FETCH --&gt; ST_IDLE
+    ST_FETCH --&gt; ST_SETUP
+    ST_IDLE --&gt; ST_CACHE_INIT
+    ST_IDLE --&gt; ST_CLEAR
+    ST_IDLE --&gt; ST_FETCH
+    ST_SETUP --&gt; ST_DRAW
+</pre>
+</details>
+</div>
+<h2 id="timing">Timing (WaveDrom)</h2>
+<p style="color:#555">Each diagram below is a separate WaveDrom JSON so it can be read on its own. Source files are listed under each diagram.</p>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_pipeline.wave.json</h3>
+<p class="desc">13-stage pixel pipeline cadence, one quad-pair per cycle (50 MHz fabric).</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_pipeline.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "clk", "wave": "p................."}, {"name": "S 0 pipe0", "wave": "====..............", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 1 recip0", "wave": ".====.............", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 2 recip1", "wave": "..====............", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 3 recip2", "wave": "...====...........", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 4 pipe1", "wave": "....====..........", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 5 tex0", "wave": ".....====.........", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 6 pipe2", "wave": "......====........", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 7 draw_pipe", "wave": ".......====.......", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 8 pal_rd", "wave": "........====......", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S 9 plr", "wave": ".........====.....", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S10 fog0", "wave": "..........====....", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S11 fog1", "wave": "...........====...", "data": ["P0", "P1", "P2", "P3"]}, {"name": "S12 commit", "wave": "............====..", "data": ["P0", "P1", "P2", "P3"]}], "head": {"text": "voxel_gpu 13-stage pipeline cadence (clk = 50 MHz)", "tick": 0}, "foot": {"text": "Stage names from hw/voxel_gpu/rtl/voxel_gpu.sv; one pair enters per cycle (2 px/cycle)."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;clk&quot;,
+      &quot;wave&quot;: &quot;p.................&quot;
+    },
+    {
+      &quot;name&quot;: &quot;S 0 pipe0&quot;,
+      &quot;wave&quot;: &quot;====..............&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 1 recip0&quot;,
+      &quot;wave&quot;: &quot;.====.............&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 2 recip1&quot;,
+      &quot;wave&quot;: &quot;..====............&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 3 recip2&quot;,
+      &quot;wave&quot;: &quot;...====...........&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 4 pipe1&quot;,
+      &quot;wave&quot;: &quot;....====..........&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 5 tex0&quot;,
+      &quot;wave&quot;: &quot;.....====.........&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 6 pipe2&quot;,
+      &quot;wave&quot;: &quot;......====........&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 7 draw_pipe&quot;,
+      &quot;wave&quot;: &quot;.......====.......&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 8 pal_rd&quot;,
+      &quot;wave&quot;: &quot;........====......&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S 9 plr&quot;,
+      &quot;wave&quot;: &quot;.........====.....&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S10 fog0&quot;,
+      &quot;wave&quot;: &quot;..........====....&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S11 fog1&quot;,
+      &quot;wave&quot;: &quot;...........====...&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;S12 commit&quot;,
+      &quot;wave&quot;: &quot;............====..&quot;,
+      &quot;data&quot;: [
+        &quot;P0&quot;,
+        &quot;P1&quot;,
+        &quot;P2&quot;,
+        &quot;P3&quot;
+      ]
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;voxel_gpu 13-stage pipeline cadence (clk = 50 MHz)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Stage names from hw/voxel_gpu/rtl/voxel_gpu.sv; one pair enters per cycle (2 px/cycle).&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_avalon.wave.json</h3>
+<p class="desc">HPS -&gt; voxel_gpu Avalon-MM lightweight slave write transaction.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_avalon.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "clk", "wave": "p..........."}, {"name": "chipselect", "wave": "0.10..10.10."}, {"name": "write", "wave": "0.10..10.10."}, {"name": "address[12:0]", "wave": "x.=x..=x.=x.", "data": ["FIFO_BASE+0", "FIFO_BASE+1", "ADDR_CONTROL"]}, {"name": "writedata[31:0]", "wave": "x.=x..=x.=x.", "data": ["desc word", "desc word", "EN|FLP"]}, {"name": "byteenable[3:0]", "wave": "x.=x..=x.=x.", "data": ["F", "F", "F"]}, {"name": "readdata[31:0]", "wave": "x..........."}], "head": {"text": "Avalon-MM lightweight slave write (HPS -> voxel_gpu)", "tick": 0}, "foot": {"text": "Slave attributes from hw/voxel_gpu_hw.tcl: word-addressed, 32-bit data, readWaitTime=1."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/voxel_gpu_hw.tcl&quot;,
+    &quot;sw/voxel_gpu.h&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;clk&quot;,
+      &quot;wave&quot;: &quot;p...........&quot;
+    },
+    {
+      &quot;name&quot;: &quot;chipselect&quot;,
+      &quot;wave&quot;: &quot;0.10..10.10.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;write&quot;,
+      &quot;wave&quot;: &quot;0.10..10.10.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;address[12:0]&quot;,
+      &quot;wave&quot;: &quot;x.=x..=x.=x.&quot;,
+      &quot;data&quot;: [
+        &quot;FIFO_BASE+0&quot;,
+        &quot;FIFO_BASE+1&quot;,
+        &quot;ADDR_CONTROL&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;writedata[31:0]&quot;,
+      &quot;wave&quot;: &quot;x.=x..=x.=x.&quot;,
+      &quot;data&quot;: [
+        &quot;desc word&quot;,
+        &quot;desc word&quot;,
+        &quot;EN|FLP&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;byteenable[3:0]&quot;,
+      &quot;wave&quot;: &quot;x.=x..=x.=x.&quot;,
+      &quot;data&quot;: [
+        &quot;F&quot;,
+        &quot;F&quot;,
+        &quot;F&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;readdata[31:0]&quot;,
+      &quot;wave&quot;: &quot;x...........&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;Avalon-MM lightweight slave write (HPS -&gt; voxel_gpu)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Slave attributes from hw/voxel_gpu_hw.tcl: word-addressed, 32-bit data, readWaitTime=1.&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_band.wave.json</h3>
+<p class="desc">Band command sequence: BAND_INDEX -&gt; BEGIN -&gt; FIFO writes -&gt; FLUSH -&gt; FLIP.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_band.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "BAND_INDEX (sw write)", "wave": "=...=...=...=...", "data": ["0", "1", "2", "..."]}, {"name": "BAND_CTRL.BEGIN", "wave": "010.010.010.010."}, {"name": "FIFO writes", "wave": "0.=.0.=.0.=.0.=.", "data": ["band 0 quads", "band 1 quads", "band 2 quads", "..."]}, {"name": "BAND_CTRL.FLUSH (= END_BAND)", "wave": "0..100..100..100"}, {"name": "STATUS.BSY", "wave": "0.1.0.1.0.1.0.1."}, {"name": "CONTROL.FLP (= FLIP)", "wave": "0..............1"}], "head": {"text": "Band command sequence (BEGIN -> FIFO -> FLUSH -> FLIP)", "tick": 0}, "foot": {"text": "Sequence is per sw/gpu_transport.c; register effects per sw/voxel_gpu.h and hw/voxel_gpu/rtl/voxel_gpu.sv."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;sw/gpu_transport.c&quot;,
+    &quot;sw/voxel_gpu.h&quot;,
+    &quot;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;BAND_INDEX (sw write)&quot;,
+      &quot;wave&quot;: &quot;=...=...=...=...&quot;,
+      &quot;data&quot;: [
+        &quot;0&quot;,
+        &quot;1&quot;,
+        &quot;2&quot;,
+        &quot;...&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;BAND_CTRL.BEGIN&quot;,
+      &quot;wave&quot;: &quot;010.010.010.010.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;FIFO writes&quot;,
+      &quot;wave&quot;: &quot;0.=.0.=.0.=.0.=.&quot;,
+      &quot;data&quot;: [
+        &quot;band 0 quads&quot;,
+        &quot;band 1 quads&quot;,
+        &quot;band 2 quads&quot;,
+        &quot;...&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;BAND_CTRL.FLUSH (= END_BAND)&quot;,
+      &quot;wave&quot;: &quot;0..100..100..100&quot;
+    },
+    {
+      &quot;name&quot;: &quot;STATUS.BSY&quot;,
+      &quot;wave&quot;: &quot;0.1.0.1.0.1.0.1.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CONTROL.FLP (= FLIP)&quot;,
+      &quot;wave&quot;: &quot;0..............1&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;Band command sequence (BEGIN -&gt; FIFO -&gt; FLUSH -&gt; FLIP)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Sequence is per sw/gpu_transport.c; register effects per sw/voxel_gpu.h and hw/voxel_gpu/rtl/voxel_gpu.sv.&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_cache_flush.wave.json</h3>
+<p class="desc">Engine-side band-cache flush pushing words into the SDRAM WR FIFO.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_cache_flush.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "clk50 (50 MHz fabric)", "wave": "p..............."}, {"name": "state == ST_CACHE_FLUSH_COLOR", "wave": "01............10", "node": ".a.............b"}, {"name": "sdram_wr_load_pulse", "wave": "010............."}, {"name": "cache_word_pending_valid", "wave": "0.1...10.1...10."}, {"name": "main_flush_wr_push", "wave": "0...10...0..10.."}, {"name": "sdram_wr_full", "wave": "0.....10........"}, {"name": "cache_words_issued[15:0]", "wave": "=.=.=.=...=.=.=.", "data": ["0", "1", "2", "3", "4", "5", "6"]}, {"name": "cache_words_done[15:0]", "wave": "=...=.=.=.=.=.=.", "data": ["0", "1", "2", "3", "4", "5", "6"]}, {"name": "WR_DATA[15:0] -> WR FIFO", "wave": "x.=x=x=x..=x=x=x", "data": ["w0", "w1", "w2", "w3", "w4", "w5"]}], "head": {"text": "Band-cache flush -> SDRAM WR FIFO (engine clock = 50 MHz)", "tick": 0}, "foot": {"text": "Signals from hw/voxel_gpu/rtl/voxel_gpu.sv (ST_CACHE_FLUSH_COLOR, sdram_wr_push, sdram_wr_full, cache_words_issued/done)."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;clk50 (50 MHz fabric)&quot;,
+      &quot;wave&quot;: &quot;p...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;state == ST_CACHE_FLUSH_COLOR&quot;,
+      &quot;wave&quot;: &quot;01............10&quot;,
+      &quot;node&quot;: &quot;.a.............b&quot;
+    },
+    {
+      &quot;name&quot;: &quot;sdram_wr_load_pulse&quot;,
+      &quot;wave&quot;: &quot;010.............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;cache_word_pending_valid&quot;,
+      &quot;wave&quot;: &quot;0.1...10.1...10.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;main_flush_wr_push&quot;,
+      &quot;wave&quot;: &quot;0...10...0..10..&quot;
+    },
+    {
+      &quot;name&quot;: &quot;sdram_wr_full&quot;,
+      &quot;wave&quot;: &quot;0.....10........&quot;
+    },
+    {
+      &quot;name&quot;: &quot;cache_words_issued[15:0]&quot;,
+      &quot;wave&quot;: &quot;=.=.=.=...=.=.=.&quot;,
+      &quot;data&quot;: [
+        &quot;0&quot;,
+        &quot;1&quot;,
+        &quot;2&quot;,
+        &quot;3&quot;,
+        &quot;4&quot;,
+        &quot;5&quot;,
+        &quot;6&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;cache_words_done[15:0]&quot;,
+      &quot;wave&quot;: &quot;=...=.=.=.=.=.=.&quot;,
+      &quot;data&quot;: [
+        &quot;0&quot;,
+        &quot;1&quot;,
+        &quot;2&quot;,
+        &quot;3&quot;,
+        &quot;4&quot;,
+        &quot;5&quot;,
+        &quot;6&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;WR_DATA[15:0] -&gt; WR FIFO&quot;,
+      &quot;wave&quot;: &quot;x.=x=x=x..=x=x=x&quot;,
+      &quot;data&quot;: [
+        &quot;w0&quot;,
+        &quot;w1&quot;,
+        &quot;w2&quot;,
+        &quot;w3&quot;,
+        &quot;w4&quot;,
+        &quot;w5&quot;
+      ]
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;Band-cache flush -&gt; SDRAM WR FIFO (engine clock = 50 MHz)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Signals from hw/voxel_gpu/rtl/voxel_gpu.sv (ST_CACHE_FLUSH_COLOR, sdram_wr_push, sdram_wr_full, cache_words_issued/done).&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_scanout_load.wave.json</h3>
+<p class="desc">Engine-side VGA scanout linebuffer load via the SDRAM RD FIFO.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_scanout_load.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "clk50 (50 MHz fabric)", "wave": "p..............."}, {"name": "vsync_pulse", "wave": "010............."}, {"name": "scan_vsync_read_req", "wave": "0.10............"}, {"name": "sdram_rd_load_out", "wave": "0.1.0..........."}, {"name": "sdram_rd_empty", "wave": "1.....10........"}, {"name": "sdram_rd_use[15:0]", "wave": "=.....=.=.=.=...", "data": ["0", "8", "16", "24", "32"]}, {"name": "cache_rd_capture", "wave": "0......10101010."}, {"name": "linebuffer wr (cache_maint)", "wave": "0.....10101010.."}, {"name": "scan_active_valid", "wave": "0.............10"}, {"name": "VGA fetch (post-line-load)", "wave": "0..............1"}], "head": {"text": "VGA scanout linebuffer load via SDRAM RD FIFO (engine clock = 50 MHz)", "tick": 0}, "foot": {"text": "Signals from hw/voxel_gpu/rtl/voxel_gpu.sv (vsync_pulse, sdram_rd_load_*, sdram_rd_use/empty, scan_active_valid)."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/voxel_gpu/rtl/voxel_gpu.sv&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;clk50 (50 MHz fabric)&quot;,
+      &quot;wave&quot;: &quot;p...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;vsync_pulse&quot;,
+      &quot;wave&quot;: &quot;010.............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;scan_vsync_read_req&quot;,
+      &quot;wave&quot;: &quot;0.10............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;sdram_rd_load_out&quot;,
+      &quot;wave&quot;: &quot;0.1.0...........&quot;
+    },
+    {
+      &quot;name&quot;: &quot;sdram_rd_empty&quot;,
+      &quot;wave&quot;: &quot;1.....10........&quot;
+    },
+    {
+      &quot;name&quot;: &quot;sdram_rd_use[15:0]&quot;,
+      &quot;wave&quot;: &quot;=.....=.=.=.=...&quot;,
+      &quot;data&quot;: [
+        &quot;0&quot;,
+        &quot;8&quot;,
+        &quot;16&quot;,
+        &quot;24&quot;,
+        &quot;32&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;cache_rd_capture&quot;,
+      &quot;wave&quot;: &quot;0......10101010.&quot;
+    },
+    {
+      &quot;name&quot;: &quot;linebuffer wr (cache_maint)&quot;,
+      &quot;wave&quot;: &quot;0.....10101010..&quot;
+    },
+    {
+      &quot;name&quot;: &quot;scan_active_valid&quot;,
+      &quot;wave&quot;: &quot;0.............10&quot;
+    },
+    {
+      &quot;name&quot;: &quot;VGA fetch (post-line-load)&quot;,
+      &quot;wave&quot;: &quot;0..............1&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;VGA scanout linebuffer load via SDRAM RD FIFO (engine clock = 50 MHz)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Signals from hw/voxel_gpu/rtl/voxel_gpu.sv (vsync_pulse, sdram_rd_load_*, sdram_rd_use/empty, scan_active_valid).&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_sdram_write.wave.json</h3>
+<p class="desc">SDRAM-pin write: ACT -&gt; WRITEA -&gt; page-mode burst -&gt; PRECHARGE (100 MHz).</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_sdram_write.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "SDR_CLK (100 MHz)", "wave": "p..............."}, {"name": "CKE", "wave": "1..............."}, {"name": "CS_N", "wave": "0..............."}, {"name": "RAS_N", "wave": "10111111111101111", "node": ".A...........B.."}, {"name": "CAS_N", "wave": "11101111111111111"}, {"name": "WE_N", "wave": "11110111111101111"}, {"name": "SA[12:0]", "wave": "x=..=.......=...", "data": ["row", "col", "A10=0"]}, {"name": "BA[1:0]", "wave": "x=..........=...", "data": ["bank", "0"]}, {"name": "DQ[15:0] (driven)", "wave": "z...=======z....", "data": ["w0", "w1", "w2", "w3", "w4", "w5", "w6"]}, {"name": "DQM[1:0]", "wave": "x...=======.....", "data": ["00"]}, {"name": "OE (controller)", "wave": "0...10.........."}], "head": {"text": "SDRAM page-mode write: ACT -> WRITEA -> burst -> PRECHARGE (SDR_CLK = 100 MHz)", "tick": 0}, "foot": {"text": "Encoding per hw/sdram_local_test/command.v; tRCD=3, SC_PM=1 (page-mode burst), SC_BL=1 (ignored under PM), per Sdram_Params.h."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/sdram_local_test/command.v&quot;,
+    &quot;hw/sdram_local_test/Sdram_Params.h&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;SDR_CLK (100 MHz)&quot;,
+      &quot;wave&quot;: &quot;p...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CKE&quot;,
+      &quot;wave&quot;: &quot;1...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CS_N&quot;,
+      &quot;wave&quot;: &quot;0...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;RAS_N&quot;,
+      &quot;wave&quot;: &quot;10111111111101111&quot;,
+      &quot;node&quot;: &quot;.A...........B..&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CAS_N&quot;,
+      &quot;wave&quot;: &quot;11101111111111111&quot;
+    },
+    {
+      &quot;name&quot;: &quot;WE_N&quot;,
+      &quot;wave&quot;: &quot;11110111111101111&quot;
+    },
+    {
+      &quot;name&quot;: &quot;SA[12:0]&quot;,
+      &quot;wave&quot;: &quot;x=..=.......=...&quot;,
+      &quot;data&quot;: [
+        &quot;row&quot;,
+        &quot;col&quot;,
+        &quot;A10=0&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;BA[1:0]&quot;,
+      &quot;wave&quot;: &quot;x=..........=...&quot;,
+      &quot;data&quot;: [
+        &quot;bank&quot;,
+        &quot;0&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;DQ[15:0] (driven)&quot;,
+      &quot;wave&quot;: &quot;z...=======z....&quot;,
+      &quot;data&quot;: [
+        &quot;w0&quot;,
+        &quot;w1&quot;,
+        &quot;w2&quot;,
+        &quot;w3&quot;,
+        &quot;w4&quot;,
+        &quot;w5&quot;,
+        &quot;w6&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;DQM[1:0]&quot;,
+      &quot;wave&quot;: &quot;x...=======.....&quot;,
+      &quot;data&quot;: [
+        &quot;00&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;OE (controller)&quot;,
+      &quot;wave&quot;: &quot;0...10..........&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;SDRAM page-mode write: ACT -&gt; WRITEA -&gt; burst -&gt; PRECHARGE (SDR_CLK = 100 MHz)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Encoding per hw/sdram_local_test/command.v; tRCD=3, SC_PM=1 (page-mode burst), SC_BL=1 (ignored under PM), per Sdram_Params.h.&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_sdram_read.wave.json</h3>
+<p class="desc">SDRAM-pin read: ACT -&gt; READA -&gt; CAS latency -&gt; page-mode burst -&gt; PRECHARGE (100 MHz).</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_sdram_read.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "SDR_CLK (100 MHz)", "wave": "p..............."}, {"name": "CKE", "wave": "1..............."}, {"name": "CS_N", "wave": "0..............."}, {"name": "RAS_N", "wave": "10111111111101111", "node": ".A...........B.."}, {"name": "CAS_N", "wave": "11101111111111111"}, {"name": "WE_N", "wave": "11111111111101111"}, {"name": "SA[12:0]", "wave": "x=..=.......=...", "data": ["row", "col", "A10=0"]}, {"name": "BA[1:0]", "wave": "x=..........=...", "data": ["bank", "0"]}, {"name": "DQ[15:0] (DRAM drives)", "wave": "z......=====z...", "data": ["r0", "r1", "r2", "r3", "r4"]}, {"name": "DQM[1:0]", "wave": "x...============", "data": ["00"]}, {"name": "OE (controller)", "wave": "0..............."}], "head": {"text": "SDRAM page-mode read: ACT -> READA -> CL -> burst -> PRECHARGE (SDR_CLK = 100 MHz)", "tick": 0}, "foot": {"text": "Encoding per hw/sdram_local_test/command.v; tRCD=3, CL=3, SC_PM=1 (page-mode burst), per Sdram_Params.h."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/sdram_local_test/command.v&quot;,
+    &quot;hw/sdram_local_test/Sdram_Params.h&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;SDR_CLK (100 MHz)&quot;,
+      &quot;wave&quot;: &quot;p...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CKE&quot;,
+      &quot;wave&quot;: &quot;1...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CS_N&quot;,
+      &quot;wave&quot;: &quot;0...............&quot;
+    },
+    {
+      &quot;name&quot;: &quot;RAS_N&quot;,
+      &quot;wave&quot;: &quot;10111111111101111&quot;,
+      &quot;node&quot;: &quot;.A...........B..&quot;
+    },
+    {
+      &quot;name&quot;: &quot;CAS_N&quot;,
+      &quot;wave&quot;: &quot;11101111111111111&quot;
+    },
+    {
+      &quot;name&quot;: &quot;WE_N&quot;,
+      &quot;wave&quot;: &quot;11111111111101111&quot;
+    },
+    {
+      &quot;name&quot;: &quot;SA[12:0]&quot;,
+      &quot;wave&quot;: &quot;x=..=.......=...&quot;,
+      &quot;data&quot;: [
+        &quot;row&quot;,
+        &quot;col&quot;,
+        &quot;A10=0&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;BA[1:0]&quot;,
+      &quot;wave&quot;: &quot;x=..........=...&quot;,
+      &quot;data&quot;: [
+        &quot;bank&quot;,
+        &quot;0&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;DQ[15:0] (DRAM drives)&quot;,
+      &quot;wave&quot;: &quot;z......=====z...&quot;,
+      &quot;data&quot;: [
+        &quot;r0&quot;,
+        &quot;r1&quot;,
+        &quot;r2&quot;,
+        &quot;r3&quot;,
+        &quot;r4&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;DQM[1:0]&quot;,
+      &quot;wave&quot;: &quot;x...============&quot;,
+      &quot;data&quot;: [
+        &quot;00&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;OE (controller)&quot;,
+      &quot;wave&quot;: &quot;0...............&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;SDRAM page-mode read: ACT -&gt; READA -&gt; CL -&gt; burst -&gt; PRECHARGE (SDR_CLK = 100 MHz)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;Encoding per hw/sdram_local_test/command.v; tRCD=3, CL=3, SC_PM=1 (page-mode burst), per Sdram_Params.h.&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<div class="diagram-card">
+<h3>voxel_gpu_timing_vga.wave.json</h3>
+<p class="desc">VGA 25 MHz pixel-clock derivation from the 50 MHz fabric clock.</p>
+<p class="source">source file: <code>docs/diagrams/voxel_gpu_timing_vga.wave.json</code></p>
+<div class="wave-container">
+<script type="WaveDrom">
+{"signal": [{"name": "clk50 (50 MHz)", "wave": "p......."}, {"name": "hcount[0]", "wave": "01010101"}, {"name": "VGA_CLK = ~hcount[0]", "wave": "10101010"}, {"name": "VGA pixel index", "wave": "=.=.=.=.", "data": ["px N", "px N+1", "px N+2", "px N+3"]}, {"name": "VGA_BLANK_n", "wave": "1......."}, {"name": "VGA_HS", "wave": "1......."}, {"name": "VGA_VS", "wave": "1......."}], "head": {"text": "VGA pixel clock derivation (25 MHz @ 640x480)", "tick": 0}, "foot": {"text": "From hw/voxel_gpu/rtl/voxel_vga_counters.sv: VGA_CLK = ~hcount[0]; each VGA pixel is 2 fabric clocks."}, "config": {"hscale": 1}}
+</script>
+</div>
+<details><summary>show WaveDrom source</summary>
+<pre class="src">{
+  &quot;_generated_by&quot;: &quot;scripts/gen_timing_diagram.py&quot;,
+  &quot;_source_files&quot;: [
+    &quot;hw/voxel_gpu/rtl/voxel_vga_counters.sv&quot;
+  ],
+  &quot;signal&quot;: [
+    {
+      &quot;name&quot;: &quot;clk50 (50 MHz)&quot;,
+      &quot;wave&quot;: &quot;p.......&quot;
+    },
+    {
+      &quot;name&quot;: &quot;hcount[0]&quot;,
+      &quot;wave&quot;: &quot;01010101&quot;
+    },
+    {
+      &quot;name&quot;: &quot;VGA_CLK = ~hcount[0]&quot;,
+      &quot;wave&quot;: &quot;10101010&quot;
+    },
+    {
+      &quot;name&quot;: &quot;VGA pixel index&quot;,
+      &quot;wave&quot;: &quot;=.=.=.=.&quot;,
+      &quot;data&quot;: [
+        &quot;px N&quot;,
+        &quot;px N+1&quot;,
+        &quot;px N+2&quot;,
+        &quot;px N+3&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;VGA_BLANK_n&quot;,
+      &quot;wave&quot;: &quot;1.......&quot;
+    },
+    {
+      &quot;name&quot;: &quot;VGA_HS&quot;,
+      &quot;wave&quot;: &quot;1.......&quot;
+    },
+    {
+      &quot;name&quot;: &quot;VGA_VS&quot;,
+      &quot;wave&quot;: &quot;1.......&quot;
+    }
+  ],
+  &quot;head&quot;: {
+    &quot;text&quot;: &quot;VGA pixel clock derivation (25 MHz @ 640x480)&quot;,
+    &quot;tick&quot;: 0
+  },
+  &quot;foot&quot;: {
+    &quot;text&quot;: &quot;From hw/voxel_gpu/rtl/voxel_vga_counters.sv: VGA_CLK = ~hcount[0]; each VGA pixel is 2 fabric clocks.&quot;
+  },
+  &quot;config&quot;: {
+    &quot;hscale&quot;: 1
+  }
+}</pre>
+</details>
+</div>
+<h2 id="breakdowns">Markdown breakdowns</h2>
+<table class="doctable"><tr><th>File</th><th>What it covers</th></tr>
+<tr><td><a href="../final_breakdown.md">docs/final_breakdown.md</a></td><td>System-level technical breakdown.</td></tr>
+<tr><td><a href="../file_listings.md">docs/file_listings.md</a></td><td>Per-file role map.</td></tr>
+<tr><td><a href="register_map.md">docs/diagrams/register_map.md</a></td><td>Word/byte register table, bit mnemonics, ioctl ABI.</td></tr>
+<tr><td><a href="hardware_software_interface.md">docs/diagrams/hardware_software_interface.md</a></td><td>How sw/* talks to voxel_gpu.</td></tr>
+<tr><td><a href="diagram_index.md">docs/diagrams/diagram_index.md</a></td><td>All diagrams + their source-of-truth files.</td></tr>
+<tr><td><a href="source_traceability.md">docs/diagrams/source_traceability.md</a></td><td>Per-artifact source-file lookup.</td></tr>
+</table>
+<p style="color:#777;font-size:12px">These are plain Markdown files. GitHub renders them inline; locally, view with any Markdown previewer or just open in an editor.</p>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose',
+                       flowchart: { htmlLabels: true } });
+  // WaveDrom renders any <script type="WaveDrom"> on load.
+  document.addEventListener("DOMContentLoaded", function () {
+    if (typeof WaveDrom !== 'undefined' && typeof WaveDrom.ProcessAll === 'function') {
+      WaveDrom.ProcessAll();
+    }
+  });
+</script>
+</body>
+</html>

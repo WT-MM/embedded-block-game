@@ -1,0 +1,42 @@
+%% Source: hw/voxel_gpu/rtl/voxel_gpu.sv (M10K / MLAB / ROM declarations),
+%% voxel_sdp_ram.sv, voxel_texture_rom.sv, sw/voxel_gpu.h
+%% (EXTMEM_FRONT_BASE / EXTMEM_BACK_BASE).
+flowchart TB
+    classDef m10k fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef mlab fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef rom fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef sdram fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef ddr3 fill:#fff1a8,stroke:#806400,color:#231a00;
+
+    subgraph ONCHIP["On-chip storage inside voxel_gpu"]
+        FIFO["fifo_mem<br/>1024 x 32 (M10K)<br/>ramstyle = M10K"]:::m10k
+        FB_A["fb_back_ram_A<br/>voxel_banked_sdp_ram<br/>2 x M10K (even/odd x)<br/>BAND_PIXELS x 16"]:::m10k
+        FB_B["fb_back_ram_B<br/>voxel_banked_sdp_ram<br/>2 x M10K (even/odd x)<br/>BAND_PIXELS x 16"]:::m10k
+        Z_A["z_ram_A<br/>voxel_banked_sdp_ram<br/>2 x M10K (even/odd x)<br/>BAND_PIXELS x 16"]:::m10k
+        Z_B["z_ram_B<br/>voxel_banked_sdp_ram<br/>2 x M10K (even/odd x)<br/>BAND_PIXELS x 16"]:::m10k
+        TROM["texture_rom<br/>voxel_texture_rom<br/>2 x altsyncram ROM<br/>(port A = lane0, B = lane1)<br/>32768 x 8 (textures.mif)"]:::rom
+        PAL["palette[256]<br/>ramstyle = logic (MLAB)<br/>24 b"]:::mlab
+        SKY["sky_palette[24]<br/>ramstyle = logic (MLAB)<br/>24 b"]:::mlab
+        RLUT["recip_lut[1025]<br/>ramstyle = logic<br/>32 b (1/x LUT)"]:::mlab
+    end
+
+    subgraph OFFCHIP["Off-chip"]
+        SDRAM[("Board SDR SDRAM<br/>(via Sdram_Control)<br/>FB front + back<br/>RGB565, 640x480 = 614400 B each")]:::sdram
+        DDR3[("HPS DDR3<br/>(hps_0.memory conduit)<br/>Linux + user heap")]:::ddr3
+    end
+
+    FB_A -- bg flush --> SDRAM
+    FB_B -- bg flush --> SDRAM
+    SDRAM -- scanout --> VGA["voxel_vga_counters<br/>VGA out"]
+    DDR3 -. iowrite32_rep .-> FIFO
+
+    FIFO --> ST_FETCH["ST_FETCH"]
+    ST_FETCH --> PIPE["pixel pipeline"]
+    PIPE --> PAL
+    PIPE --> SKY
+    PIPE --> RLUT
+    PIPE --> TROM
+    PIPE --> FB_A
+    PIPE --> FB_B
+    PIPE --> Z_A
+    PIPE --> Z_B

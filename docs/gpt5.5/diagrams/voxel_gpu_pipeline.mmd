@@ -1,0 +1,61 @@
+%% Generated from RTL/C/Platform Designer source. Do not hand-edit generated diagrams.
+%% Regenerate with: make diagrams
+flowchart LR
+subgraph S0["S0 ST_FETCH"]
+  s0["desc_words[] registers<br/>FIFO pop, descriptor size 16/25 words"]:::reg
+end
+subgraph S1["S1 ST_SETUP"]
+  s1a["voxel_raster_setup<br/>MUL edge A*x/B*y"]:::math
+  s1b["edge_row/cur, z_row/cur,<br/>uw/vw/iw row/cur registers"]:::reg
+end
+subgraph S2["S2 ST_DRAW issue"]
+  s2a["voxel_draw_step<br/>ADD next pair/row"]:::math
+  s2b["inside CMP, bbox CMP,<br/>cache address, z clamp"]:::math
+  s2c["pipe0 / pipe0_o registers"]:::reg
+end
+subgraph S3["S3 reciprocal normalize"]
+  s3["recip0 registers<br/>iw_msb, iw_norm, cache z/color read alignment"]:::reg
+end
+subgraph S4["S4 reciprocal LUT"]
+  s4["recip1 registers<br/>recip_lut lo/hi, z_ref, dst_rgb565"]:::reg
+end
+subgraph S5["S5 reciprocal interpolate"]
+  s5["recip2 registers<br/>voxel_recip_interpolate"]:::reg
+end
+subgraph S6["S6 denormalize / UV multiply"]
+  s6["pipe1 registers<br/>voxel_w_denormalize + MUL u/v"]:::reg
+end
+subgraph S7["S7 texture address"]
+  s7["tex0 registers<br/>texture_coord, tex_addr"]:::reg
+end
+subgraph S8["S8 texture ROM latency"]
+  s8["pipe2 registers<br/>voxel_texture_rom address"]:::reg
+end
+subgraph S9["S9 color select"]
+  s9["draw_pipe registers<br/>texel or flat color, light bank"]:::reg
+end
+subgraph S10["S10 palette address"]
+  s10["pal_rd registers<br/>palette/sky/fog addresses, z pass"]:::reg
+end
+subgraph S11["S11 palette data"]
+  s11["plr registers<br/>palette RGB + fog RGB"]:::reg
+end
+subgraph S12["S12 fog setup"]
+  s12["fog0 registers<br/>RGB565 + radial distance product"]:::reg
+end
+subgraph S13["S13 fog blend"]
+  s13["fog1 registers<br/>radial_q8_8 + voxel_fog_blend"]:::reg
+end
+subgraph S14["S14 commit"]
+  s14["commit registers<br/>z-test pass, alpha/fog color, color/Z write"]:::reg
+end
+s0 --> s1a --> s1b --> s2a --> s2b --> s2c --> s3 --> s4 --> s5 --> s6 --> s7 --> s8 --> s9 --> s10 --> s11 --> s12 --> s13 --> s14
+
+classDef hps fill:#e8f1ff,stroke:#2f63b8,stroke-width:1px,color:#0d2448;
+classDef fpga fill:#e9f7ef,stroke:#2a7a45,stroke-width:1px,color:#0d341c;
+classDef reg fill:#fff3cc,stroke:#b98500,stroke-width:1px,color:#3d2c00;
+classDef mem fill:#f4e9ff,stroke:#6e3fa0,stroke-width:1px,color:#2d124a;
+classDef bus fill:#ffe8df,stroke:#b55632,stroke-width:1px,color:#4a1f0b;
+classDef ctrl fill:#ffe9ef,stroke:#b83a58,stroke-width:1px,color:#4a0d1b;
+classDef math fill:#e6fbff,stroke:#247a91,stroke-width:1px,color:#09313d;
+classDef out fill:#eeeeee,stroke:#555555,stroke-width:1px,color:#222222;

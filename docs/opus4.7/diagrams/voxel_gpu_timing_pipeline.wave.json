@@ -1,0 +1,152 @@
+{
+  "_generated_by": "scripts/gen_timing_diagram.py",
+  "_source_files": [
+    "hw/voxel_gpu/rtl/voxel_gpu.sv"
+  ],
+  "signal": [
+    {
+      "name": "clk",
+      "wave": "p................."
+    },
+    {
+      "name": "S 0 pipe0",
+      "wave": "====..............",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 1 recip0",
+      "wave": ".====.............",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 2 recip1",
+      "wave": "..====............",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 3 recip2",
+      "wave": "...====...........",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 4 pipe1",
+      "wave": "....====..........",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 5 tex0",
+      "wave": ".....====.........",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 6 pipe2",
+      "wave": "......====........",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 7 draw_pipe",
+      "wave": ".......====.......",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 8 pal_rd",
+      "wave": "........====......",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S 9 plr",
+      "wave": ".........====.....",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S10 fog0",
+      "wave": "..........====....",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S11 fog1",
+      "wave": "...........====...",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "name": "S12 commit",
+      "wave": "............====..",
+      "data": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    }
+  ],
+  "head": {
+    "text": "voxel_gpu 13-stage pipeline cadence (clk = 50 MHz)",
+    "tick": 0
+  },
+  "foot": {
+    "text": "Stage names from hw/voxel_gpu/rtl/voxel_gpu.sv; one pair enters per cycle (2 px/cycle)."
+  },
+  "config": {
+    "hscale": 1
+  }
+}

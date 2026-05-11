@@ -1,0 +1,52 @@
+{
+  "_generated_by": "scripts/gen_timing_diagram.py",
+  "_source_files": [
+    "hw/voxel_gpu/rtl/voxel_vga_counters.sv"
+  ],
+  "signal": [
+    {
+      "name": "clk50 (50 MHz)",
+      "wave": "p......."
+    },
+    {
+      "name": "hcount[0]",
+      "wave": "01010101"
+    },
+    {
+      "name": "VGA_CLK = ~hcount[0]",
+      "wave": "10101010"
+    },
+    {
+      "name": "VGA pixel index",
+      "wave": "=.=.=.=.",
+      "data": [
+        "px N",
+        "px N+1",
+        "px N+2",
+        "px N+3"
+      ]
+    },
+    {
+      "name": "VGA_BLANK_n",
+      "wave": "1......."
+    },
+    {
+      "name": "VGA_HS",
+      "wave": "1......."
+    },
+    {
+      "name": "VGA_VS",
+      "wave": "1......."
+    }
+  ],
+  "head": {
+    "text": "VGA pixel clock derivation (25 MHz @ 640x480)",
+    "tick": 0
+  },
+  "foot": {
+    "text": "From hw/voxel_gpu/rtl/voxel_vga_counters.sv: VGA_CLK = ~hcount[0]; each VGA pixel is 2 fabric clocks."
+  },
+  "config": {
+    "hscale": 1
+  }
+}

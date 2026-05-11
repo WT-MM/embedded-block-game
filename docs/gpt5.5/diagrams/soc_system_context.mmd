@@ -1,0 +1,29 @@
+%% Generated from RTL/C/Platform Designer source. Do not hand-edit generated diagrams.
+%% Regenerate with: make diagrams
+flowchart LR
+top["soc_system_top.sv<br/>board pins"]:::out
+soc["soc_system<br/>Platform Designer generated system"]:::bus
+hps["hps_0<br/>HPS IO + DDR3 conduit"]:::bus
+clk["clk_0 50 MHz<br/>sdram_clocks.sys_clk"]:::ctrl
+gpu["voxel_gpu_0<br/>kind=voxel_gpu"]:::fpga
+fpga_sdram["fpga_sdram<br/>altera_avalon_new_sdram_controller"]:::mem
+vga["exported vga conduit"]:::out
+dram["exported voxel_sdram conduit"]:::out
+ddr["HPS DDR3 pins"]:::out
+top --> soc
+soc --> hps --> ddr
+hps -->|"h2f_lw_axi_master base 0x0000"| gpu
+hps -->|"h2f_axi_master base 0x0000"| fpga_sdram
+clk --> gpu
+clk --> fpga_sdram
+gpu --> vga
+gpu --> dram
+
+classDef hps fill:#e8f1ff,stroke:#2f63b8,stroke-width:1px,color:#0d2448;
+classDef fpga fill:#e9f7ef,stroke:#2a7a45,stroke-width:1px,color:#0d341c;
+classDef reg fill:#fff3cc,stroke:#b98500,stroke-width:1px,color:#3d2c00;
+classDef mem fill:#f4e9ff,stroke:#6e3fa0,stroke-width:1px,color:#2d124a;
+classDef bus fill:#ffe8df,stroke:#b55632,stroke-width:1px,color:#4a1f0b;
+classDef ctrl fill:#ffe9ef,stroke:#b83a58,stroke-width:1px,color:#4a0d1b;
+classDef math fill:#e6fbff,stroke:#247a91,stroke-width:1px,color:#09313d;
+classDef out fill:#eeeeee,stroke:#555555,stroke-width:1px,color:#222222;

@@ -1,0 +1,38 @@
+%% Generated from RTL/C/Platform Designer source. Do not hand-edit generated diagrams.
+%% Regenerate with: make diagrams
+flowchart LR
+subgraph HPS["HPS-owned state and work"]
+  world["VoxelWorld<br/>chunks, blocks, lighting, redstone, falling blocks"]:::hps
+  mesh["ChunkMesh snapshots<br/>atomic live_mesh"]:::hps
+  renderbuf["RenderContext submit_buffer<br/>quad_desc stream"]:::hps
+  bins["gpu_transport per-band bins<br/>g_bins_pool[2][8]"]:::hps
+  kdrv["Kernel driver bounce buffer<br/>VOXEL_BOUNCE_WORDS=2048"]:::hps
+end
+subgraph CROSS["Boundary crossings"]
+  ioctls["ioctl ABI<br/>CLEAR, BEGIN_BAND, END_BAND, FLIP, SET_*"]:::bus
+  writes["write() descriptor stream<br/>32-bit FIFO words"]:::bus
+  regs["Avalon-MM CSR window<br/>0x0000..0x006C + FIFO 0x1000..0x1FFF"]:::reg
+end
+subgraph FPGA["FPGA-owned state and work"]
+  csr["voxel_gpu CSRs<br/>control/status/palette/fog/band/extmem/perf"]:::reg
+  fifo["fifo_mem[1024] descriptor FIFO"]:::mem
+  pipe["voxel_gpu raster pipeline<br/>pipe0..commit"]:::fpga
+  tex["texture ROM + reciprocal LUT + palettes"]:::mem
+  cache["color/Z ping-pong band caches"]:::mem
+  ext["external SDRAM color/Z frames"]:::mem
+  scan["VGA counters + scanout line buffers"]:::fpga
+end
+world --> mesh --> renderbuf --> bins --> writes --> fifo --> pipe
+bins --> ioctls --> csr
+kdrv --> regs --> csr
+pipe --> tex
+pipe --> cache --> ext --> scan
+
+classDef hps fill:#e8f1ff,stroke:#2f63b8,stroke-width:1px,color:#0d2448;
+classDef fpga fill:#e9f7ef,stroke:#2a7a45,stroke-width:1px,color:#0d341c;
+classDef reg fill:#fff3cc,stroke:#b98500,stroke-width:1px,color:#3d2c00;
+classDef mem fill:#f4e9ff,stroke:#6e3fa0,stroke-width:1px,color:#2d124a;
+classDef bus fill:#ffe8df,stroke:#b55632,stroke-width:1px,color:#4a1f0b;
+classDef ctrl fill:#ffe9ef,stroke:#b83a58,stroke-width:1px,color:#4a0d1b;
+classDef math fill:#e6fbff,stroke:#247a91,stroke-width:1px,color:#09313d;
+classDef out fill:#eeeeee,stroke:#555555,stroke-width:1px,color:#222222;

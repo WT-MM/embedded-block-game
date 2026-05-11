@@ -1,0 +1,284 @@
+{
+  "_generated_by": "scripts/gen_timing_diagram.py",
+  "_source_files": [
+    "hw/voxel_gpu/rtl/voxel_gpu.sv",
+    "hw/voxel_gpu/rtl/voxel_vga_counters.sv",
+    "hw/voxel_gpu_hw.tcl",
+    "sw/voxel_gpu.h",
+    "sw/gpu_transport.c"
+  ],
+  "signal": [
+    [
+      "13-stage pipeline cadence (clk = 50 MHz fabric)",
+      {
+        "name": "clk",
+        "wave": "p................."
+      },
+      {
+        "name": "S 0 pipe0",
+        "wave": "====..............",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 1 recip0",
+        "wave": ".====.............",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 2 recip1",
+        "wave": "..====............",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 3 recip2",
+        "wave": "...====...........",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 4 pipe1",
+        "wave": "....====..........",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 5 tex0",
+        "wave": ".....====.........",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 6 pipe2",
+        "wave": "......====........",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 7 draw_pipe",
+        "wave": ".......====.......",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 8 pal_rd",
+        "wave": "........====......",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S 9 plr",
+        "wave": ".........====.....",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S10 fog0",
+        "wave": "..........====....",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S11 fog1",
+        "wave": "...........====...",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      },
+      {
+        "name": "S12 commit",
+        "wave": "............====..",
+        "data": [
+          "P0",
+          "P1",
+          "P2",
+          "P3"
+        ]
+      }
+    ],
+    {},
+    [
+      "Avalon-MM lightweight slave write (HPS -> voxel_gpu)",
+      {
+        "name": "clk",
+        "wave": "p..........."
+      },
+      {
+        "name": "chipselect",
+        "wave": "0.10..10.10."
+      },
+      {
+        "name": "write",
+        "wave": "0.10..10.10."
+      },
+      {
+        "name": "address[12:0]",
+        "wave": "x.=x..=x.=x.",
+        "data": [
+          "FIFO_BASE+0",
+          "FIFO_BASE+1",
+          "ADDR_CONTROL"
+        ]
+      },
+      {
+        "name": "writedata[31:0]",
+        "wave": "x.=x..=x.=x.",
+        "data": [
+          "desc word",
+          "desc word",
+          "EN|FLP"
+        ]
+      },
+      {
+        "name": "byteenable[3:0]",
+        "wave": "x.=x..=x.=x.",
+        "data": [
+          "F",
+          "F",
+          "F"
+        ]
+      },
+      {
+        "name": "readdata[31:0]",
+        "wave": "x..........."
+      }
+    ],
+    {},
+    [
+      "VGA pixel clock derivation (25 MHz @ 640x480)",
+      {
+        "name": "clk50 (50 MHz)",
+        "wave": "p......."
+      },
+      {
+        "name": "hcount[0]",
+        "wave": "01010101"
+      },
+      {
+        "name": "VGA_CLK = ~hcount[0]",
+        "wave": "10101010"
+      },
+      {
+        "name": "VGA pixel index",
+        "wave": "=.=.=.=.",
+        "data": [
+          "px N",
+          "px N+1",
+          "px N+2",
+          "px N+3"
+        ]
+      },
+      {
+        "name": "VGA_BLANK_n",
+        "wave": "1......."
+      },
+      {
+        "name": "VGA_HS",
+        "wave": "1......."
+      },
+      {
+        "name": "VGA_VS",
+        "wave": "1......."
+      }
+    ],
+    {},
+    [
+      "High-level band command sequence (gpu_transport.c)",
+      {
+        "name": "BAND_INDEX (sw write)",
+        "wave": "=...=...=...=...",
+        "data": [
+          "0",
+          "1",
+          "2",
+          "..."
+        ]
+      },
+      {
+        "name": "BAND_CTRL.BEGIN",
+        "wave": "010.010.010.010."
+      },
+      {
+        "name": "FIFO writes",
+        "wave": "0.=.0.=.0.=.0.=.",
+        "data": [
+          "band 0 quads",
+          "band 1 quads",
+          "band 2 quads",
+          "..."
+        ]
+      },
+      {
+        "name": "BAND_CTRL.FLUSH (= END_BAND)",
+        "wave": "0..100..100..100"
+      },
+      {
+        "name": "STATUS.BSY",
+        "wave": "0.1.0.1.0.1.0.1."
+      },
+      {
+        "name": "CONTROL.FLP (= FLIP)",
+        "wave": "0..............1"
+      }
+    ]
+  ],
+  "head": {
+    "text": "voxel_gpu timing reference",
+    "tick": 0
+  },
+  "foot": {
+    "text": "Stages and signals match voxel_gpu.sv; Avalon shape from voxel_gpu_hw.tcl; VGA shape from voxel_vga_counters.sv"
+  },
+  "config": {
+    "hscale": 1
+  }
+}

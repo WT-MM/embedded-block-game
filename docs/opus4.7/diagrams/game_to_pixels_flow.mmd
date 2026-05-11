@@ -1,0 +1,33 @@
+%% Source: sw/game.c (main loop), sw/renderer.c (renderer_begin_frame /
+%% _end_frame, gpu_transport_open), sw/gpu_transport.c (bin + ioctl
+%% dispatch), sw/voxel_gpu.c (kernel MMIO), hw/voxel_gpu/rtl/voxel_gpu.sv
+%% (ST_FETCH .. ST_DRAW .. ST_CACHE_FLUSH_*), voxel_vga_counters.sv.
+flowchart LR
+    classDef game fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+    classDef hw fill:#d2f4d2,stroke:#1f6b1f,color:#0c2c0c;
+    classDef out fill:#cfd8dc,stroke:#37474f,color:#0f1a20;
+
+    A["sw/game.c<br/>main() while loop"]:::game
+    B["sample input,<br/>step physics,<br/>update world"]:::game
+    C["renderer_begin_frame()<br/>sw/renderer.c"]:::ren
+    D["renderer_draw_*<br/>(world quads, UI)"]:::ren
+    E["gpu_transport_begin_descriptors()<br/>+ append into per-band bins"]:::tr
+    F["per-band submit:<br/>VOXEL_IOC_BEGIN_BAND ->\nwrite(fd, desc bytes) ->\nVOXEL_IOC_END_BAND"]:::tr
+    G["voxel_write -><br/>iowrite32_rep into FIFO_WINDOW"]:::km
+    H["ST_FETCH -> ST_SETUP -><br/>ST_DRAW (13-stage pipe, 2 px/cycle)"]:::hw
+    I["band cache (M10K)<br/>fb_back_ram + z_ram"]:::hw
+    J["ST_CACHE_FLUSH_COLOR -><br/>Sdram_Control writes RGB565"]:::hw
+    K["SDR SDRAM<br/>back frame"]:::hw
+    L["renderer_end_frame() -><br/>gpu_transport_flip()"]:::ren
+    M["VOXEL_IOC_FLIP / FLIP_ASYNC<br/>CONTROL.FLP swap on vsync"]:::km
+    N["scanout reads SDRAM front frame"]:::hw
+    O["voxel_vga_counters drives<br/>VGA_R/G/B + HS/VS @ 25 MHz"]:::out
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+    C --> L
+    L --> M
+    K --> N --> O
+    M -. swaps front<->back .-> K

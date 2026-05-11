@@ -1,0 +1,85 @@
+{
+  "_generated_by": "scripts/gen_timing_diagram.py",
+  "_source_files": [
+    "hw/sdram_local_test/command.v",
+    "hw/sdram_local_test/Sdram_Params.h"
+  ],
+  "signal": [
+    {
+      "name": "SDR_CLK (100 MHz)",
+      "wave": "p..............."
+    },
+    {
+      "name": "CKE",
+      "wave": "1..............."
+    },
+    {
+      "name": "CS_N",
+      "wave": "0..............."
+    },
+    {
+      "name": "RAS_N",
+      "wave": "10111111111101111",
+      "node": ".A...........B.."
+    },
+    {
+      "name": "CAS_N",
+      "wave": "11101111111111111"
+    },
+    {
+      "name": "WE_N",
+      "wave": "11110111111101111"
+    },
+    {
+      "name": "SA[12:0]",
+      "wave": "x=..=.......=...",
+      "data": [
+        "row",
+        "col",
+        "A10=0"
+      ]
+    },
+    {
+      "name": "BA[1:0]",
+      "wave": "x=..........=...",
+      "data": [
+        "bank",
+        "0"
+      ]
+    },
+    {
+      "name": "DQ[15:0] (driven)",
+      "wave": "z...=======z....",
+      "data": [
+        "w0",
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6"
+      ]
+    },
+    {
+      "name": "DQM[1:0]",
+      "wave": "x...=======.....",
+      "data": [
+        "00"
+      ]
+    },
+    {
+      "name": "OE (controller)",
+      "wave": "0...10.........."
+    }
+  ],
+  "head": {
+    "text": "SDRAM page-mode write: ACT -> WRITEA -> burst -> PRECHARGE (SDR_CLK = 100 MHz)",
+    "tick": 0
+  },
+  "foot": {
+    "text": "Encoding per hw/sdram_local_test/command.v; tRCD=3, SC_PM=1 (page-mode burst), SC_BL=1 (ignored under PM), per Sdram_Params.h."
+  },
+  "config": {
+    "hscale": 1
+  }
+}

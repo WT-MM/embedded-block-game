@@ -1,0 +1,39 @@
+%% Source: sw/game.c, sw/renderer.c, sw/gpu_transport.c, sw/voxel_gpu.c,
+%% sw/voxel_gpu.h. Functions named with file:line where useful.
+flowchart TB
+    classDef app fill:#fff1a8,stroke:#806400,color:#231a00;
+    classDef ren fill:#cfe9ff,stroke:#1f4d7a,color:#0c2138;
+    classDef tr fill:#ffd6d6,stroke:#8a1f1f,color:#2c0808;
+    classDef km fill:#dcd0ff,stroke:#553a99,color:#1d124d;
+
+    subgraph USER["User-space (HPS Linux)"]
+        direction TB
+        MAIN["sw/game.c::main()<br/>main loop: input -> sim -> render"]
+        WORLD["sw/world.c / world_gen.c<br/>chunk gen + dirty tracking"]
+        MESH["sw/mesh_worker.c<br/>greedy-mesh + cull"]
+        REN["sw/renderer.c<br/>renderer_begin_frame / _end_frame"]
+        TR["sw/gpu_transport.c<br/>per-band descriptor bins,<br/>ioctl dispatch"]
+        class MAIN,WORLD,MESH app
+        class REN ren
+        class TR tr
+        MAIN --> WORLD --> MESH --> REN --> TR
+    end
+
+    subgraph KERN["Kernel (linux platform driver)"]
+        direction TB
+        OPEN["voxel_open / voxel_release"]
+        WRITE["voxel_write<br/>(iowrite32_rep into FIFO_WINDOW)"]
+        IOCTL["voxel_ioctl<br/>BEGIN_BAND / END_BAND /<br/>FLIP / FLIP_ASYNC / WAIT_FLIP /<br/>SET_PALETTE / SET_FOG / ..."]
+        POLL["voxel_poll_status<br/>(STATUS reg polling)"]
+        class OPEN,WRITE,IOCTL,POLL km
+        WRITE --> POLL
+        IOCTL --> POLL
+    end
+
+    DEV[("/dev/voxel_gpu")]:::km
+    AVL[("Avalon-MM lwslave<br/>hps_0.h2f_lw_axi_master -><br/>voxel_gpu_0.avalon_slave_0")]
+
+    TR -- write(2) bytes --> DEV --> WRITE
+    TR -- ioctl(2) --> DEV --> IOCTL
+    WRITE -- 32-bit MMIO --> AVL
+    IOCTL -- 32-bit MMIO --> AVL

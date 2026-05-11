@@ -339,12 +339,33 @@ def mirror_display_pattern(pattern):
     return mirrored
 
 
+def rotate_display_pattern(pattern):
+    rotated = pattern & SEG_G
+    if pattern & SEG_A:
+        rotated |= SEG_D
+    if pattern & SEG_B:
+        rotated |= SEG_E
+    if pattern & SEG_C:
+        rotated |= SEG_F
+    if pattern & SEG_D:
+        rotated |= SEG_A
+    if pattern & SEG_E:
+        rotated |= SEG_B
+    if pattern & SEG_F:
+        rotated |= SEG_C
+    return rotated
+
+
 DISPLAY_MIRRORED_DIGITS = {1, 2, 5}
+DISPLAY_ROTATED_DIGITS = {4, 6, 7}
 
 
 SEGMENT_PATTERNS = [
-    mirror_display_pattern(pattern)
-    if digit in DISPLAY_MIRRORED_DIGITS else pattern
+    rotate_display_pattern(pattern)
+    if digit in DISPLAY_ROTATED_DIGITS else (
+        mirror_display_pattern(pattern)
+        if digit in DISPLAY_MIRRORED_DIGITS else pattern
+    )
     for digit, pattern in enumerate(DISPLAY_STANDARD_PATTERNS)
 ]
 

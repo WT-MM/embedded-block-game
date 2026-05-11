@@ -339,9 +339,13 @@ def mirror_display_pattern(pattern):
     return mirrored
 
 
+DISPLAY_MIRRORED_DIGITS = {1, 2, 5}
+
+
 SEGMENT_PATTERNS = [
     mirror_display_pattern(pattern)
-    for pattern in DISPLAY_STANDARD_PATTERNS
+    if digit in DISPLAY_MIRRORED_DIGITS else pattern
+    for digit, pattern in enumerate(DISPLAY_STANDARD_PATTERNS)
 ]
 
 DECODER_ROW_SPACING = 3
@@ -483,7 +487,8 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     count_bus_z = count_button_z - 1
     count_input_x = first_input_x - 1
     reset_button_x = count_button_x - 4
-    reset_button_z = count_button_z
+    reset_button_y = y + 1
+    reset_button_z = count_button_z - 5
     reset_bus_y = y + 1
     reset_bus_z = min(reset_z for _, _, reset_z in reset_targets) - 5
     count_repeater = (
@@ -501,11 +506,11 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     for reset_x, _, reset_z in reset_targets:
         world.set(reset_x, y, reset_z, "BLOCK_BUTTON")
 
-    world.set(reset_button_x, y - 1, reset_button_z, "BLOCK_BRICKS")
-    world.set(reset_button_x, y, reset_button_z, "BLOCK_BUTTON")
+    world.set(reset_button_x, y, reset_button_z, "BLOCK_BRICKS")
+    world.set(reset_button_x, reset_button_y, reset_button_z, "BLOCK_BUTTON")
 
     repeater_line_z(world, reset_button_x, reset_bus_y,
-                    reset_button_z, reset_bus_z,
+                    reset_button_z - 1, reset_bus_z,
                     "BLOCK_REPEATER_OFF", interval=8)
     repeater_line_x(world, reset_button_x,
                     max(reset_x for reset_x, _, _ in reset_targets),
@@ -525,7 +530,7 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
 
     return {
         "button": (count_button_x, y, count_button_z),
-        "reset": (reset_button_x, y, reset_button_z),
+        "reset": (reset_button_x, reset_button_y, reset_button_z),
     }
 
 

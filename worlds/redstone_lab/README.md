@@ -11,11 +11,11 @@ Landmarks from spawn:
   resets it, and the lamp marks the latched output.
 - South plot: a real three-bit ripple counter wired into a constructed
   seven-segment decoder matrix. The count button at roughly `-29 / 5 / 21`
-  and reset button at roughly `-33 / 5 / 21` sit beside a ground-laid
-  seven-segment display with three lamps per segment. The display decoder is
-  mirrored so digits read correctly from the button side. The flip-flop cells
-  use a compact 17-block stride, and the three local reset buttons remain
-  beside the flip-flop cells for debugging.
+  sits beside a ground-laid seven-segment display with three lamps per segment.
+  The raised reset button at roughly `-33 / 6 / 16` sits on a brick pedestal
+  behind the controls. The display decoder is oriented so digits read correctly
+  from the button side. The flip-flop cells use a compact 17-block stride, and
+  the three local reset buttons remain beside the flip-flop cells for debugging.
 - South-east decoder matrix: the Q/NQ literal buses, invalid-row torches,
   segment taps, repeaters, and display feed columns are all normal redstone
   parts fed by the counter outputs.

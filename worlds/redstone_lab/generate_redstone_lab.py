@@ -357,12 +357,12 @@ def rotate_display_pattern(pattern):
 
 
 DISPLAY_MIRRORED_DIGITS = {1, 2, 5}
-DISPLAY_ROTATED_DIGITS = {4, 6, 7}
+DISPLAY_ROTATED_MIRRORED_DIGITS = {4, 6, 7}
 
 
 SEGMENT_PATTERNS = [
-    rotate_display_pattern(pattern)
-    if digit in DISPLAY_ROTATED_DIGITS else (
+    mirror_display_pattern(rotate_display_pattern(pattern))
+    if digit in DISPLAY_ROTATED_MIRRORED_DIGITS else (
         mirror_display_pattern(pattern)
         if digit in DISPLAY_MIRRORED_DIGITS else pattern
     )

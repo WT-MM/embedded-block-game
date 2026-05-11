@@ -314,7 +314,7 @@ SEG_F = 1 << 5
 SEG_G = 1 << 6
 
 
-SEGMENT_PATTERNS = [
+DISPLAY_STANDARD_PATTERNS = [
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
     SEG_B | SEG_C,
     SEG_A | SEG_B | SEG_D | SEG_E | SEG_G,
@@ -323,6 +323,25 @@ SEGMENT_PATTERNS = [
     SEG_A | SEG_C | SEG_D | SEG_F | SEG_G,
     SEG_A | SEG_C | SEG_D | SEG_E | SEG_F | SEG_G,
     SEG_A | SEG_B | SEG_C,
+]
+
+
+def mirror_display_pattern(pattern):
+    mirrored = pattern & (SEG_A | SEG_D | SEG_G)
+    if pattern & SEG_B:
+        mirrored |= SEG_F
+    if pattern & SEG_C:
+        mirrored |= SEG_E
+    if pattern & SEG_E:
+        mirrored |= SEG_C
+    if pattern & SEG_F:
+        mirrored |= SEG_B
+    return mirrored
+
+
+SEGMENT_PATTERNS = [
+    mirror_display_pattern(pattern)
+    for pattern in DISPLAY_STANDARD_PATTERNS
 ]
 
 DECODER_ROW_SPACING = 3
@@ -463,6 +482,10 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     count_button_z = display_min_z - 2
     count_bus_z = count_button_z - 1
     count_input_x = first_input_x - 1
+    reset_button_x = count_button_x - 4
+    reset_button_z = count_button_z
+    reset_bus_y = y + 1
+    reset_bus_z = min(reset_z for _, _, reset_z in reset_targets) - 5
     count_repeater = (
         "BLOCK_REPEATER_EAST_OFF"
         if count_button_x <= count_input_x else
@@ -478,9 +501,31 @@ def place_counter_controls(world, y, first_input_x, first_input_z,
     for reset_x, _, reset_z in reset_targets:
         world.set(reset_x, y, reset_z, "BLOCK_BUTTON")
 
+    world.set(reset_button_x, y - 1, reset_button_z, "BLOCK_BRICKS")
+    world.set(reset_button_x, y, reset_button_z, "BLOCK_BUTTON")
+
+    repeater_line_z(world, reset_button_x, reset_bus_y,
+                    reset_button_z, reset_bus_z,
+                    "BLOCK_REPEATER_OFF", interval=8)
+    repeater_line_x(world, reset_button_x,
+                    max(reset_x for reset_x, _, _ in reset_targets),
+                    reset_bus_y, reset_bus_z,
+                    "BLOCK_REPEATER_EAST_OFF", interval=8)
+    for reset_x, _, reset_z in reset_targets:
+        injection_x = reset_x - 2
+        injection_z = reset_z - 1
+
+        world.set(injection_x, y, injection_z,
+                  "BLOCK_REDSTONE_WIRE_UNCONNECTED")
+        wire_z(world, injection_x, reset_bus_y,
+               reset_bus_z, injection_z - 2)
+        world.set(injection_x, reset_bus_y, injection_z - 1,
+                  "BLOCK_REPEATER_SOUTH_OFF")
+        world.set(injection_x, reset_bus_y, injection_z, "BLOCK_STONE")
+
     return {
         "button": (count_button_x, y, count_button_z),
-        "reset": reset_targets[-1],
+        "reset": (reset_button_x, y, reset_button_z),
     }
 
 

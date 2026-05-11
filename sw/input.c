@@ -321,6 +321,24 @@ static void text_queue_push(InputState *inp, char ch)
     inp->text_queue[inp->text_queue_len++] = ch;
 }
 
+/* evdev REL_WHEEL is often ±120 per detent, but some devices report ±1. */
+static void feed_hotbar_wheel(InputState *inp, int v)
+{
+    unsigned mag;
+    unsigned clicks;
+    int sign;
+
+    if (!inp || v == 0 || inp->_text_mode)
+        return;
+
+    sign = (v > 0) ? 1 : -1;
+    mag = (unsigned)(v > 0 ? v : -v);
+    clicks = (mag + 119U) / 120U;
+    if (clicks < 1U)
+        clicks = 1U;
+    inp->hotbar_wheel_delta += (int)clicks * sign;
+}
+
 static int hotbar_slot_for_key(int code)
 {
     switch (code) {
@@ -541,7 +559,8 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
             default: break;
             }
         } else if (pointer && pointer->mode == INPUT_POINTER_REL && ev.type == EV_REL) {
-            if (ev.value != 0)
+            if (ev.value != 0 &&
+                (ev.code == REL_X || ev.code == REL_Y))
                 inp->_last_relative_motion_ns = monotonic_time_ns();
 
             if (ev.code == REL_X) {
@@ -552,6 +571,8 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                 inp->mouse_dy += (float)ev.value * inp->_mouse_scale_y;
                 inp->cursor_dy += (float)ev.value * inp->_cursor_scale_y;
             }
+            if (ev.code == REL_WHEEL)
+                feed_hotbar_wheel(inp, ev.value);
         } else if (pointer && pointer->mode == INPUT_POINTER_ABS && ev.type == EV_ABS) {
             if (ev.code == ABS_X) {
                 float delta = 0.0f;
@@ -607,6 +628,9 @@ static void drain_fd(InputState *inp, int fd, InputPointer *pointer)
                     inp->cursor_dy += cursor_delta;
                 }
             }
+        } else if (pointer && ev.type == EV_REL && ev.code == REL_WHEEL) {
+            /* Absolute-position pointers may still emit REL_WHEEL on the same fd. */
+            feed_hotbar_wheel(inp, ev.value);
         }
     }
 }
@@ -721,6 +745,14 @@ bool input_consume_hotbar_page(InputState *inp)
     return pressed;
 }
 
+int input_consume_hotbar_wheel_delta(InputState *inp)
+{
+    int delta = inp->hotbar_wheel_delta;
+
+    inp->hotbar_wheel_delta = 0;
+    return delta;
+}
+
 void input_set_pointer_capture(InputState *inp, bool on)
 {
     uint64_t now_ns;
@@ -770,6 +802,7 @@ void input_set_text_mode(InputState *inp, bool on)
         inp->menu_delete_pressed = false;
         inp->hotbar_slot_pressed = -1;
         inp->hotbar_page_pressed = false;
+        inp->hotbar_wheel_delta = 0;
         inp->_forward_tap_armed = false;
         inp->_last_forward_press_ns = 0;
     }

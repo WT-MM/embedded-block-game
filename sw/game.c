@@ -4364,7 +4364,7 @@ home_menu_start:
     bool gen_worker_running = gen_worker_start(&world);
 
     if (debug_enabled) {
-        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9=hotbar  Tab=hotbar page/chat autocomplete  F/LMB=break  R/RMB=place  Q=drop item  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse\n");
+        printf("Controls: WASD=move  double-tap W=sprint  Space=jump/fly-up  double-tap Space=creative flight  Shift=crouch/fly-down  1-9 / mouse wheel=hotbar  Tab=hotbar page/chat autocomplete  F/LMB=break  R/RMB=place  Q=drop item  E=inventory  G=cycle mode  T=chat  Esc=pause/release mouse\n");
         printf("Mode: %s (survival=gravity+collision, creative=build+toggle-flight, spectator=fly+no-collision)\n",
                player_mode_name(player.mode));
         printf("World: %s, %dx%dx%d chunks, seed 0x%08x\n",
@@ -4963,6 +4963,7 @@ home_menu_start:
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_hotbar_page(&inp);
+            (void)input_consume_hotbar_wheel_delta(&inp);
             (void)input_consume_item_drop(&inp);
             inventory_recipe_page =
                 clamp_recipe_lookup_page(craft_grid_dim, inventory_recipe_page);
@@ -4991,6 +4992,7 @@ home_menu_start:
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_hotbar_page(&inp);
+            (void)input_consume_hotbar_wheel_delta(&inp);
             (void)input_consume_item_drop(&inp);
 
             if (open_furnace_index >= 0 &&
@@ -5024,6 +5026,7 @@ home_menu_start:
                    !inventory_open && !furnace_open) {
             int hotbar_slot = input_consume_hotbar_slot(&inp);
             bool hotbar_page_pressed = input_consume_hotbar_page(&inp);
+            int hotbar_wheel = input_consume_hotbar_wheel_delta(&inp);
             bool break_pressed = input_consume_break(&inp);
             bool place_pressed = input_consume_place(&inp);
             bool item_drop_pressed = input_consume_item_drop(&inp);
@@ -5066,6 +5069,39 @@ home_menu_start:
                     chat_log(&chat, "selected: %d %s",
                              selected_hotbar_slot + 1,
                              BlockRegistry[selected].name);
+                }
+            }
+
+            if (hotbar_wheel != 0) {
+                int new_slot = selected_hotbar_slot + hotbar_wheel;
+
+                new_slot %= HOTBAR_SLOT_COUNT;
+                if (new_slot < 0)
+                    new_slot += HOTBAR_SLOT_COUNT;
+                if (new_slot != selected_hotbar_slot) {
+                    selected_hotbar_slot = new_slot;
+                    if (player.mode == PLAYER_MODE_SURVIVAL) {
+                        const ItemStack *stack =
+                            survival_inventory_hotbar_stack(&survival_inventory,
+                                                            selected_hotbar_slot);
+
+                        if (item_stack_is_empty(stack)) {
+                            chat_log(&chat, "selected: %d empty",
+                                     selected_hotbar_slot + 1);
+                        } else {
+                            chat_log(&chat, "selected: %d %s x%u",
+                                     selected_hotbar_slot + 1,
+                                     item_name(stack->item),
+                                     (unsigned)stack->count);
+                        }
+                    } else {
+                        BlockID selected = hotbar_block_at(selected_hotbar_page,
+                                                           selected_hotbar_slot);
+
+                        chat_log(&chat, "selected: %d %s",
+                                 selected_hotbar_slot + 1,
+                                 BlockRegistry[selected].name);
+                    }
                 }
             }
 
@@ -5304,6 +5340,7 @@ home_menu_start:
             hand_swing_timer = HAND_SWING_SECONDS;
             (void)input_consume_hotbar_slot(&inp);
             (void)input_consume_hotbar_page(&inp);
+            (void)input_consume_hotbar_wheel_delta(&inp);
             (void)input_consume_break(&inp);
             (void)input_consume_place(&inp);
             (void)input_consume_item_drop(&inp);

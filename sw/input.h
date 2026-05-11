@@ -56,6 +56,9 @@ typedef struct {
     bool quit;
     int hotbar_slot_pressed;
     bool hotbar_page_pressed;
+    /* Accumulated hotbar slot steps from REL_WHEEL since last consume (positive
+     * = evdev scroll-down / typically next slot to the right). */
+    int hotbar_wheel_delta;
 
     float mouse_dx;
     float mouse_dy;
@@ -102,6 +105,7 @@ bool input_consume_menu_select(InputState *inp);
 bool input_consume_menu_delete(InputState *inp);
 int input_consume_hotbar_slot(InputState *inp);
 bool input_consume_hotbar_page(InputState *inp);
+int input_consume_hotbar_wheel_delta(InputState *inp);
 void input_set_pointer_capture(InputState *inp, bool on);
 void input_set_text_mode(InputState *inp, bool on);
 void input_clear_text_queue(InputState *inp);

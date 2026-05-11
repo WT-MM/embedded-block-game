@@ -11,6 +11,18 @@ static void tick_redstone(VoxelWorld *world, int ticks)
         world_update_redstone(world, 0.1f);
 }
 
+static void mark_loaded_chunks_modified(VoxelWorld *world)
+{
+    for (int i = 0; i < world->chunk_count; i++) {
+        if ((world->chunks[i].flags & CHUNK_FLAG_LOADED) &&
+            world->chunks[i].chunk_x >= SETTLE_CHUNK_MIN &&
+            world->chunks[i].chunk_x <= SETTLE_CHUNK_MAX &&
+            world->chunks[i].chunk_z >= SETTLE_CHUNK_MIN &&
+            world->chunks[i].chunk_z <= SETTLE_CHUNK_MAX)
+            world->chunks[i].flags |= CHUNK_FLAG_MODIFIED;
+    }
+}
+
 int main(int argc, char **argv)
 {
     VoxelWorld world;
@@ -50,6 +62,7 @@ int main(int argc, char **argv)
         tick_redstone(&world, 50);
     }
     tick_redstone(&world, 100);
+    mark_loaded_chunks_modified(&world);
 
     if (!world_flush(&world)) {
         fprintf(stderr, "failed to flush settled chunks\n");

@@ -4543,19 +4543,6 @@ module voxel_gpu (
         end
     end
 
-    /*
-     * Per-frame perf counters — accumulate while a frame is in flight,
-     * reset on the FLIP write that ends the frame. Software reads them
-     * just before issuing FLIP, so the values reflect the just-completed
-     * frame's activity. Kept in a separate always_ff so the main FSM
-     * stays untouched and these can be ifdef'd out cleanly later.
-     *
-     * Note: counters CAN overlap. Background flush runs in parallel with
-     * the rasterizer (perf_flush_active + perf_draw_active in the same
-     * cycle) and ST_CACHE_INIT runs on the opposite cache while a flush
-     * is in flight (perf_init + perf_flush_active). Sums therefore exceed
-     * wall-clock cycles by design.
-     */
     wire perf_flip_write = wr && (address == ADDR_CONTROL) && writedata[1];
     wire perf_in_draw    = (state == ST_DRAW) || (state == ST_DRAW_FLUSH);
     wire perf_draw_commit = commit_valid || commit_valid_o;
@@ -4565,49 +4552,42 @@ module voxel_gpu (
                            (state == ST_CACHE_DRAIN_Z) ||
                            (state == ST_CACHE_START_LOAD_Z);
     wire perf_flush_push = bg_flush_wr_push || main_flush_wr_push;
-    wire perf_flush_stalling = flush_active && !perf_flush_push;
-    wire perf_flush_done_wait =
-        (flush_words_done == flush_pixels_total) &&
-        !flush_word_pending_valid &&
-        !flush_fetch_inflight;
-    wire perf_flush_fifo_wait =
-        sdram_wr_full || (sdram_wr_use[8:0] >= COPY_WR_FIFO_HIGH_WATER);
 
-    always_ff @(posedge clk) begin
-        if (reset || perf_flip_write) begin
-            perf_draw_active  <= 32'd0;
-            perf_draw_idle    <= 32'd0;
-            perf_flush_active <= 32'd0;
-            perf_flush_stall  <= 32'd0;
-            perf_init         <= 32'd0;
-            perf_load         <= 32'd0;
-            perf_flush_wait_load  <= 32'd0;
-            perf_flush_wait_fifo  <= 32'd0;
-            perf_flush_wait_data  <= 32'd0;
-            perf_flush_wait_drain <= 32'd0;
-        end else begin
-            if (perf_in_draw && perf_draw_commit)
-                perf_draw_active <= perf_draw_active + 32'd1;
-            if (perf_in_draw && !perf_draw_commit)
-                perf_draw_idle <= perf_draw_idle + 32'd1;
-            if (flush_active &&  perf_flush_push)
-                perf_flush_active <= perf_flush_active + 32'd1;
-            if (flush_active && !perf_flush_push)
-                perf_flush_stall <= perf_flush_stall + 32'd1;
-            if (perf_flush_stalling && flush_load_pending)
-                perf_flush_wait_load <= perf_flush_wait_load + 32'd1;
-            else if (perf_flush_stalling && perf_flush_fifo_wait)
-                perf_flush_wait_fifo <= perf_flush_wait_fifo + 32'd1;
-            else if (perf_flush_stalling && perf_flush_done_wait)
-                perf_flush_wait_drain <= perf_flush_wait_drain + 32'd1;
-            else if (perf_flush_stalling && !flush_word_pending_valid)
-                perf_flush_wait_data <= perf_flush_wait_data + 32'd1;
-            if (state == ST_CACHE_INIT)
-                perf_init <= perf_init + 32'd1;
-            if (perf_in_load)
-                perf_load <= perf_load + 32'd1;
-        end
-    end
+    /*
+     * Per-frame perf counters accumulate while a frame is in flight and reset
+     * on the FLIP write that ends the frame. Counter categories can overlap
+     * because background flush, cache init, and draw can run concurrently.
+     */
+    voxel_perf_counters #(
+        .COPY_WR_FIFO_HIGH_WATER(COPY_WR_FIFO_HIGH_WATER)
+    ) perf_counters (
+        .clk                    (clk),
+        .reset                  (reset),
+        .flip_write             (perf_flip_write),
+        .in_draw                (perf_in_draw),
+        .draw_commit            (perf_draw_commit),
+        .in_cache_init          (state == ST_CACHE_INIT),
+        .in_load                (perf_in_load),
+        .flush_active           (flush_active),
+        .flush_push             (perf_flush_push),
+        .flush_load_pending     (flush_load_pending),
+        .sdram_wr_full          (sdram_wr_full),
+        .sdram_wr_use           (sdram_wr_use),
+        .flush_words_done       (flush_words_done),
+        .flush_pixels_total     (flush_pixels_total),
+        .flush_word_pending_valid (flush_word_pending_valid),
+        .flush_fetch_inflight   (flush_fetch_inflight),
+        .perf_draw_active       (perf_draw_active),
+        .perf_draw_idle         (perf_draw_idle),
+        .perf_flush_active      (perf_flush_active),
+        .perf_flush_stall       (perf_flush_stall),
+        .perf_init              (perf_init),
+        .perf_load              (perf_load),
+        .perf_flush_wait_load   (perf_flush_wait_load),
+        .perf_flush_wait_fifo   (perf_flush_wait_fifo),
+        .perf_flush_wait_data   (perf_flush_wait_data),
+        .perf_flush_wait_drain  (perf_flush_wait_drain)
+    );
 
     always_comb begin
         case (address)

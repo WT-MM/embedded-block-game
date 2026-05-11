@@ -7,10 +7,15 @@ component RTL, generated assets, and asset generators together.
 ## Layout
 
 - `rtl/voxel_gpu.sv` - top-level Avalon/VGA/SDRAM GPU peripheral.
-- `rtl/voxel_raster_math.sv` - stateless raster setup and draw-step math.
-- `rtl/voxel_recip_math.sv` - stateless reciprocal pipeline math.
+- `rtl/voxel_raster_setup.sv` - stateless descriptor-to-edge setup math.
+- `rtl/voxel_draw_step.sv` - stateless two-pixel raster stepping math.
+- `rtl/voxel_iw_normalize.sv` - normalizes one-over-w before LUT lookup.
+- `rtl/voxel_recip_interpolate.sv` - interpolates reciprocal LUT entries.
+- `rtl/voxel_w_denormalize.sv` - restores reciprocal values to pixel scale.
 - `rtl/voxel_fog_blend.sv` - stateless fog/translucency blend math.
+- `rtl/voxel_perf_counters.sv` - frame performance counter block.
 - `rtl/voxel_sdp_ram.sv` - explicit M10K simple dual-port RAM wrapper.
+- `rtl/voxel_banked_sdp_ram.sv` - even/odd banked wrapper for band caches.
 - `rtl/voxel_texture_rom.sv` - explicit M10K texture atlas ROM.
 - `rtl/voxel_vga_counters.sv` - 640x480 VGA timing generator.
 - `assets/textures.mif` - generated texture atlas for synthesis and virtual hardware.

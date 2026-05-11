@@ -11,16 +11,19 @@ Files
 
   * `voxel_gpu.sv` - top-level Avalon-MM peripheral, descriptor FIFO, main
     engine FSM, pixel pipeline, SDRAM arbitration, and VGA scanout wiring.
-  * `voxel_raster_math.sv` - stateless raster setup and two-pixel draw-loop
-    stepping math used by `ST_SETUP` / `ST_DRAW`.
-  * `voxel_recip_math.sv` - stateless one-over-w normalization,
-    reciprocal-LUT interpolation, and depth denormalization helpers.
+  * `voxel_raster_setup.sv` - stateless raster setup math used by `ST_SETUP`.
+  * `voxel_draw_step.sv` - stateless two-pixel draw-loop stepping math used by
+    `ST_DRAW`.
+  * `voxel_iw_normalize.sv`, `voxel_recip_interpolate.sv`, and
+    `voxel_w_denormalize.sv` - stateless one-over-w pipeline helpers.
   * `voxel_fog_blend.sv` - stateless per-lane fog and translucency blending.
+  * `voxel_perf_counters.sv` - frame performance counter block.
   * `voxel_raster_helpers.svh` - pure helper functions for coordinate clamps,
     band math, sky-gradient indexing, and texture-coordinate clamps.
   * `voxel_color_helpers.svh` - pure helper functions for RGB565 conversion,
     alpha blending, scanout channel expansion, and palette light-bank remapping.
-  * `voxel_sdp_ram.sv` - small RAM wrappers used by the band caches.
+  * `voxel_sdp_ram.sv` - explicit simple dual-port RAM wrapper.
+  * `voxel_banked_sdp_ram.sv` - even/odd banked wrapper used by the band caches.
   * `voxel_texture_rom.sv` - explicit texture ROM wrapper with fixed read
     latency.
   * `voxel_vga_counters.sv` - 640x480 VGA timing generator.

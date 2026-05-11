@@ -145,11 +145,15 @@ The main renderer remains in `voxel_gpu/rtl/voxel_gpu.sv`. Stateless leaf
 modules own repeated arithmetic, while the main file keeps the FSM and pipeline
 timing visible:
 
-  * `voxel_gpu/rtl/voxel_raster_math.sv` for raster setup and two-pixel draw
-    stepping.
-  * `voxel_gpu/rtl/voxel_recip_math.sv` for one-over-w normalization,
-    reciprocal interpolation, and depth denormalization.
+  * `voxel_gpu/rtl/voxel_raster_setup.sv` for descriptor-to-edge setup.
+  * `voxel_gpu/rtl/voxel_draw_step.sv` for two-pixel draw stepping.
+  * `voxel_gpu/rtl/voxel_iw_normalize.sv`,
+    `voxel_gpu/rtl/voxel_recip_interpolate.sv`, and
+    `voxel_gpu/rtl/voxel_w_denormalize.sv` for one-over-w pipeline math.
   * `voxel_gpu/rtl/voxel_fog_blend.sv` for per-lane fog/translucency blending.
+  * `voxel_gpu/rtl/voxel_perf_counters.sv` for frame performance counters.
+  * `voxel_gpu/rtl/voxel_sdp_ram.sv` and
+    `voxel_gpu/rtl/voxel_banked_sdp_ram.sv` for local band-cache RAM wrappers.
   * `voxel_gpu/rtl/voxel_raster_helpers.svh` for clamps, band math, sky row
     helpers, and texture-coordinate clamps.
   * `voxel_gpu/rtl/voxel_color_helpers.svh` for RGB565 conversion, blending,

@@ -3768,6 +3768,7 @@ static bool redstone_block_can_hold_power(BlockID id)
            id != BLOCK_LAMP &&
            id != BLOCK_LAMP_OFF &&
            block_render_model(id) == BLOCK_RENDER_CUBE &&
+           !block_is_transparent(id) &&
            !block_is_passable(id);
 }
 

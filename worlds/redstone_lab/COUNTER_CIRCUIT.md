@@ -18,6 +18,12 @@ Reset is asynchronous per flip-flop. The compact torch-cell version should use
 one `CLR` rail that powers each reset support block directly and inhibits
 count/carry pulse gates while reset is held.
 
+Current lab note: the generated lab uses the tested comparator-latch TFFs,
+direct NQ ripple carry, one-way repeater taps into the decoder, and the local
+per-bit reset buttons. A single shared reset rail is deliberately not wired yet:
+the simple dust/block drop variants couple back into the latch and stop the
+counter from rippling.
+
 Compact redesign prep
 ---------------------
 

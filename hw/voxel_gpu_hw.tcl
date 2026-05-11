@@ -44,12 +44,7 @@ set_fileset_property QUARTUS_SYNTH ENABLE_FILE_OVERWRITE_MODE false
 add_fileset_file voxel_gpu/rtl/voxel_gpu.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_gpu.sv TOP_LEVEL_FILE
 add_fileset_file voxel_gpu/rtl/voxel_raster_helpers.svh SYSTEM_VERILOG_INCLUDE PATH voxel_gpu/rtl/voxel_raster_helpers.svh
 add_fileset_file voxel_gpu/rtl/voxel_color_helpers.svh SYSTEM_VERILOG_INCLUDE PATH voxel_gpu/rtl/voxel_color_helpers.svh
-add_fileset_file voxel_gpu/rtl/voxel_raster_setup.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_raster_setup.sv
-add_fileset_file voxel_gpu/rtl/voxel_draw_step.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_draw_step.sv
-add_fileset_file voxel_gpu/rtl/voxel_iw_normalize.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_iw_normalize.sv
-add_fileset_file voxel_gpu/rtl/voxel_recip_interpolate.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_recip_interpolate.sv
-add_fileset_file voxel_gpu/rtl/voxel_w_denormalize.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_w_denormalize.sv
-add_fileset_file voxel_gpu/rtl/voxel_fog_blend.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_fog_blend.sv
+add_fileset_file voxel_gpu/rtl/voxel_math_utils.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_math_utils.sv
 add_fileset_file voxel_gpu/rtl/voxel_perf_counters.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_perf_counters.sv
 add_fileset_file voxel_gpu/rtl/voxel_sdp_ram.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_sdp_ram.sv
 add_fileset_file voxel_gpu/rtl/voxel_banked_sdp_ram.sv SYSTEM_VERILOG PATH voxel_gpu/rtl/voxel_banked_sdp_ram.sv

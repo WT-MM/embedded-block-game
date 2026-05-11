@@ -11,12 +11,9 @@ Files
 
   * `voxel_gpu.sv` - top-level Avalon-MM peripheral, descriptor FIFO, main
     engine FSM, pixel pipeline, SDRAM arbitration, and VGA scanout wiring.
-  * `voxel_raster_setup.sv` - stateless raster setup math used by `ST_SETUP`.
-  * `voxel_draw_step.sv` - stateless two-pixel draw-loop stepping math used by
-    `ST_DRAW`.
-  * `voxel_iw_normalize.sv`, `voxel_recip_interpolate.sv`, and
-    `voxel_w_denormalize.sv` - stateless one-over-w pipeline helpers.
-  * `voxel_fog_blend.sv` - stateless per-lane fog and translucency blending.
+  * `voxel_math_utils.sv` - stateless math modules:
+    `voxel_raster_setup`, `voxel_draw_step`, `voxel_iw_normalize`,
+    `voxel_recip_interpolate`, `voxel_w_denormalize`, and `voxel_fog_blend`.
   * `voxel_perf_counters.sv` - frame performance counter block.
   * `voxel_raster_helpers.svh` - pure helper functions for coordinate clamps,
     band math, sky-gradient indexing, and texture-coordinate clamps.

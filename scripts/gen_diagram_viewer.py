@@ -23,6 +23,9 @@ DIAGRAM_TITLES = {
     "full_system_architecture.mmd": "Full System Architecture",
     "hps_fpga_ownership.mmd": "HPS/FPGA Ownership",
     "hps_software_architecture.mmd": "HPS Software Architecture",
+    "hps_game_loop_flow.mmd": "HPS Game Loop Flow",
+    "hps_world_streaming_mesh_flow.mmd": "HPS World Streaming / Mesh Flow",
+    "hps_interaction_logic_flow.mmd": "HPS Interaction Logic Flow",
     "hps_to_fpga_dataflow.mmd": "HPS-to-FPGA Dataflow",
     "register_interface_flow.mmd": "Register Interface Flow",
     "soc_system_context.mmd": "soc_system Context",
@@ -39,10 +42,20 @@ DIAGRAM_TITLES = {
 DOC_TITLES = {
     "diagram_index.md": "Diagram Index",
     "hardware_software_interface.md": "Hardware/Software Interface",
+    "operator_level_datapaths.md": "Operator-Level Datapaths",
     "register_map.md": "Register Map",
     "source_traceability.md": "Source Traceability",
+    "../hps_game_logic_breakdown.md": "HPS Game Logic Breakdown",
     "../final_breakdown.md": "Final Breakdown",
     "../file_listings.md": "File Listings",
+}
+
+
+SVG_TITLES = {
+    "raster_setup_operator_datapath.svg": "Raster Setup Operator Datapath",
+    "raster_draw_step_operator_datapath.svg": "Raster Draw-Step Operator Datapath",
+    "texture_pipeline_operator_datapath.svg": "Perspective Texture / Palette / Fog Operators",
+    "memory_access_operator_datapath.svg": "Framebuffer / Z / SDRAM Memory Operators",
 }
 
 
@@ -126,6 +139,31 @@ def timing_section() -> str:
     """
 
 
+def svg_sections() -> str:
+    sections = []
+    for name, title in SVG_TITLES.items():
+        path = DIAGRAMS / name
+        if not path.exists():
+            continue
+        anchor = anchor_for(name)
+        sections.append(
+            f"""
+            <section class="diagram-card" id="{anchor}">
+              <div class="card-header">
+                <div>
+                  <h2>{html.escape(title)}</h2>
+                  <a href="{html.escape(name)}">{html.escape(name)}</a>
+                </div>
+              </div>
+              <div class="svg-image">
+                <img src="{html.escape(name)}" alt="{html.escape(title)}">
+              </div>
+            </section>
+            """
+        )
+    return "\n".join(sections)
+
+
 def markdown_bundle() -> str:
     lines = [
         "# All Diagrams",
@@ -151,6 +189,21 @@ def markdown_bundle() -> str:
                 "```mermaid",
                 read(path).rstrip(),
                 "```",
+                "",
+            ]
+        )
+
+    for name, title in SVG_TITLES.items():
+        path = DIAGRAMS / name
+        if not path.exists():
+            continue
+        lines.extend(
+            [
+                f"## {title}",
+                "",
+                f"Rendered SVG: [{name}]({name})",
+                "",
+                f"![{title}]({name})",
                 "",
             ]
         )
@@ -181,6 +234,9 @@ def nav() -> str:
     for path in sorted(DIAGRAMS.glob("*.mmd")):
         title = DIAGRAM_TITLES.get(path.name, path.stem.replace("_", " ").title())
         diagram_links.append(f'<a href="#{anchor_for(path.name)}">{html.escape(title)}</a>')
+    for name, title in SVG_TITLES.items():
+        if (DIAGRAMS / name).exists():
+            diagram_links.append(f'<a href="#{anchor_for(name)}">{html.escape(title)}</a>')
     diagram_links.append('<a href="#voxel-gpu-timing-wave-json">voxel_gpu Timing WaveDrom</a>')
 
     doc_links = []
@@ -336,7 +392,13 @@ def main() -> int:
       border-bottom: 1px solid var(--line);
       background: #ffffff;
     }}
-    .timing-image img {{
+    .svg-image {{
+      overflow: auto;
+      padding: 18px;
+      background: #ffffff;
+    }}
+    .timing-image img,
+    .svg-image img {{
       display: block;
       max-width: none;
       height: auto;
@@ -383,6 +445,7 @@ def main() -> int:
     {nav()}
     <main>
       {mermaid_sections()}
+      {svg_sections()}
       {timing_section()}
     </main>
   </div>

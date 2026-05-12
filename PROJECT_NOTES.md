@@ -31,9 +31,10 @@ The larger C files are being split along ownership boundaries:
   * `sw/world.c` owns chunk storage, persistence, streaming, lighting, meshing,
     fluid/gravity simulation, and block mutation.
   * `sw/world_gen.c` owns deterministic biome/heightmap terrain generation.
-  * `hw/voxel_gpu/rtl/voxel_gpu.sv` remains the main RTL module. Stateless
-    arithmetic is split into `voxel_raster_math.sv`, `voxel_recip_math.sv`, and
-    `voxel_fog_blend.sv`; shared helper functions live in
+  * `hw/voxel_gpu/rtl/voxel_gpu.sv` remains the main RTL module. Small
+    stateless arithmetic modules live together in `voxel_math_utils.sv`;
+    `voxel_perf_counters.sv` owns frame counter accumulation; shared helper
+    functions live in
     `voxel_raster_helpers.svh` and `voxel_color_helpers.svh`. Keep FSM timing
     and ownership gates in the main file unless an extraction is proven by lint
     and hardware-targeted smoke tests. `hw/voxel_gpu/rtl/README.md` is the

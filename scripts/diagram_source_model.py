@@ -628,6 +628,7 @@ setup["voxel_raster_setup<br/>edge/depth/UV initial values"]:::math
 drawstep["voxel_draw_step<br/>2-pixel edge/depth/UV stepping"]:::math
 recip["voxel_iw_normalize x2<br/>voxel_recip_interpolate x2<br/>voxel_w_denormalize x2"]:::math
 fog["voxel_fog_blend x2"]:::math
+perf["voxel_perf_counters<br/>frame activity counters"]:::reg
 ram["voxel_banked_sdp_ram x4<br/>fb_back_ram_A/B, z_ram_A/B"]:::mem
 texture["voxel_texture_rom<br/>dual read texture atlas"]:::mem
 vga["voxel_vga_counters"]:::fpga
@@ -638,6 +639,7 @@ gpu --> setup
 gpu --> drawstep
 gpu --> recip
 gpu --> fog
+gpu --> perf
 gpu --> ram
 gpu --> texture
 gpu --> vga
@@ -908,6 +910,54 @@ TRACEABILITY = {
         "sw/gpu_transport.c",
         "sw/voxel_gpu.c",
     ],
+    "hps_game_loop_flow.mmd": [
+        "sw/game.c::main",
+        "sw/input.h",
+        "sw/player_physics.c",
+        "sw/world.c",
+        "sw/renderer.c",
+        "sw/gen_worker.h",
+        "sw/mesh_worker.h",
+    ],
+    "hps_world_streaming_mesh_flow.mmd": [
+        "sw/game.c::main",
+        "sw/world.h",
+        "sw/world.c::world_stream_around",
+        "sw/world.c::world_run_mesh_job",
+        "sw/gen_worker.h",
+        "sw/mesh_worker.h",
+        "sw/renderer.c::renderer_draw_world",
+    ],
+    "hps_interaction_logic_flow.mmd": [
+        "sw/game.c::trace_target_block",
+        "sw/game.c::break_block_target",
+        "sw/game.c::try_place_targeted_block",
+        "sw/game.c::try_use_held_bucket",
+        "sw/game.c::try_toggle_targeted_door",
+        "sw/game.c::try_press_targeted_button",
+        "sw/game.c::try_toggle_targeted_lever",
+        "sw/world.c::world_set_block_locked",
+        "sw/inventory.h",
+        "sw/game_items.h",
+    ],
+    "hps_game_logic_breakdown.md": [
+        "sw/game.c",
+        "sw/game_home.c",
+        "sw/input.h",
+        "sw/player_physics.c",
+        "sw/world.h",
+        "sw/world.c",
+        "sw/world_gen.c",
+        "sw/gen_worker.h",
+        "sw/mesh_worker.h",
+        "sw/block_types.h",
+        "sw/inventory.h",
+        "sw/game_items.h",
+        "sw/command_parser.h",
+        "sw/renderer.c",
+        "sw/gpu_transport.c",
+        "sw/voxel_gpu.h",
+    ],
     "hps_to_fpga_dataflow.mmd": [
         "sw/renderer.c",
         "sw/gpu_transport.c",
@@ -919,11 +969,16 @@ TRACEABILITY = {
     "register_map.md": ["sw/voxel_gpu.h", "sw/voxel_gpu.c", "hw/voxel_gpu/rtl/voxel_gpu.sv"],
     "soc_system_context.mmd": ["hw/soc_system.qsys", "hw/soc_system_top.sv", "hw/voxel_gpu_hw.tcl"],
     "voxel_gpu_module_hierarchy.mmd": ["hw/voxel_gpu/rtl/*.sv", "hw/voxel_gpu_hw.tcl"],
-    "voxel_gpu_datapath.mmd": ["hw/voxel_gpu/rtl/voxel_gpu.sv", "hw/voxel_gpu/rtl/voxel_raster_math.sv"],
-    "voxel_gpu_pipeline.mmd": ["hw/voxel_gpu/rtl/voxel_gpu.sv", "hw/voxel_gpu/rtl/voxel_recip_math.sv"],
+    "voxel_gpu_datapath.mmd": ["hw/voxel_gpu/rtl/voxel_gpu.sv", "hw/voxel_gpu/rtl/voxel_math_utils.sv"],
+    "voxel_gpu_pipeline.mmd": ["hw/voxel_gpu/rtl/voxel_gpu.sv", "hw/voxel_gpu/rtl/voxel_math_utils.sv"],
     "voxel_gpu_control_fsm.mmd": ["hw/voxel_gpu/rtl/voxel_gpu.sv"],
     "memory_and_buffer_ownership.mmd": ["sw/world.h", "sw/renderer.c", "sw/gpu_transport.c", "hw/voxel_gpu/rtl/voxel_gpu.sv"],
     "game_to_pixels_flow.mmd": ["sw/game.c", "sw/renderer.c", "sw/gpu_transport.c", "sw/voxel_gpu.c", "hw/voxel_gpu/rtl/voxel_gpu.sv"],
+    "raster_setup_operator_datapath.svg": ["hw/voxel_gpu/rtl/voxel_math_utils.sv::voxel_raster_setup", "hw/voxel_gpu/rtl/voxel_gpu.sv::ST_SETUP"],
+    "raster_draw_step_operator_datapath.svg": ["hw/voxel_gpu/rtl/voxel_math_utils.sv::voxel_draw_step", "hw/voxel_gpu/rtl/voxel_gpu.sv::ST_DRAW"],
+    "texture_pipeline_operator_datapath.svg": ["hw/voxel_gpu/rtl/voxel_math_utils.sv", "hw/voxel_gpu/rtl/voxel_gpu.sv::pipe0..commit", "hw/voxel_gpu/rtl/voxel_texture_rom.sv"],
+    "memory_access_operator_datapath.svg": ["hw/voxel_gpu/rtl/voxel_gpu.sv::cache muxing and commit fanout", "hw/voxel_gpu/rtl/voxel_sdp_ram.sv", "hw/voxel_gpu/rtl/voxel_banked_sdp_ram.sv", "hw/sdram_local_test/Sdram_Control.v"],
+    "operator_level_datapaths.md": ["scripts/gen_operator_diagrams.py", "hw/voxel_gpu/rtl/voxel_math_utils.sv", "hw/voxel_gpu/rtl/voxel_gpu.sv", "hw/voxel_gpu/rtl/voxel_perf_counters.sv", "hw/voxel_gpu/rtl/voxel_sdp_ram.sv", "hw/voxel_gpu/rtl/voxel_banked_sdp_ram.sv"],
     "voxel_gpu_timing.wave.json": ["tb/voxel_gpu_tb.sv", "build/diagrams/voxel_gpu.vcd when present"],
     "voxel_gpu_timing.svg": ["docs/diagrams/voxel_gpu_timing.wave.json", "scripts/render_timing_diagram.py"],
     "c_call_graph.mmd": ["sw/game.c", "sw/renderer.c", "sw/gpu_transport.c", "sw/voxel_gpu.c"],
@@ -1009,6 +1064,10 @@ def diagram_index_md() -> str:
         "full_system_architecture.mmd": "Where the HPS software, Platform Designer system, voxel_gpu, SDRAM, and VGA output fit.",
         "hps_fpga_ownership.mmd": "Which side owns world/chunk data, descriptor buffers, CSRs, FIFOs, caches, and output memories.",
         "hps_software_architecture.mmd": "How game.c, renderer.c, gpu_transport.c, world.c, and the kernel driver cooperate.",
+        "hps_game_loop_flow.mmd": "The source-level HPS game loop order from startup through simulation, interactions, rendering, and shutdown.",
+        "hps_world_streaming_mesh_flow.mmd": "How player position drives chunk streaming, async generation, mesh publishing, renderer reads, and retired mesh cleanup.",
+        "hps_interaction_logic_flow.mmd": "How normal gameplay input becomes targeting, breaking, placement, interactive block actions, world mutation, and mesh updates.",
+        "hps_game_logic_breakdown.md": "The comprehensive HPS-side game logic breakdown with source-file/function traceability.",
         "hps_to_fpga_dataflow.mmd": "How world/chunk data becomes descriptors and crosses into voxel_gpu.",
         "register_interface_flow.mmd": "Which C APIs/macros drive which RTL registers/signals.",
         "register_map.md": "The extracted hardware/software register map.",
@@ -1019,6 +1078,11 @@ def diagram_index_md() -> str:
         "voxel_gpu_control_fsm.mmd": "The engine_state_t state flow and key transition conditions.",
         "memory_and_buffer_ownership.mmd": "Who writes and reads each important memory/buffer.",
         "game_to_pixels_flow.mmd": "End-to-end game/world-to-VGA explanation.",
+        "raster_setup_operator_datapath.svg": "Whiteboard-style operator diagram for edge-equation setup and start-value correction.",
+        "raster_draw_step_operator_datapath.svg": "Whiteboard-style operator diagram for two-pixel raster stepping, inside tests, and pair/row increments.",
+        "texture_pipeline_operator_datapath.svg": "Whiteboard-style operator diagram for reciprocal, UV multiply, texture, palette, fog, and z-test operators.",
+        "memory_access_operator_datapath.svg": "Whiteboard-style operator diagram for active cache reads, commit writes, bank steering, SDRAM copy/load, and scanout.",
+        "operator_level_datapaths.md": "Readable page containing the rendered operator-level SVG diagrams.",
         "voxel_gpu_timing.wave.json": "WaveDrom skeleton or VCD-derived timing if a real VCD is present.",
         "voxel_gpu_timing.svg": "Static rendered view of the WaveDrom timing asset.",
         "c_call_graph.mmd": "Main C call path from game loop to hardware access functions.",
@@ -1039,6 +1103,10 @@ def diagram_index_md() -> str:
         lines.append(f"- Based on: {sources}")
         if name in {"voxel_gpu_timing.wave.json", "voxel_gpu_timing.svg"}:
             lines.append(f"- Limitation: {simulation_status()}")
+        elif name == "hps_game_logic_breakdown.md":
+            lines.append("- Limitation: source-level HPS game-logic document; runtime performance and observed gameplay behavior require logs or hardware/simulation evidence.")
+        elif name.endswith("_operator_datapath.svg") or name == "operator_level_datapaths.md":
+            lines.append("- Limitation: source-grounded schematic, not a post-synthesis netlist or Quartus resource/timing report.")
         elif name == "register_map.md":
             lines.append("- Limitation: bit fields are limited to fields named in source comments/macros/RTL readback.")
         elif name == "soc_system_context.mmd":

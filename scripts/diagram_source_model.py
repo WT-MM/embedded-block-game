@@ -282,7 +282,7 @@ def register_rows() -> list[RegisterRow]:
         "VOXEL_REG_PERF_FLUSH_ACT": "[31:0]=background flush active cycles",
         "VOXEL_REG_PERF_FLUSH_STL": "[31:0]=background flush stalled cycles",
         "VOXEL_REG_PERF_INIT": "[31:0]=cache init cycles",
-        "VOXEL_REG_PERF_LOAD": "[31:0]=cache load/drain cycles",
+        "VOXEL_REG_PERF_LOAD": "[31:0]=reserved legacy cache-load counter; currently zero",
         "VOXEL_REG_PERF_FLUSH_LOAD": "[31:0]=flush wait for load cycles",
         "VOXEL_REG_PERF_FLUSH_FIFO": "[31:0]=flush wait for FIFO/headroom cycles",
         "VOXEL_REG_PERF_FLUSH_DATA": "[31:0]=flush wait for cache/sky data cycles",
@@ -479,7 +479,7 @@ subgraph FPGA["FPGA-owned state and work"]
   pipe["voxel_gpu raster pipeline<br/>pipe0..commit"]:::fpga
   tex["texture ROM + reciprocal LUT + palettes"]:::mem
   cache["color/Z ping-pong band caches"]:::mem
-  ext["external SDRAM color/Z frames"]:::mem
+  ext["external SDRAM front/back color frames"]:::mem
   scan["VGA counters + scanout line buffers"]:::fpga
 end
 world --> mesh --> renderbuf --> bins --> writes --> fifo --> pipe
@@ -623,7 +623,7 @@ def voxel_gpu_module_hierarchy() -> str:
     return mermaid_header() + """flowchart TB
 gpu["voxel_gpu<br/>Avalon slave, FSM, pipeline, SDRAM/VGA arbitration"]:::fpga
 front["CSR/FIFO front door<br/>ADDR_* map, fifo_mem"]:::reg
-fsm["engine_state_t FSM<br/>ST_IDLE..ST_CACHE_DRAIN_Z"]:::ctrl
+fsm["engine_state_t FSM<br/>IDLE/CLEAR/FETCH/SETUP/DRAW/FLUSH/CACHE_INIT"]:::ctrl
 setup["voxel_raster_setup<br/>edge/depth/UV initial values"]:::math
 drawstep["voxel_draw_step<br/>2-pixel edge/depth/UV stepping"]:::math
 recip["voxel_iw_normalize x2<br/>voxel_recip_interpolate x2<br/>voxel_w_denormalize x2"]:::math
@@ -677,8 +677,8 @@ subgraph PIPE["Pixel pipeline"]
 end
 subgraph CACHE["Band cache and external frame"]
   band["ping-pong color/Z band caches<br/>640x60"]:::mem
-  flush["ST_CACHE_* + background flush<br/>SDRAM write bursts"]:::fpga
-  sdram["board SDR SDRAM frames<br/>front/back color + Z base"]:::mem
+  flush["ST_CACHE_INIT + background flush<br/>Z init and SDRAM write bursts"]:::fpga
+  sdram["board SDR SDRAM frames<br/>front/back color"]:::mem
 end
 subgraph OUT["Display"]
   scan["scanout line buffers x3<br/>SDRAM read bursts"]:::mem
@@ -760,19 +760,6 @@ ST_SETUP --> ST_DRAW: setup registers loaded
 ST_DRAW --> ST_DRAW_FLUSH: descriptor row/bbox complete or cache miss/drain
 ST_DRAW_FLUSH --> ST_FETCH: prefetched descriptor ready
 ST_DRAW_FLUSH --> ST_IDLE: pipeline drained
-ST_IDLE --> ST_CACHE_FLUSH_COLOR: cache final flush path
-ST_CACHE_FLUSH_COLOR --> ST_CACHE_FLUSH_Z: color flush done and Z flush needed
-ST_CACHE_FLUSH_COLOR --> ST_IDLE: color-only flush done
-ST_CACHE_FLUSH_Z --> ST_CACHE_SELECT_FILL: Z flush done and next fill needed
-ST_CACHE_FLUSH_Z --> ST_IDLE: final flush done
-ST_CACHE_SELECT_FILL --> ST_CACHE_LOAD_COLOR: valid cached band to load
-ST_CACHE_SELECT_FILL --> ST_CACHE_INIT: no valid cached band
-ST_CACHE_LOAD_COLOR --> ST_CACHE_DRAIN_COLOR: color burst words loaded
-ST_CACHE_DRAIN_COLOR --> ST_CACHE_START_LOAD_Z: read FIFO drained
-ST_CACHE_START_LOAD_Z --> ST_CACHE_LOAD_Z: Z read launched
-ST_CACHE_LOAD_Z --> ST_CACHE_DRAIN_Z: Z burst words loaded
-ST_CACHE_DRAIN_Z --> ST_DRAW: cache_resume_draw
-ST_CACHE_DRAIN_Z --> ST_IDLE: otherwise
 note right of ST_IDLE
   Also arbitrates BAND_CTRL.FLUSH background flush,
   CONTROL.FLP copy_complete_pending, prefetch handoff,
@@ -801,7 +788,7 @@ subgraph FPGA["FPGA internal memory"]
   line["scan_linebuf0/1/2"]:::mem
 end
 subgraph EXTERNAL["External or board-visible"]
-  sdram["Board SDR SDRAM<br/>front/back color frames + Z base"]:::mem
+  sdram["Board SDR SDRAM<br/>front/back color frames"]:::mem
   vga["VGA DAC pins"]:::out
 end
 chunks -->|"world.c writes/reads"| meshes

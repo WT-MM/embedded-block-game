@@ -381,7 +381,7 @@ def memory_access_svg() -> str:
         1700,
         1060,
         "Framebuffer / Z / SDRAM Memory Access Operators",
-        "Active ping-pong cache reads feed z-test/commit; inactive/cache-maintenance paths flush/load through Sdram_Control.",
+        "Active ping-pong cache reads feed z-test/commit; background flush streams inactive-cache data through Sdram_Control.",
     )
     svg.group(24, 84, 1652, 276, "Active draw-cache read path", "#ffffff")
     svg.node(58, 150, 150, 58, "draw_cache_sel\nA/B active", "ctrl")
@@ -423,13 +423,13 @@ def memory_access_svg() -> str:
     svg.arrow(948, 483, 1052, 474)
     svg.arrow(1222, 474, 1308, 467)
 
-    svg.group(24, 720, 1652, 200, "Cache maintenance, SDRAM copy, and scanout", "#ffffff")
-    svg.node(58, 782, 150, 58, "cache_flush_state\ncache_load_state", "ctrl")
-    svg.mem(258, 760, 176, 86, "inactive cache\nflush/load ports", "flush_cache_sel")
+    svg.group(24, 720, 1652, 200, "Cache init, background flush, and scanout", "#ffffff")
+    svg.node(58, 782, 150, 58, "ST_CACHE_INIT\nbackground flush", "ctrl")
+    svg.mem(258, 760, 176, 86, "inactive cache\nflush read ports", "flush_cache_sel")
     svg.op(500, 780, "MUX\ncolor/Z/sky", "mux")
     svg.node(652, 760, 150, 86, "WR FIFO push\nsdram_wr_push", "ctrl")
     svg.mem(872, 748, 184, 110, "Sdram_Control\nboard SDRAM", "WR/RD bursts")
-    svg.node(1128, 760, 150, 86, "RD pop\ncache or scanout", "ctrl")
+    svg.node(1128, 760, 150, 86, "RD pop\nscanout only", "ctrl")
     svg.mem(1328, 748, 156, 110, "line buffers\ntriple", "VGA scan")
     svg.node(1534, 770, 104, 76, "VGA\nRGB/HS/VS", "out")
     svg.arrow(208, 811, 258, 803)
@@ -479,7 +479,7 @@ OPERATOR_DIAGRAMS = [
     {
         "file": "memory_access_operator_datapath.svg",
         "title": "Framebuffer / Z / SDRAM Memory Access Operators",
-        "question": "How active cache reads, z-test commit writes, bank steering, SDRAM flush/load, and VGA scanout connect.",
+        "question": "How active cache reads, z-test commit writes, bank steering, background SDRAM flush, and VGA scanout connect.",
         "sources": [
             "hw/voxel_gpu/rtl/voxel_gpu.sv::cache muxing and commit fanout",
             "hw/voxel_gpu/rtl/voxel_sdp_ram.sv",

@@ -46,11 +46,10 @@ State Groups
 
   * Descriptor/raster path: `ST_IDLE`, `ST_FETCH`, `ST_SETUP`, `ST_DRAW`,
     `ST_DRAW_FLUSH`.
-  * Cache writeback path: `ST_CACHE_EVICT`, `ST_CACHE_FLUSH_COLOR`,
-    `ST_CACHE_FLUSH_Z`.
-  * Cache fill/init path: `ST_CACHE_SELECT_FILL`, `ST_CACHE_INIT`,
-    `ST_CACHE_LOAD_COLOR`, `ST_CACHE_START_LOAD_Z`, `ST_CACHE_LOAD_Z`.
-  * SDRAM read safety path: `ST_CACHE_DRAIN_COLOR`, `ST_CACHE_DRAIN_Z`.
+  * Frame reset path: `ST_CLEAR`.
+  * Band preparation path: `ST_CACHE_INIT`, which clears the resident Z band
+    after `BEGIN_BAND`. `END_BAND` writeback runs in the independent
+    background flush controller rather than as a main FSM state.
 
 Why Some Gates Look Defensive
 -----------------------------
@@ -76,5 +75,6 @@ For a quick walkthrough, follow these landmarks in `voxel_gpu.sv`:
   * `desc_*` wires: how packed descriptor words become raster inputs.
   * `raster_setup` / `draw_step`: descriptor setup and two-pixel stepping.
   * `ST_DRAW`: pixel pipeline staging and valid-bit movement.
-  * `ST_CACHE_*`: cache init/load/flush lifecycle.
+  * `ST_CACHE_INIT`: resident band Z clear after `BEGIN_BAND`.
+  * Background flush controller: `END_BAND` color writeback to SDRAM.
   * bottom perf-counter block: how software measures draw/load/flush time.

@@ -25,8 +25,6 @@ SETTLE_CENTER_Z = 30.0
 
 FACE_LEFT = 2
 FACE_RIGHT = 3
-FACE_FRONT = 4
-FACE_BACK = 5
 TORCH_SUPPORT_FLOOR = 8
 
 
@@ -53,11 +51,6 @@ def load_block_ids():
 
 
 B = load_block_ids()
-
-
-def floor_div(value, divisor):
-    q = value // divisor
-    return q
 
 
 def block_index(x, y, z):
@@ -109,8 +102,8 @@ class LabWorld:
     def set(self, wx, wy, wz, name, delay=1, torch_support=None):
         if wy < 0 or wy >= CHUNK_HEIGHT:
             raise ValueError(f"y out of range: {wy}")
-        cx = floor_div(wx, CHUNK_SIZE)
-        cz = floor_div(wz, CHUNK_SIZE)
+        cx = wx // CHUNK_SIZE
+        cz = wz // CHUNK_SIZE
         if (cx, cz) not in self.blocks:
             raise ValueError(f"coordinate outside lab chunks: {(wx, wy, wz)}")
         lx = wx - cx * CHUNK_SIZE
@@ -129,8 +122,8 @@ class LabWorld:
             self.redstone[(cx, cz)][idx] = 0
 
     def get(self, wx, wy, wz):
-        cx = floor_div(wx, CHUNK_SIZE)
-        cz = floor_div(wz, CHUNK_SIZE)
+        cx = wx // CHUNK_SIZE
+        cz = wz // CHUNK_SIZE
         if (cx, cz) not in self.blocks or wy < 0 or wy >= CHUNK_HEIGHT:
             return B["BLOCK_AIR"]
         lx = wx - cx * CHUNK_SIZE
@@ -213,32 +206,6 @@ def repeater_line_z(world, x, y, z0, z1, repeater_name, interval=10):
         else:
             world.set(x, y, z, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
         distance += 1
-
-
-def place_rising_edge_detector(world, wx, wy, wz):
-    """Place the 2x2 core for a compact comparator rising-edge detector.
-
-    Footprint, viewed from above:
-
-        [keepout ] [side repeater]
-        [rear tap] [comparator   ] -> pulse out
-
-    The clock bus owns the adjacent cells feeding `rear_input` and the side
-    repeater's rear `delay_input`. Keep the rear tap at a weaker dust strength
-    than the delayed repeater output, so the comparator turns off once the side
-    input arrives.
-    """
-    world.set(wx, wy, wz, "BLOCK_REDSTONE_WIRE_UNCONNECTED")
-    world.set(wx + 1, wy, wz, "BLOCK_COMPARATOR_EAST_OFF")
-    world.set(wx + 1, wy, wz - 1, "BLOCK_REPEATER_SOUTH_OFF")
-
-    return {
-        "rear_input": (wx, wy, wz),
-        "delay_input": (wx + 1, wy, wz - 2),
-        "side_repeater": (wx + 1, wy, wz - 1),
-        "output": (wx + 2, wy, wz),
-        "footprint": (wx, wz - 1, wx + 1, wz),
-    }
 
 
 def place_wide_comparator_latch(world, wx, wy, wz):
@@ -570,7 +537,7 @@ def place_connected_counter_display(world,
     segment_bus = [-50, -52, -44, -40, -42, -48, -46]
     segment_bus_min = min(segment_bus)
 
-    for bit, (cell_x, row_z) in enumerate(zip(cell_xs, row_zs)):
+    for cell_x, row_z in zip(cell_xs, row_zs):
         place_t_flip_flop(world, cell_x, wy, row_z, False)
 
     wire_x(world, nq_bus[0], cell_xs[1] - 1, wy, row_zs[0])

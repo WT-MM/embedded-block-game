@@ -98,11 +98,8 @@ module voxel_gpu (
     localparam logic [12:0] ADDR_FIFO_HI  = 13'h800;  // 0x2000 (exclusive)
 
     localparam int FB_WIDTH       = 640;
-    localparam int FB_HEIGHT      = 480;
-    localparam int FB_PIXELS      = FB_WIDTH * FB_HEIGHT;
     localparam int BAND_HEIGHT    = 60;
     localparam int BAND_PIXELS    = FB_WIDTH * BAND_HEIGHT;
-    localparam int BAND_COUNT     = 8;
     localparam int FIFO_DEPTH     = 1024;
     localparam int BASE_QUAD_WORDS = 16;
     localparam int UV_QUAD_WORDS   = 9;
@@ -111,16 +108,12 @@ module voxel_gpu (
     localparam logic [5:0] MAX_DESC_WORDS_6  = 6'd25;
     localparam int TEXTURE_BYTES   = 128 * 16 * 16;
     localparam int LINE_WORDS      = FB_WIDTH;
-    localparam int COPY_BURST_WORDS = 128;
-    localparam int READ_BURST_WORDS = 64;
     /* Stage background-flush words into the 512-word SDRAM WR FIFO while
      * scanout owns the bus; keep headroom for in-flight pushes. */
     localparam logic [8:0] COPY_WR_FIFO_HIGH_WATER = 9'd224;
     localparam logic [7:0] COPY_DRAIN_CYCLES = 8'd128;
-    localparam int SDRAM_ADDR_W    = 25;
     /* Drain every valid pipeline stage between fetch and color commit. */
     localparam logic [3:0] DRAW_FLUSH_CYCLES = 4'd14;
-    localparam logic [24:0] FB_WORDS_25 = 25'd307200;
     localparam logic [24:0] READ_BURST_WORDS_25 = 25'd64;
     localparam logic [9:0]  LINE_WORDS_10 = 10'd640;
     localparam logic [8:0]  COPY_BURST_WORDS_9 = 9'd128;
@@ -138,8 +131,6 @@ module voxel_gpu (
     localparam logic [31:0] DEFAULT_EXTMEM_FRONT_BASE = 32'd0;
     localparam logic [31:0] DEFAULT_EXTMEM_BACK_BASE = 32'd1048576; // 1MB
     localparam logic [31:0] DEFAULT_EXTMEM_STRIDE = 32'd1280;
-    localparam int SDRAM_POWERUP_HOLD_CYCLES = 200000;
-    localparam int SDRAM_INIT_WAIT_CYCLES = 32000;
     localparam logic [17:0] SDRAM_POWERUP_HOLD_LAST = 18'd199999;
     localparam logic [15:0] SDRAM_INIT_WAIT_LAST = 16'd31999;
     localparam int FLAG_TEX_BIT        = 0;
@@ -211,30 +202,18 @@ module voxel_gpu (
     logic [31:0] perf_flush_active;  // bg flush running AND word pushed this cyc
     logic [31:0] perf_flush_stall;   // bg flush running AND no push (SDRAM stall)
     logic [31:0] perf_init;          // ST_CACHE_INIT
-    logic [31:0] perf_load;          // reserved; legacy cache-load states removed
+    logic [31:0] perf_load;          // reserved ABI counter
     logic [31:0] perf_flush_wait_load;  // bg flush waiting to launch WR stream
     logic [31:0] perf_flush_wait_fifo;  // bg flush blocked by write FIFO/headroom
     logic [31:0] perf_flush_wait_data;  // bg flush waiting on cache/sky word
     logic [31:0] perf_flush_wait_drain; // bg flush final SDRAM/FIFO drain
 
-    // Palette lookup path: draw_pipe_color -> apply_light_bank ->
-    // pal_rd_src_addr (registered) -> palette[] -> plr_src_rgb
-    // (registered) -> rgb888_to_rgb565 -> fog0_src_rgb565 (registered).
-    //
-    // The pal_rd + plr split flops the palette address and its read
-    // output in two separate cycles, so the pipeline stays correct
-    // whether Quartus implements this array as MLAB (async read) or
-    // demotes it to M10K (sync read). The MLAB attribute still keeps
-    // the read cheap on paper; the explicit two-stage pipeline is the
-    // correctness guarantee. See PROJECT_NOTES.md for the history.
+    // Palette path: draw_pipe_color -> pal_rd address flop -> palette[] ->
+    // plr data flop -> RGB565/fog. The explicit address/data split keeps
+    // the timing fixed whether Quartus maps the array to logic or memory.
     (* ramstyle = "logic" *) logic [23:0] palette [0:255];
     (* ramstyle = "logic" *) logic [23:0] sky_palette [0:SKY_GRADIENT_COLORS-1];
     (* ramstyle = "M10K" *) logic [31:0] fifo_mem [0:FIFO_DEPTH-1];
-    // texture_mem is implemented as an explicit altsyncram ROM below
-    // (see voxel_texture_rom). Do NOT reintroduce an inferred array here:
-    // inference lets Quartus silently pick between 1-cycle and 2-cycle
-    // read latency, which is what caused the quad-boundary colored
-    // fringes / "chromatic aberration" we chased for weeks.
     (* ramstyle = "logic" *) logic [31:0] recip_lut [0:1024];
 
     logic [9:0]  fifo_wr_ptr;
@@ -294,9 +273,10 @@ module voxel_gpu (
     // Unsuffixed lane = even pixel of the 2-pixel pair.
     // `_o` lane        = odd pixel of the same pair.
     //
-    // The long pipeline exists to keep reciprocal lookup, texture ROM,
-    // palette lookup, fog, and destination read latencies aligned.
+    // Stage notes name the field that changes; unmentioned metadata is carried
+    // forward to keep the two lanes aligned.
 
+    // pipe0: raster pair accepted; cache read addresses, z, and UV/w are sampled.
     logic        pipe0_valid;
     logic        pipe0_inside;
     logic        pipe0_ztest;
@@ -313,6 +293,7 @@ module voxel_gpu (
     logic signed [31:0] pipe0_uw_q;
     logic signed [31:0] pipe0_vw_q;
     logic [31:0] pipe0_iw_q;
+    // recip0: 1/w is normalized and the LUT index/fraction is derived.
     logic        recip0_valid;
     logic        recip0_inside;
     logic        recip0_ztest;
@@ -331,6 +312,7 @@ module voxel_gpu (
     logic        recip0_iw_zero;
     logic  [5:0] recip0_iw_msb;
     logic [31:0] recip0_iw_norm_q;
+    // recip1: destination color/Z return from the band cache; reciprocal LUT read.
     logic        recip1_valid;
     logic        recip1_inside;
     logic        recip1_ztest;
@@ -353,6 +335,7 @@ module voxel_gpu (
     logic  [5:0] recip1_iw_lut_frac;
     logic [31:0] recip1_w_norm_lo;
     logic [31:0] recip1_w_norm_hi;
+    // recip2: reciprocal interpolation finishes; normalized w is registered.
     logic        recip2_valid;
     logic        recip2_inside;
     logic        recip2_ztest;
@@ -373,6 +356,7 @@ module voxel_gpu (
     logic        recip2_iw_zero;
     logic  [5:0] recip2_iw_msb;
     logic [31:0] recip2_w_norm_q;
+    // pipe1: w is denormalized and aligned with UV and destination metadata.
     logic        pipe1_valid;
     logic        pipe1_inside;
     logic        pipe1_ztest;
@@ -391,6 +375,7 @@ module voxel_gpu (
     logic signed [31:0] pipe1_uw_q;
     logic signed [31:0] pipe1_vw_q;
     logic [31:0] pipe1_w_q;
+    // tex0: perspective UV products are registered.
     logic        tex0_valid;
     logic        tex0_inside;
     logic        tex0_ztest;
@@ -409,6 +394,7 @@ module voxel_gpu (
     logic [31:0] tex0_w_q;
     logic signed [63:0] tex0_u_prod;
     logic signed [63:0] tex0_v_prod;
+    // pipe2: texture coordinates become atlas addresses.
     logic        pipe2_valid;
     logic        pipe2_inside;
     logic        pipe2_ztest;
@@ -426,6 +412,7 @@ module voxel_gpu (
     logic  [8:0] pipe2_y;
     logic [31:0] pipe2_w_q;
     logic [14:0] pipe2_tex_addr;
+    // draw_pipe: ROM texel data is aligned with color/Z metadata.
     logic        draw_pipe_valid;
     logic        draw_pipe_inside;
     logic        draw_pipe_ztest;
@@ -444,21 +431,7 @@ module voxel_gpu (
     logic [31:0] draw_pipe_w_q;
     logic        draw_is_band_primer;
 
-    /* Palette-address register (pal_rd) stage: first half of the
-     * pipelined palette read. We register the palette source/fog
-     * addresses coming out of apply_light_bank here so the palette
-     * array is indexed by a stable, flopped address on the following
-     * cycle. The plr stage below then captures the palette output.
-     * Splitting the read into two cycles (address flop, then data
-     * flop) makes the timing deterministic whether Quartus implements
-     * the palette array as MLAB (async read) or silently demotes it
-     * to M10K (sync read with a registered address internally). The
-     * old single-plr layout only worked when MLAB was inferred; if
-     * Quartus added its own address register on top we ended up one
-     * cycle behind and bled the previous quad's palette entry into
-     * the first pixel of each new quad, which manifested as colored
-     * fringes on every block edge (worst on stone, where any non-gray
-     * leak is maximally visible). */
+    // pal_rd: palette/fog addresses are flopped before the array read.
     logic        pal_rd_valid;
     logic        pal_rd_pass;
     logic        pal_rd_ztest;
@@ -474,13 +447,7 @@ module voxel_gpu (
     logic [31:0] pal_rd_w_q;
     logic [33:0] pal_rd_ray_scale_q16;
 
-    /* Palette-lookup register (plr) stage: second half of the
-     * pipelined palette read. Captures palette[pal_rd_src_addr] and
-     * palette[pal_rd_fog_addr] so fog0 sees RGB values that arrive
-     * on the same cycle as every other fog0 input. See PROJECT_NOTES.md
-     * for the reasoning. (Prefix avoids colliding with the existing
-     * CSR-side pal_addr register used to auto-increment palette
-     * writes.) */
+    // plr: palette/fog RGB values are captured and kept with fog metadata.
     logic        plr_valid;
     logic        plr_pass;
     logic        plr_ztest;
@@ -494,6 +461,7 @@ module voxel_gpu (
     logic [31:0] plr_w_q;
     logic [33:0] plr_ray_scale_q16;
 
+    // fog0: RGB888 converts to RGB565; radial distance multiply starts.
     logic        fog0_valid;
     logic        fog0_pass;
     logic        fog0_ztest;
@@ -506,6 +474,7 @@ module voxel_gpu (
     logic [15:0] fog0_fog_rgb565;
     logic [31:0] fog0_w_q;
     logic [33:0] fog0_ray_scale_q16;
+    // fog1: radial distance is in Q8.8 for fog blend.
     logic        fog1_valid;
     logic        fog1_pass;
     logic        fog1_ztest;
@@ -517,6 +486,7 @@ module voxel_gpu (
     logic [15:0] fog1_dst_rgb565;
     logic [15:0] fog1_fog_rgb565;
     logic [15:0] fog1_radial_q8_8;
+    // commit: final RGB565 and Z write-back controls.
     logic        commit_valid;
     logic        commit_pass;
     logic        commit_ztest;
@@ -843,17 +813,9 @@ module voxel_gpu (
     logic [15:0] flush_fetch_clear_rgb565; // clear color aligned with cache read
 
     /*
-     * Per-cache, per-bank read/write signals. Each cache (fb_A, fb_B,
-     * z_A, z_B) is now a banked SDP RAM exposing two physical banks
-     * keyed on linear addr[0]: `_e` is the even bank and `_o` is the
-     * odd bank. For 1 px/cycle paths today, the cache port driver
-     * fans the unified addr/data/en to both banks of the active cache
-     * and qualifies each `wr_en_*` by linear addr[0]. The unified
-     * `rd_data` view that the rest of the design consumes is then
-     * recovered by muxing `rd_data_e` / `rd_data_o` with a 1-cycle
-     * delayed copy of the LSB of the read address (`*_rd_sel_q`) —
-     * the same trick the old in-wrapper mux performed, hoisted out so
-     * the per-bank ports can be driven independently in step 4b/c.
+     * Per-cache, per-bank read/write signals. `_e` and `_o` are the even/odd
+     * linear-address banks, and `*_rd_sel_q` selects the bank whose read data
+     * returns one cycle after the address.
      */
     logic [15:0] fb_A_e_rd_addr, fb_A_o_rd_addr;
     logic [15:0] fb_A_e_rd_data, fb_A_o_rd_data;
@@ -875,12 +837,8 @@ module voxel_gpu (
     logic [15:0] z_B_e_wr_addr,  z_B_o_wr_addr;
     logic [15:0] z_B_e_wr_data,  z_B_o_wr_data;
     logic        z_B_e_wr_en,    z_B_o_wr_en;
-    /* 1-cycle-delayed LSB of each cache's read address. Equal to what
-     * the old in-wrapper rd_sel_q used to be. */
     logic        fb_A_rd_sel_q, fb_B_rd_sel_q;
     logic        z_A_rd_sel_q,  z_B_rd_sel_q;
-    /* Reconstructed unified per-cache rd_data, consumed by the existing
-     * fb_back_rd_data / z_rd_data muxes. */
     logic [15:0] fb_A_rd_data, fb_B_rd_data;
     logic [15:0] z_A_rd_data,  z_B_rd_data;
 
@@ -1079,7 +1037,6 @@ module voxel_gpu (
                                           !scan_fill_load_pending &&
                                           sdram_rd_empty;
     wire        cache_init_state        = (state == ST_CACHE_INIT);
-    wire        cache_maint_state       = cache_init_state;
     /* True when the main FSM still owns the active cache port. */
     wire        cache_used_by_main      = cache_sky_patch_state ||
                                           (state == ST_DRAW) ||
@@ -1091,12 +1048,6 @@ module voxel_gpu (
         (!flush_active || flush_generated_sky || ((~draw_cache_sel) != flush_cache_sel));
     wire        scan_vsync_read_req     = vsync_pulse && sdram_ready &&
                                           (copy_complete_pending || display_valid);
-    wire        scan_next_read_req      = display_valid &&
-                                          sdram_ready && scan_active_valid &&
-                                          vcount_visible &&
-                                          (!scan_current_line_ready ||
-                                           !scan_target_line_ready);
-    wire        scan_read_start_req     = scan_vsync_read_req || scan_next_read_req;
     /*
      * Defense-in-depth: never spawn a scan-fill burst while the SDRAM RD
      * FIFO still has residuals. This keeps one scanline burst from poisoning
@@ -1133,10 +1084,6 @@ module voxel_gpu (
                                            (!VGA_BLANK_n ||
                                             (scan_prefetch_margin_ready &&
                                              scan_active_write_window)));
-    wire        scanout_read_slack      = !display_valid ||
-                                          (scan_read_idle &&
-                                           !scan_prefetch_req &&
-                                           !VGA_BLANK_n);
     wire        scanout_read_load_req   = scan_vsync_read_req ||
                                           scan_fill_load_pending ||
                                           scan_prefetch_req;
@@ -1690,15 +1637,8 @@ module voxel_gpu (
 
     assign DRAM_CS_N = dram_cs_n_bus[0];
 
-    /* ── Ping-pong band caches A and B ───────────────────── *
-     * Banked by addr[0] (= x[0]) so even/odd x land in disjoint
-     * SDP RAMs. The wrapper now exposes per-bank read and write
-     * ports directly; the cache port driver below produces them by
-     * fanning out the unified addr/data/en to both banks and
-     * qualifying each bank's wr_en by linear addr[0]. The 1 px/cycle
-     * rasterizer drives both banks of the active cache with the same
-     * address; step 4b/c will start driving the lane-A and lane-B
-     * ports independently for 2 px/cycle. */
+    /* Ping-pong band caches A and B. Even and odd linear addresses land in
+     * separate banks so the two raster lanes can read/write independently. */
     voxel_banked_sdp_ram #(
         .DATA_W(16),
         .ADDR_W(16),
@@ -1771,50 +1711,26 @@ module voxel_gpu (
         .wr_en_o   (z_B_o_wr_en)
     );
 
-    /*
-     * Combine each cache's per-bank read outputs back into a unified
-     * `rd_data` view. The 1-cycle-delayed LSB of the read address picks
-     * whichever bank actually held the requested word — matches the
-     * behavior of the old in-wrapper rd_sel_q mux exactly.
-     */
+    /* Rebuild the single-cache read view from the bank selected last cycle. */
     assign fb_A_rd_data = fb_A_rd_sel_q ? fb_A_o_rd_data : fb_A_e_rd_data;
     assign fb_B_rd_data = fb_B_rd_sel_q ? fb_B_o_rd_data : fb_B_e_rd_data;
     assign z_A_rd_data  = z_A_rd_sel_q  ? z_A_o_rd_data  : z_A_e_rd_data;
     assign z_B_rd_data  = z_B_rd_sel_q  ? z_B_o_rd_data  : z_B_e_rd_data;
 
     /*
-     * Texture-atlas ROM. Sized to match TEXTURE_BYTES = 128 tiles *
-     * 16 * 16 = 32768 entries (15-bit address). See voxel_texture_rom
-     * for why we instantiate altsyncram directly instead of letting
-     * Quartus infer a ramstyle="M10K" array -- the short version is
-     * that inference can silently pick 2-cycle latency, producing
-     * colored 1-pixel fringes at every quad boundary.
-     *
-     * Textured descriptors use tex_or_color[6:0] as the 128-tile atlas
-     * index. tex_or_color[7] is QUAD_TEX_REPEAT_UV and only controls
-     * coordinate wrapping in texture_coord().
+     * Texture-atlas ROM. Two explicit 1-cycle read ports keep texels aligned
+     * with draw_pipe metadata; tex_or_color[6:0] selects the tile and bit 7
+     * controls UV wrapping.
      */
     voxel_texture_rom #(
         .DATA_W(8),
         .ADDR_W(15),
         .DEPTH(TEXTURE_BYTES),
-        /*
-         * The texture atlas lives as a single `.mif` file, produced by
-         * hw/voxel_gpu/scripts/generate_textures.py. Quartus consumes it here via the
-         * altsyncram init_file, and the Python virtual hardware parses
-         * the exact same file at runtime (see
-         * virtualhw.raster.load_texture_mif) -- one source of truth.
-         * Note: altsyncram does NOT accept Verilog $readmemh-style hex
-         * files, only .mif or Intel-format .hex.
-         */
         .INIT_FILE("voxel_gpu/assets/textures.mif")
     ) texture_rom (
         .clk       (clk),
         .rd_addr   (pipe2_tex_addr),
         .rd_data   (tex_rd_data),
-        /*
-         * Port B serves the odd lane of the 2 px/cycle draw pipe.
-         */
         .rd_addr_b (pipe2_tex_addr_o),
         .rd_data_b (tex_rd_data_o)
     );
@@ -2834,14 +2750,6 @@ module voxel_gpu (
                 edge_cur_val[ei] <= 64'sd0;
             end
         end else begin
-            /*
-             * Texture read no longer happens here -- voxel_texture_rom
-             * drives tex_rd_data directly from pipe2_tex_addr with a
-             * fixed 1-cycle latency. Leaving it as an always_ff
-             * assignment let Quartus silently stack an extra flop on
-             * top of the M10K's internal output register, which pushed
-             * tex_rd_data one cycle late on real hardware.
-             */
             vga_vs_d <= VGA_VS;
             scan_rgb565_r <= scan_rgb565_now;
             scan_visible_r <= scan_visible_now;
@@ -3263,17 +3171,7 @@ module voxel_gpu (
                 end
             end
 
-            /* pal_rd stage: register the palette source/fog addresses
-             * (both derived combinationally from draw_pipe_*) along
-             * with every other field fog0 needs. Having a dedicated
-             * address flop before the palette read lets Quartus pick
-             * either MLAB or M10K for the palette array without
-             * introducing a hidden 1-cycle skew: with MLAB the read
-             * is async out of pal_rd_*_addr and the plr stage flops
-             * it; with M10K the address flop is what the primitive
-             * expects internally and plr simply reads the next-cycle
-             * data. Either way, plr_src_rgb/plr_fog_rgb stay
-             * aligned with plr_pass/plr_alpha/... */
+            // draw_pipe -> pal_rd: register palette/fog addresses.
             pal_rd_valid       <= draw_pipe_valid;
             pal_rd_pass        <= draw_commit_pass;
             pal_rd_ztest       <= draw_pipe_ztest;
@@ -3303,13 +3201,7 @@ module voxel_gpu (
             pal_rd_w_q_o         <= draw_pipe_w_q_o;
             pal_rd_ray_scale_q16_o <= draw_pipe_ray_scale_q16_o;
 
-            /* plr stage: register the palette lookup output so every
-             * fog0 input arrives on the same cycle. The combinational
-             * chain here is now just palette[pal_rd_*_addr] (an array
-             * index with a registered address), which is MUCH shorter
-             * than the old tex_rd_data -> apply_light_bank -> palette
-             * -> rgb888_to_rgb565 path we used to have feeding fog0
-             * directly. */
+            // pal_rd -> plr: capture palette RGB values.
             plr_valid          <= pal_rd_valid;
             plr_pass           <= pal_rd_pass;
             plr_ztest          <= pal_rd_ztest;
@@ -3339,6 +3231,7 @@ module voxel_gpu (
             plr_w_q_o            <= pal_rd_w_q_o;
             plr_ray_scale_q16_o  <= pal_rd_ray_scale_q16_o;
 
+            // plr -> fog0: convert source/fog colors to RGB565.
             fog0_valid <= plr_valid;
             fog0_pass <= plr_pass;
             fog0_ztest <= plr_ztest;
@@ -3364,6 +3257,7 @@ module voxel_gpu (
             fog0_w_q_o <= plr_w_q_o;
             fog0_ray_scale_q16_o <= plr_ray_scale_q16_o;
 
+            // fog0 -> fog1: finish radial distance in Q8.8.
             fog1_valid <= fog0_valid;
             fog1_pass <= fog0_pass;
             fog1_ztest <= fog0_ztest;
@@ -3387,6 +3281,7 @@ module voxel_gpu (
             fog1_fog_rgb565_o <= fog0_fog_rgb565_o;
             fog1_radial_q8_8_o <= fog0_radial_q8_8_o;
 
+            // fog1 -> commit: final fog/alpha-blended color.
             commit_valid <= fog1_valid;
             commit_pass <= fog1_pass;
             commit_ztest <= fog1_ztest;
@@ -3647,14 +3542,7 @@ module voxel_gpu (
 
                 ST_DRAW,
                 ST_DRAW_FLUSH: begin
-                    /*
-                     * Stage 0: raster eval at the current pixel.
-                     * Recip 0/1/2: normalize, lookup/interpolate, then rescale 1/w.
-                     * Stage 1: perspective divide metadata aligned with final 1/w.
-                     * Tex 0: register perspective texture-coordinate products.
-                     * Stage 2: texel address formation.
-                     * Stage 3/fog: commit metadata aligned with texture and fog latency.
-                     */
+                    // pipe0 -> recip0: normalize 1/w; all raster metadata carries.
                     recip0_valid <= pipe0_valid;
                     recip0_inside <= pipe0_inside;
                     recip0_ztest <= pipe0_ztest;
@@ -3692,6 +3580,7 @@ module voxel_gpu (
                     recip0_iw_msb_o <= pipe0_iw_msb_o;
                     recip0_iw_norm_q_o <= pipe0_iw_norm_q_o;
 
+                    // recip0 -> recip1: read reciprocal LUT and destination cache.
                     recip1_valid <= recip0_valid;
                     recip1_inside <= recip0_inside;
                     recip1_ztest <= recip0_ztest;
@@ -3741,6 +3630,7 @@ module voxel_gpu (
                     recip1_w_norm_lo_o <= recip_lut[recip0_iw_lut_idx_o];
                     recip1_w_norm_hi_o <= recip_lut[recip0_iw_lut_idx_o + 11'd1];
 
+                    // recip1 -> recip2: interpolate reciprocal.
                     recip2_valid <= recip1_valid;
                     recip2_inside <= recip1_inside;
                     recip2_ztest <= recip1_ztest;
@@ -3782,6 +3672,7 @@ module voxel_gpu (
                     recip2_iw_msb_o <= recip1_iw_msb_o;
                     recip2_w_norm_q_o <= recip1_w_norm_q_o;
 
+                    // recip2 -> pipe1: denormalize w.
                     pipe1_valid <= recip2_valid;
                     pipe1_inside <= recip2_inside;
                     pipe1_ztest <= recip2_ztest;
@@ -3819,6 +3710,7 @@ module voxel_gpu (
                     pipe1_vw_q_o <= recip2_vw_q_o;
                     pipe1_w_q_o <= recip2_w_q_o;
 
+                    // pipe1 -> tex0: multiply (u/w, v/w) by w.
                     tex0_valid <= pipe1_valid;
                     tex0_inside <= pipe1_inside;
                     tex0_ztest <= pipe1_ztest;
@@ -3856,6 +3748,7 @@ module voxel_gpu (
                     tex0_u_prod_o <= pipe1_u_prod_o;
                     tex0_v_prod_o <= pipe1_v_prod_o;
 
+                    // tex0 -> pipe2: build texture atlas address.
                     pipe2_valid <= tex0_valid;
                     pipe2_inside <= tex0_inside;
                     pipe2_ztest <= tex0_ztest;
@@ -3891,6 +3784,7 @@ module voxel_gpu (
                     pipe2_w_q_o <= tex0_w_q_o;
                     pipe2_tex_addr_o <= tex0_tex_addr_o;
 
+                    // pipe2 -> draw_pipe: texture ROM output is now aligned.
                     draw_pipe_valid <= pipe2_valid;
                     draw_pipe_inside <= pipe2_inside;
                     draw_pipe_ztest <= pipe2_ztest;
@@ -4193,7 +4087,7 @@ module voxel_gpu (
                 display_sel,
                 copy_target_sel,
                 copy_complete_pending,
-                cache_maint_state,
+                cache_init_state,
                 flush_active,
                 scan_fill_active,
                 display_valid,
@@ -4210,7 +4104,6 @@ module voxel_gpu (
     wire perf_flip_write = wr && (address == ADDR_CONTROL) && writedata[1];
     wire perf_in_draw    = (state == ST_DRAW) || (state == ST_DRAW_FLUSH);
     wire perf_draw_commit = commit_valid || commit_valid_o;
-    wire perf_in_load    = 1'b0;
     wire perf_flush_push = bg_flush_wr_push;
 
     /*
@@ -4226,8 +4119,7 @@ module voxel_gpu (
         .flip_write             (perf_flip_write),
         .in_draw                (perf_in_draw),
         .draw_commit            (perf_draw_commit),
-        .in_cache_init          (state == ST_CACHE_INIT),
-        .in_load                (perf_in_load),
+        .in_cache_init          (cache_init_state),
         .flush_active           (flush_active),
         .flush_push             (perf_flush_push),
         .flush_load_pending     (flush_load_pending),

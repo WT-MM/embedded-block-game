@@ -10,7 +10,6 @@ module voxel_perf_counters #(
     input  logic        in_draw,
     input  logic        draw_commit,
     input  logic        in_cache_init,
-    input  logic        in_load,
 
     input  logic        flush_active,
     input  logic        flush_push,
@@ -72,8 +71,6 @@ module voxel_perf_counters #(
                 perf_flush_wait_data <= perf_flush_wait_data + 32'd1;
             if (in_cache_init)
                 perf_init <= perf_init + 32'd1;
-            if (in_load)
-                perf_load <= perf_load + 32'd1;
         end
     end
 endmodule

@@ -86,8 +86,7 @@ struct descriptor_bin {
 static struct descriptor_bin g_bins_pool[2][VOXEL_BAND_COUNT];
 static int g_main_bin_set = 0;
 
-/* Hidden 1-pixel descriptor that primes the first draw after BEGIN_BAND.
- * See PROJECT_NOTES.md for the stale-palette history. */
+/* Hidden 1-pixel descriptor that primes the first draw after BEGIN_BAND. */
 static struct quad_desc g_band_primers[VOXEL_BAND_COUNT];
 static int g_band_primers_initialized;
 
@@ -902,8 +901,8 @@ void gpu_transport_begin_descriptors(GPUTransport *transport)
     }
 
     if (reset_bins_and_prime(bins, g_diag_bbox ? &g_staged_diag_cost : NULL) < 0) {
-        /* OOM: leave staged_active=0 so submit_hw_binned re-runs the
-         * legacy binning path on the contiguous stream. */
+        /* OOM: leave staged_active=0 so submit_hw_binned bins from the
+         * contiguous descriptor stream. */
         transport->staged_active = 0;
         return;
     }
@@ -1183,12 +1182,9 @@ done:
                 diag_cycles_ms(vsync_slots * DIAG_VGA_FRAME_CYCLES),
                 (unsigned long long)vsync_slots);
         if (transport->hw_fd >= 0) {
-            /* HW perf counters reset on the next FLIP (writedata[1] to
-             * ADDR_CONTROL), so read them BEFORE gpu_transport_flip(). At
-             * 50 MHz, 50000 cycles = 1 ms. Counters can overlap (bg flush
-             * runs in parallel with raster + ping-pong init), so columns
-             * don't sum to wall-clock — they reveal the breakdown of what
-             * was happening during the frame. See PROJECT_NOTES.md. */
+            /* Read perf before FLIP resets the counters. At 50 MHz,
+             * 50000 cycles = 1 ms; categories can overlap because flush,
+             * cache init, and draw run concurrently. */
             struct voxel_perf_counters_v2 perf2;
             int have_perf2 = (ioctl(transport->hw_fd,
                                     VOXEL_IOC_GET_PERF2, &perf2) == 0);

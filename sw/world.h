@@ -359,10 +359,8 @@ bool world_run_mesh_job(VoxelWorld *world,
 typedef struct ChunkGenResult {
     BlockID blocks[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t sky_light[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
-    /* Mirror of Chunk::water_level so an async-generated chunk can carry
-     * its initial water levels into the integration step. Procedural gen
-     * only ever emits sources, so this stays zero in practice - but a
-     * future loaded snapshot could populate it. */
+    /* Initial per-cell water levels for integration. Procedural generation
+     * emits only sources, so this stays zero for generated chunks. */
     uint8_t water_level[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     uint8_t redstone_data[WORLD_CHUNK_HEIGHT][WORLD_CHUNK_SIZE][WORLD_CHUNK_SIZE];
     bool has_light_emitters;

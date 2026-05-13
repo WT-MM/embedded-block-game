@@ -37,13 +37,8 @@
 #define REDSTONE_DEVICE_PLATE_TEXEL (REDSTONE_DEVICE_PLATE_HALF / 8.0f)
 #define REDSTONE_DEVICE_POST_HALF 0.060f
 
-/* Quantization step for the sky-gradient palette computation. Continuous
- * world_time would re-derive every frame; even sub-pixel color drift bumps
- * gpu_transport's hw_sky_epoch, which invalidates the per-band SDRAM reuse
- * cache (see PROJECT_NOTES.md "May 5 sky-band reuse epoch fix"). 1.0 s steps
- * give 180 distinct sky states across a 180 s day cycle, visually smooth
- * while cutting periodic palette/cache invalidations in half versus the old
- * 0.5 s cadence. VOXEL_SKY_PALETTE_STEP_SECONDS can tune this at runtime. */
+/* Quantize sky-gradient palette updates so tiny time deltas do not churn the
+ * hardware band-reuse epoch every frame. */
 #define DEFAULT_SKY_PALETTE_TIME_STEP_SECONDS 1.0f
 #define MIN_SKY_PALETTE_TIME_STEP_SECONDS 0.1f
 #define MAX_SKY_PALETTE_TIME_STEP_SECONDS 10.0f
@@ -3312,9 +3307,7 @@ static bool chunk_intersects_frustum(RenderContext *ctx, const Chunk *chunk)
 typedef struct {
     const Chunk *chunk;
     /* Cached at the start of draw_world so the entire frame iterates a
-     * stable mesh pointer even if a future worker thread publishes a new
-     * one mid-draw. Lifetime guarantee: replaced meshes sit in the chunk's
-     * retired list until the post-render reap. */
+     * stable mesh pointer while workers publish replacements. */
     const ChunkMesh *mesh;
     float distance_sq;
 } ChunkDrawCandidate;
@@ -3522,22 +3515,6 @@ static bool stage_prepared_quad(RenderContext *ctx, RenderQuad quad)
     d->flags = quad.flags;
 
 #ifdef DEBUG_FLAT_COLOR
-    /*
-     * Diagnostic mode: force every quad to render as a flat palette
-     * entry (bypasses the texture ROM + UV interpolation + light-bank
-     * indirection) while keeping rasterization, z-test, fog and
-     * alpha-blending paths intact.
-     *
-     * Use this to narrow down where "chromatic aberration" lives: if
-     * every block becomes a uniform gray/whatever-you-set with no
-     * colored edges in this mode, the culprit is the texture sampling
-     * path (ROM latency, UV step, tex0_tex_addr). If fringes persist,
-     * look further downstream (palette, fog blend, framebuffer RMW,
-     * VGA scanout).
-     *
-     * DEBUG_FLAT_COLOR_INDEX defaults to PAL_STONE_LIGHT (24) which is
-     * a neutral mid-gray -- any palette index works.
-     */
 #ifndef DEBUG_FLAT_COLOR_INDEX
 #define DEBUG_FLAT_COLOR_INDEX 24
 #endif
@@ -3723,8 +3700,6 @@ int renderer_draw_world(RenderContext *ctx, const VoxelWorld *world,
         };
     }
 
-    /* Draw nearest chunks first so any future budget limit degrades
-     * gracefully instead of dropping arbitrary sides of the world. */
     for (int i = 1; i < candidate_count; i++) {
         ChunkDrawCandidate key = candidates[i];
         int j = i - 1;

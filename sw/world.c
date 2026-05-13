@@ -3335,8 +3335,7 @@ bool world_finalize_async_chunk_load(VoxelWorld *world,
             finalized = true;
         } else if (chunk->generation == generation &&
                    (chunk->flags & CHUNK_FLAG_GEN_QUEUED)) {
-            /* Stale: slot was finalized through some other path. Just
-             * clear the in-flight bit so a future re-stream can re-queue. */
+            /* Stale: slot was finalized elsewhere; clear the in-flight bit. */
             chunk->flags &= ~CHUNK_FLAG_GEN_QUEUED;
         }
     }

@@ -4,14 +4,13 @@ from pathlib import Path
 import re
 import sys
 
-# Pillow is imported lazily inside write_preview() so the .mif emission
-# path (which has no extra dependencies) still works on hosts that don't
-# have PIL installed.
+from PIL import Image, ImageDraw
 
 TILE_SIZE = 16
 TILE_COUNT = 128
 TEXELS_PER_TILE = TILE_SIZE * TILE_SIZE
 ATLAS_BYTES = TILE_COUNT * TEXELS_PER_TILE
+NEAREST = getattr(Image, "Resampling", Image).NEAREST
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TEXTURE_TILE_DEF = REPO_ROOT / "sw" / "texture_tiles.def"
@@ -83,8 +82,6 @@ for tile in TEXTURE_TILES:
         globals()[f"TEX_TILE_{tile.name}_MIP2"] = tile.mip2
 
 PAL_TRANSPARENT = 0
-PAL_GRASS_TOP = 1
-PAL_DIRT = 2
 PAL_WOOD = 3
 PAL_STONE = 4
 PAL_WHITE = 5
@@ -96,9 +93,7 @@ PAL_WOOD_TOP = 11
 PAL_UI_DARK = 14
 PAL_GRASS_DARK = 17
 PAL_GRASS_LIGHT = 18
-PAL_DIRT_DARK = 19
 PAL_DIRT_LIGHT = 20
-PAL_WOOD_GRAIN = 21
 PAL_WOOD_DARK = 22
 PAL_STONE_DARK = 23
 PAL_STONE_LIGHT = 24
@@ -201,16 +196,6 @@ PREVIEW_PALETTE: dict[int, tuple[int, int, int]] = {
     56: (0x8b, 0x56, 0x4e),  # brick mortar
 }
 
-# Tiles shown in the preview, one column per block type, one row per LOD.
-# Columns are chosen so the preview matches what a player actually sees on
-# a real block face; add/remove entries as the atlas grows.
-PREVIEW_COLUMNS: list[tuple[str, int, int, int]] = [
-    (tile.label, tile.base, tile.mip1, tile.mip2)
-    for tile in MIPPED_TEXTURE_TILES
-]
-
-
-
 MIP1_TILES = {
     tile.mip1: tile.base
     for tile in MIPPED_TEXTURE_TILES
@@ -220,121 +205,6 @@ MIP2_TILES = {
     tile.mip2: tile.base
     for tile in MIPPED_TEXTURE_TILES
 }
-
-GRASS_TOP_ROWS = [
-    "ggglggdgggglggdg",
-    "gdggggglgdgggggg",
-    "ggggdgggglgggdgg",
-    "lggggggdgggglggg",
-    "ggdggglggggdgggg",
-    "gggglggggdgggglg",
-    "dgggggglgggggdgg",
-    "gglggdgggglggggg",
-    "gggggglggdgggglg",
-    "lggdgggggglggggd",
-    "gggglggdgggggglg",
-    "dgggggglggggdggg",
-    "gglggggdggglgggg",
-    "ggggdgggglggggdg",
-    "lggggglggdgggggg",
-    "ggdgggggglggdggl",
-]
-
-DIRT_ROWS = [
-    "bbdbbbbblbbbdbbb",
-    "bbbbdbbbbbbblbbb",
-    "dbbbbbbbdbbbbbbl",
-    "bbbblbbbbbbbdbbb",
-    "bbbbbdbbbblbbbbb",
-    "lbbbbbbbbdbbbbdb",
-    "bbbbdbbbbbblbbbb",
-    "bbbblbbbdbbbbbbb",
-    "dbbbbbblbbbbdbbb",
-    "bbbbbbdbbbbbblbb",
-    "bbdbbbbbblbbbbbb",
-    "bbbblbbbbbbbdbbb",
-    "bbbdbbbbblbbbbdb",
-    "lbbbbbbdbbbbbbbb",
-    "bbbbdbbbbbblbbbl",
-    "bbbbbblbbbdbbbbb",
-]
-
-GRASS_SIDE_ROWS = [
-    "ggglggdgggglggdg",
-    "gdggggglgdgggggg",
-    "ggggdgggglgggdgg",
-    "bdbbbbbblbbbdbbb",
-    "bbbbdbbbbbbblbbb",
-    "dbbbbbbbdbbbbbbl",
-    "bbbblbbbbbbbdbbb",
-    "bbbbbdbbbblbbbbb",
-    "lbbbbbbbbdbbbbdb",
-    "bbbbdbbbbbblbbbb",
-    "bbbblbbbdbbbbbbb",
-    "dbbbbbblbbbbdbbb",
-    "bbbbbbdbbbbbblbb",
-    "bbdbbbbbblbbbbbb",
-    "bbbblbbbbbbbdbbb",
-    "bbbdbbbbblbbbbdb",
-]
-
-STONE_ROWS = [
-    "ssssdssslssssssd",
-    "dsssssssdssslsss",
-    "ssslssssdsssssss",
-    "sssssdssssslsssd",
-    "lsssssssssdsssss",
-    "sssdssslssssdsss",
-    "ssssssssslsssssd",
-    "dssslsssssssssss",
-    "ssssssdssslsssss",
-    "ssslsssssdssssls",
-    "ssssssslsssssdss",
-    "dssssssssdssslss",
-    "ssssldsssssssssd",
-    "sssdssssslssssss",
-    "sssssssdssssslss",
-    "lssssdsssssssdss",
-]
-
-WOOD_SIDE_ROWS = [
-    "dbgbbggbbgbbggbd",
-    "dbgbbbgbbggbbbdd",
-    "dggbbbgbbgbbggbd",
-    "dbgbbggbbbgbbbgd",
-    "dggbbbgbbgbbggbd",
-    "dbgbbbgbbggbbbdd",
-    "dbgbbggbbgbbggbd",
-    "dggbbbgbbgbbggbd",
-    "dbgbbggbbbgbbbgd",
-    "dbgbbbgbbggbbbdd",
-    "dggbbbgbbgbbggbd",
-    "dbgbbggbbgbbggbd",
-    "dbgbbbgbbggbbbdd",
-    "dggbbbgbbgbbggbd",
-    "dbgbbggbbbgbbbgd",
-    "dggbbbgbbgbbggbd",
-]
-
-
-LEAVES_ROWS = [
-    "tggltggdggtlgttg",
-    "ggdggtgglggdggtg",
-    "tgglggdgtgglggdt",
-    "ggtgglggdggtgglg",
-    "dggtgglggdgtgglt",
-    "gglgdtggtgglggdg",
-    "tggdgglggtggdggt",
-    "ggtggdgglggtggld",
-    "lggtgglgdtgglggt",
-    "ggdggtgglggdggtl",
-    "tgglggdgtgglggdt",
-    "ggtgglggdggtgglg",
-    "dggtgglggdgtgglt",
-    "gglgdtggtgglggdg",
-    "tggdgglggtggdggt",
-    "ggtggdgglggtgglt",
-]
 
 SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_GRASS_TOP: "grass_block_top.png",
@@ -419,10 +289,6 @@ SOURCE_TEXTURE_FILES: dict[int, str] = {
     TEX_TILE_WATER_BUCKET: "water_bucket.png",
     TEX_TILE_LAVA_BUCKET: "lava_bucket.png",
     TEX_TILE_SUGAR_CANE: "reeds.tga",
-}
-
-REQUIRED_SOURCE_TEXTURE_TILES = {
-    TEX_TILE_BRICKS,
 }
 
 CACTUS_SOURCE_TILES = {
@@ -565,33 +431,18 @@ SOURCE_TILE_TINT: dict[int, tuple[int, int, int]] = {
 }
 
 
-def pattern_texel(rows: list[str], mapping: dict[str, int], x: int, y: int) -> int:
-    return mapping[rows[y][x]]
-
-
-def noise(x: int, y: int, seed: int) -> int:
-    value = (x * 97) ^ (y * 57) ^ (seed * 131)
-    value = (value * 1103515245 + 12345) & 0x7FFFFFFF
-    return value & 0xFF
-
-
 _SOURCE_TILE_CACHE: dict[int, list[tuple[int, int, int, int]]] = {}
 _NAMED_SOURCE_TILE_CACHE: dict[str, list[tuple[int, int, int, int]]] = {}
 
 
-def _load_named_source_tile(name: str) -> list[tuple[int, int, int, int]] | None:
+def _load_named_source_tile(name: str) -> list[tuple[int, int, int, int]]:
     if name in _NAMED_SOURCE_TILE_CACHE:
         return _NAMED_SOURCE_TILE_CACHE[name]
-
-    try:
-        from PIL import Image
-    except ImportError:
-        return None
 
     root = Path(__file__).resolve().parents[1]
     source_path = root / "assets" / "minecraft_source" / name
     if not source_path.exists():
-        return None
+        raise FileNotFoundError(f"required source texture missing: {source_path}")
 
     with Image.open(source_path) as image:
         rgba = image.convert("RGBA")
@@ -604,10 +455,8 @@ def _load_named_source_tile(name: str) -> list[tuple[int, int, int, int]] | None
         return pixels
 
 
-def named_source_pixel(name: str, x: int, y: int) -> tuple[int, int, int, int] | None:
+def named_source_pixel(name: str, x: int, y: int) -> tuple[int, int, int, int]:
     pixels = _load_named_source_tile(name)
-    if pixels is None:
-        return None
     return pixels[y * TILE_SIZE + x]
 
 
@@ -724,39 +573,24 @@ def _load_source_tile(tile: int) -> list[tuple[int, int, int, int]] | None:
     if name is None:
         return None
 
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        if tile in REQUIRED_SOURCE_TEXTURE_TILES:
-            raise RuntimeError(
-                f"Pillow is required to load source texture {name!r}"
-            )
-        return None
-
     root = Path(__file__).resolve().parents[1]
     source_path = root / "assets" / "minecraft_source" / name
     if not source_path.exists():
-        if tile in REQUIRED_SOURCE_TEXTURE_TILES:
-            raise FileNotFoundError(
-                f"required source texture missing: {source_path}"
-            )
-        return None
+        raise FileNotFoundError(f"required source texture missing: {source_path}")
 
     with Image.open(source_path) as image:
         rgba = image.convert("RGBA")
         if tile in HUD_CROP_SOURCE_TILES:
             bbox = rgba.getbbox()
             if bbox is not None:
-                nearest = getattr(Image, "Resampling", Image).NEAREST
-                rgba = rgba.crop(bbox).resize((TILE_SIZE, TILE_SIZE), nearest)
+                rgba = rgba.crop(bbox).resize((TILE_SIZE, TILE_SIZE), NEAREST)
         elif tile in HUD_SOURCE_TILES:
             # Modern vanilla HUD sprites are usually 9x9 standalone images.
             # Resize the whole sprite frame, not the non-transparent bounds:
             # half-heart and bursting-bubble sprites rely on empty pixels for
             # their actual shape and position.
             if rgba.size != (TILE_SIZE, TILE_SIZE):
-                nearest = getattr(Image, "Resampling", Image).NEAREST
-                rgba = rgba.resize((TILE_SIZE, TILE_SIZE), nearest)
+                rgba = rgba.resize((TILE_SIZE, TILE_SIZE), NEAREST)
         elif rgba.size[0] == TILE_SIZE and rgba.size[1] > TILE_SIZE and rgba.size[1] % TILE_SIZE == 0:
             # Animated vanilla block textures, such as lava_still.png, are
             # vertical frame strips. Our hardware atlas stores one static
@@ -794,263 +628,6 @@ def source_texel(tile: int, x: int, y: int) -> int | None:
         r, g, b, _ = best_rgba
         rgba = (r, g, b, 255)
     return _quantize_to_palette(tile, rgba, x, y)
-
-
-def grass_top(x: int, y: int) -> int:
-    return pattern_texel(
-        GRASS_TOP_ROWS,
-        {"g": PAL_GRASS_TOP, "d": PAL_GRASS_DARK, "l": PAL_GRASS_LIGHT},
-        x,
-        y,
-    )
-
-
-def dirt(x: int, y: int) -> int:
-    return pattern_texel(
-        DIRT_ROWS,
-        {"b": PAL_DIRT, "d": PAL_DIRT_DARK, "l": PAL_DIRT_LIGHT},
-        x,
-        y,
-    )
-
-
-def grass_side(x: int, y: int) -> int:
-    return pattern_texel(
-        GRASS_SIDE_ROWS,
-        {
-            "g": PAL_GRASS_SIDE,
-            "d": PAL_GRASS_DARK,
-            "l": PAL_GRASS_LIGHT,
-            "b": PAL_DIRT,
-        },
-        x,
-        y,
-    )
-
-
-def stone(x: int, y: int) -> int:
-    return pattern_texel(
-        STONE_ROWS,
-        {"s": PAL_STONE, "d": PAL_STONE_DARK, "l": PAL_STONE_LIGHT},
-        x,
-        y,
-    )
-
-
-def wood_side(x: int, y: int) -> int:
-    return pattern_texel(
-        WOOD_SIDE_ROWS,
-        {"b": PAL_WOOD, "g": PAL_WOOD_GRAIN, "d": PAL_WOOD_DARK},
-        x,
-        y,
-    )
-
-
-def glass(x: int, y: int) -> int:
-    # Darker frame on the outside of the pane so adjacent glass blocks still
-    # have a visible seam. Single-pixel highlight in the upper-left gives the
-    # face a recognizable orientation so we can see that perspective-correct
-    # UV mapping is still working through the alpha blend.
-    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
-        return PAL_GLASS_EDGE
-    if (x == 2 and 2 <= y <= 5) or (y == 2 and 2 <= x <= 5):
-        return PAL_GLASS_HIGHLIGHT
-    if (x == 3 and y == 3):
-        return PAL_GLASS_HIGHLIGHT
-    return PAL_GLASS
-
-
-def lamp(x: int, y: int) -> int:
-    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
-        return PAL_LAMP_FRAME
-    if x in (2, TILE_SIZE - 3) or y in (2, TILE_SIZE - 3):
-        return PAL_WOOD_DARK
-    if 4 <= x <= 11 and 4 <= y <= 11:
-        if 6 <= x <= 9 and 6 <= y <= 9:
-            return PAL_WHITE
-        return PAL_LAMP_GLOW
-    if ((x + y) & 1) == 0:
-        return PAL_WOOD_TOP
-    return PAL_WOOD
-
-
-def wood_top(x: int, y: int) -> int:
-    # Square-ish rings read better at 16x16 than smooth circular math.
-    dx = abs(x - 7.5)
-    dy = abs(y - 7.5)
-    r = int(max(dx, dy))
-    skew = ((x * 3 + y * 5) & 3) == 0
-
-    if r <= 1:
-        return PAL_WOOD_DARK
-    if (r + (1 if skew else 0)) % 4 == 0:
-        return PAL_WOOD_GRAIN
-    if (r + (1 if x > y else 0)) % 4 == 2:
-        return PAL_WOOD
-    return PAL_WOOD_TOP
-
-
-def wood_plank(x: int, y: int) -> int:
-    # Fallback if source PNG is missing.
-    band = (y // 4) & 3
-    if band == 0:
-        return PAL_WOOD_TOP if (x & 1) == 0 else PAL_WOOD_GRAIN
-    if band == 1:
-        return PAL_WOOD if ((x + y) & 3) else PAL_WOOD_GRAIN
-    if band == 2:
-        return PAL_WOOD_GRAIN if (x & 1) else PAL_WOOD_TOP
-    return PAL_WOOD if ((x + 2 * y) & 3) else PAL_WOOD_DARK
-
-
-def leaves(x: int, y: int) -> int:
-    # Includes sparse transparent texels for the dithered cutout look.
-    return pattern_texel(
-        LEAVES_ROWS,
-        {
-            "g": PAL_GRASS_SIDE,
-            "d": PAL_GRASS_DARK,
-            "l": PAL_GRASS_LIGHT,
-            "b": PAL_DIRT,
-            "t": PAL_TRANSPARENT,
-        },
-        x,
-        y,
-    )
-
-
-_WATER_RIPPLE_OFFSETS = (0, 1, 1, 2, 2, 1, 1, 0, -1, -2, -2, -3, -3, -2, -2, -1)
-_WATER_RIPPLE_LEN = len(_WATER_RIPPLE_OFFSETS)
-
-
-def water(x: int, y: int) -> int:
-    # Mostly-flat blue body with two superimposed sine-like horizontal ripple
-    # lines that tile cleanly across 16x16 borders, plus sparse highlight
-    # texels for sparkle. Translucent rendering relies on QUAD_ALPHA_50, so
-    # the body texels stay fully opaque palette entries. The ripples thread
-    # through the texture rather than sit as parallel diagonals so the
-    # surface reads as water instead of a striped flag.
-    if (x ^ (y * 5)) & 0x1F == 7:
-        return PAL_WATER_HIGHLIGHT
-
-    ripple_a = (y + _WATER_RIPPLE_OFFSETS[x % _WATER_RIPPLE_LEN]) & 0x0F
-    if ripple_a == 4:
-        return PAL_WATER_DEEP
-    ripple_b = (y + _WATER_RIPPLE_OFFSETS[(x + 8) % _WATER_RIPPLE_LEN] + 8) & 0x0F
-    if ripple_b == 4:
-        return PAL_WATER_DEEP
-
-    # A few mid-tone speckles to break up the flat fill.
-    n = noise(x, y, 311)
-    if n >= 224:
-        return PAL_WATER_HIGHLIGHT
-    if n >= 200:
-        return PAL_WATER_DEEP
-    return PAL_WATER_MID
-
-
-def cactus(x: int, y: int, top: bool = False) -> int:
-    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
-        return PAL_GRASS_DARK
-    if top and 4 <= x <= 11 and 4 <= y <= 11:
-        return PAL_GRASS_LIGHT if noise(x, y, 377) > 128 else PAL_GRASS_SIDE
-    if x in (3, 12) and (y & 1) == 0:
-        return PAL_WHITE
-    if noise(x, y, 379) > 210:
-        return PAL_GRASS_LIGHT
-    return PAL_GRASS_SIDE
-
-
-def sand(x: int, y: int) -> int:
-    n = noise(x, y, 421)
-    if n < 34 or ((x + y * 3) & 0x0F) == 0:
-        return PAL_SAND_DARK
-    if n > 218:
-        return PAL_SAND_LIGHT
-    if n < 72:
-        return PAL_SAND_SHADOW
-    return PAL_SAND
-
-
-def gravel(x: int, y: int) -> int:
-    n = noise(x, y, 433)
-    if n < 72:
-        return PAL_STONE_DARK
-    if n > 196:
-        return PAL_STONE_LIGHT
-    if ((x * 5 + y * 3) & 7) == 0:
-        return PAL_UI_DARK
-    return PAL_STONE
-
-
-def cobblestone(x: int, y: int) -> int:
-    cell_x = x // 4
-    cell_y = y // 4
-    local_x = x & 3
-    local_y = y & 3
-    offset = (cell_y & 1) * 2
-    seam = local_y == 0 or ((x + offset) & 3) == 0
-
-    if seam:
-        return PAL_STONE_DARK
-    if noise(cell_x, cell_y, 467) > 170:
-        return PAL_STONE_LIGHT
-    return PAL_STONE
-
-
-def bricks(x: int, y: int) -> int:
-    row = y // 4
-    shifted_x = (x + ((row & 1) * 4)) & 15
-    mortar = (y & 3) == 0 or (shifted_x & 7) == 0
-
-    if mortar:
-        return PAL_BRICK_MORTAR
-    if noise(x, y, 479) > 204:
-        return PAL_BRICK_LIGHT
-    if noise(y, x, 481) < 40:
-        return PAL_BRICK_DARK
-    return PAL_BRICK
-
-
-def obsidian(x: int, y: int) -> int:
-    n = noise(x, y, 491)
-    if x == 0 or y == 0 or x == 15 or y == 15:
-        return PAL_OBSIDIAN_EDGE
-    if n > 232:
-        return PAL_OBSIDIAN_EDGE
-    if ((x + 2 * y) & 15) == 0:
-        return PAL_UI_DARK
-    return PAL_OBSIDIAN
-
-
-def sandstone(x: int, y: int) -> int:
-    if y in (0, 7, 15):
-        return PAL_SAND_DARK
-    if y == 8 and 3 <= x <= 12:
-        return PAL_SAND_SHADOW
-    if noise(x, y, 503) < 42:
-        return PAL_SAND_SHADOW
-    if noise(y, x, 509) > 224:
-        return PAL_SAND_LIGHT
-    return PAL_SAND
-
-
-def clay(x: int, y: int) -> int:
-    n = noise(x, y, 521)
-    if n < 64:
-        return PAL_GLASS_EDGE
-    if n > 220:
-        return PAL_STONE_LIGHT
-    return PAL_CLAY
-
-
-def redstone_block(x: int, y: int) -> int:
-    if x == 0 or y == 0 or x == 15 or y == 15:
-        return PAL_BRICK_DARK
-    if x in (4, 11) or y in (4, 11):
-        return PAL_RED
-    if noise(x, y, 541) > 220:
-        return PAL_LAVA_ORANGE
-    return PAL_BRICK
 
 
 REDSTONE_WIRE_N = 1
@@ -1093,82 +670,15 @@ def redstone_cross_pixel_allowed(mask: int, x: int, y: int) -> bool:
     return False
 
 
-def procedural_redstone_wire(x: int, y: int, mask: int, powered: bool) -> int:
-    cx = x - 7.5
-    cy = y - 7.5
-    main = PAL_LAVA_ORANGE if powered else PAL_RED
-    highlight = PAL_LAVA_HOT if powered else PAL_BRICK
-    shadow = PAL_RED if powered else PAL_BRICK_DARK
-
-    if mask == 0:
-        if cx * cx + cy * cy <= 7.5:
-            return highlight if 6 <= x <= 9 and 6 <= y <= 9 else main
-        if cx * cx + cy * cy <= 12.5 and ((x + y) & 1) == 0:
-            return shadow
-        return PAL_TRANSPARENT
-
-    if 5 <= x <= 10 and 5 <= y <= 10:
-        return main
-    if (mask & REDSTONE_WIRE_N) and 6 <= x <= 9 and 1 <= y <= 8:
-        return shadow if x in (6, 9) else main
-    if (mask & REDSTONE_WIRE_E) and 7 <= y <= 9 and 7 <= x <= 14:
-        return shadow if y in (7, 9) else main
-    if (mask & REDSTONE_WIRE_S) and 6 <= x <= 9 and 7 <= y <= 14:
-        return shadow if x in (6, 9) else main
-    if (mask & REDSTONE_WIRE_W) and 7 <= y <= 9 and 1 <= x <= 8:
-        return shadow if y in (7, 9) else main
-    if 5 <= x <= 10 and 5 <= y <= 10 and ((x + y) & 1) == 0:
-        return shadow
-    return PAL_TRANSPARENT
-
-
 def redstone_wire(x: int, y: int, mask: int, powered: bool) -> int:
     if mask == (REDSTONE_WIRE_E | REDSTONE_WIRE_W):
         rgba = named_source_pixel("redstone_dust_line.png", x, y)
     else:
         rgba = named_source_pixel("redstone_dust_cross.png", x, y)
-        if rgba is not None and not redstone_cross_pixel_allowed(mask, x, y):
+        if not redstone_cross_pixel_allowed(mask, x, y):
             rgba = (0, 0, 0, 0)
 
-    if rgba is not None:
-        return redstone_dust_palette(rgba, powered)
-    return procedural_redstone_wire(x, y, mask, powered)
-
-
-def redstone_torch(x: int, y: int, powered: bool) -> int:
-    if 7 <= x <= 8 and 6 <= y <= 15:
-        return PAL_WOOD if (y & 1) else PAL_WOOD_DARK
-    if 6 <= x <= 9 and 3 <= y <= 7:
-        if powered:
-            return PAL_LAVA_HOT if 7 <= x <= 8 and 4 <= y <= 5 else PAL_RED
-        return PAL_BRICK_DARK if (x + y) & 1 else PAL_RED
-    if powered and ((x - 7) * (x - 7) + (y - 3) * (y - 3) <= 8):
-        return PAL_LAVA_ORANGE
-    return PAL_TRANSPARENT
-
-
-def repeater(x: int, y: int, powered: bool) -> int:
-    if not (2 <= x <= 13 and 3 <= y <= 12):
-        return PAL_TRANSPARENT
-    if x in (2, 13) or y in (3, 12):
-        return PAL_STONE_DARK
-    if 6 <= y <= 8 and 3 <= x <= 12:
-        return PAL_LAVA_ORANGE if powered else PAL_BRICK_DARK
-    if (x, y) in ((5, 5), (10, 5), (5, 6), (10, 6)):
-        return PAL_LAVA_HOT if powered else PAL_RED
-    if (x + 2 * y) & 7 == 0:
-        return PAL_STONE_LIGHT
-    return PAL_STONE
-
-
-def lamp_off(x: int, y: int) -> int:
-    if x == 0 or y == 0 or x == TILE_SIZE - 1 or y == TILE_SIZE - 1:
-        return PAL_LAMP_FRAME
-    if x in (2, TILE_SIZE - 3) or y in (2, TILE_SIZE - 3):
-        return PAL_WOOD_DARK
-    if 4 <= x <= 11 and 4 <= y <= 11:
-        return PAL_STONE if ((x + y) & 1) else PAL_STONE_DARK
-    return PAL_WOOD_DARK if ((x + y) & 1) == 0 else PAL_WOOD
+    return redstone_dust_palette(rgba, powered)
 
 
 def button(x: int, y: int) -> int:
@@ -1203,127 +713,6 @@ def lever(x: int, y: int, powered: bool) -> int:
             return PAL_WOOD_DARK
         return PAL_WOOD if powered else PAL_DIRT_LIGHT
     return PAL_TRANSPARENT
-
-
-def lava(x: int, y: int) -> int:
-    n = noise(x, y, 557)
-    vein_a = (x + y + (noise(y, x, 563) >> 6)) & 7
-    vein_b = (x * 2 - y + 16 + (noise(x, y, 569) >> 7)) & 15
-
-    if vein_a <= 1 or vein_b <= 1:
-        return PAL_LAVA_HOT if n > 64 else PAL_SUN_GLOW
-    if n > 190:
-        return PAL_LAVA_HOT
-    if n < 42:
-        return PAL_LAVA_DARK
-    return PAL_LAVA_ORANGE
-
-
-def ore_texture(x: int, y: int, accent: int, highlight: int, seed: int) -> int:
-    n = noise(x, y, seed)
-    cluster = ((x - 5) * (x - 5) + (y - 5) * (y - 5) <= 9 or
-               (x - 11) * (x - 11) + (y - 10) * (y - 10) <= 8 or
-               (x - 4) * (x - 4) + (y - 12) * (y - 12) <= 5)
-
-    if cluster and n > 72:
-        return highlight if n > 196 else accent
-    if n < 26:
-        return PAL_STONE_DARK
-    if n > 236:
-        return PAL_STONE_LIGHT
-    return PAL_STONE
-
-
-def gold_block(x: int, y: int) -> int:
-    if x == 0 or y == 0 or x == 15 or y == 15:
-        return PAL_LAMP_GLOW
-    if x in (5, 10) or y in (5, 10):
-        return PAL_YELLOW
-    if noise(x, y, 587) > 220:
-        return PAL_SUN_CORE
-    return PAL_LAMP_GLOW
-
-
-def diamond_block(x: int, y: int) -> int:
-    if x == 0 or y == 0 or x == 15 or y == 15:
-        return PAL_BLUE
-    if x in (4, 11) or y in (4, 11):
-        return PAL_GLASS_HIGHLIGHT
-    if noise(x, y, 599) > 218:
-        return PAL_WHITE
-    return PAL_GLASS
-
-
-def flower(x: int, y: int, petal: int, petal_highlight: int) -> int:
-    stem = x in (7, 8) and 7 <= y <= 15
-    leaf = ((4 <= x <= 7 and y in (11, 12) and x + y <= 18) or
-            (8 <= x <= 12 and y in (10, 11) and x - y <= 1))
-    petal_shape = ((x - 7) * (x - 7) + (y - 4) * (y - 4) <= 8 or
-                   (x - 5) * (x - 5) + (y - 5) * (y - 5) <= 4 or
-                   (x - 10) * (x - 10) + (y - 5) * (y - 5) <= 4)
-
-    if petal_shape:
-        return petal_highlight if noise(x, y, 613) > 210 else petal
-    if stem or leaf:
-        return PAL_GRASS_DARK if noise(x, y, 617) < 92 else PAL_GRASS_SIDE
-    return PAL_TRANSPARENT
-
-
-AIR_BUBBLE_ROWS = [
-    "tttttwwwwttttttt",
-    "tttwwbbbbwwttttt",
-    "ttwbwwbbbbbwtttt",
-    "twbwwbbbbbbbwttt",
-    "twbbbbbbbbbbbwtt",
-    "wbbbbbbbbbbbbwtt",
-    "wbbbbbbbbbbbbwtt",
-    "wbbbbbbbbbbbbwtt",
-    "wbbbbbbbbbbbbwtt",
-    "twbbbbbbbbbbwttt",
-    "twbbbbbbbbbwtttt",
-    "ttwbbbbbbwtttttt",
-    "tttwbbbbwttttttt",
-    "ttttwwwwtttttttt",
-    "tttttttttttttttt",
-    "tttttttttttttttt",
-]
-
-AIR_BUBBLE_POP_ROWS = [
-    "ttttttwwtttttttt",
-    "tttwttttttwttttt",
-    "ttttwttttwtttttt",
-    "tttttttttttttttt",
-    "ttwtttttttttwttt",
-    "ttttttwwtttttttt",
-    "tttttwbbwwtttttt",
-    "tttttwbbbwtttttt",
-    "ttttttwwwttttttt",
-    "tttttttttttttttt",
-    "tttwttttttwttttt",
-    "ttttwttttwtttttt",
-    "ttttttwwtttttttt",
-    "tttttttttttttttt",
-    "tttttttttttttttt",
-    "tttttttttttttttt",
-]
-
-
-def air_bubble(x: int, y: int) -> int:
-    return pattern_texel(
-        AIR_BUBBLE_ROWS,
-        {"t": PAL_TRANSPARENT, "b": PAL_WATER_MID, "w": PAL_WHITE},
-        x,
-        y,
-    )
-
-
-def air_bubble_pop(x: int, y: int) -> int:
-    return pattern_texel(
-        AIR_BUBBLE_POP_ROWS,
-        {"t": PAL_TRANSPARENT, "b": PAL_WATER_MID, "w": PAL_WHITE},
-        x,
-        y,
-    )
 
 
 def sky(x: int, y: int) -> int:
@@ -1395,46 +784,6 @@ def base_texel(tile: int, x: int, y: int) -> int:
     if source_value is not None:
         return source_value
 
-    if tile == TEX_TILE_GRASS_TOP:
-        return grass_top(x, y)
-    if tile == TEX_TILE_GRASS_SIDE:
-        return grass_side(x, y)
-    if tile == TEX_TILE_DIRT:
-        return dirt(x, y)
-    if tile == TEX_TILE_STONE:
-        return stone(x, y)
-    if tile == TEX_TILE_WOOD_SIDE:
-        return wood_side(x, y)
-    if tile == TEX_TILE_WOOD_TOP:
-        return wood_top(x, y)
-    if tile == TEX_TILE_WOOD_PLANK:
-        return wood_plank(x, y)
-    if tile == TEX_TILE_GLASS:
-        return glass(x, y)
-    if tile == TEX_TILE_LAMP:
-        return lamp(x, y)
-    if tile == TEX_TILE_LEAVES:
-        return leaves(x, y)
-    if tile == TEX_TILE_WATER:
-        return water(x, y)
-    if tile == TEX_TILE_CACTUS_SIDE:
-        return cactus(x, y, False)
-    if tile == TEX_TILE_CACTUS_TOP or tile == TEX_TILE_CACTUS_BOTTOM:
-        return cactus(x, y, True)
-    if tile == TEX_TILE_SAND:
-        return sand(x, y)
-    if tile == TEX_TILE_GRAVEL:
-        return gravel(x, y)
-    if tile == TEX_TILE_COBBLESTONE:
-        return cobblestone(x, y)
-    if tile == TEX_TILE_OBSIDIAN:
-        return obsidian(x, y)
-    if tile == TEX_TILE_SANDSTONE:
-        return sandstone(x, y)
-    if tile == TEX_TILE_CLAY:
-        return clay(x, y)
-    if tile == TEX_TILE_REDSTONE_BLOCK:
-        return redstone_block(x, y)
     if tile == TEX_TILE_REDSTONE_WIRE_UNCONNECTED:
         return redstone_wire(x, y, 0, False)
     if tile == TEX_TILE_REDSTONE_WIRE_DOT_ON:
@@ -1469,54 +818,12 @@ def base_texel(tile: int, x: int, y: int) -> int:
                              REDSTONE_WIRE_N | REDSTONE_WIRE_E |
                              REDSTONE_WIRE_S | REDSTONE_WIRE_W,
                              True)
-    if tile == TEX_TILE_REDSTONE_TORCH_OFF:
-        return redstone_torch(x, y, False)
-    if tile == TEX_TILE_REDSTONE_TORCH_ON:
-        return redstone_torch(x, y, True)
-    if tile == TEX_TILE_REPEATER_OFF:
-        return repeater(x, y, False)
-    if tile == TEX_TILE_REPEATER_ON:
-        return repeater(x, y, True)
-    if tile == TEX_TILE_LAMP_OFF:
-        return lamp_off(x, y)
     if tile == TEX_TILE_BUTTON:
         return button(x, y)
     if tile == TEX_TILE_LEVER_OFF:
         return lever(x, y, False)
     if tile == TEX_TILE_LEVER_ON:
         return lever(x, y, True)
-    if tile == TEX_TILE_LAVA:
-        return lava(x, y)
-    if tile == TEX_TILE_COAL_ORE:
-        return ore_texture(x, y, PAL_UI_DARK, PAL_STONE_DARK, 631)
-    if tile == TEX_TILE_IRON_ORE:
-        return ore_texture(x, y, PAL_DIRT_LIGHT, PAL_SAND, 641)
-    if tile == TEX_TILE_GOLD_ORE:
-        return ore_texture(x, y, PAL_YELLOW, PAL_SUN_CORE, 643)
-    if tile == TEX_TILE_DIAMOND_ORE:
-        return ore_texture(x, y, PAL_BLUE, PAL_GLASS_HIGHLIGHT, 647)
-    if tile == TEX_TILE_REDSTONE_ORE:
-        return ore_texture(x, y, PAL_RED, PAL_LAVA_ORANGE, 653)
-    if tile == TEX_TILE_GOLD_BLOCK:
-        return gold_block(x, y)
-    if tile == TEX_TILE_DIAMOND_BLOCK:
-        return diamond_block(x, y)
-    if tile == TEX_TILE_RED_FLOWER:
-        return flower(x, y, PAL_RED, PAL_WHITE)
-    if tile == TEX_TILE_YELLOW_FLOWER:
-        return flower(x, y, PAL_YELLOW, PAL_SUN_CORE)
-    if tile == TEX_TILE_RED_MUSHROOM:
-        return flower(x, y, PAL_RED, PAL_WHITE)
-    if tile == TEX_TILE_BROWN_MUSHROOM:
-        return flower(x, y, PAL_WOOD, PAL_DIRT_LIGHT)
-    if tile == TEX_TILE_SUGAR_CANE:
-        return flower(x, y, PAL_GRASS_SIDE, PAL_GRASS_LIGHT)
-    if tile == TEX_TILE_APPLE:
-        return flower(x, y, PAL_RED, PAL_WHITE)
-    if tile == TEX_TILE_BOWL:
-        return wood_top(x, y)
-    if tile == TEX_TILE_MUSHROOM_STEW:
-        return wood_plank(x, y)
     if tile == TEX_TILE_SKY:
         return sky(x, y)
     if tile == TEX_TILE_CLOUD:
@@ -1527,10 +834,6 @@ def base_texel(tile: int, x: int, y: int) -> int:
         return moon(x, y)
     if tile == TEX_TILE_STARS:
         return stars(x, y)
-    if tile == TEX_TILE_AIR_BUBBLE:
-        return air_bubble(x, y)
-    if tile == TEX_TILE_AIR_BUBBLE_POP:
-        return air_bubble_pop(x, y)
     return PAL_TRANSPARENT
 
 
@@ -1615,11 +918,6 @@ def write_mif(path: Path) -> None:
 def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8) -> bool:
     """Render a PNG snapshot of the full texture atlas.
 
-    The preview is a debug aid for humans, not a build input, so Pillow
-    is a soft dependency: if PIL is not importable we just skip the PNG
-    and let the .mif generation stand on its own. Returns True when a
-    file was written, False otherwise.
-
     Layout:
       * all TILE_COUNT tiles are shown in row-major atlas order,
       * `atlas_cols` controls grid width (defaults to 8 columns),
@@ -1630,15 +928,6 @@ def write_preview(path: Path, scale: int = 12, gap: int = 8, atlas_cols: int = 8
     magenta so drift between this table and the real renderer palette
     is impossible to miss.
     """
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        print(
-            "skip preview: Pillow not installed (pip install Pillow) -- "
-            "the .mif was still written"
-        )
-        return False
-
     atlas = build_atlas()
     cols = max(1, atlas_cols)
     rows = (TILE_COUNT + cols - 1) // cols

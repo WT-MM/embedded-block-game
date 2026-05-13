@@ -13,7 +13,7 @@ obj_dir/
 # --- Quartus build artifacts ---
 db/
 incremental_db/
-output_files/
+# output_files/
 .qsys_edit/
 hps_isw_handoff/
 hc_output/

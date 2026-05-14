@@ -1,0 +1,85 @@
+# --- OS / editor cruft ---
+.DS_Store
+*~
+*.bak
+*.swp
+*.swo
+__pycache__/
+*.pyc
+
+# verilator
+obj_dir/
+
+# --- Quartus build artifacts ---
+db/
+incremental_db/
+# output_files/
+.qsys_edit/
+hps_isw_handoff/
+hc_output/
+greybox_tmp/
+*.qws
+*.qarlog
+*.rpt
+*.smsg
+*.summary
+*.pin
+*.sof
+*.sld
+*.jdi
+*.done
+*.txt.bak
+
+# --- Platform Designer (Qsys) generated ---
+hw/soc_system/
+hw/ip/
+*.sopcinfo
+*.srf
+c5_pin_model_dump.txt
+hps_sdram_p0_all_pins.txt
+hps_sdram_p0_summary.csv
+
+# --- Linux kernel module build artifacts ---
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+modules.order
+Module.symvers
+.tmp_versions/
+
+# --- Userspace build artifacts ---
+/a.out
+sw/tests/voxel_test
+sw/tests/command_parser_test
+sw/tests/inventory_test
+sw/tests/player_physics_test
+sw/tests/renderer_scene_test
+sw/tests/renderer_static_test
+sw/tests/renderer_quad_test
+sw/tests/renderer_edge_test
+sw/tests/fpga_sdram_test
+sw/tests/world_chunk_test
+sw/tests/renderer_fog_test
+sw/tests/fpga_band_offset_test
+sw/game
+
+# --- Build logs ---
+hw/build.log
+
+# --- Virtual GPU local artifacts ---
+virtual_hw/*.sock
+virtual_hw/test_frames/
+virtual_hw/.venv/
+virtual_hw/*.egg-info/
+
+# --- Local world saves ---
+worlds/*
+!worlds/README.md
+!worlds/redstone_lab/
+!worlds/redstone_lab/**
+
+# --- Filesystem mount stub from old workflow ---
+usr/

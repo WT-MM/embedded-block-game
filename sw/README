@@ -1,0 +1,209 @@
+voxel_gpu — MVP device driver for the FPGA voxel GPU
+=====================================================
+
+Files
+-----
+  voxel_gpu.h    Shared user/kernel ABI: register map, ioctls, structs.
+  voxel_gpu.c    Kernel module (misc + platform driver, polling-based).
+  gpu_transport.c
+                Runtime-selectable GPU transport (`hw`, `socket`, `tee`).
+  virtual_gpu_protocol.h
+                Binary protocol shared with the Python virtual GPU server.
+  renderer.c     Software block renderer that emits quad descriptors.
+  game_home.c    World-select screen, save discovery, and home-menu drawing.
+  game_items.c   Dropped-item entity update/draw and inventory-close drops.
+  world_gen.c    Deterministic biome/heightmap terrain generation.
+  texture_tiles.def
+                Shared atlas slot metadata consumed by block_types.h/c and
+                ../hw/voxel_gpu/scripts/generate_textures.py.
+  tests/         Userspace test programs (see below).
+  Makefile       Builds both the .ko and the test binaries.
+  ../PROJECT_NOTES.md
+                 Active engineering-note index. Long SDRAM/debug history is
+                 archived under ../docs/notes/.
+
+  tests/voxel_test.c
+                 Multi-quad flat-color smoke test for the device.
+  tests/renderer_scene_test.c
+                 Minimal static-scene test that drives renderer.c.
+  tests/renderer_static_test.c
+                 Fixed-camera shared-edge coverage test for renderer.c.
+  tests/renderer_quad_test.c
+                 Single hand-placed screen-space quad (raster / packing check).
+  tests/fpga_sdram_test.c
+                 Standalone `/dev/mem` smoke test for an FPGA SDRAM window
+                 once the external SDRAM controller is wired into Qsys and
+                 mapped behind the full HPS-to-FPGA bridge.
+
+Build
+-----
+On the SoC (with kernel headers installed):
+
+    make            # builds voxel_gpu.ko and ./tests/* test binaries
+    make clean
+
+On a desktop machine without kernel headers or Linux input devices:
+
+    make tests      # builds renderer/unit tests only
+    make clean_tests
+
+Cross-compiling from a host: set KERNEL_SOURCE and CC, e.g.
+
+    make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+         KERNEL_SOURCE=/path/to/linux-socfpga \
+         CC=arm-linux-gnueabihf-gcc
+
+Device-tree binding
+-------------------
+The driver matches the OF node with
+
+    compatible = "csee4840,voxel_gpu-1.0";
+
+That string is generated automatically by Platform Designer from the
+embeddedsw.dts.vendor / .name assignments in voxel_gpu_hw.tcl. After you
+add the voxel_gpu IP into soc_system.qsys, regenerate soc_system.dts
+(via sopc2dts) so a node like the following appears:
+
+    voxel_gpu_0: voxel_gpu@0x100001000 {
+        compatible = "csee4840,voxel_gpu-1.0";
+        reg = <0x00000001 0x00001000 0x00002000>;
+        clocks = <&clk_0>;
+    };
+
+The `reg` size must cover the whole 0x2000-byte slave (registers +
+4 KB FIFO window).
+
+Run
+---
+    # Print kernel messages while bringing the module up.
+    echo 8 > /proc/sys/kernel/printk
+
+    insmod voxel_gpu.ko
+    dmesg | tail
+    ls -l /dev/voxel_gpu        # should appear with mode 0666
+
+    ./tests/voxel_test                # raw multi-quad smoke test
+    ./tests/renderer_scene_test     # renderer-driven static block scene
+    ./tests/renderer_static_test    # fixed-camera top-face / crack test
+    ./tests/renderer_quad_test      # single screen-space quad
+    sudo ./tests/fpga_sdram_test <phys_base> 0x04000000
+    rmmod voxel_gpu
+
+Virtual GPU / Socket Backend
+----------------------------
+The renderer can also stream the same palette updates and packed quad
+descriptors to a Unix socket instead of `/dev/voxel_gpu`. This is useful on a
+desktop Ubuntu machine where you want to run the C game/renderer against the
+Python virtual monitor in `../virtual_hw/`.
+
+Start the Python server first:
+
+    cd ../virtual_hw
+    uv sync
+    uv run virtualhw
+
+Then run any renderer-based binary with one of:
+
+    VOXEL_GPU_BACKEND=socket ./tests/renderer_static_test
+    VOXEL_GPU_BACKEND=socket ./game
+
+On Linux, `./game` opens on a world-select screen. Press W/S or use the cursor
+to choose an existing save or create a new random-seed world, then Enter, Space,
+or click to start. Press Delete/Backspace twice, or click a world's Delete then
+Confirm button, to remove a saved world from that screen.
+On macOS, use the renderer tests with the socket backend; the game target needs
+Linux input headers and `/dev/input/event*` devices.
+
+To mirror to both FPGA hardware and the Python monitor at once:
+
+    VOXEL_GPU_BACKEND=tee ./game
+
+Environment variables:
+
+    VOXEL_GPU_BACKEND=hw|socket|tee      # default: hw
+    VOXEL_GPU_SOCKET_PATH=/tmp/voxel_gpu.sock
+    VOXEL_RENDER_DISTANCE=1..9           # chunk radius; default: 3
+    VOXEL_STATUS_LOG=auto|0|1            # per-frame HUD; auto only on TTY
+    VOXEL_MOUSE_GRAB=0|1                 # default: 1, exclusive pointer grab
+    VOXEL_MOUSE_ALLOW_ABS=0|1            # default: 1, keep abs-tablet fallback active
+    VOXEL_WORLDS_DIR=/path/to/worlds     # home-screen root; default: ../worlds
+    VOXEL_WORLD_DIR=/path/to/world       # bypass home screen and open/create one save
+    VOXEL_FOV_DEG=30..150                # horizontal FOV in degrees; default 86.5
+    VOXEL_TARGET_FPS=15..120             # frame cap; default: 30
+    VOXEL_DEBUG_HUD=0|1                  # extra on-screen renderer/debug stats
+    VOXEL_DIAG_BBOX=0|1                  # log band bbox/cost summaries
+    VOXEL_DIAG_CACHE=0|1                 # log hardware band-cache hit/miss state
+    VOXEL_OCCLUSION_CULL=0|1             # experimental coarse opaque occlusion culling; default: 0
+    VOXEL_DIAG_OCCLUSION=0|1             # log culling counters every 60 frames
+    VOXEL_HW_BAND_REUSE=0|1              # cached-band skip path; default: 1 for hw
+    VOXEL_PIPELINE_FRAMES=0|1            # hw submit worker; default: 1 for hw
+
+`socket` mode avoids opening `/dev/voxel_gpu` entirely, while `tee` sends the
+same command stream to both backends.
+
+While capture is enabled, `Esc` opens the pause menu and releases the grabbed
+pointer devices so the VM/desktop cursor can come back. Resuming gameplay
+re-captures them. The pause menu can adjust render distance, mouse
+sensitivity, and FOV at runtime.
+
+Sysfs / debug peeks
+-------------------
+    cat /proc/iomem             # voxel_gpu region appears here
+    ls /sys/class/misc/voxel_gpu
+
+ABI summary
+-----------
+write(fd, buf, n)              Stream `n` bytes (must be a multiple of 4)
+                               into the FIFO. Blocks while FIFO_FULL,
+                               returns -ETIMEDOUT if the GPU is wedged.
+
+ioctl(fd, VOXEL_IOC_CLEAR_FRAME)         Starts a new inactive SDRAM frame.
+ioctl(fd, VOXEL_IOC_FLIP)                Swaps the completed SDRAM frame on vsync.
+ioctl(fd, VOXEL_IOC_SET_PALETTE, &e)     Upload one palette entry.
+ioctl(fd, VOXEL_IOC_GET_STATUS, &s)      Snapshot of STATUS register.
+ioctl(fd, VOXEL_IOC_GET_FRAME_COUNT, &n) Read free-running frame counter.
+ioctl(fd, VOXEL_IOC_SET_EXTMEM, &x)      Program future SDRAM color-path regs.
+ioctl(fd, VOXEL_IOC_GET_EXTMEM, &x)      Read back SDRAM color-path regs.
+ioctl(fd, VOXEL_IOC_BEGIN_BAND, &b)      Clear/select one band and flush row window.
+ioctl(fd, VOXEL_IOC_END_BAND)            Drain and flush that band to SDRAM.
+
+The MVP render loop is therefore:
+
+    ioctl(CLEAR_FRAME);
+    for each 60-line band:
+        ioctl(BEGIN_BAND, { band_index, flush_y_min, flush_y_max });
+        write(quad_descriptors_for_that_band, n_bytes);
+        ioctl(END_BAND);
+    ioctl(FLIP);
+
+Normal game code does not hand-write that loop. renderer.c still emits one
+packed whole-frame descriptor stream, and gpu_transport.c bins it into the
+hardware band loop above. The socket/virtual backend still receives the original
+whole-frame stream.
+
+`voxel_test` currently submits four focused z-buffer cases per frame:
+a z-tested different-depth overlap whose submission order swaps by phase,
+a z-disabled overlap control, an equal-depth tie case, and a sloped-depth
+gradient case. This covers descriptor/FIFO behavior and the hardware z path.
+
+`world_chunk_test` verifies the reusable chunk window: same-center streams
+generate nothing, one-chunk movement reuses the overlap, boundary block edits
+rebuild both affected chunk meshes, and modified chunks survive eviction plus
+full world reload.
+
+`renderer_scene_test` uses the real software renderer against a tiny fixed
+scene of blocks. It now relies on the FPGA z-buffer path by emitting
+`QUAD_FLAG_ZTEST` on renderer-generated quads.
+
+`renderer_static_test` uses the same renderer path but keeps the camera fixed
+over a tiled platform so cracks, uneven top-face coverage, or z mistakes are
+easier to see than in the animated scene test.
+
+What this driver intentionally does NOT do
+------------------------------------------
+  * Parse, validate, or schedule descriptors.
+  * Manage GPU memory beyond a small bounce buffer.
+  * Use interrupts (everything is polled — see VOXEL_POLL_TIMEOUT_MS).
+  * Implement mmap of the FIFO (write() is the only data path for MVP).
+
+Adding any of those is a post-MVP exercise.

@@ -1,0 +1,375 @@
+#include "mesh_worker.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "env_util.h"
+#include "thread_affinity.h"
+
+/*
+ * SPSC ring buffer of pending mesh-rebuild jobs. Push happens on the
+ * main thread (mesh_worker_drain_dirty); pop happens on the worker.
+ * Capacity is power-of-two so head/tail wrap is a mask. A full queue is
+ * not an error - we just leave MESH_DIRTY set on the chunk and it will
+ * be picked up next drain pass.
+ *
+ * The job stores (chunk_x, chunk_z, generation) instead of a Chunk*
+ * because retain_chunks_in_window can compact the chunks[] array, so a
+ * pointer captured at push time would dangle. Coordinates round-trip
+ * through chunk_lookup_find_index in the worker, and we re-check
+ * generation under world_mu to discard stale jobs (chunk evicted and
+ * re-streamed before the worker got to it).
+ */
+#define MESH_JOB_QUEUE_CAPACITY 1024u
+/* Small head-of-line lane for player-edit driven rebuilds. The worker
+ * pops from here first, so a click-to-mesh path stays sub-frame even
+ * when the main queue carries a backlog from streaming or a lighting
+ * rebuild. Sized for "many simultaneous edits" (e.g. a sweep of
+ * placements); overflow falls back to leaving CHUNK_FLAG_MESH_EDIT_PRIORITY
+ * set so the next drain pass retries. */
+#define MESH_PRIORITY_QUEUE_CAPACITY 32u
+
+typedef struct {
+    int chunk_x;
+    int chunk_z;
+    uint32_t generation;
+} MeshJob;
+
+static struct {
+    VoxelWorld *world;
+    pthread_t thread;
+    bool thread_started;
+
+    pthread_mutex_t queue_mu;
+    pthread_cond_t  queue_cv;
+    MeshJob queue[MESH_JOB_QUEUE_CAPACITY];
+    unsigned head;          /* next pop index */
+    unsigned tail;          /* next push index */
+    MeshJob priority_queue[MESH_PRIORITY_QUEUE_CAPACITY];
+    unsigned priority_head;
+    unsigned priority_tail;
+    _Atomic bool stop;
+    bool running;
+
+    /* Owned by the worker thread. world_run_mesh_job uses this to copy
+     * self+neighbor block/light data under a brief world_mu hold, then
+     * runs the heavy meshing on it without the lock so the main thread
+     * is not blocked behind a 5-15 ms rebuild. */
+    ChunkMeshWorkerScratch *scratch;
+} g_worker;
+
+static bool worker_enabled_from_env(void)
+{
+    return env_flag("VOXEL_MESH_WORKER", true);
+}
+
+static int mesh_pushes_cap_from_env(void)
+{
+    static int cached = -1;
+    static bool initialized = false;
+
+    if (!initialized) {
+        cached = env_int_or_default("VOXEL_MESH_PUSHES_PER_FRAME",
+                                    -1,
+                                    0,
+                                    4095);
+        initialized = true;
+    }
+
+    return cached;
+}
+
+static unsigned queue_count_unlocked(void)
+{
+    return g_worker.tail - g_worker.head;
+}
+
+static bool queue_push_unlocked(const MeshJob *job)
+{
+    if (queue_count_unlocked() >= MESH_JOB_QUEUE_CAPACITY)
+        return false;
+    g_worker.queue[g_worker.tail & (MESH_JOB_QUEUE_CAPACITY - 1u)] = *job;
+    g_worker.tail++;
+    return true;
+}
+
+static bool queue_pop_unlocked(MeshJob *out)
+{
+    if (queue_count_unlocked() == 0)
+        return false;
+    *out = g_worker.queue[g_worker.head & (MESH_JOB_QUEUE_CAPACITY - 1u)];
+    g_worker.head++;
+    return true;
+}
+
+static unsigned priority_count_unlocked(void)
+{
+    return g_worker.priority_tail - g_worker.priority_head;
+}
+
+static bool priority_push_unlocked(const MeshJob *job)
+{
+    if (priority_count_unlocked() >= MESH_PRIORITY_QUEUE_CAPACITY)
+        return false;
+    g_worker.priority_queue[g_worker.priority_tail & (MESH_PRIORITY_QUEUE_CAPACITY - 1u)] = *job;
+    g_worker.priority_tail++;
+    return true;
+}
+
+static bool priority_pop_unlocked(MeshJob *out)
+{
+    if (priority_count_unlocked() == 0)
+        return false;
+    *out = g_worker.priority_queue[g_worker.priority_head & (MESH_PRIORITY_QUEUE_CAPACITY - 1u)];
+    g_worker.priority_head++;
+    return true;
+}
+
+static void *mesh_worker_thread(void *arg)
+{
+    VoxelWorld *world = (VoxelWorld *)arg;
+
+    thread_affinity_pin_current("mesh_worker", "VOXEL_MESH_CPU", 1);
+
+    for (;;) {
+        MeshJob job;
+        bool got_job = false;
+
+        pthread_mutex_lock(&g_worker.queue_mu);
+        while (!atomic_load_explicit(&g_worker.stop, memory_order_acquire) &&
+               priority_count_unlocked() == 0 &&
+               queue_count_unlocked() == 0) {
+            pthread_cond_wait(&g_worker.queue_cv, &g_worker.queue_mu);
+        }
+        if (atomic_load_explicit(&g_worker.stop, memory_order_acquire) &&
+            priority_count_unlocked() == 0 &&
+            queue_count_unlocked() == 0) {
+            pthread_mutex_unlock(&g_worker.queue_mu);
+            break;
+        }
+        /* Priority lane drains first: head-of-line for player edits. */
+        got_job = priority_pop_unlocked(&job);
+        if (!got_job)
+            got_job = queue_pop_unlocked(&job);
+        pthread_mutex_unlock(&g_worker.queue_mu);
+
+        if (!got_job)
+            continue;
+
+        /* world_run_mesh_job handles the lock-snapshot-build-publish dance
+         * internally: world_mu is held only during the snapshot copy and
+         * the publish, not during the (much longer) greedy meshing. It
+         * also clears MESH_QUEUED on every exit path. */
+        (void)world_run_mesh_job(world, g_worker.scratch,
+                                 job.chunk_x, job.chunk_z, job.generation);
+    }
+
+    return NULL;
+}
+
+bool mesh_worker_start(VoxelWorld *world)
+{
+    int rc;
+
+    if (!world)
+        return false;
+    if (g_worker.running)
+        return true;
+    if (!worker_enabled_from_env())
+        return false;
+
+    memset(&g_worker, 0, sizeof(g_worker));
+    g_worker.world = world;
+    g_worker.scratch = chunk_mesh_worker_scratch_create();
+    if (!g_worker.scratch)
+        return false;
+
+    if (pthread_mutex_init(&g_worker.queue_mu, NULL) != 0) {
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
+        return false;
+    }
+    if (pthread_cond_init(&g_worker.queue_cv, NULL) != 0) {
+        pthread_mutex_destroy(&g_worker.queue_mu);
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
+        return false;
+    }
+
+    rc = pthread_create(&g_worker.thread, NULL, mesh_worker_thread, world);
+    if (rc != 0) {
+        fprintf(stderr, "mesh_worker: pthread_create failed (%d)\n", rc);
+        pthread_cond_destroy(&g_worker.queue_cv);
+        pthread_mutex_destroy(&g_worker.queue_mu);
+        chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+        g_worker.scratch = NULL;
+        return false;
+    }
+
+    g_worker.thread_started = true;
+    g_worker.running = true;
+
+    world_lock(world);
+    world->async_mesh_rebuilds_enabled = true;
+    world_unlock(world);
+    return true;
+}
+
+void mesh_worker_stop(void)
+{
+    VoxelWorld *world = g_worker.world;
+
+    if (!g_worker.running)
+        return;
+
+    pthread_mutex_lock(&g_worker.queue_mu);
+    atomic_store_explicit(&g_worker.stop, true, memory_order_release);
+    pthread_cond_broadcast(&g_worker.queue_cv);
+    pthread_mutex_unlock(&g_worker.queue_mu);
+
+    if (g_worker.thread_started)
+        pthread_join(g_worker.thread, NULL);
+
+    pthread_cond_destroy(&g_worker.queue_cv);
+    pthread_mutex_destroy(&g_worker.queue_mu);
+    chunk_mesh_worker_scratch_destroy(g_worker.scratch);
+
+    if (world) {
+        world_lock(world);
+        world->async_mesh_rebuilds_enabled = false;
+        world_unlock(world);
+    }
+
+    memset(&g_worker, 0, sizeof(g_worker));
+}
+
+bool mesh_worker_is_running(void)
+{
+    return g_worker.running;
+}
+
+void mesh_worker_drain_dirty(VoxelWorld *world)
+{
+    if (!world)
+        return;
+
+    if (!g_worker.running) {
+        world_rebuild_dirty_meshes(world);
+        return;
+    }
+
+    /*
+     * Hold world_mu across the scan so we get a coherent snapshot of
+     * which chunks are dirty and mark MESH_QUEUED atomically with the
+     * generation snapshot we enqueue. Worker also takes world_mu at
+     * job execution time, so by the time it actually rebuilds, any
+     * later main-thread edit will leave MESH_DIRTY set for a follow-up job.
+     */
+    world_lock(world);
+
+    pthread_mutex_lock(&g_worker.queue_mu);
+
+    bool pushed_any = false;
+    bool any_dirty = false;
+    int env_cap = mesh_pushes_cap_from_env();
+    int cap = (env_cap < 0) ? world->stream_chunks_per_frame : env_cap;
+    int pushed_count = 0;
+
+    if (cap <= 0)
+        cap = INT_MAX;
+
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+
+        if (!(chunk->flags & CHUNK_FLAG_LOADED) ||
+            !(chunk->flags & CHUNK_FLAG_MESH_DIRTY))
+            continue;
+        any_dirty = true;
+
+        bool is_priority = !!(chunk->flags & CHUNK_FLAG_MESH_EDIT_PRIORITY);
+        bool already_queued = !!(chunk->flags & CHUNK_FLAG_MESH_QUEUED);
+
+        /* Already in main queue and not flagged for priority routing -
+         * the existing job will run when its turn comes up. */
+        if (already_queued && !is_priority)
+            continue;
+        /* Defer until neighbors are stable - otherwise async chunk-load
+         * waves trigger O(neighbors) re-meshes per chunk. The last
+         * neighbor's finalize will re-assert MESH_DIRTY on our chunk.
+         * Priority chunks defer too: meshing now would just produce a
+         * stale snapshot we'd have to redo when the neighbor lands. */
+        if (world_chunk_has_loading_neighbor_locked(world,
+                                                    chunk->chunk_x,
+                                                    chunk->chunk_z))
+            continue;
+        /* Per-frame cap is for streaming/light-driven dirties. Priority
+         * pushes bypass it - they are sourced from player edits, which
+         * are naturally rate-limited by the human at the controls. */
+        if (!is_priority && pushed_count >= cap)
+            continue;
+
+        MeshJob job = {
+            .chunk_x = chunk->chunk_x,
+            .chunk_z = chunk->chunk_z,
+            .generation = chunk->generation,
+        };
+
+        bool pushed;
+        if (is_priority) {
+            pushed = priority_push_unlocked(&job);
+            if (pushed)
+                chunk->flags &= ~CHUNK_FLAG_MESH_EDIT_PRIORITY;
+            /* Priority queue full: leave EDIT_PRIORITY+MESH_DIRTY set,
+             * retry next frame. Don't fall back to main queue - we
+             * specifically want head-of-line semantics for edits. */
+        } else {
+            pushed = queue_push_unlocked(&job);
+        }
+
+        if (!pushed) {
+            if (is_priority)
+                continue;     /* try other priority/normal candidates */
+            break;            /* main queue full - retry next frame */
+        }
+
+        /* When already_queued && is_priority: there is now a stale
+         * generation copy in the main queue. world_run_mesh_job's
+         * generation check will discard it when it eventually pops. */
+        chunk->flags |= CHUNK_FLAG_MESH_QUEUED;
+        pushed_any = true;
+        if (!is_priority)
+            pushed_count++;
+    }
+
+    world->meshes_dirty = any_dirty;
+
+    if (pushed_any)
+        pthread_cond_signal(&g_worker.queue_cv);
+
+    pthread_mutex_unlock(&g_worker.queue_mu);
+
+    world_unlock(world);
+}
+
+void mesh_worker_reap_retired(VoxelWorld *world)
+{
+    if (!world)
+        return;
+
+    /*
+     * Walks chunks[] and frees retired_mesh on each. Reads world->chunks
+     * without world_mu - safe because retain_chunks_in_window only ever
+     * runs on the main thread, the same thread that calls reap, and
+     * this is called outside the renderer's draw window.
+     */
+    for (int i = 0; i < world->chunk_count; i++) {
+        Chunk *chunk = &world->chunks[i];
+        if (!(chunk->flags & CHUNK_FLAG_LOADED))
+            continue;
+        chunk_mesh_free_retired(chunk);
+    }
+}

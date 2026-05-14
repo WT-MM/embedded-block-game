@@ -43,6 +43,8 @@
 #define PERF_LOG_NS  1000000000L
 #define DEFAULT_WORLD_RENDER_DISTANCE_CHUNKS 3
 #define MAX_WORLD_RENDER_DISTANCE_CHUNKS 9
+#define MIN_FOG_RADIUS_CHUNKS 1
+#define FOG_RADIUS_STEP_CHUNKS 1
 #define DEFAULT_STREAM_CHUNKS_PER_FRAME 0
 #define MAX_STREAM_CHUNKS_PER_FRAME 64
 #define DEFERRED_LIGHTING_MAX_STREAM_BODY_NS 1000000ULL
@@ -4346,6 +4348,11 @@ home_menu_start:
     pause_settings.near_chunk_radius_max = world_render_distance(&world);
     pause_settings.render_distance = world_render_distance(&world);
     pause_settings.render_distance_max = MAX_WORLD_RENDER_DISTANCE_CHUNKS;
+    pause_settings.fog_radius = world_render_distance(&world);
+    pause_settings.fog_radius_min = MIN_FOG_RADIUS_CHUNKS;
+    pause_settings.fog_radius_max = world_render_distance(&world);
+    pause_settings.fog_radius_step = FOG_RADIUS_STEP_CHUNKS;
+    renderer_set_fog_radius_chunks(ctx, pause_settings.fog_radius);
     pause_settings.mouse_sensitivity_percent =
         mouse_sensitivity_to_percent(mouse_sens);
     pause_settings.mouse_sensitivity_percent_min = MIN_MOUSE_SENS_PERCENT;
@@ -4592,11 +4599,15 @@ home_menu_start:
                 world_stream_chunks_per_frame(&world);
             pause_settings.near_chunk_radius =
                 world_near_chunk_radius(&world);
-            pause_settings.render_distance =
-                world_render_distance(&world);
-            /* near_chunk_radius_max tracks the current render distance */
-            pause_settings.near_chunk_radius_max =
-                world_render_distance(&world);
+            int current_render_distance = world_render_distance(&world);
+            pause_settings.render_distance = current_render_distance;
+            pause_settings.near_chunk_radius_max = current_render_distance;
+            pause_settings.fog_radius_max = current_render_distance;
+            if (pause_settings.fog_radius > pause_settings.fog_radius_max)
+                pause_settings.fog_radius = pause_settings.fog_radius_max;
+            if (pause_settings.fog_radius < pause_settings.fog_radius_min)
+                pause_settings.fog_radius = pause_settings.fog_radius_min;
+            renderer_set_fog_radius_chunks(ctx, pause_settings.fog_radius);
         }
         if (paused)
             (void)input_consume_menu_select(&inp);

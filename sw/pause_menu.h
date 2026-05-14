@@ -29,6 +29,10 @@ typedef struct {
     int near_chunk_radius_max;
     int render_distance;
     int render_distance_max;
+    int fog_radius;
+    int fog_radius_min;
+    int fog_radius_max;
+    int fog_radius_step;
     int mouse_sensitivity_percent;
     int mouse_sensitivity_percent_min;
     int mouse_sensitivity_percent_max;

@@ -70,6 +70,7 @@ void renderer_shutdown(RenderContext* ctx);
 /* --- Frame Operations --- */
 void renderer_begin_frame(RenderContext* ctx);
 void renderer_end_frame(RenderContext* ctx);
+void renderer_set_fog_radius_chunks(RenderContext* ctx, int radius_chunks);
 
 /* --- Camera & Geometry --- */
 void renderer_set_camera(RenderContext* ctx, const Camera* camera);

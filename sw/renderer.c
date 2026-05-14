@@ -200,6 +200,7 @@ struct RenderContext {
     struct voxel_fog_state fog_pending;
     uint8_t fog_valid;
     uint8_t fog_dirty;
+    int fog_radius_chunks;
     uint8_t light_palette_key;
     uint8_t light_palette_key_valid;
     uint8_t face_light_flags[NUM_FACES];
@@ -3252,6 +3253,7 @@ static bool chunk_within_render_distance(RenderContext *ctx,
 static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
 {
     struct voxel_fog_state fog = {0};
+    int fog_radius_chunks;
 
     if (!ctx || !world || world->render_distance_chunks <= 0) {
         if (ctx)
@@ -3259,7 +3261,13 @@ static void configure_world_fog(RenderContext *ctx, const VoxelWorld *world)
         return;
     }
 
-    float end_distance = (float)(world->render_distance_chunks * WORLD_CHUNK_SIZE);
+    fog_radius_chunks = ctx->fog_radius_chunks > 0 ?
+                        ctx->fog_radius_chunks :
+                        world->render_distance_chunks;
+    if (fog_radius_chunks > world->render_distance_chunks)
+        fog_radius_chunks = world->render_distance_chunks;
+
+    float end_distance = (float)(fog_radius_chunks * WORLD_CHUNK_SIZE);
     float fade_span = (float)WORLD_CHUNK_SIZE;
     float start_distance;
     float inv_proj_sq;
@@ -3414,6 +3422,14 @@ void renderer_end_frame(RenderContext *ctx)
         return;
 
     gpu_transport_flip(ctx->transport);
+}
+
+void renderer_set_fog_radius_chunks(RenderContext *ctx, int radius_chunks)
+{
+    if (!ctx)
+        return;
+
+    ctx->fog_radius_chunks = radius_chunks > 0 ? radius_chunks : 0;
 }
 
 void renderer_set_camera(RenderContext *ctx, const Camera *camera)

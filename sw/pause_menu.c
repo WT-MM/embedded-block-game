@@ -8,12 +8,21 @@
 
 #define PAUSE_DIM_PALETTE   14   /* medium grey (0x5c5c5c) */
 #define PAUSE_TEXT_PALETTE  5    /* white */
-#define PAUSE_SETTING_COUNT 5
-#define PAUSE_OPTION_COUNT  7
-#define PAUSE_EXIT_TO_MENU_INDEX 5
-#define PAUSE_EXIT_GAME_INDEX    6
-#define PAUSE_MAX_LINES 14
+#define PAUSE_MAX_LINES 15
 #define PAUSE_LINE_CHARS 72
+#define PAUSE_SLIDER_CHARS 10
+
+typedef enum {
+    PAUSE_ITEM_STREAM_CHUNKS = 0,
+    PAUSE_ITEM_NEAR_MESH_RADIUS,
+    PAUSE_ITEM_RENDER_DISTANCE,
+    PAUSE_ITEM_FOG_RADIUS,
+    PAUSE_ITEM_MOUSE_SENSITIVITY,
+    PAUSE_ITEM_FOV,
+    PAUSE_ITEM_EXIT_TO_MENU,
+    PAUSE_ITEM_EXIT_GAME,
+    PAUSE_OPTION_COUNT,
+} PauseMenuItem;
 
 void pause_menu_init(PauseMenu *pm)
 {
@@ -59,6 +68,48 @@ static bool adjust_int_setting(int *value, int min_value, int max_value,
     return true;
 }
 
+static bool adjust_selected_setting(PauseMenuSettings *settings, int selected,
+                                    int direction)
+{
+    if (!settings)
+        return false;
+
+    switch (selected) {
+    case PAUSE_ITEM_STREAM_CHUNKS:
+        return adjust_int_setting(&settings->stream_chunks_per_frame,
+                                  0,
+                                  settings->stream_chunks_per_frame_max,
+                                  direction);
+    case PAUSE_ITEM_NEAR_MESH_RADIUS:
+        return adjust_int_setting(&settings->near_chunk_radius,
+                                  0,
+                                  settings->near_chunk_radius_max,
+                                  direction);
+    case PAUSE_ITEM_RENDER_DISTANCE:
+        return adjust_int_setting(&settings->render_distance,
+                                  1,
+                                  settings->render_distance_max,
+                                  direction);
+    case PAUSE_ITEM_FOG_RADIUS:
+        return adjust_int_setting(&settings->fog_radius,
+                                  settings->fog_radius_min,
+                                  settings->fog_radius_max,
+                                  direction * settings->fog_radius_step);
+    case PAUSE_ITEM_MOUSE_SENSITIVITY:
+        return adjust_int_setting(&settings->mouse_sensitivity_percent,
+                                  settings->mouse_sensitivity_percent_min,
+                                  settings->mouse_sensitivity_percent_max,
+                                  direction * settings->mouse_sensitivity_percent_step);
+    case PAUSE_ITEM_FOV:
+        return adjust_int_setting(&settings->fov_degrees_x10,
+                                  settings->fov_degrees_x10_min,
+                                  settings->fov_degrees_x10_max,
+                                  direction * settings->fov_degrees_x10_step);
+    default:
+        return false;
+    }
+}
+
 bool pause_menu_update(PauseMenu *pm, const InputState *inp,
                        PauseMenuSettings *settings,
                        PauseMenuAction *action)
@@ -96,73 +147,14 @@ bool pause_menu_update(PauseMenu *pm, const InputState *inp,
             pm->selected_setting = 0;
     }
 
-    if (edge_pressed(left, &pm->prev_left)) {
-        if (pm->selected_setting == 0) {
-            if (settings->stream_chunks_per_frame > 0) {
-                settings->stream_chunks_per_frame--;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 1) {
-            if (settings->near_chunk_radius > 0) {
-                settings->near_chunk_radius--;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 2) {
-            if (settings->render_distance > 1) {
-                settings->render_distance--;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 3) {
-            changed |= adjust_int_setting(
-                &settings->mouse_sensitivity_percent,
-                settings->mouse_sensitivity_percent_min,
-                settings->mouse_sensitivity_percent_max,
-                -settings->mouse_sensitivity_percent_step);
-        } else if (pm->selected_setting == 4) {
-            changed |= adjust_int_setting(
-                &settings->fov_degrees_x10,
-                settings->fov_degrees_x10_min,
-                settings->fov_degrees_x10_max,
-                -settings->fov_degrees_x10_step);
-        }
-    }
-    if (edge_pressed(right, &pm->prev_right)) {
-        if (pm->selected_setting == 0) {
-            if (settings->stream_chunks_per_frame <
-                settings->stream_chunks_per_frame_max) {
-                settings->stream_chunks_per_frame++;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 1) {
-            if (settings->near_chunk_radius <
-                settings->near_chunk_radius_max) {
-                settings->near_chunk_radius++;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 2) {
-            if (settings->render_distance <
-                settings->render_distance_max) {
-                settings->render_distance++;
-                changed = true;
-            }
-        } else if (pm->selected_setting == 3) {
-            changed |= adjust_int_setting(
-                &settings->mouse_sensitivity_percent,
-                settings->mouse_sensitivity_percent_min,
-                settings->mouse_sensitivity_percent_max,
-                settings->mouse_sensitivity_percent_step);
-        } else if (pm->selected_setting == 4) {
-            changed |= adjust_int_setting(
-                &settings->fov_degrees_x10,
-                settings->fov_degrees_x10_min,
-                settings->fov_degrees_x10_max,
-                settings->fov_degrees_x10_step);
-        }
-    }
+    if (edge_pressed(left, &pm->prev_left))
+        changed |= adjust_selected_setting(settings, pm->selected_setting, -1);
+    if (edge_pressed(right, &pm->prev_right))
+        changed |= adjust_selected_setting(settings, pm->selected_setting, 1);
     if (edge_pressed(inp->menu_select_pressed, &pm->prev_select)) {
-        if (pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX) {
+        if (pm->selected_setting == PAUSE_ITEM_EXIT_TO_MENU) {
             *action = PAUSE_MENU_ACTION_EXIT_TO_MENU;
-        } else if (pm->selected_setting == PAUSE_EXIT_GAME_INDEX) {
+        } else if (pm->selected_setting == PAUSE_ITEM_EXIT_GAME) {
             *action = PAUSE_MENU_ACTION_EXIT_GAME;
         }
     }
@@ -176,6 +168,29 @@ static void format_stream_value(char *buf, size_t buf_size, int value)
         snprintf(buf, buf_size, "UNLIMITED");
     else
         snprintf(buf, buf_size, "%d", value);
+}
+
+static void format_slider_value(char *buf, size_t buf_size,
+                                int value, int min_value, int max_value)
+{
+    char bar[PAUSE_SLIDER_CHARS + 1];
+    int pos = PAUSE_SLIDER_CHARS - 1;
+
+    if (max_value > min_value) {
+        int span = max_value - min_value;
+        pos = ((value - min_value) * (PAUSE_SLIDER_CHARS - 1) + span / 2) /
+              span;
+    }
+    if (pos < 0)
+        pos = 0;
+    if (pos >= PAUSE_SLIDER_CHARS)
+        pos = PAUSE_SLIDER_CHARS - 1;
+
+    for (int i = 0; i < PAUSE_SLIDER_CHARS; i++)
+        bar[i] = i == pos ? '|' : (i < pos ? '=' : '-');
+    bar[PAUSE_SLIDER_CHARS] = '\0';
+
+    snprintf(buf, buf_size, "%d [%s]", value, bar);
 }
 
 void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
@@ -197,32 +212,41 @@ void pause_menu_draw(const PauseMenu *pm, RenderContext *ctx,
     int line_step = cell_h + 2;  /* a little breathing room between lines */
     char lines[PAUSE_MAX_LINES][PAUSE_LINE_CHARS];
     char stream_value[16];
+    char fog_value[24];
     int line_count = 0;
 
     format_stream_value(stream_value, sizeof(stream_value),
                         settings->stream_chunks_per_frame);
+    format_slider_value(fog_value, sizeof(fog_value),
+                        settings->fog_radius,
+                        settings->fog_radius_min,
+                        settings->fog_radius_max);
 
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "GAME MENU");
     lines[line_count++][0] = '\0';
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c STREAM CHUNKS/FRAME  %s",
-             pm->selected_setting == 0 ? '>' : ' ', stream_value);
+             pm->selected_setting == PAUSE_ITEM_STREAM_CHUNKS ? '>' : ' ',
+             stream_value);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c NEAR MESH RADIUS     %d",
-             pm->selected_setting == 1 ? '>' : ' ',
+             pm->selected_setting == PAUSE_ITEM_NEAR_MESH_RADIUS ? '>' : ' ',
              settings->near_chunk_radius);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c RENDER DISTANCE       %d",
-             pm->selected_setting == 2 ? '>' : ' ',
+             pm->selected_setting == PAUSE_ITEM_RENDER_DISTANCE ? '>' : ' ',
              settings->render_distance);
+    snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c FOG RADIUS            %s",
+             pm->selected_setting == PAUSE_ITEM_FOG_RADIUS ? '>' : ' ',
+             fog_value);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c MOUSE SENSITIVITY    %d%%",
-             pm->selected_setting == 3 ? '>' : ' ',
+             pm->selected_setting == PAUSE_ITEM_MOUSE_SENSITIVITY ? '>' : ' ',
              settings->mouse_sensitivity_percent);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c FOV                  %d.%d",
-             pm->selected_setting == 4 ? '>' : ' ',
+             pm->selected_setting == PAUSE_ITEM_FOV ? '>' : ' ',
              settings->fov_degrees_x10 / 10,
              settings->fov_degrees_x10 % 10);
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT TO MENU",
-             pm->selected_setting == PAUSE_EXIT_TO_MENU_INDEX ? '>' : ' ');
+             pm->selected_setting == PAUSE_ITEM_EXIT_TO_MENU ? '>' : ' ');
     snprintf(lines[line_count++], PAUSE_LINE_CHARS, "%c EXIT GAME",
-             pm->selected_setting == PAUSE_EXIT_GAME_INDEX ? '>' : ' ');
+             pm->selected_setting == PAUSE_ITEM_EXIT_GAME ? '>' : ' ');
     lines[line_count++][0] = '\0';
     snprintf(lines[line_count++], PAUSE_LINE_CHARS,
              "W/S SELECT   A/D ADJUST   ENTER USE");

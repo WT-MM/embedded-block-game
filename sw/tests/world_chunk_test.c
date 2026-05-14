@@ -922,10 +922,12 @@ int main(void)
         block_emission_level(BLOCK_TORCH) != 14 ||
         !block_is_self_lit(BLOCK_TORCH) ||
         !block_is_alpha_keyed(BLOCK_TORCH) ||
+        !block_is_transparent(BLOCK_TORCH) ||
         !block_is_passable(BLOCK_TORCH))
         return check_failed("furnace/torch metadata missing");
     if (block_render_model(BLOCK_REDSTONE_WIRE_ON) != BLOCK_RENDER_FLAT ||
         !block_is_alpha_keyed(BLOCK_REDSTONE_WIRE_ON) ||
+        !block_is_transparent(BLOCK_REDSTONE_WIRE_ON) ||
         !block_is_passable(BLOCK_REDSTONE_WIRE_ON) ||
         block_emission_level(BLOCK_REDSTONE_WIRE_ON) != 5 ||
         block_render_model(BLOCK_REDSTONE_TORCH_ON) != BLOCK_RENDER_TORCH ||
@@ -986,17 +988,21 @@ int main(void)
         !block_is_door_open(block_door_make(BLOCK_DOOR_FACING_SOUTH, true, false)) ||
         block_is_passable(BLOCK_DOOR) ||
         !block_is_passable(block_door_make(BLOCK_DOOR_FACING_NORTH, true, false)) ||
+        !block_is_transparent(BLOCK_DOOR) ||
         !block_is_alpha_keyed(BLOCK_DOOR))
         return check_failed("door metadata missing");
 
     if (block_render_model(BLOCK_RED_FLOWER) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_RED_FLOWER) ||
+        !block_is_transparent(BLOCK_RED_FLOWER) ||
         !block_is_passable(BLOCK_RED_FLOWER) ||
         block_render_model(BLOCK_RED_MUSHROOM) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_RED_MUSHROOM) ||
+        !block_is_transparent(BLOCK_RED_MUSHROOM) ||
         !block_is_passable(BLOCK_RED_MUSHROOM) ||
         block_render_model(BLOCK_SUGAR_CANE) != BLOCK_RENDER_CROSS ||
         !block_is_alpha_keyed(BLOCK_SUGAR_CANE) ||
+        !block_is_transparent(BLOCK_SUGAR_CANE) ||
         !block_is_passable(BLOCK_SUGAR_CANE) ||
         block_render_model(BLOCK_CACTUS) != BLOCK_RENDER_CUBE ||
         block_is_alpha_keyed(BLOCK_CACTUS) ||
@@ -1896,6 +1902,11 @@ int main(void)
     const int flower_x = 9;
     const int flower_y = 26;
     const int flower_z = 2;
+    const int flower_stone_x = flower_x - 1;
+    if (!world_set_block(&world,
+                         flower_stone_x, flower_y, flower_z,
+                         BLOCK_STONE))
+        return check_failed("flower culling stone fixture failed");
     if (!world_set_block(&world, flower_x, flower_y, flower_z, BLOCK_RED_FLOWER))
         return check_failed("flower placement failed");
     if (!world_rebuild_dirty_meshes(&world))
@@ -1912,9 +1923,18 @@ int main(void)
     const ChunkFace *flower_cube_top = find_chunk_face(flower_chunk,
                                                        flower_x, flower_y, flower_z,
                                                        FACE_TOP, BLOCK_RED_FLOWER);
+    const ChunkFace *stone_face_against_flower =
+        find_chunk_face(flower_chunk,
+                        flower_stone_x, flower_y, flower_z,
+                        FACE_RIGHT, BLOCK_STONE);
     if (!flower_cross_a || !flower_cross_b || flower_cube_top)
         return check_failed("flower did not mesh as crossed planes");
-    if (!world_set_block(&world, flower_x, flower_y, flower_z, BLOCK_AIR))
+    if (!stone_face_against_flower)
+        return check_failed("flower culled adjacent stone face");
+    if (!world_set_block(&world, flower_x, flower_y, flower_z, BLOCK_AIR) ||
+        !world_set_block(&world,
+                         flower_stone_x, flower_y, flower_z,
+                         BLOCK_AIR))
         return check_failed("flower cleanup failed");
     if (!world_rebuild_dirty_meshes(&world))
         return check_failed("post-flower-cleanup mesh rebuild failed");

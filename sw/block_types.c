@@ -36,6 +36,31 @@ static void init_redstone_flat_descriptor(BlockID id,
     }
 }
 
+static bool block_is_intrinsically_transparent(BlockID id)
+{
+    switch (id) {
+    case BLOCK_AIR:
+    case BLOCK_GLASS:
+    case BLOCK_LEAVES:
+    case BLOCK_WATER:
+    case BLOCK_WATER_FLOW:
+    case BLOCK_LAVA:
+    case BLOCK_LAVA_FLOW:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void mark_transparent_blocks(void)
+{
+    for (BlockID id = BLOCK_AIR; id < NUM_BLOCK_TYPES; id++) {
+        BlockRegistry[id].transparent =
+            block_is_intrinsically_transparent(id) ||
+            BlockRegistry[id].render_model != BLOCK_RENDER_CUBE;
+    }
+}
+
 typedef struct {
     uint8_t base;
     uint8_t mip1;
@@ -437,6 +462,7 @@ void init_block_types(void)
     BlockRegistry[BLOCK_STONE_PRESSURE_PLATE_PRESSED].render_model =
         BLOCK_RENDER_FLAT;
 
+    mark_transparent_blocks();
 }
 
 uint8_t block_face_texture_id(BlockID id, BlockFace face)
@@ -493,13 +519,11 @@ bool block_blocks_light(BlockID id)
 
 bool block_is_transparent(BlockID id)
 {
-    return id == BLOCK_AIR || id == BLOCK_GLASS || id == BLOCK_LEAVES ||
-           id == BLOCK_WATER || id == BLOCK_WATER_FLOW ||
-           id == BLOCK_LAVA || id == BLOCK_LAVA_FLOW ||
-           block_is_door(id) ||
-           block_render_model(id) == BLOCK_RENDER_CROSS ||
-           block_render_model(id) == BLOCK_RENDER_TORCH ||
-           block_render_model(id) == BLOCK_RENDER_FLAT;
+    if (id < BLOCK_AIR || id >= NUM_BLOCK_TYPES)
+        return false;
+
+    return block_is_intrinsically_transparent(id) ||
+           BlockRegistry[id].transparent;
 }
 
 bool block_is_translucent(BlockID id)

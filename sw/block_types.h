@@ -135,6 +135,7 @@ typedef struct {
     uint8_t emission_level;
     float hardness_seconds;
     bool self_lit;
+    bool transparent;
     BlockRenderModel render_model;
 } BlockDescriptor;
 
@@ -148,7 +149,7 @@ float block_break_seconds(BlockID id);
 bool block_is_self_lit(BlockID id);
 bool block_blocks_light(BlockID id);
 
-/* True for blocks that don't fully occlude their neighbors (air, glass). */
+/* True for blocks that don't fully occlude neighbor faces/light. */
 bool block_is_transparent(BlockID id);
 /* True for alpha-blended blocks that need special draw treatment (glass). */
 bool block_is_translucent(BlockID id);
